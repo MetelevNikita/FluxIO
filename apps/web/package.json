@@ -1,0 +1,26 @@
+{
+  "name": "@gruber/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "dev": "vite --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@gruber/contracts": "*",
+    "hls.js": "^1.6.16",
+    "lucide-react": "^1.28.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "vite": "8.2.0"
+  }
+}

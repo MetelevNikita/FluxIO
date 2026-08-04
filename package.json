@@ -1,0 +1,37 @@
+{
+  "name": "gruber-playout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FluxIO server-first desktop playout application powered by Node.js and FFmpeg",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:contracts": "npm run build -w @gruber/contracts",
+    "build": "npm run build:contracts && npm run build -w @gruber/media-server && npm run build -w @gruber/web && npm run build -w @gruber/desktop",
+    "typecheck": "npm run build:contracts && npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && node --test setup.test.mjs",
+    "setup": "node setup.mjs",
+    "setup:no-start": "node setup.mjs --no-start",
+    "dev:server": "npm run build:contracts && npm run dev -w @gruber/media-server",
+    "dev:web": "npm run build:contracts && npm run dev -w @gruber/web",
+    "dev:desktop": "npm run build -w @gruber/desktop && npm run dev -w @gruber/desktop",
+    "start:server": "npm run start -w @gruber/media-server",
+    "start:desktop": "npm run start -w @gruber/desktop -- --gruber-production",
+    "db:generate": "npm run prisma:generate -w @gruber/media-server",
+    "db:migrate:dev": "npm run prisma:migrate:dev -w @gruber/media-server",
+    "db:migrate": "npm run prisma:migrate:deploy -w @gruber/media-server",
+    "package:desktop": "npm run build && npm run package -w @gruber/desktop",
+    "package:desktop:dir": "npm run build && npm run package:dir -w @gruber/desktop"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "npm@11.17.0",
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "tsx": "4.23.5",
+    "typescript": "7.0.2"
+  }
+}

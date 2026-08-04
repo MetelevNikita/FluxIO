@@ -1,0 +1,29 @@
+[Unit]
+Description=Gruber Playout Media Service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gruber
+Group=gruber
+WorkingDirectory=/opt/gruber-playout
+Environment=NODE_ENV=production
+Environment=GRUBER_PREVIEW_DIR=/run/gruber-playout/preview
+EnvironmentFile=/etc/gruber-playout/gruber.env
+RuntimeDirectory=gruber-playout
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/node /opt/gruber-playout/apps/media-server/dist/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGTERM
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/gruber-playout
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+ALTER TABLE "PlaylistItem"
+ADD COLUMN "scte35Markers" JSONB NOT NULL DEFAULT '[]';

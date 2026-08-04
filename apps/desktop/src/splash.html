@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FluxIO — Starting</title>
+    <style>
+      :root {
+        color: #f8fafc;
+        background: #0a0b0d;
+        font-family: Inter, Geist, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        border: 1px solid #262b32;
+        background:
+          radial-gradient(circle at 50% 36%, rgba(245, 213, 101, 0.055), transparent 35%),
+          #0a0b0d;
+        -webkit-app-region: drag;
+        user-select: none;
+      }
+
+      main {
+        width: min(430px, calc(100% - 64px));
+        text-align: center;
+      }
+
+      .lockup {
+        display: inline-flex;
+        align-items: center;
+        gap: 18px;
+      }
+
+      .mark {
+        width: 68px;
+        height: 68px;
+        flex: 0 0 68px;
+        border-radius: 17px;
+        color: #0a0b0d;
+        background: #f5d565;
+        box-shadow: 0 14px 42px rgba(245, 213, 101, 0.12);
+      }
+
+      .mark svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        padding: 13px;
+      }
+
+      .wordmark {
+        font-size: 39px;
+        font-weight: 760;
+        letter-spacing: -1.9px;
+        line-height: 1;
+      }
+
+      .wordmark span { color: #f5d565; }
+
+      .tagline {
+        margin-top: 22px;
+        color: #64748b;
+        font-size: 9px;
+        font-weight: 650;
+        letter-spacing: 2.2px;
+        text-transform: uppercase;
+      }
+
+      .progress-block { margin-top: 66px; }
+
+      .progress-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        color: #94a3b8;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        letter-spacing: 0.2px;
+      }
+
+      .pulse {
+        width: 6px;
+        height: 6px;
+        display: inline-block;
+        margin-right: 7px;
+        border-radius: 50%;
+        background: #f5d565;
+        box-shadow: 0 0 10px rgba(245, 213, 101, 0.7);
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+
+      .progress-track {
+        height: 3px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #20242a;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 100%;
+        border-radius: inherit;
+        background: #f5d565;
+        box-shadow: 0 0 14px rgba(245, 213, 101, 0.38);
+        transform: scaleX(0);
+        transform-origin: left center;
+        animation: load 5s cubic-bezier(0.24, 0.72, 0.22, 1) forwards;
+      }
+
+      footer {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 18px;
+        color: #4c5665;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 8px;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+      }
+
+      @keyframes load {
+        0% { transform: scaleX(0); }
+        18% { transform: scaleX(0.13); }
+        48% { transform: scaleX(0.51); }
+        78% { transform: scaleX(0.82); }
+        100% { transform: scaleX(1); }
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 0.45; transform: scale(0.8); }
+        50% { opacity: 1; transform: scale(1); }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="lockup">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <g stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12 7 2" />
+              <path d="m7 12 5-10" />
+              <path d="m12 12 5-10" />
+              <path d="m17 12 5-10" />
+              <path d="M4.5 7h15" />
+              <path d="M12 16v6" />
+            </g>
+          </svg>
+        </div>
+        <div class="wordmark">Flux<span>IO</span></div>
+      </div>
+      <p class="tagline">Professional video playout engine</p>
+
+      <section class="progress-block" aria-label="Application loading">
+        <div class="progress-meta">
+          <span><span class="pulse"></span><span id="status">Initializing core modules…</span></span>
+          <span id="percent">0%</span>
+        </div>
+        <div class="progress-track"><div class="progress-bar"></div></div>
+      </section>
+
+      <footer>
+        <span>FluxIO 0.1.0</span>
+        <span>Electron environment</span>
+      </footer>
+    </main>
+
+    <script>
+      const durationMs = 5000;
+      const startedAt = performance.now();
+      const status = document.getElementById("status");
+      const percent = document.getElementById("percent");
+      const stages = [
+        [0, "Initializing core modules…"],
+        [1400, "Connecting media service…"],
+        [2850, "Loading operator workspace…"],
+        [4200, "Preparing console…"],
+      ];
+
+      function update() {
+        const elapsed = Math.min(durationMs, performance.now() - startedAt);
+        percent.textContent = `${Math.round((elapsed / durationMs) * 100)}%`;
+        for (const [time, label] of stages) {
+          if (elapsed >= time) status.textContent = label;
+        }
+        if (elapsed < durationMs) requestAnimationFrame(update);
+      }
+
+      requestAnimationFrame(update);
+    </script>
+  </body>
+</html>

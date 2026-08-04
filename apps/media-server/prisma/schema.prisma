@@ -1,0 +1,137 @@
+generator client {
+  provider   = "prisma-client"
+  output     = "../src/generated/prisma"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OutputProtocol {
+  UDP
+  SRT
+  RTMP
+}
+
+enum BroadcastSessionState {
+  STARTING
+  RUNNING
+  STOPPING
+  COMPLETED
+  FAILED
+  STOPPED
+}
+
+model MediaAsset {
+  id              String         @id @default(uuid()) @db.Uuid
+  filePath        String         @unique
+  name            String
+  durationSeconds Float
+  videoCodec      String
+  videoProfile    String
+  width           Int
+  height          Int
+  frameRate       Float
+  bitrate         BigInt
+  sizeBytes       BigInt
+  pixelFormat     String
+  colorSpace      String
+  hasAudio        Boolean
+  audioCodec      String?
+  audioSampleRate Int?
+  audioChannels   Int?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  playlistItems   PlaylistItem[]
+
+  @@index([name])
+}
+
+model Playlist {
+  id          String             @id @default(uuid()) @db.Uuid
+  name        String
+  description String             @default("")
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  items       PlaylistItem[]
+  sessions    BroadcastSession[]
+  configurations BroadcastConfiguration[]
+
+  @@index([updatedAt])
+}
+
+model PlaylistItem {
+  id             String     @id @default(uuid()) @db.Uuid
+  playlistId     String     @db.Uuid
+  mediaAssetId   String     @db.Uuid
+  position       Int
+  trimInSeconds  Float      @default(0)
+  trimOutSeconds Float?
+  scte35Markers  Json       @default("[]")
+  playlist       Playlist   @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  mediaAsset     MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+
+  @@unique([playlistId, position])
+  @@index([mediaAssetId])
+}
+
+model EncodingProfile {
+  id        String             @id @default(uuid()) @db.Uuid
+  name      String             @unique
+  settings  Json
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  sessions  BroadcastSession[]
+  configurations BroadcastConfiguration[]
+}
+
+model OutputEndpoint {
+  id               String             @id @default(uuid()) @db.Uuid
+  name             String             @unique
+  protocol         OutputProtocol
+  configuration    Json
+  encryptedSecret  String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  sessions         BroadcastSession[]
+  configurations   BroadcastConfiguration[]
+
+  @@index([protocol])
+}
+
+model BroadcastConfiguration {
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String          @unique
+  playlistId  String          @db.Uuid
+  profileId   String          @db.Uuid
+  endpointId  String          @db.Uuid
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  playlist    Playlist        @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  profile     EncodingProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  endpoint    OutputEndpoint  @relation(fields: [endpointId], references: [id], onDelete: Restrict)
+
+  @@index([updatedAt])
+}
+
+model BroadcastSession {
+  id              String                @id @default(uuid()) @db.Uuid
+  runtimeSessionId String?               @unique @db.Uuid
+  state           BroadcastSessionState
+  playlistId      String?               @db.Uuid
+  profileId       String?               @db.Uuid
+  endpointId      String?               @db.Uuid
+  requestSnapshot Json
+  error           String?
+  startedAt       DateTime              @default(now())
+  stoppedAt       DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  playlist        Playlist?             @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+  profile         EncodingProfile?      @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  endpoint        OutputEndpoint?       @relation(fields: [endpointId], references: [id], onDelete: SetNull)
+
+  @@index([state, startedAt])
+  @@index([playlistId])
+}

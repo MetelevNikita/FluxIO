@@ -1,0 +1,65 @@
+{
+  "name": "@gruber/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FluxIO professional video playout console",
+  "author": "FluxIO",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "electron .",
+    "icons": "node scripts/generate-icons.mjs",
+    "start": "electron .",
+    "package": "electron-builder",
+    "package:dir": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "live.gruber.playout",
+    "productName": "FluxIO",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon-mac.png",
+        "to": "icon-mac.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "build/icon.icns",
+      "target": ["dmg", "zip"]
+    },
+    "linux": {
+      "category": "AudioVideo",
+      "icon": "build/icon.png",
+      "target": ["AppImage", "deb"]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "^26.15.3"
+  }
+}
