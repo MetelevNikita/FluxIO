@@ -83,7 +83,9 @@ flowchart LR
   Overlay --> Realtime["video/audio realtime pacing"]
   Realtime --> Split["program/preview split"]
   Split --> Encode["Selected video/audio encoders"]
-  Encode --> Endpoint["UDP, SRT or RTMP(S)"]
+  Encode --> Direct["Direct UDP or RTMP(S)"]
+  Encode --> Loopback["Loopback UDP for every SRT"]
+  Loopback --> SrtRelay["TSDuck SRT relay"]
   Split --> HLS["Low-latency-oriented H.264/AAC HLS preview"]
 ```
 
@@ -94,7 +96,7 @@ flowchart LR
 ### Program output
 
 - UDP: MPEG-TS, `pkt_size`, TTL, optional local address;
-- SRT: MPEG-TS, caller/listener/rendezvous, latency, optional passphrase и stream ID;
+- SRT: MPEG-TS через обязательный TSDuck relay, caller/listener/rendezvous, latency, optional passphrase и stream ID; libsrt в FFmpeg не требуется;
 - RTMP/RTMPS: FLV, только H.264 + AAC.
 
 ### Preview

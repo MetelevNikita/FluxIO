@@ -16,7 +16,10 @@ import { buildApp } from "./app.js";
 import { buildFfmpegCommand } from "./ffmpeg/command-builder.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
-import { PlayoutSupervisor } from "./ffmpeg/playout-supervisor.js";
+import {
+  PlayoutSupervisor,
+  usesTsdDuckTransport,
+} from "./ffmpeg/playout-supervisor.js";
 import { runCommand } from "./ffmpeg/process.js";
 import { DatabaseService } from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
@@ -294,6 +297,33 @@ test("TSDuck command sends the injected MPEG-TS through SRT caller settings", ()
   assert.match(rendered, /--passphrase valid-test-passphrase --pbkeylen 16/);
   assert.match(rendered, /--streamid #!::r=channel-1,m=publish/);
   assert.match(rendered, /--payload-size 1316 --packet-burst 7/);
+});
+
+test("plain SRT uses TSDuck relay without adding SCTE-35 signaling", () => {
+  const request = baseRequest();
+  request.endpoint = {
+    protocol: "srt",
+    host: "192.0.2.20",
+    port: 9_001,
+    mode: "caller",
+    latencyMs: 160,
+    passphrase: "",
+    streamId: "",
+  };
+  const command = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 19_002,
+    request,
+  });
+  const rendered = command.args.join(" ");
+  assert.equal(usesTsdDuckTransport(request), true);
+  assert.match(rendered, /-I ip --local-address 127\.0\.0\.1 19002/);
+  assert.match(rendered, /-O srt .*--caller 192\.0\.2\.20:9001/);
+  assert.doesNotMatch(rendered, /\bpmt\b|spliceinject|splicemonitor/);
+
+  const udpRequest = baseRequest();
+  assert.equal(usesTsdDuckTransport(udpRequest), false);
 });
 
 test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", () => {
@@ -594,6 +624,92 @@ test(
       ]);
       assert.match(monitor.stderr, /"event-id": 54321/);
       assert.match(monitor.stderr, /"segmentation_type_id": 52/);
+    } finally {
+      receiver?.kill("SIGTERM");
+      await supervisor.close();
+      await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "real plain SRT playout uses TSDuck relay when FFmpeg SRT is not required",
+  { skip: process.env.GRUBER_RUN_SRT_TESTS !== "1", timeout: 30_000 },
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gruber-srt-test-"));
+    const clip = path.join(directory, "program.mp4");
+    const capture = path.join(directory, "capture.ts");
+    const previewDirectory = path.join(directory, "preview");
+    const srtPort = await testUdpPort();
+    const capabilities = new FfmpegCapabilitiesService();
+    const supervisor = new PlayoutSupervisor(capabilities, previewDirectory);
+    const tspPath = process.env.TSDUCK_PATH ?? "tsp";
+    let receiver: ReturnType<typeof spawn> | null = null;
+    let receiverLogs = "";
+    try {
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000",
+        "-t", "2", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip,
+      ]);
+      receiver = spawn(tspPath, [
+        "-I", "srt", "--listener", `127.0.0.1:${srtPort}`,
+        "-O", "file", capture,
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      receiver.stderr?.on("data", (chunk: Buffer) => {
+        receiverLogs += chunk.toString("utf8");
+      });
+      await new Promise<void>((resolve, reject) => {
+        receiver?.once("spawn", resolve);
+        receiver?.once("error", reject);
+      });
+
+      const request = baseRequest();
+      request.playlist = [{
+        id: "program",
+        name: "program.mp4",
+        filePath: clip,
+        trimInSeconds: 0,
+        trimOutSeconds: null,
+        scte35Markers: [],
+      }];
+      request.video.width = 640;
+      request.video.height = 360;
+      request.video.targetBitrateKbps = 1_200;
+      request.video.maxBitrateKbps = 1_200;
+      request.video.bufferSizeKbps = 2_400;
+      request.endpoint = {
+        protocol: "srt",
+        host: "127.0.0.1",
+        port: srtPort,
+        mode: "caller",
+        latencyMs: 120,
+        passphrase: "",
+        streamId: "",
+      };
+
+      await supervisor.start(request);
+      const deadline = Date.now() + 20_000;
+      while (["starting", "running"].includes(supervisor.getStatus().state)) {
+        if (Date.now() > deadline) throw new Error("Timed out waiting for SRT playout");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      const status = supervisor.getStatus();
+      assert.equal(status.state, "completed", status.logs.slice(-20).join("\n"));
+      assert.equal(status.scte35.state, "disabled");
+      assert.match(status.logs.join("\n"), /TSDuck SRT relay started/);
+
+      if (receiver.exitCode == null) {
+        receiver.kill("SIGTERM");
+        await new Promise<void>((resolve) => receiver?.once("close", () => resolve()));
+      }
+      const streams = await runCommand(capabilities.ffprobePath, [
+        "-v", "error", "-show_entries", "stream=codec_name", "-of", "json", capture,
+      ]);
+      assert.match(streams.stdout, /"codec_name": "h264"/, receiverLogs);
+      assert.match(streams.stdout, /"codec_name": "aac"/, receiverLogs);
     } finally {
       receiver?.kill("SIGTERM");
       await supervisor.close();

@@ -153,6 +153,8 @@ tsp -I ip 239.10.10.10:5000 -P splicemonitor --all-commands -O drop
 tsversion --support srt
 ```
 
+Весь SRT output, независимо от SCTE-35, открывает TSDuck по схеме `FFmpeg → loopback UDP → TSDuck → SRT`. Поэтому отсутствие `srt` в `ffmpeg -protocols` допустимо. Если SCTE-35 выключен, TSDuck работает как transport relay и не изменяет PMT и не добавляет cue PID.
+
 PostgreSQL не показывается в Broadcast Settings: база обслуживается media-service и настраивается через `.env`/`setup.mjs`, а не оператором во время эфира.
 
 В Encoder Settings отсутствует файловый Output: program отправляется только на выбранный streaming endpoint.
@@ -165,6 +167,21 @@ node setup.mjs
 ```
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
+
+### Обновление без доступа к интернету
+
+Для заранее подготовленного offline bundle:
+
+```powershell
+node setup.mjs --offline
+```
+
+В режиме offline мастер не выполняет npm/system downloads. Варианты Electron output:
+
+- `offline unpacked` — не требует NSIS/WinCodeSign cache, результат `apps\desktop\release\win-unpacked\FluxIO.exe`;
+- полный NSIS installer — требует перенесённый `%LOCALAPPDATA%\electron-builder\Cache` с Windows-машины той же архитектуры.
+
+Electron runtime для обоих вариантов читается из `node_modules\electron\dist`. Если этот каталог, Prisma CLI, Vite, TypeScript или electron-builder отсутствуют, мастер останавливается до сборки с перечнем недостающих компонентов.
 
 ## 9. Backup
 

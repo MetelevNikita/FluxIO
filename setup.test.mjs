@@ -7,6 +7,7 @@ import {
   buildSystemdUnit,
   buildWindowsTaskCommand,
   commandVersionArguments,
+  electronRuntimePath,
   mergeWindowsPathValues,
   npmCiArguments,
   parseEnv,
@@ -73,6 +74,21 @@ test("macOS and Linux keep the native npm command", () => {
     prefixArgs: [],
     shell: false,
   });
+});
+
+test("offline setup resolves the platform-native installed Electron runtime", () => {
+  assert.equal(
+    electronRuntimePath("C:\\FluxIO", "win32"),
+    "C:\\FluxIO\\node_modules\\electron\\dist\\electron.exe",
+  );
+  assert.equal(
+    electronRuntimePath("/srv/FluxIO", "linux"),
+    "/srv/FluxIO/node_modules/electron/dist/electron",
+  );
+  assert.equal(
+    electronRuntimePath("/Applications/FluxIO", "darwin"),
+    "/Applications/FluxIO/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+  );
 });
 
 test("setup builds an encoded URL for local PostgreSQL without SSL", () => {

@@ -12,11 +12,13 @@
     "icons": "node scripts/generate-icons.mjs",
     "start": "electron .",
     "package": "electron-builder",
-    "package:dir": "electron-builder --dir"
+    "package:dir": "electron-builder --dir",
+    "package:offline-dir": "electron-builder --dir -c.win.signAndEditExecutable=false"
   },
   "build": {
     "appId": "live.gruber.playout",
     "productName": "FluxIO",
+    "electronDist": "../../node_modules/electron/dist",
     "asar": true,
     "directories": {
       "output": "release"

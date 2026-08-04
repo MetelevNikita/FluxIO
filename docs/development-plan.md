@@ -179,6 +179,26 @@
 - новая задача запускается только с актуальным `dist`;
 - Windows restart order защищён regression-тестом.
 
+### 2.15. SRT transport through TSDuck
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-15-srt-tsduck-relay.md`](progress/02-15-srt-tsduck-relay.md).
+
+- весь SRT output идёт через `FFmpeg → loopback UDP → TSDuck → SRT`;
+- FFmpeg build больше не обязан содержать libsrt;
+- plain SRT relay не добавляет SCTE-35 signaling или PID;
+- SRT preflight проверяет поддержку через `tsversion --support srt`;
+- UDP без SCTE-35 и RTMP остаются прямыми FFmpeg outputs.
+
+### 2.16. Offline Electron packaging
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-16-offline-electron-packaging.md`](progress/02-16-offline-electron-packaging.md).
+
+- Electron runtime берётся из local `node_modules/electron/dist`;
+- `node setup.mjs --offline` отключает npm/system downloads;
+- offline preflight проверяет TypeScript, Vite, Prisma, Electron и electron-builder;
+- без toolset cache доступна network-free unpacked application;
+- полный NSIS installer собирается offline с заранее перенесённым electron-builder cache.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

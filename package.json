@@ -23,7 +23,8 @@
     "db:migrate:dev": "npm run prisma:migrate:dev -w @gruber/media-server",
     "db:migrate": "npm run prisma:migrate:deploy -w @gruber/media-server",
     "package:desktop": "npm run build && npm run package -w @gruber/desktop",
-    "package:desktop:dir": "npm run build && npm run package:dir -w @gruber/desktop"
+    "package:desktop:dir": "npm run build && npm run package:dir -w @gruber/desktop",
+    "package:desktop:offline-dir": "npm run build && npm run package:offline-dir -w @gruber/desktop"
   },
   "engines": {
     "node": ">=24"

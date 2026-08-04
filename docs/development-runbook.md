@@ -81,6 +81,18 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 
 При первом создании Electron-окна FluxIO показывает startup splash 1440 × 920 в течение 5 секунд. Media-service и основной renderer в это время продолжают загружаться; повторное открытие окна через macOS Dock не повторяет splash.
 
+### Offline-сборка
+
+Если repository уже содержит подготовленные для текущей ОС и архитектуры `node_modules`, запустите:
+
+```bash
+node setup.mjs --offline
+```
+
+Мастер не выполняет `npm ci`, Homebrew/apt/winget installation и другие сетевые установки. Он проверяет локальные TypeScript, Vite, Prisma, Electron runtime и electron-builder. При выборе unpacked application Electron берётся напрямую из `node_modules/electron/dist`, а результат на Windows создаётся в `apps/desktop/release/win-unpacked`.
+
+Полный NSIS installer требует заранее заполненный `%LOCALAPPDATA%\electron-builder\Cache`. Этот cache нужно создать однократной успешной сборкой на Windows-машине с интернетом той же архитектуры, затем перенести целиком на offline-машину. `node_modules` с macOS/Linux нельзя использовать для Windows.
+
 ## 4. Повторный запуск
 
 Повторный `node setup.mjs` подставляет текущие значения из `.env`. PostgreSQL password не печатается. Перед перезаписью создаётся файл `.env.backup-<timestamp>`.
@@ -104,6 +116,8 @@ node setup.mjs --no-start
 9. Проверить 16:9 HLS-preview, current clip, loop, progress, FPS, bitrate, speed, а при SCTE-35 — injector state, PID и счётчик observed cues.
 
 При включённом SCTE-35 выход доступен только через UDP/SRT MPEG-TS. Внутренний тракт — `FFmpeg → loopback UDP → TSDuck → endpoint`; RTMP preflight отклоняется.
+
+Для любого SRT, в том числе без SCTE-35, transport открывает TSDuck: `FFmpeg → loopback UDP → TSDuck → SRT`. Поэтому наличие `srt` в `ffmpeg -protocols` не требуется. При выключенном SCTE-35 relay не добавляет CUEI registration, SCTE PID или cue sections.
 
 Файлового Output в UI нет: FFmpeg формирует program stream и внутренний HLS-preview, но не сохраняет закодированный файл.
 
@@ -143,11 +157,11 @@ curl http://127.0.0.1:4310/api/playout/status
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
+- electron-builder завершается `connect ETIMEDOUT ...:443` — использовать `node setup.mjs --offline`; для unpacked build достаточно local Electron runtime, для NSIS перенести `%LOCALAPPDATA%\electron-builder\Cache`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;
-- отсутствует SRT при включённом SCTE-35 — проверить `tsversion --support srt`; финальный SRT socket открывает TSDuck;
-- отсутствует SRT без SCTE-35 — установлен FFmpeg без libsrt;
+- SRT недоступен — проверить `tsversion --support srt`; весь финальный SRT transport открывает TSDuck, поддержка libsrt в FFmpeg не требуется;
 - cue `too close to playlist start` — перенести marker позже либо уменьшить pre-roll, сохранив достаточный запас для головной станции;
 - SRT passphrase — пустая либо 10–79 символов;
 - RTMP требует H.264 + AAC;

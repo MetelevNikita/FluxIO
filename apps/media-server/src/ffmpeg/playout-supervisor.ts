@@ -31,6 +31,10 @@ export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
 export type PlayoutEventSink = (entry: string) => void;
 
+export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
+  return request.scte35.enabled || request.endpoint.protocol === "srt";
+}
+
 export class PlayoutSupervisor {
   readonly previewDirectory: string;
   readonly capabilities: FfmpegCapabilitiesService;
@@ -102,7 +106,7 @@ export class PlayoutSupervisor {
     try {
       const capabilities = await this.capabilities.get();
       validateCapabilities(capabilities, request);
-      if (request.scte35.enabled) {
+      if (usesTsdDuckTransport(request)) {
         await this.tsduckCapabilities.getVersion();
         if (request.endpoint.protocol === "srt") {
           await this.tsduckCapabilities.assertSrtSupport();
@@ -115,7 +119,7 @@ export class PlayoutSupervisor {
       await mkdir(this.previewDirectory, { recursive: true });
       await this.#prepareLoopCommands();
       this.#appendEvent(`Starting ${request.playlist.length} clip playout`);
-      if (resolvedRequest.scte35.enabled) {
+      if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
       }
       const child = this.#spawnPreparedFfmpeg();
@@ -179,7 +183,7 @@ export class PlayoutSupervisor {
     this.#status.scte35.lastEventId = null;
     this.#status.scte35.error = null;
 
-    if (!request.scte35.enabled) {
+    if (!usesTsdDuckTransport(request)) {
       const command = buildFfmpegCommand(request, this.#items, this.previewDirectory);
       this.#commandArgs = command.args;
       this.#tsduckArgs = [];
@@ -187,9 +191,9 @@ export class PlayoutSupervisor {
       return;
     }
 
-    validateScte35Cues(request, this.#cues);
+    if (request.scte35.enabled) validateScte35Cues(request, this.#cues);
     const inputPort = await reserveUdpPort();
-    const cueFilePath = this.#cues.length > 0
+    const cueFilePath = request.scte35.enabled && this.#cues.length > 0
       ? path.join(this.previewDirectory, `scte35-loop-${this.#status.loopCount}.xml`)
       : null;
     if (cueFilePath) {
@@ -204,7 +208,9 @@ export class PlayoutSupervisor {
       localAddress: "",
     };
     const command = buildFfmpegCommand(request, this.#items, this.previewDirectory, {
-      forceKeyFramesSeconds: this.#cues.map((cue) => cue.programTimeSeconds),
+      forceKeyFramesSeconds: request.scte35.enabled
+        ? this.#cues.map((cue) => cue.programTimeSeconds)
+        : undefined,
       programEndpoint: internalEndpoint,
       transportMuxRateBps: calculateTransportMuxRate(request),
     });
@@ -304,7 +310,7 @@ export class PlayoutSupervisor {
       } else if (/\b(error|failed|dropping|obsolete)\b/i.test(line)) {
         const message = redactSecrets(line.trim(), this.#request);
         this.#appendEvent(`TSDuck: ${message}`);
-        if (/dropping|obsolete/i.test(line)) {
+        if (this.#status.scte35.enabled && /dropping|obsolete/i.test(line)) {
           this.#status.scte35.state = "failed";
           this.#status.scte35.error = "One or more SCTE-35 cues were too late and were dropped";
         }
@@ -390,7 +396,9 @@ export class PlayoutSupervisor {
   async #restartLoop(): Promise<void> {
     try {
       await this.#prepareLoopCommands();
-      if (this.#request?.scte35.enabled) await this.#spawnTsdDuck();
+      if (this.#request && usesTsdDuckTransport(this.#request)) {
+        await this.#spawnTsdDuck();
+      }
       this.#spawnPreparedFfmpeg();
     } catch (error) {
       this.#handleProcessError(
@@ -442,11 +450,15 @@ export class PlayoutSupervisor {
     child.once("error", (error) => this.#handleTsdDuckError(child, error));
     await waitForSpawn(child);
     if (this.#tsduckChild !== child) throw new Error("TSDuck exited during startup");
-    this.#status.scte35.state = "running";
-    this.#appendEvent(
-      `SCTE-35 injector started with PID ${child.pid ?? "unknown"}; ` +
-        `${this.#cues.length} event(s) queued on TS PID ${this.#request?.scte35.pid}`,
-    );
+    if (this.#status.scte35.enabled) {
+      this.#status.scte35.state = "running";
+      this.#appendEvent(
+        `SCTE-35 injector started with PID ${child.pid ?? "unknown"}; ` +
+          `${this.#cues.length} event(s) queued on TS PID ${this.#request?.scte35.pid}`,
+      );
+    } else {
+      this.#appendEvent(`TSDuck SRT relay started with PID ${child.pid ?? "unknown"}`);
+    }
   }
 
   #handleTsdDuckClose(
@@ -460,9 +472,12 @@ export class PlayoutSupervisor {
       this.#tsduckKillTimer = null;
     }
     if (this.#expectedTsdDuckStops.has(child)) return;
-    const error = `TSDuck injector exited with ${code ?? signal ?? "unknown"}`;
-    this.#status.scte35.state = "failed";
-    this.#status.scte35.error = error;
+    const role = this.#status.scte35.enabled ? "injector" : "SRT relay";
+    const error = `TSDuck ${role} exited with ${code ?? signal ?? "unknown"}`;
+    if (this.#status.scte35.enabled) {
+      this.#status.scte35.state = "failed";
+      this.#status.scte35.error = error;
+    }
     this.#status.state = "failed";
     this.#status.error = error;
     this.#status.stoppedAt = new Date().toISOString();
@@ -472,8 +487,10 @@ export class PlayoutSupervisor {
 
   #handleTsdDuckError(child: ChildProcessWithoutNullStreams, error: Error): void {
     if (this.#expectedTsdDuckStops.has(child)) return;
-    this.#status.scte35.state = "failed";
-    this.#status.scte35.error = error.message;
+    if (this.#status.scte35.enabled) {
+      this.#status.scte35.state = "failed";
+      this.#status.scte35.error = error.message;
+    }
     this.#status.state = "failed";
     this.#status.error = error.message;
     this.#appendEvent(`TSDuck process error: ${error.message}`);
@@ -556,7 +573,9 @@ function validateCapabilities(
       "SCTE-35 injection requires UDP or SRT MPEG-TS output; RTMP/FLV is not supported",
     );
   }
-  const ffmpegProtocol = request.scte35.enabled ? "udp" : request.endpoint.protocol;
+  const ffmpegProtocol = usesTsdDuckTransport(request)
+    ? "udp"
+    : request.endpoint.protocol;
   if (!capabilities.supports[ffmpegProtocol]) {
     throw new PlayoutPreflightError(
       `FFmpeg does not support ${ffmpegProtocol.toUpperCase()} output`,

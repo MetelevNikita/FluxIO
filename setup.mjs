@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
+const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
 
 export function buildDatabaseUrl({
@@ -260,13 +261,26 @@ async function main() {
     );
 
     console.log("\n4. Действия мастера");
-    const installDependencies = await prompt.confirm(
-      "Установить все build dependencies через npm ci --include=dev?",
-      true,
-    );
+    const installDependencies = offline
+      ? false
+      : await prompt.confirm(
+          "Установить все build dependencies через npm ci --include=dev?",
+          true,
+        );
+    if (offline) {
+      console.log("  Offline: npm ci и автоматические загрузки отключены.");
+    }
     const runChecks = await prompt.confirm("Запустить typecheck и tests?", true);
     const buildInstaller = mode === "production"
-      ? await prompt.confirm("Собрать Electron installer для текущей ОС?", true)
+      ? await prompt.confirm(
+          offline
+            ? "Собрать полный Electron installer? Требуется подготовленный electron-builder cache"
+            : "Собрать Electron installer для текущей ОС?",
+          !offline,
+        )
+      : false;
+    const buildUnpacked = mode === "production" && offline && !buildInstaller
+      ? await prompt.confirm("Собрать offline unpacked Electron application?", true)
       : false;
     const serviceKind = platformServiceKind();
     const installBackgroundService =
@@ -291,12 +305,17 @@ async function main() {
           true,
         );
 
+    if (offline) {
+      assertOfflineBuildDependencies({ requireElectron: mode === "production" });
+    }
+
     const resolvedFfmpegPath = await ensureTool(
       prompt,
       ffmpegPath,
       "FFmpeg",
       "ffmpeg",
       "ffmpeg",
+      offline,
     );
     const resolvedFfprobePath = await ensureTool(
       prompt,
@@ -304,6 +323,7 @@ async function main() {
       "ffprobe",
       "ffmpeg",
       "ffprobe",
+      offline,
     );
     const resolvedTsdDuckPath = await ensureTool(
       prompt,
@@ -311,6 +331,7 @@ async function main() {
       "TSDuck",
       "tsduck",
       "tsp",
+      offline,
     );
     if (!databaseReady) {
       const psqlPath = await ensureTool(
@@ -319,6 +340,7 @@ async function main() {
         "PostgreSQL client",
         "postgresql",
         "psql",
+        offline,
       );
       const pgIsReadyPath = discoverToolPath(
         siblingExecutable(psqlPath, "pg_isready"),
@@ -371,6 +393,8 @@ async function main() {
     if (mode === "production") {
       if (buildInstaller) {
         await runNpmCommand(["run", "package:desktop"], { env: commandEnv });
+      } else if (buildUnpacked) {
+        await runNpmCommand(["run", "package:desktop:offline-dir"], { env: commandEnv });
       } else {
         await runNpmCommand(["run", "build"], { env: commandEnv });
       }
@@ -453,7 +477,9 @@ async function postgresReady(host, port, pgIsReadyPath) {
 function printHeader() {
   console.log("\nFluxIO — мастер установки");
   console.log("=================================");
-  console.log("Docker не используется. Пароли не выводятся в итоговый отчёт.\n");
+  console.log("Docker не используется. Пароли не выводятся в итоговый отчёт.");
+  if (offline) console.log("Offline mode: сетевые установки и npm ci отключены.");
+  console.log();
 }
 
 function assertNodeVersion() {
@@ -461,6 +487,50 @@ function assertNodeVersion() {
   if (major < 24) {
     throw new Error(`Требуется Node.js 24+, установлена версия ${process.versions.node}`);
   }
+}
+
+export function electronRuntimePath(
+  rootPath = projectRoot,
+  platform = process.platform,
+) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const relativeParts = platform === "darwin"
+    ? ["node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", "Electron"]
+    : [
+        "node_modules",
+        "electron",
+        "dist",
+        platform === "win32" ? "electron.exe" : "electron",
+      ];
+  return pathApi.join(rootPath, ...relativeParts);
+}
+
+function assertOfflineBuildDependencies({ requireElectron }) {
+  const required = [
+    ["TypeScript", path.join(projectRoot, "node_modules", "typescript", "package.json")],
+    ["Vite", path.join(projectRoot, "node_modules", "vite", "package.json")],
+    ["Prisma CLI", path.join(projectRoot, "node_modules", "prisma", "package.json")],
+    ["Prisma Client", path.join(projectRoot, "node_modules", "@prisma", "client", "package.json")],
+  ];
+  if (requireElectron) {
+    required.push(
+      ["Electron", path.join(projectRoot, "node_modules", "electron", "package.json")],
+      [
+        "electron-builder",
+        path.join(projectRoot, "node_modules", "electron-builder", "package.json"),
+      ],
+      ["Electron runtime", electronRuntimePath()],
+    );
+  }
+  const missing = required.filter(([, filePath]) => !existsSync(filePath));
+  if (missing.length > 0) {
+    throw new Error(
+      "Offline build bundle неполный. Не найдены: " +
+        missing.map(([label, filePath]) => `${label} (${filePath})`).join(", ") +
+        ". Подготовьте dependencies на машине с интернетом той же ОС и архитектуры.",
+    );
+  }
+  console.log("  ✓ Offline build dependencies и Electron runtime найдены локально.");
 }
 
 async function loadExistingEnv() {
@@ -500,6 +570,7 @@ async function ensureTool(
   label,
   packageName,
   executableName,
+  offlineMode = false,
 ) {
   const detected = discoverToolPath(command, executableName);
   if (detected) {
@@ -507,6 +578,12 @@ async function ensureTool(
     return detected;
   }
   console.warn(`\n${label} не найден: ${command}`);
+  if (offlineMode) {
+    throw new Error(
+      `${label} не найден. Offline mode запрещает автоматическую установку; ` +
+        "установите инструмент заранее или укажите полный путь.",
+    );
+  }
   if (!(await prompt.confirm(`Установить ${label} автоматически?`, true))) {
     throw new Error(`${label} required`);
   }

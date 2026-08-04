@@ -27,19 +27,24 @@ export function buildTsdDuckCommand({
     "--local-address",
     "127.0.0.1",
     String(inputPort),
-    "-P",
-    "pmt",
-    "--service",
-    "1",
-    "--add-registration",
-    "0x43554549",
-    "--add-pid",
-    `${pid}/0x86`,
-    "--set-cue-type",
-    `${pid}/0x01`,
   ];
 
-  if (cueFilePath && cueCount > 0) {
+  if (request.scte35.enabled) {
+    args.push(
+      "-P",
+      "pmt",
+      "--service",
+      "1",
+      "--add-registration",
+      "0x43554549",
+      "--add-pid",
+      `${pid}/0x86`,
+      "--set-cue-type",
+      `${pid}/0x01`,
+    );
+  }
+
+  if (request.scte35.enabled && cueFilePath && cueCount > 0) {
     args.push(
       "-P",
       "spliceinject",
@@ -61,14 +66,16 @@ export function buildTsdDuckCommand({
     );
   }
 
-  args.push(
-    "-P",
-    "splicemonitor",
-    "--splice-pid",
-    String(pid),
-    "--all-commands",
-    `--json-line=${monitorPrefix}`,
-  );
+  if (request.scte35.enabled) {
+    args.push(
+      "-P",
+      "splicemonitor",
+      "--splice-pid",
+      String(pid),
+      "--all-commands",
+      `--json-line=${monitorPrefix}`,
+    );
+  }
   args.push(...buildOutput(request.endpoint, request));
 
   return {

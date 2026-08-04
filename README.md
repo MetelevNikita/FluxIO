@@ -39,6 +39,8 @@ npm run setup
 
 Даже в production мастер использует `npm ci --include=dev`: Electron, Vite, TypeScript и Prisma CLI нужны во время сборки. Запущенный media-service при этом работает с `NODE_ENV=production`.
 
+Для изолированной машины с заранее подготовленными platform-native `node_modules` используйте `node setup.mjs --offline`. Electron runtime берётся из `node_modules/electron/dist`; network-free unpacked application создаётся без NSIS, а полный Windows installer требует заранее перенесённый `%LOCALAPPDATA%\electron-builder\Cache`.
+
 PostgreSQL всегда подключается по `127.0.0.1`, поэтому SSL и адрес базы не запрашиваются.
 
 Production background service:

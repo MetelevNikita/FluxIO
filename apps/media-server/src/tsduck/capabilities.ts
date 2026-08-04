@@ -31,7 +31,9 @@ export class TsdDuckCapabilitiesService {
       return result.stdout.trim();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`TSDuck tsp is required for SCTE-35 injection: ${message}`);
+      throw new Error(
+        `TSDuck tsp is required for SRT transport and SCTE-35 injection: ${message}`,
+      );
     }
   }
 }
