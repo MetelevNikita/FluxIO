@@ -344,9 +344,25 @@ test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", (
   const rendered = command.args.join(" ");
   assert.match(rendered, /-force_key_frames 6,12\.5/);
   assert.match(rendered, /-muxrate 3700000/);
+  assert.match(rendered, /-muxdelay 0\.7/);
+  assert.match(rendered, /-muxpreload 0\.5/);
+  assert.doesNotMatch(rendered, /-muxdelay 0(?:\s|$)/);
   assert.match(rendered, /-mpegts_service_id 1/);
   assert.match(rendered, /udp:\/\/127\.0\.0\.1:19001/);
   assert.equal(command.endpointLabel, "UDP 239.1.1.1:5000");
+});
+
+test("FFmpeg keeps only actionable playout warnings in the application log", () => {
+  const command = buildFfmpegCommand(
+    baseRequest(),
+    preparedItems(),
+    "/tmp/preview",
+  );
+  const logLevelIndex = command.args.indexOf("-loglevel");
+  assert.deepEqual(command.args.slice(logLevelIndex, logLevelIndex + 2), [
+    "-loglevel",
+    "warning",
+  ]);
 });
 
 test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT secrets", () => {
@@ -700,6 +716,7 @@ test(
       assert.equal(status.state, "completed", status.logs.slice(-20).join("\n"));
       assert.equal(status.scte35.state, "disabled");
       assert.match(status.logs.join("\n"), /TSDuck SRT relay started/);
+      assert.doesNotMatch(status.logs.join("\n"), /dts < pcr/i);
 
       if (receiver.exitCode == null) {
         receiver.kill("SIGTERM");

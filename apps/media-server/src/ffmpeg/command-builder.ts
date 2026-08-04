@@ -40,7 +40,7 @@ export function buildFfmpegCommand(
     "-nostdin",
     "-y",
     "-loglevel",
-    "info",
+    "warning",
     "-nostats",
     "-progress",
     "pipe:1",
@@ -347,9 +347,9 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
 function mpegTsOutputArgs(target: string, transportMuxRateBps?: number): string[] {
   const args = [
     "-muxdelay",
-    "0",
+    "0.7",
     "-muxpreload",
-    "0",
+    "0.5",
     "-mpegts_service_id",
     "1",
     "-mpegts_transport_stream_id",
