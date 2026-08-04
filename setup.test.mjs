@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildLaunchAgentPlist,
   buildDatabaseUrl,
+  buildNpmInvocation,
   buildSystemdUnit,
   buildWindowsTaskCommand,
   commandVersionArguments,
@@ -25,6 +26,53 @@ test("setup uses the version flags expected by FFmpeg tools", () => {
 
 test("production setup always installs build-time dev dependencies", () => {
   assert.deepEqual(npmCiArguments(), ["ci", "--include=dev"]);
+});
+
+test("Windows setup runs npm-cli.js with node.exe instead of spawning npm.cmd", () => {
+  const nodePath = "C:\\Program Files\\nodejs\\node.exe";
+  const npmCliPath = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  assert.deepEqual(
+    buildNpmInvocation({
+      platform: "win32",
+      nodePath,
+      fileExists: (candidate) => candidate === npmCliPath,
+    }),
+    {
+      command: nodePath,
+      prefixArgs: [npmCliPath],
+      shell: false,
+    },
+  );
+});
+
+test("Windows setup falls back to npm.cmd through the command shell", () => {
+  const nodePath = "C:\\Program Files\\nodejs\\node.exe";
+  const npmCmdPath = "C:\\Program Files\\nodejs\\npm.cmd";
+  assert.deepEqual(
+    buildNpmInvocation({
+      platform: "win32",
+      nodePath,
+      fileExists: (candidate) => candidate === npmCmdPath,
+    }),
+    {
+      command: npmCmdPath,
+      prefixArgs: [],
+      shell: true,
+    },
+  );
+});
+
+test("macOS and Linux keep the native npm command", () => {
+  assert.deepEqual(buildNpmInvocation({ platform: "darwin" }), {
+    command: "npm",
+    prefixArgs: [],
+    shell: false,
+  });
+  assert.deepEqual(buildNpmInvocation({ platform: "linux" }), {
+    command: "npm",
+    prefixArgs: [],
+    shell: false,
+  });
 });
 
 test("setup builds an encoded URL for local PostgreSQL without SSL", () => {

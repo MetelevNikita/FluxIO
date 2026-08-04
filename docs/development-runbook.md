@@ -18,6 +18,20 @@ node setup.mjs
 
 `setup.mjs` использует только встроенные модули Node.js, поэтому предварительный `npm install` не нужен.
 
+### Что отправлять в Git
+
+Проект рассчитан на один monorepo. Перед первым push из корня:
+
+```bash
+git init
+git add .
+git status --short
+```
+
+В `git status` не должны появляться `.env`, `.env.backup-*`, `node_modules`, `dist`, `dist-test`, `apps/desktop/release`, generated Prisma Client, logs и локальные database dumps. Должны появляться `package-lock.json`, Prisma migrations, исходники, документация, `apps/web/public` и `apps/desktop/build` с платформенными иконками.
+
+Иконки PNG/ICNS/ICO намеренно хранятся в Git: Windows/Linux packaging использует уже подготовленные assets, поскольку их генератор запускается на macOS. Для текущих web media assets Git LFS не требуется.
+
 ## 2. Рекомендуемые ответы для test/development
 
 1. `Режим проекта` → `Тест / разработка`.
@@ -45,6 +59,8 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 7. сохраняет найденные абсолютные пути в `.env`.
 
 Если FFmpeg был установлен в нестандартный каталог и не добавлен в PATH, в вопросе можно один раз вставить полный путь, например `D:\MediaTools\ffmpeg\bin\ffmpeg.exe`. Для `ffprobe` используется отдельный путь; обычно он находится рядом с `ffmpeg.exe`. После автоматической установки через winget мастер повторно перечитывает PATH, поэтому новый PowerShell открывать не требуется.
+
+Команды npm на Windows запускаются через установленный `node.exe` и `node_modules\npm\bin\npm-cli.js`. Это позволяет корректно работать с путём `C:\Program Files\nodejs` и не передавать `npm.cmd` напрямую в Node.js `spawn()`. Если `npm-cli.js` отсутствует, мастер использует совместимый запасной запуск `npm.cmd` через Windows command shell. На macOS и Linux остаётся обычная команда `npm`.
 
 ## 3. Что делает мастер
 
@@ -122,6 +138,7 @@ curl http://127.0.0.1:4310/api/playout/status
 ## Типичные ошибки
 
 - PostgreSQL недоступен — запустить нативный database service и повторить мастер;
+- `spawn EINVAL` сразу после строки `npm.cmd ci` — использовалась старая версия `setup.mjs`; обновить файл из repository и повторить `node setup.mjs`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

@@ -1,13 +1,63 @@
+# Dependencies
 node_modules/
+**/node_modules/
+
+# Compiled and packaged output
 dist/
+**/dist/
 dist-test/
-release/
-.DS_Store
-*.log
+**/dist-test/
+apps/desktop/release/
+coverage/
+.nyc_output/
 *.tsbuildinfo
+
+# Generated clients: restored by npm run db:generate / npm run build
+apps/media-server/src/generated/prisma/
+
+# Local configuration and secrets
 .env
 .env.*
 !.env.example
-coverage/
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state, previews, caches and logs
 .cache/
+**/.cache/
+.vite/
 data/
+tmp/
+temp/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local databases and backups (Prisma migrations remain tracked)
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+
+# Editors
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/

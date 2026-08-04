@@ -35,6 +35,8 @@ npm run setup
 
 На Windows достаточно нажать Enter в вопросах FFmpeg/ffprobe/TSDuck. Мастер обновляет `PATH` из системных и пользовательских Windows settings, проверяет `where.exe`, WinGet Links/Packages, Chocolatey, Scoop, `Program Files`, стандартные FFmpeg-каталоги и versioned PostgreSQL directories. В `.env` сохраняются найденные абсолютные пути `.exe`.
 
+Для npm мастер на Windows запускает `npm-cli.js` через `node.exe`, поэтому установка корректно работает и из стандартного каталога `C:\Program Files\nodejs` без ошибки `spawn EINVAL`. Поведение macOS и Linux не меняется: там используется обычная команда `npm`.
+
 Даже в production мастер использует `npm ci --include=dev`: Electron, Vite, TypeScript и Prisma CLI нужны во время сборки. Запущенный media-service при этом работает с `NODE_ENV=production`.
 
 PostgreSQL всегда подключается по `127.0.0.1`, поэтому SSL и адрес базы не запрашиваются.
@@ -46,6 +48,18 @@ Production background service:
 - Windows — Task Scheduler.
 
 Electron installer собирается нативно для текущей ОС: DMG/ZIP на macOS, NSIS EXE на Windows, AppImage/DEB на Linux.
+
+## Git-репозиторий
+
+Весь проект хранится в одном monorepo. В Git добавляются `apps`, `packages`, Prisma schema/migrations, setup-скрипты, документация, `package.json`, `package-lock.json`, web assets и Electron brand icons. Не добавляются dependencies, generated Prisma Client, compiled `dist`, installers в `release`, локальные `.env`, backups, logs и runtime data.
+
+После клонирования отсутствующие dependencies/generated files восстанавливает:
+
+```bash
+node setup.mjs
+```
+
+Корневой `.gitignore` действует на все npm workspaces. `.env.example` нужно хранить в Git, а реальный `.env` с PostgreSQL password и `GRUBER_SECRET_KEY` — никогда.
 
 ## Что работает
 

@@ -123,6 +123,26 @@
 - повторный поиск после автоматической установки;
 - TCP fallback для проверки локального PostgreSQL.
 
+### 2.9. Git repository hygiene
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-9-git-repository.md`](progress/02-9-git-repository.md).
+
+- один npm monorepo для desktop, web, media-service и contracts;
+- root `.gitignore` для secrets, dependencies, build/runtime output;
+- Prisma migrations tracked, generated Prisma Client ignored;
+- Electron cross-platform icons tracked;
+- `.gitattributes` для LF/CRLF и binary assets.
+
+### 2.10. Надёжный запуск npm на Windows
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-10-windows-npm-spawn.md`](progress/02-10-windows-npm-spawn.md).
+
+- стандартная Windows installation запускает `npm-cli.js` через `node.exe`;
+- `npm.cmd` больше не передаётся напрямую в `spawn()`;
+- shell fallback используется только если `npm-cli.js` отсутствует;
+- macOS и Linux продолжают запускать обычную команду `npm`;
+- одинаковый механизм применяется к install, Prisma, checks, build и Electron launch.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

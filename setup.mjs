@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
-const npmExecutable = resolveNpmExecutable();
+const npmInvocation = buildNpmInvocation();
 
 export function buildDatabaseUrl({
   database,
@@ -359,20 +359,20 @@ async function main() {
     const commandEnv = { ...process.env, ...values };
 
     if (installDependencies) {
-      await runCommand(npmExecutable, npmCiArguments(), { env: commandEnv });
+      await runNpmCommand(npmCiArguments(), { env: commandEnv });
     }
-    await runCommand(npmExecutable, ["run", "db:generate"], { env: commandEnv });
-    await runCommand(npmExecutable, ["run", "db:migrate"], { env: commandEnv });
+    await runNpmCommand(["run", "db:generate"], { env: commandEnv });
+    await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
     if (runChecks) {
-      await runCommand(npmExecutable, ["run", "typecheck"], { env: commandEnv });
-      await runCommand(npmExecutable, ["test"], { env: commandEnv });
+      await runNpmCommand(["run", "typecheck"], { env: commandEnv });
+      await runNpmCommand(["test"], { env: commandEnv });
     }
 
     if (mode === "production") {
       if (buildInstaller) {
-        await runCommand(npmExecutable, ["run", "package:desktop"], { env: commandEnv });
+        await runNpmCommand(["run", "package:desktop"], { env: commandEnv });
       } else {
-        await runCommand(npmExecutable, ["run", "build"], { env: commandEnv });
+        await runNpmCommand(["run", "build"], { env: commandEnv });
       }
     }
 
@@ -566,10 +566,37 @@ function resolveCommandPath(command, platform = process.platform) {
   return resolved || command;
 }
 
-function resolveNpmExecutable() {
-  if (process.platform !== "win32") return "npm";
-  const sibling = path.join(path.dirname(process.execPath), "npm.cmd");
-  return existsSync(sibling) ? sibling : "npm.cmd";
+export function buildNpmInvocation({
+  platform = process.platform,
+  nodePath = process.execPath,
+  fileExists = existsSync,
+} = {}) {
+  if (platform !== "win32") {
+    return { command: "npm", prefixArgs: [], shell: false };
+  }
+
+  const nodeDirectory = path.win32.dirname(nodePath);
+  const npmCliPath = path.win32.join(
+    nodeDirectory,
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
+  );
+  if (fileExists(npmCliPath)) {
+    return {
+      command: nodePath,
+      prefixArgs: [npmCliPath],
+      shell: false,
+    };
+  }
+
+  const npmCmdPath = path.win32.join(nodeDirectory, "npm.cmd");
+  return {
+    command: fileExists(npmCmdPath) ? npmCmdPath : "npm.cmd",
+    prefixArgs: [],
+    shell: true,
+  };
 }
 
 function siblingExecutable(command, executableName) {
@@ -1083,7 +1110,7 @@ async function runCommand(command, args, options = {}) {
     const child = spawn(command, args, {
       cwd: projectRoot,
       env: options.env ?? process.env,
-      shell: false,
+      shell: options.shell ?? false,
       stdio: [options.input == null ? "inherit" : "pipe", "inherit", "inherit"],
     });
     child.once("error", reject);
@@ -1093,6 +1120,14 @@ async function runCommand(command, args, options = {}) {
     });
     if (options.input != null) child.stdin.end(options.input);
   });
+}
+
+async function runNpmCommand(args, options = {}) {
+  await runCommand(
+    npmInvocation.command,
+    [...npmInvocation.prefixArgs, ...args],
+    { ...options, shell: npmInvocation.shell },
+  );
 }
 
 function renderCommand(command, args) {
@@ -1110,14 +1145,14 @@ async function launchApplication(mode, env, mediaApiUrl) {
   console.log("\nЗапускаю FluxIO. Для остановки нажмите Ctrl+C.\n");
   const processes = [];
   const mediaScript = mode === "production" ? "start:server" : "dev:server";
-  processes.push(spawnManaged(npmExecutable, ["run", mediaScript], env));
+  processes.push(spawnManagedNpm(["run", mediaScript], env));
   await waitForUrl(`${mediaApiUrl}/api/health`, 30_000);
   if (mode === "test") {
-    processes.push(spawnManaged(npmExecutable, ["run", "dev:web"], env));
+    processes.push(spawnManagedNpm(["run", "dev:web"], env));
     await waitForUrl("http://127.0.0.1:5173", 30_000);
-    processes.push(spawnManaged(npmExecutable, ["run", "dev:desktop"], env));
+    processes.push(spawnManagedNpm(["run", "dev:desktop"], env));
   } else {
-    processes.push(spawnManaged(npmExecutable, ["run", "start:desktop"], env));
+    processes.push(spawnManagedNpm(["run", "start:desktop"], env));
   }
 
   await new Promise((resolve) => {
@@ -1132,12 +1167,16 @@ async function launchApplication(mode, env, mediaApiUrl) {
 async function launchDesktop(env) {
   console.log("\nMedia-service уже работает в фоне. Запускаю Electron…\n");
   await new Promise((resolve, reject) => {
-    const child = spawn(npmExecutable, ["run", "start:desktop"], {
-      cwd: projectRoot,
-      env,
-      shell: false,
-      stdio: "inherit",
-    });
+    const child = spawn(
+      npmInvocation.command,
+      [...npmInvocation.prefixArgs, "run", "start:desktop"],
+      {
+        cwd: projectRoot,
+        env,
+        shell: npmInvocation.shell,
+        stdio: "inherit",
+      },
+    );
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0 || signal) resolve();
@@ -1147,12 +1186,21 @@ async function launchDesktop(env) {
   console.log("Electron закрыт; media-service продолжает работать в фоне.");
 }
 
-function spawnManaged(command, args, env) {
+function spawnManagedNpm(args, env) {
+  return spawnManaged(
+    npmInvocation.command,
+    [...npmInvocation.prefixArgs, ...args],
+    env,
+    { shell: npmInvocation.shell },
+  );
+}
+
+function spawnManaged(command, args, env, options = {}) {
   return spawn(command, args, {
     cwd: projectRoot,
     detached: process.platform !== "win32",
     env,
-    shell: false,
+    shell: options.shell ?? false,
     stdio: "inherit",
   });
 }
