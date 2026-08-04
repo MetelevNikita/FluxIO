@@ -11,7 +11,9 @@ packaging platform=win32 arch=x64 electron=43.2.0
 connect ETIMEDOUT 140.82.121.3:443
 ```
 
-Пакет `electron` уже содержал распакованный Windows runtime в `node_modules\electron\dist`, но electron-builder по умолчанию использовал отдельный download/cache workflow.
+Dependency `electron` была установлена и позволяла определить версию 43.2.0, но распакованный Windows runtime в `node_modules\electron\dist` отсутствовал. Без явного local runtime electron-builder использовал отдельный download/cache workflow.
+
+В Electron 43.2.0 npm package не объявляет `postinstall`: `npm ci` устанавливает package metadata и `install.js`, но platform runtime может отсутствовать. Online setup теперь явно запускает `node node_modules/electron/install.js`, если native executable не найден, и проверяет результат до electron-builder.
 
 ## Local Electron runtime
 
@@ -40,6 +42,14 @@ node setup.mjs --offline
 - electron-builder.
 
 Dependencies должны быть подготовлены на такой же ОС и архитектуре. Windows `node_modules` нельзя заменять каталогом, созданным на macOS или Linux.
+
+Для ручного восстановления runtime на машине с интернетом:
+
+```powershell
+node .\node_modules\electron\install.js
+```
+
+После команды должен существовать `node_modules\electron\dist\electron.exe`.
 
 ## Два варианта Windows output
 

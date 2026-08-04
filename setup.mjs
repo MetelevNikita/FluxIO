@@ -306,7 +306,7 @@ async function main() {
         );
 
     if (offline) {
-      assertOfflineBuildDependencies({ requireElectron: mode === "production" });
+      assertOfflineBuildDependencies({ requireElectron: true });
     }
 
     const resolvedFfmpegPath = await ensureTool(
@@ -383,6 +383,7 @@ async function main() {
     if (installDependencies) {
       await runNpmCommand(npmCiArguments(), { env: commandEnv });
     }
+    await ensureElectronRuntime({ env: commandEnv, offlineMode: offline });
     await runNpmCommand(["run", "db:generate"], { env: commandEnv });
     await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
     if (runChecks) {
@@ -531,6 +532,39 @@ function assertOfflineBuildDependencies({ requireElectron }) {
     );
   }
   console.log("  ✓ Offline build dependencies и Electron runtime найдены локально.");
+}
+
+async function ensureElectronRuntime({ env, offlineMode }) {
+  const executablePath = electronRuntimePath();
+  if (existsSync(executablePath)) {
+    console.log(`  ✓ Electron runtime: ${executablePath}`);
+    return;
+  }
+  const installScript = path.join(
+    projectRoot,
+    "node_modules",
+    "electron",
+    "install.js",
+  );
+  if (!existsSync(installScript)) {
+    throw new Error(
+      "Electron package не найден. Выполните npm ci --include=dev на машине с интернетом.",
+    );
+  }
+  if (offlineMode) {
+    throw new Error(
+      `Electron runtime не найден: ${executablePath}. ` +
+        "Offline mode не выполняет download; подготовьте node_modules/electron/dist заранее.",
+    );
+  }
+  console.log("\nElectron runtime отсутствует; загружаю platform binary…");
+  await runCommand(process.execPath, [installScript], { env });
+  if (!existsSync(executablePath)) {
+    throw new Error(
+      `Electron installer завершился без ошибки, но runtime не найден: ${executablePath}`,
+    );
+  }
+  console.log(`  ✓ Electron runtime: ${executablePath}`);
 }
 
 async function loadExistingEnv() {

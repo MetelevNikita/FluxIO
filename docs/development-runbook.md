@@ -93,6 +93,8 @@ node setup.mjs --offline
 
 Полный NSIS installer требует заранее заполненный `%LOCALAPPDATA%\electron-builder\Cache`. Этот cache нужно создать однократной успешной сборкой на Windows-машине с интернетом той же архитектуры, затем перенести целиком на offline-машину. `node_modules` с macOS/Linux нельзя использовать для Windows.
 
+Electron 43 runtime при online setup проверяется отдельно после `npm ci`. Если `node_modules\electron\dist\electron.exe` отсутствует, мастер автоматически запускает `node node_modules\electron\install.js`. В offline mode отсутствие этого файла является ошибкой подготовленного bundle и download не выполняется.
+
 ## 4. Повторный запуск
 
 Повторный `node setup.mjs` подставляет текущие значения из `.env`. PostgreSQL password не печатается. Перед перезаписью создаётся файл `.env.backup-<timestamp>`.

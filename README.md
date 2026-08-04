@@ -41,6 +41,8 @@ npm run setup
 
 Для изолированной машины с заранее подготовленными platform-native `node_modules` используйте `node setup.mjs --offline`. Electron runtime берётся из `node_modules/electron/dist`; network-free unpacked application создаётся без NSIS, а полный Windows installer требует заранее перенесённый `%LOCALAPPDATA%\electron-builder\Cache`.
 
+На online-машине мастер после `npm ci` отдельно проверяет Electron runtime и при необходимости запускает `node node_modules/electron/install.js`; это требуется для Electron 43, где наличие npm package ещё не гарантирует наличие platform binary в `dist`.
+
 PostgreSQL всегда подключается по `127.0.0.1`, поэтому SSL и адрес базы не запрашиваются.
 
 Production background service:
