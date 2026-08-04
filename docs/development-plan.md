@@ -152,6 +152,15 @@
 - тест одинаково работает с `/` на Unix и `\\` на Windows;
 - production FFmpeg command builder не изменён.
 
+### 2.12. Platform-owned service paths
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-12-platform-service-paths.md`](progress/02-12-platform-service-paths.md).
+
+- systemd `ExecStart` всегда использует POSIX path;
+- macOS LaunchAgent program path всегда использует POSIX path;
+- Windows не влияет на generated Linux/macOS service definitions;
+- Windows Task Scheduler продолжает получать native Windows path.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

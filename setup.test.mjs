@@ -156,6 +156,11 @@ test("setup generates macOS and Windows background launch definitions", () => {
   assert.match(plist, /live\.gruber\.media/);
   assert.match(plist, /Node &amp; Tools/);
   assert.match(plist, /Gruber &amp; Playout/);
+  assert.match(
+    plist,
+    /\/Users\/operator\/Gruber &amp; Playout\/apps\/media-server\/dist\/index\.js/,
+  );
+  assert.doesNotMatch(plist, /\\apps\\media-server/);
 
   const windows = buildWindowsTaskCommand({
     nodePath: "C:\\Program Files\\nodejs\\node.exe",

@@ -969,7 +969,7 @@ Environment=GRUBER_PREVIEW_DIR=/run/gruber-playout/preview
 EnvironmentFile=${quoteSystemd(environmentPath)}
 RuntimeDirectory=gruber-playout
 RuntimeDirectoryMode=0750
-ExecStart=${quoteSystemd(nodePath)} ${quoteSystemd(path.join(rootPath, "apps/media-server/dist/index.js"))}
+ExecStart=${quoteSystemd(nodePath)} ${quoteSystemd(path.posix.join(rootPath, "apps/media-server/dist/index.js"))}
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
@@ -1034,7 +1034,7 @@ export function buildLaunchAgentPlist({
   <key>ProgramArguments</key>
   <array>
     <string>${escapeXml(nodePath)}</string>
-    <string>${escapeXml(path.join(rootPath, "apps/media-server/dist/index.js"))}</string>
+    <string>${escapeXml(path.posix.join(rootPath, "apps/media-server/dist/index.js"))}</string>
   </array>
   <key>WorkingDirectory</key><string>${escapeXml(rootPath)}</string>
   <key>RunAtLoad</key><true/>
