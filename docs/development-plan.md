@@ -143,6 +143,15 @@
 - macOS и Linux продолжают запускать обычную команду `npm`;
 - одинаковый механизм применяется к install, Prisma, checks, build и Electron launch.
 
+### 2.11. Cross-platform FFmpeg command tests
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-11-cross-platform-ffmpeg-tests.md`](progress/02-11-cross-platform-ffmpeg-tests.md).
+
+- HLS manifest и segment paths проверяются как отдельные FFmpeg arguments;
+- expected paths формируются через `node:path`;
+- тест одинаково работает с `/` на Unix и `\\` на Windows;
+- production FFmpeg command builder не изменён.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

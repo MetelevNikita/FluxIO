@@ -115,6 +115,7 @@ test("production API accepts Electron file origin preflight", async () => {
 
 test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () => {
   const request = baseRequest();
+  const previewDirectory = "/tmp/gruber-test-preview";
   const command = buildFfmpegCommand(
     request,
     [
@@ -135,13 +136,21 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
         hasAudio: false,
       },
     ],
-    "/tmp/gruber-test-preview",
+    previewDirectory,
   );
   const rendered = command.args.join(" ");
   assert.match(rendered, /concat=n=2:v=1:a=1/);
   assert.match(rendered, /anullsrc=r=48000:cl=stereo/);
   assert.match(rendered, /udp:\/\/239\.1\.1\.1:5000\?pkt_size=1316&ttl=16/);
-  assert.match(rendered, /\/tmp\/gruber-test-preview\/index\.m3u8/);
+  assert.equal(
+    command.args.at(-1),
+    path.join(previewDirectory, "index.m3u8"),
+  );
+  const segmentOption = command.args.indexOf("-hls_segment_filename");
+  assert.equal(
+    command.args[segmentOption + 1],
+    path.join(previewDirectory, "segment-%06d.ts"),
+  );
   assert.equal(command.totalDurationSeconds, 5);
 });
 
