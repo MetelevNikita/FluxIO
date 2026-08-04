@@ -3,6 +3,7 @@ import {
   serviceHealthSchema,
   type FfmpegCapabilities,
   type MediaProbe,
+  type NetworkInterfaceInfo,
   type PlayoutStatus,
   type ServiceHealth,
   type StartPlayoutRequest,
@@ -21,6 +22,7 @@ import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { mediaPath } from "./runtime";
 import {
   getFfmpegCapabilities,
+  getNetworkInterfaces,
   getPlayoutStatus,
   getSystemMetrics,
   mediaThumbnailUrl,
@@ -72,33 +74,38 @@ export function App() {
   const [capabilities, setCapabilities] = useState<FfmpegCapabilities | null>(null);
   const [playoutStatus, setPlayoutStatus] = useState<PlayoutStatus | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
+  const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterfaceInfo[]>([]);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [mediaBusy, setMediaBusy] = useState(false);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let cancelled = false;
 
     async function loadHealth() {
       try {
         const healthPayload = window.gruberDesktop
           ? await window.gruberDesktop.getServiceHealth()
-          : await fetchHealth(controller.signal);
+          : await fetchHealth();
         const health = serviceHealthSchema.parse(healthPayload);
-        setConnection({ kind: "ready", health });
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return;
+        if (!cancelled) {
+          setConnection({ kind: "ready", health });
         }
-
-        setConnection({
-          kind: "error",
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
+      } catch (error) {
+        if (!cancelled) {
+          setConnection({
+            kind: "error",
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+        }
       }
     }
 
     void loadHealth();
-    return () => controller.abort();
+    const timer = window.setInterval(() => void loadHealth(), 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -109,15 +116,25 @@ export function App() {
 
     async function refresh() {
       try {
-        const [nextCapabilities, nextStatus, nextMetrics] = await Promise.all([
+        const [nextCapabilities, nextStatus, nextMetrics, nextNetworkInterfaces] = await Promise.all([
           getFfmpegCapabilities(),
           getPlayoutStatus(),
           getSystemMetrics(),
+          getNetworkInterfaces(),
         ]);
         if (!cancelled) {
           setCapabilities(nextCapabilities);
           setPlayoutStatus(nextStatus);
           setSystemMetrics(nextMetrics);
+          setNetworkInterfaces(nextNetworkInterfaces);
+          const preferredInterface = nextNetworkInterfaces.find(
+            (entry) => entry.family === "IPv4" && !entry.internal,
+          );
+          if (preferredInterface) {
+            setSettings((current) => current.udpLocalAddress
+              ? current
+              : { ...current, udpLocalAddress: preferredInterface.address });
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -349,6 +366,7 @@ export function App() {
       {view === "broadcast" ? (
         <BroadcastSettingsScreen
           settings={settings}
+          networkInterfaces={networkInterfaces}
           capabilities={capabilities}
           onSettingsChange={setSettings}
           onStart={() => void startPlayout()}
@@ -363,7 +381,11 @@ export function App() {
         />
       ) : null}
 
-      {view !== "import" ? <GlobalStatusBar status={playoutStatus} /> : null}
+      <GlobalStatusBar
+        connection={connection}
+        serverAddress={mediaServerAddress()}
+        status={playoutStatus}
+      />
     </div>
   );
 }
@@ -383,14 +405,26 @@ function EmptyPlaylist({ onOpenLibrary }: { onOpenLibrary: () => void }) {
   );
 }
 
-async function fetchHealth(signal: AbortSignal): Promise<unknown> {
-  const response = await fetch("/api/health", { signal });
+async function fetchHealth(): Promise<unknown> {
+  const response = await fetch("/api/health");
 
   if (!response.ok) {
     throw new Error(`Media service returned ${response.status}`);
   }
 
   return response.json() as Promise<unknown>;
+}
+
+function mediaServerAddress(): string {
+  const configuredUrl = window.gruberDesktop?.mediaApiBaseUrl;
+  if (!configuredUrl) {
+    return window.location.host || "127.0.0.1:4310";
+  }
+  try {
+    return new URL(configuredUrl).host;
+  } catch {
+    return configuredUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  }
 }
 
 function formatBytes(bytes: number): string {
@@ -484,6 +518,15 @@ function buildStartRequest(
         packetSize: settings.udpPacketSize,
         ttl: settings.udpTtl,
         localAddress: settings.udpLocalAddress,
+        mpegTs: {
+          serviceName: settings.udpServiceName.trim() || "FluxIO",
+          serviceId: integerOrDefault(settings.udpServiceId, 1, 1, 65_535),
+          providerName: settings.udpProviderName.trim() || "FluxIO",
+          videoPid: integerOrDefault(settings.udpVideoPid, 256, 32, 8_190),
+          audioPid: integerOrDefault(settings.udpAudioPid, 257, 32, 8_190),
+          serviceType: normalizeMpegTsServiceType(settings.udpServiceType),
+          pcrPeriodMs: integerOrDefault(settings.udpPcrPeriodMs, 20, 1, 1_000),
+        },
       }
     : protocol === "srt"
       ? {
@@ -532,6 +575,7 @@ function buildStartRequest(
       profile: settings.profile,
       level: settings.level,
       deinterlace: settings.deinterlace,
+      fieldOrder: normalizeFieldOrder(settings.fieldOrder),
     },
     audio: {
       codec: settings.audioCodec === "MP2"
@@ -581,6 +625,41 @@ function buildStartRequest(
         : "increment",
     },
   };
+}
+
+function integerOrDefault(
+  value: number,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isFinite(value) || value === 0) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
+}
+
+function normalizeFieldOrder(
+  value: string,
+): StartPlayoutRequest["video"]["fieldOrder"] {
+  if (value === "upper" || value === "lower") return value;
+  return "progressive";
+}
+
+function normalizeMpegTsServiceType(
+  value: string,
+): Extract<StartPlayoutRequest["endpoint"], { protocol: "udp" }>["mpegTs"]["serviceType"] {
+  const supported = new Set([
+    "digital_tv",
+    "digital_radio",
+    "teletext",
+    "advanced_codec_digital_radio",
+    "mpeg2_digital_hdtv",
+    "advanced_codec_digital_sdtv",
+    "advanced_codec_digital_hdtv",
+    "hevc_digital_hdtv",
+  ]);
+  return supported.has(value)
+    ? value as Extract<StartPlayoutRequest["endpoint"], { protocol: "udp" }>["mpegTs"]["serviceType"]
+    : "digital_tv";
 }
 
 function normalizeScte35UpidType(

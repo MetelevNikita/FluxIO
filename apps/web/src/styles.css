@@ -1434,6 +1434,17 @@ input[type="range"] {
   gap: 12px;
 }
 
+.udp-section-label {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 13px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .scte35-planner-summary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1915,13 +1926,69 @@ input[type="range"] {
   min-height: 48px;
   flex: 0 0 48px;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 280px minmax(470px, 1fr);
+  grid-template-columns: 190px minmax(240px, 1fr) 220px minmax(350px, 1fr);
   align-items: center;
   gap: 28px;
   border-top: 1px solid var(--border);
   padding: 0 24px;
   background: var(--surface);
   font-size: 11px;
+}
+
+.media-server-status {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.media-server-status > svg {
+  color: var(--muted);
+}
+
+.server-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 8px rgba(255, 102, 102, 0.45);
+}
+
+.media-server-status.active .server-state-dot {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+}
+
+.media-server-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.media-server-copy strong,
+.media-server-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-server-copy strong {
+  color: var(--danger);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.media-server-status.active .media-server-copy strong {
+  color: #4ade80;
+}
+
+.media-server-copy small {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
 }
 
 .encoding-file {
@@ -1983,7 +2050,7 @@ input[type="range"] {
   }
 
   .global-status-bar {
-    grid-template-columns: minmax(260px, 1fr) 220px auto;
+    grid-template-columns: 170px minmax(220px, 1fr) 180px auto;
     gap: 18px;
   }
 
@@ -2052,5 +2119,9 @@ input[type="range"] {
   .encoding-summary .muted,
   .encoding-summary i {
     display: none;
+  }
+
+  .global-status-bar {
+    grid-template-columns: 165px minmax(210px, 1fr) 150px auto;
   }
 }

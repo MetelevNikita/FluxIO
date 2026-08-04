@@ -1,6 +1,6 @@
 {
   "name": "gruber-playout",
-  "version": "0.1.0",
+  "version": "4.2.2",
   "private": true,
   "description": "FluxIO server-first desktop playout application powered by Node.js and FFmpeg",
   "workspaces": [
@@ -11,9 +11,10 @@
     "build:contracts": "npm run build -w @gruber/contracts",
     "build": "npm run build:contracts && npm run build -w @gruber/media-server && npm run build -w @gruber/web && npm run build -w @gruber/desktop",
     "typecheck": "npm run build:contracts && npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present && node --test setup.test.mjs",
+    "test": "npm run test --workspaces --if-present && node --test setup.test.mjs launch.test.mjs",
     "setup": "node setup.mjs",
     "setup:no-start": "node setup.mjs --no-start",
+    "launch": "node launch.mjs",
     "dev:server": "npm run build:contracts && npm run dev -w @gruber/media-server",
     "dev:web": "npm run build:contracts && npm run dev -w @gruber/web",
     "dev:desktop": "npm run build -w @gruber/desktop && npm run dev -w @gruber/desktop",

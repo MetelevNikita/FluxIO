@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildLaunchAgentPlist,
+  buildLinuxDesktopEntry,
+  buildMacDesktopLauncher,
+  buildMacDesktopLauncherPlist,
   buildDatabaseUrl,
   buildNpmInvocation,
   buildSystemdUnit,
+  buildWindowsShortcutCommand,
   buildWindowsTaskCommand,
   commandVersionArguments,
   electronRuntimePath,
   mergeWindowsPathValues,
   npmCiArguments,
   parseEnv,
+  platformServiceStopCommand,
   serializeEnv,
   validatePort,
   windowsToolCandidates,
@@ -192,4 +197,69 @@ test("setup generates macOS and Windows background launch definitions", () => {
   assert.ok(
     windows.indexOf("Stop-ScheduledTask") < windows.indexOf("Register-ScheduledTask"),
   );
+});
+
+test("setup creates branded desktop launchers on Windows, macOS and Linux", () => {
+  const windows = buildWindowsShortcutCommand({
+    iconPath: "C:\\FluxIO\\apps\\desktop\\build\\icon.ico",
+    launcherPath: "C:\\FluxIO Project\\launch.mjs",
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    rootPath: "C:\\FluxIO Project",
+  });
+  assert.match(windows, /GetFolderPath\('Desktop'\)/);
+  assert.match(windows, /FluxIO\.lnk/);
+  assert.match(windows, /launch\.mjs/);
+  assert.match(windows, /icon\.ico,0/);
+
+  const macLauncher = buildMacDesktopLauncher({
+    launcherPath: "/Users/operator/FluxIO Project/launch.mjs",
+    nodePath: "/usr/local/bin/node",
+  });
+  assert.match(macLauncher, /^#!\/bin\/sh/);
+  assert.match(macLauncher, /exec '\/usr\/local\/bin\/node'/);
+  assert.match(macLauncher, /'\/Users\/operator\/FluxIO Project\/launch\.mjs'/);
+  const plist = buildMacDesktopLauncherPlist("4.2.2");
+  assert.match(plist, /live\.fluxio\.desktop-launcher/);
+  assert.match(plist, /<string>4\.2\.2<\/string>/);
+
+  const linux = buildLinuxDesktopEntry({
+    iconPath: "/srv/FluxIO Project/icon.png",
+    launcherPath: "/srv/FluxIO Project/launch.mjs",
+    nodePath: "/usr/bin/node",
+    rootPath: "/srv/FluxIO Project",
+  });
+  assert.match(linux, /Name=FluxIO/);
+  assert.match(linux, /Exec="\/usr\/bin\/node" "\/srv\/FluxIO Project\/launch\.mjs"/);
+  assert.match(linux, /Terminal=false/);
+});
+
+test("Ctrl+C stop commands cover each production service manager", () => {
+  assert.deepEqual(
+    platformServiceStopCommand({ kind: "systemd", label: "gruber-media.service" }),
+    {
+      command: "sudo",
+      args: ["systemctl", "stop", "gruber-media.service"],
+    },
+  );
+  assert.deepEqual(
+    platformServiceStopCommand({
+      kind: "launchd",
+      domain: "gui/501",
+      plistPath: "/Users/operator/Library/LaunchAgents/live.gruber.media.plist",
+    }),
+    {
+      command: "launchctl",
+      args: [
+        "bootout",
+        "gui/501",
+        "/Users/operator/Library/LaunchAgents/live.gruber.media.plist",
+      ],
+    },
+  );
+  const windows = platformServiceStopCommand({
+    kind: "windows-task",
+    label: "Gruber Playout Media Service",
+  });
+  assert.equal(windows.command, "powershell.exe");
+  assert.match(windows.args.at(-1), /Stop-ScheduledTask/);
 });

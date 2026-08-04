@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  defaultMpegTsOutputSettings,
   playoutStatusSchema,
   serviceHealthSchema,
   startPlayoutRequestSchema,
@@ -17,12 +18,14 @@ import { buildFfmpegCommand } from "./ffmpeg/command-builder.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
+  formatFrameProgressLog,
   PlayoutSupervisor,
   usesTsdDuckTransport,
 } from "./ffmpeg/playout-supervisor.js";
 import { runCommand } from "./ffmpeg/process.js";
 import { DatabaseService } from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
+import { listNetworkInterfaces } from "./network-interfaces.js";
 import { buildScte35CueXml, planScte35Cues } from "./tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
@@ -42,6 +45,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
+    assert.equal(health.version, "4.2.2");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -70,6 +74,44 @@ test("GET /api/system/metrics returns real server metrics", async () => {
   } finally {
     await app.close();
   }
+});
+
+test("GET /api/system/network-interfaces returns host adapters", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system/network-interfaces",
+    });
+    assert.equal(response.statusCode, 200);
+    const payload = response.json() as { items: unknown[] };
+    assert.ok(Array.isArray(payload.items));
+  } finally {
+    await app.close();
+  }
+});
+
+test("network interface discovery prioritizes external adapters", () => {
+  const interfaces = listNetworkInterfaces({
+    Loopback: [{
+      address: "127.0.0.1",
+      cidr: "127.0.0.1/8",
+      family: "IPv4",
+      internal: true,
+      mac: "00:00:00:00:00:00",
+      netmask: "255.0.0.0",
+    }],
+    Ethernet: [{
+      address: "192.168.10.20",
+      cidr: "192.168.10.20/24",
+      family: "IPv4",
+      internal: false,
+      mac: "00:11:22:33:44:55",
+      netmask: "255.255.255.0",
+    }],
+  });
+  assert.equal(interfaces[0]?.name, "Ethernet");
+  assert.equal(interfaces[0]?.address, "192.168.10.20");
 });
 
 test("CPU sampler calculates utilization from node:os time deltas", () => {
@@ -165,6 +207,20 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   assert.equal(command.totalDurationSeconds, 5);
 });
 
+test("UDP and field-order defaults are applied to older saved requests", () => {
+  const request = baseRequest() as unknown as {
+    endpoint: Record<string, unknown>;
+    video: Record<string, unknown>;
+  };
+  delete request.endpoint.mpegTs;
+  delete request.video.fieldOrder;
+  const parsed = startPlayoutRequestSchema.parse(request);
+  assert.equal(parsed.video.fieldOrder, "progressive");
+  assert.equal(parsed.endpoint.protocol, "udp");
+  if (parsed.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  assert.deepEqual(parsed.endpoint.mpegTs, defaultMpegTsOutputSettings);
+});
+
 test("FFmpeg command burns logo before program and preview split", () => {
   const request: StartPlayoutRequest = {
     ...baseRequest(),
@@ -192,7 +248,39 @@ test("FFmpeg command burns logo before program and preview split", () => {
   assert.match(filter, /colorchannelmixer=aa=0\.75/);
   assert.match(filter, /overlay=x=main_w-overlay_w-24:y=24/);
   assert.match(filter, /\[vbranded\]realtime\[vrealtime\]/);
-  assert.match(filter, /\[vrealtime\]split=2\[vprogram\]\[vpreviewbase\]/);
+  assert.match(filter, /\[vrealtime\]split=2\[vprogrambase\]\[vpreviewbase\]/);
+  assert.match(filter, /\[vprogrambase\]setfield=mode=prog\[vprogram\]/);
+});
+
+test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () => {
+  const request = baseRequest();
+  request.video.fieldOrder = "upper";
+  if (request.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  request.endpoint.localAddress = "192.168.10.20";
+  request.endpoint.mpegTs = {
+    serviceName: "News One",
+    serviceId: 42,
+    providerName: "Flux Provider",
+    videoPid: 301,
+    audioPid: 302,
+    serviceType: "advanced_codec_digital_hdtv",
+    pcrPeriodMs: 40,
+  };
+  const rendered = buildFfmpegCommand(
+    request,
+    preparedItems(),
+    "/tmp/preview",
+  ).args.join(" ");
+  assert.match(rendered, /setfield=mode=tff/);
+  assert.match(rendered, /-x264-params tff=1/);
+  assert.match(rendered, /-field_order tt/);
+  assert.match(rendered, /-metadata service_name=News One/);
+  assert.match(rendered, /-metadata service_provider=Flux Provider/);
+  assert.match(rendered, /-streamid 0:301 -streamid 1:302/);
+  assert.match(rendered, /-mpegts_service_id 42/);
+  assert.match(rendered, /-mpegts_service_type advanced_codec_digital_hdtv/);
+  assert.match(rendered, /-pcr_period 40/);
+  assert.match(rendered, /localaddr=192\.168\.10\.20/);
 });
 
 test("FFmpeg command creates SRT MPEG-TS endpoint with transport settings", () => {
@@ -258,6 +346,9 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   const request = baseRequest();
   request.scte35.enabled = true;
   request.scte35.pid = 500;
+  if (request.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  request.endpoint.localAddress = "192.168.10.20";
+  request.endpoint.mpegTs.serviceId = 42;
   const command = buildTsdDuckCommand({
     cueCount: 1,
     cueFilePath: "/tmp/cues.xml",
@@ -267,10 +358,12 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   const rendered = command.args.join(" ");
   assert.match(rendered, /-I ip --local-address 127\.0\.0\.1 19001/);
   assert.match(rendered, /--add-registration 0x43554549/);
+  assert.match(rendered, /--service 42/);
   assert.match(rendered, /--add-pid 500\/0x86/);
   assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
   assert.match(rendered, /-O ip .*239\.1\.1\.1:5000/);
+  assert.match(rendered, /--local-address 192\.168\.10\.20/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
 });
 
@@ -338,6 +431,7 @@ test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", (
       packetSize: 1_316,
       ttl: 1,
       localAddress: "",
+      mpegTs: { ...defaultMpegTsOutputSettings },
     },
     transportMuxRateBps: 3_700_000,
   });
@@ -363,6 +457,18 @@ test("FFmpeg keeps only actionable playout warnings in the application log", () 
     "-loglevel",
     "warning",
   ]);
+});
+
+test("playout frame progress is formatted for Log Output", () => {
+  assert.equal(
+    formatFrameProgressLog({
+      bitrateKbps: 2_628.4,
+      fps: 25,
+      frame: 125,
+      outTimeSeconds: 5.4,
+    }),
+    "Transmitted frames: 125 | FPS: 25.00 | bitrate: 2628 kbps | time: 00:00:05",
+  );
 });
 
 test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT secrets", () => {
@@ -412,6 +518,30 @@ test("FFmpeg preflight rejects MP2 with 5.1 audio", async () => {
   request.audio.channels = 6;
   try {
     await assert.rejects(supervisor.start(request), /MP2 output supports mono or stereo/);
+  } finally {
+    await supervisor.close();
+  }
+});
+
+test("SCTE-35 preflight rejects an elementary-stream PID collision", async () => {
+  const supervisor = new PlayoutSupervisor(
+    new FfmpegCapabilitiesService(),
+    path.join(tmpdir(), "gruber-invalid-scte-pid-preview"),
+  );
+  const request = baseRequest();
+  request.endpoint = {
+    protocol: "srt",
+    host: "127.0.0.1",
+    port: 9_000,
+    mode: "caller",
+    latencyMs: 120,
+    passphrase: "",
+    streamId: "",
+  };
+  request.scte35.enabled = true;
+  request.scte35.pid = defaultMpegTsOutputSettings.videoPid;
+  try {
+    await assert.rejects(supervisor.start(request), /conflicts with video PID/);
   } finally {
     await supervisor.close();
   }
@@ -474,6 +604,7 @@ test(
       request.video.targetBitrateKbps = 1_200;
       request.video.maxBitrateKbps = 1_200;
       request.video.bufferSizeKbps = 2_400;
+      request.video.fieldOrder = "upper";
       request.endpoint = {
         protocol: "udp",
         host: "127.0.0.1",
@@ -481,6 +612,15 @@ test(
         packetSize: 1_316,
         ttl: 16,
         localAddress: "",
+        mpegTs: {
+          ...defaultMpegTsOutputSettings,
+          serviceName: "FluxIO Test",
+          serviceId: 42,
+          providerName: "FluxIO QA",
+          videoPid: 301,
+          audioPid: 302,
+          pcrPeriodMs: 40,
+        },
       };
       request.logo = {
         filePath: logo,
@@ -502,6 +642,10 @@ test(
       const status = supervisor.getStatus();
       assert.equal(status.state, "completed", status.logs.slice(-10).join("\n"));
       assert.equal(status.progressPercent, 100);
+      assert.ok(
+        status.logs.some((line) => line.includes("Transmitted frames:")),
+        status.logs.slice(-10).join("\n"),
+      );
       assert.ok(
         Date.now() - wallStartedAt >= 2_300,
         "Playout must be paced close to the combined clip duration",
@@ -591,6 +735,7 @@ test(
         packetSize: 1_316,
         ttl: 1,
         localAddress: "",
+        mpegTs: { ...defaultMpegTsOutputSettings },
       };
       request.scte35 = {
         ...request.scte35,
@@ -834,6 +979,7 @@ function baseRequest(): StartPlayoutRequest {
       profile: "high",
       level: "4.1",
       deinterlace: false,
+      fieldOrder: "progressive",
     },
     audio: {
       codec: "aac",
@@ -849,6 +995,7 @@ function baseRequest(): StartPlayoutRequest {
       packetSize: 1_316,
       ttl: 16,
       localAddress: "",
+      mpegTs: { ...defaultMpegTsOutputSettings },
     },
     repeatPlaylist: false,
     scte35: {

@@ -161,7 +161,9 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(SERVICE_HEALTH_CHANNEL, async () => {
     const baseUrl = process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310";
-    const response = await fetch(new URL("/api/health", baseUrl));
+    const response = await fetch(new URL("/api/health", baseUrl), {
+      signal: AbortSignal.timeout(1_500),
+    });
 
     if (!response.ok) {
       throw new Error(`Media service returned ${response.status}`);

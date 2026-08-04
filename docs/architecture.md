@@ -36,6 +36,7 @@ flowchart LR
 - выполняет preflight;
 - запускает FFmpeg без shell-интерпретации;
 - разбирает `-progress pipe:1` и хранит актуальный runtime status;
+- читает сетевые интерфейсы через `node:os` и отдаёт их UI для привязки UDP output;
 - выдаёт HLS playlist/segments для preview;
 - сохраняет конфигурации и историю сессий через Prisma.
 
@@ -95,7 +96,7 @@ flowchart LR
 
 ### Program output
 
-- UDP: MPEG-TS, `pkt_size`, TTL, optional local address;
+- UDP: MPEG-TS, `pkt_size`, TTL, выбранный local interface, service metadata/ID/type, elementary-stream PID и PCR interval;
 - SRT: MPEG-TS через обязательный TSDuck relay, caller/listener/rendezvous, latency, optional passphrase и stream ID; libsrt в FFmpeg не требуется;
 - RTMP/RTMPS: FLV, только H.264 + AAC.
 
@@ -106,6 +107,18 @@ Preview формируется второй веткой того же FFmpeg-п
 Renderer приоритетно использует HLS.js даже в Electron на macOS. Это исключает ложный выбор нативной HLS-ветки Chromium. Если manifest запрошен раньше появления первого сегмента, клиент повторяет загрузку с ограниченной задержкой; recoverable media errors вызывают восстановление decoder без остановки program output.
 
 Broadcast вычисляет оставшееся время всей программы как `totalDurationSeconds - outTimeSeconds`. Значение показывается в формате `HH:MM:SS` поверх program preview, в Playlist Progress и в Real-time Stats.
+
+Program video получает отдельный `setfield` после split. `progressive`, `upper`
+(TFF) и `lower` (BFF) преобразуются в encoder-specific параметры x264, x265 или
+MPEG-2 и в `field_order` FFmpeg; HLS preview при этом остаётся отдельной веткой.
+Для UDP FFmpeg применяет `service_name`, `service_provider`,
+`mpegts_service_id`, `mpegts_service_type`, `streamid` для video/audio PID и
+`pcr_period`. При SCTE-35 эти параметры формируются до loopback handoff и
+сохраняются TSDuck; выбранный service ID используется его PMT processor.
+
+Каждый блок `-progress` добавляет в rolling Log Output количество переданных
+кадров, FPS, bitrate и output time. Это телеметрия FFmpeg, а не подтверждение
+приёма endpoint.
 
 При включённом `Repeat` supervisor после штатного завершения FFmpeg увеличивает `loopCount`, сбрасывает прогресс цикла и повторно запускает заранее проверенную команду с первого ролика. Это бесконечное расписание до команды Stop. Между двумя FFmpeg-процессами возможен короткий стык, поэтому бесшовный 24/7 loop остаётся задачей rolling scheduler.
 
@@ -157,6 +170,7 @@ Playlist Preview не использует макетный таймер. Отд
 
 - `GET /api/health` — процесс и статус PostgreSQL-конфигурации;
 - `GET /api/capabilities` — реальные возможности FFmpeg;
+- `GET /api/system/network-interfaces` — IPv4/IPv6 адреса сетевых адаптеров media-server;
 - `POST /api/media/probe` — анализ переданных путей;
 - `POST /api/media/scan` — рекурсивный поиск и анализ папки;
 - `GET /api/media/thumbnail` — кэшированный JPEG-кадр проанализированного файла;

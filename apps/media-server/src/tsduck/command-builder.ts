@@ -21,6 +21,9 @@ export function buildTsdDuckCommand({
   request,
 }: TsdDuckCommandOptions): TsdDuckCommand {
   const pid = request.scte35.pid;
+  const serviceId = request.endpoint.protocol === "udp"
+    ? request.endpoint.mpegTs.serviceId
+    : 1;
   const args = [
     "-I",
     "ip",
@@ -34,7 +37,7 @@ export function buildTsdDuckCommand({
       "-P",
       "pmt",
       "--service",
-      "1",
+      String(serviceId),
       "--add-registration",
       "0x43554549",
       "--add-pid",
@@ -49,7 +52,7 @@ export function buildTsdDuckCommand({
       "-P",
       "spliceinject",
       "--service",
-      "1",
+      String(serviceId),
       "--pid",
       String(pid),
       "--files",
@@ -98,7 +101,7 @@ function buildOutput(
       "--ttl",
       String(endpoint.ttl),
     ];
-    if (endpoint.localAddress && isMulticast(endpoint.host)) {
+    if (endpoint.localAddress) {
       args.push("--local-address", endpoint.localAddress);
     }
     args.push(`${formatHost(endpoint.host)}:${endpoint.port}`);
@@ -155,9 +158,4 @@ function endpointLabel(endpoint: PlayoutEndpoint): string {
 
 function formatHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function isMulticast(host: string): boolean {
-  const first = Number.parseInt(host.split(".")[0] ?? "", 10);
-  return Number.isInteger(first) && first >= 224 && first <= 239;
 }

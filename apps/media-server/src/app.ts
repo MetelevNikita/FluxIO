@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   saveBroadcastConfigurationRequestSchema,
+  networkInterfaceListSchema,
   probeMediaRequestSchema,
   scanMediaRequestSchema,
   serviceHealthSchema,
@@ -22,8 +23,9 @@ import {
 import { probeMedia, scanMediaDirectory } from "./ffmpeg/probe.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
+import { listNetworkInterfaces } from "./network-interfaces.js";
 
-const serviceVersion = "0.1.0";
+const serviceVersion = "4.2.2";
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
@@ -87,6 +89,10 @@ export function buildApp(options: FastifyServerOptions = {}) {
     return systemMetricsSchema.parse(
       systemMetrics.sample(isStreaming ? status.bitrateKbps / 1_000 : 0),
     );
+  });
+
+  app.get("/api/system/network-interfaces", async () => {
+    return networkInterfaceListSchema.parse({ items: listNetworkInterfaces() });
   });
 
   app.post("/api/media/probe", async (request, reply) => {

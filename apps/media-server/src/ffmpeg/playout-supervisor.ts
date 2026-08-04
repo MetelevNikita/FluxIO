@@ -8,7 +8,7 @@ import type {
   PlayoutStatus,
   StartPlayoutRequest,
 } from "@gruber/contracts";
-import { playoutStatusSchema } from "@gruber/contracts";
+import { defaultMpegTsOutputSettings, playoutStatusSchema } from "@gruber/contracts";
 import { buildFfmpegCommand, type PreparedPlayoutItem } from "./command-builder.js";
 import { FfmpegCapabilitiesService } from "./capabilities.js";
 import { probeMedia } from "./probe.js";
@@ -54,6 +54,7 @@ export class PlayoutSupervisor {
   #progressBuffer = "";
   #logBuffer = "";
   #tsduckLogBuffer = "";
+  #lastLoggedFrame = -1;
   #eventSink: PlayoutEventSink | null;
 
   constructor(
@@ -206,6 +207,9 @@ export class PlayoutSupervisor {
       packetSize: 1_316,
       ttl: 1,
       localAddress: "",
+      mpegTs: request.endpoint.protocol === "udp"
+        ? { ...request.endpoint.mpegTs }
+        : { ...defaultMpegTsOutputSettings },
     };
     const command = buildFfmpegCommand(request, this.#items, this.previewDirectory, {
       forceKeyFramesSeconds: request.scte35.enabled
@@ -255,7 +259,20 @@ export class PlayoutSupervisor {
       this.#status.bitrateKbps = Math.max(0, numberValue(value.replace("kbits/s", "")));
     } else if (key === "speed") {
       this.#status.speed = Math.max(0, numberValue(value.replace("x", "")));
+    } else if (key === "progress") {
+      this.#appendFrameProgressLog();
     }
+  }
+
+  #appendFrameProgressLog(): void {
+    if (this.#status.frame === this.#lastLoggedFrame) return;
+    this.#lastLoggedFrame = this.#status.frame;
+    this.#appendLog(formatFrameProgressLog({
+      bitrateKbps: this.#status.bitrateKbps,
+      fps: this.#status.fps,
+      frame: this.#status.frame,
+      outTimeSeconds: this.#status.outTimeSeconds,
+    }));
   }
 
   #updateDerivedProgress(): void {
@@ -424,6 +441,7 @@ export class PlayoutSupervisor {
     this.#child = child;
     this.#progressBuffer = "";
     this.#logBuffer = "";
+    this.#lastLoggedFrame = -1;
     child.stdout.on("data", (chunk: Buffer) => this.#readProgress(chunk));
     child.stderr.on("data", (chunk: Buffer) => this.#readLogs(chunk));
     child.once("spawn", () => {
@@ -601,6 +619,17 @@ function validateCapabilities(
   if (request.audio.codec === "mp2" && request.audio.channels === 6) {
     throw new PlayoutPreflightError("MP2 output supports mono or stereo audio only");
   }
+  if (request.scte35.enabled && request.endpoint.protocol !== "rtmp") {
+    const { audioPid, videoPid } = request.endpoint.protocol === "udp"
+      ? request.endpoint.mpegTs
+      : defaultMpegTsOutputSettings;
+    if (request.scte35.pid === videoPid || request.scte35.pid === audioPid) {
+      throw new PlayoutPreflightError(
+        `SCTE-35 PID ${request.scte35.pid} conflicts with ` +
+          `${request.scte35.pid === videoPid ? "video" : "audio"} PID`,
+      );
+    }
+  }
 }
 
 function validateScte35Cues(
@@ -668,6 +697,33 @@ function idleStatus(): PlayoutStatus {
 function numberValue(value: string): number {
   const parsed = Number.parseFloat(value.trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function formatFrameProgressLog({
+  bitrateKbps,
+  fps,
+  frame,
+  outTimeSeconds,
+}: {
+  bitrateKbps: number;
+  fps: number;
+  frame: number;
+  outTimeSeconds: number;
+}): string {
+  return `Transmitted frames: ${Math.max(0, Math.round(frame))} | ` +
+    `FPS: ${Math.max(0, fps).toFixed(2)} | ` +
+    `bitrate: ${Math.max(0, bitrateKbps).toFixed(0)} kbps | ` +
+    `time: ${formatClock(outTimeSeconds)}`;
+}
+
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3_600);
+  const minutes = Math.floor((whole % 3_600) / 60);
+  const remaining = whole % 60;
+  return [hours, minutes, remaining]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
 }
 
 function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {

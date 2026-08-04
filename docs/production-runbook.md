@@ -33,8 +33,9 @@ node setup.mjs
 3. Для нового локального PostgreSQL → `нет`, после чего ввести administrator credentials; на Linux локальный `postgres` без password использует peer connection через `sudo -u postgres`.
 4. Оставить `GRUBER_HOST=127.0.0.1`, если Electron работает на том же сервере.
 5. Подтвердить `npm ci`, typecheck/tests и Electron installer.
-6. Подтвердить установку background media-service.
-7. На headless-сервере отказаться от запуска Electron; service всё равно будет запущен.
+6. Подтвердить создание ярлыка FluxIO на рабочем столе.
+7. Подтвердить установку background media-service.
+8. На headless-сервере отказаться от запуска Electron; service всё равно будет запущен.
 
 PostgreSQL всегда подключается по `127.0.0.1`. Мастер не запрашивает host и SSL: сетевой доступ к базе для Gruber не требуется.
 
@@ -55,6 +56,7 @@ prerequisite check
   → native Electron installer
   → background service installation/start
   → GET /api/health verification
+  → desktop shortcut creation
 ```
 
 Если `.env` уже существует, он сохраняется как `.env.backup-<timestamp>`. `GRUBER_SECRET_KEY` повторно используется, чтобы сохранённые SRT/RTMP secrets продолжили расшифровываться.
@@ -73,7 +75,7 @@ journalctl -u gruber-media.service -f
 sudo systemctl restart gruber-media.service
 ```
 
-Unit включается в автозапуск и использует отдельный runtime-каталог для HLS-preview. Закрытие Electron или terminal не останавливает эфир.
+Unit включается в автозапуск и использует отдельный runtime-каталог для HLS-preview. Обычное закрытие окна Electron оставляет service активным. Если Electron запущен самим `setup.mjs`, нажатие `Ctrl+C` в этом terminal завершает Electron и выполняет `systemctl stop gruber-media.service`.
 
 ### macOS
 
@@ -85,6 +87,8 @@ tail -f "$HOME/Library/Logs/GruberPlayout/media-service.log"
 ```
 
 LaunchAgent стартует при входе выбранного пользователя в macOS. Для полностью headless boot-before-login deployment потребуется отдельный LaunchDaemon и системный пользователь.
+
+При `Ctrl+C` в активном `setup.mjs` мастер выполняет `launchctl bootout` и останавливает LaunchAgent вместе с Electron. Обычное закрытие окна Electron service не выгружает.
 
 ### Windows
 
@@ -100,6 +104,8 @@ Stop-ScheduledTask -TaskName 'Gruber Playout Media Service'
 
 Задача повторно запускает media-service при входе пользователя. Для Windows Server без интерактивного logon следующим этапом следует оформить настоящий Windows Service с отдельной service account.
 
+При `Ctrl+C` в активном `setup.mjs` мастер завершает дерево Electron и вызывает `Stop-ScheduledTask`; обычное закрытие окна оставляет задачу активной.
+
 ## 5. Electron installer
 
 Один и тот же `setup.mjs` работает на macOS, Windows и Linux. Installer собирается нативно для текущей ОС:
@@ -111,6 +117,22 @@ Stop-ScheduledTask -TaskName 'Gruber Playout Media Service'
 Сборка macOS installer выполняется на macOS, Windows installer — на Windows. Это исключает зависимость от нестабильной cross-compilation toolchain и позволяет позже добавить корректную code signing/notarization.
 
 Текущие installers не подписаны. Product name — `FluxIO`. Все installers используют утолщённый antenna mark; macOS использует отдельный full-bleed source без прозрачных/белых боковых полей. При первом запуске приложение показывает пятисекундный startup splash размером с основное окно и параллельно подготавливает основной renderer.
+
+### Ярлык рабочего стола
+
+Production-мастер создаёт нативный ярлык:
+
+- Windows — `FluxIO.lnk` с фирменной ICO;
+- macOS — `~/Desktop/FluxIO.app` с фирменной ICNS;
+- Linux — `FluxIO.desktop` с фирменной PNG.
+
+Ярлык запускает корневой `launch.mjs`. Launcher читает `.env`, проверяет media-server через `/api/health`, при необходимости запускает собранный `apps/media-server/dist/index.js`, затем открывает production Electron. Если launcher сам поднял media-server, при закрытии Electron он завершает и этот дочерний server. Уже работающий systemd/LaunchAgent/Windows Task launcher не останавливает.
+
+Тот же запуск без ярлыка:
+
+```bash
+npm run launch
+```
 
 ## 6. Проверка после мастера
 
@@ -126,18 +148,30 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 
 ## 7. Операторский запуск эфира
 
-1. Запустить установленный Electron client.
-2. Убедиться, что header показывает media-service `ready`.
+1. Запустить FluxIO ярлыком рабочего стола или командой `npm run launch`.
+2. Убедиться, что в левом нижнем углу показаны зелёные `ACTIVE` и правильный IP:port media-server. Состояние проверяется каждые 2 секунды.
 3. Выбрать папку/video files и дождаться зелёного `Done` для каждого материала.
 4. При необходимости проверить thumbnails и Play/Seek в `Playlist & Preview`.
 5. Собрать Playlist.
 6. Настроить video/audio encoder и optional logo.
-7. Настроить UDP, SRT, RTMP или RTMPS endpoint.
+7. Настроить UDP, SRT, RTMP или RTMPS endpoint. Для UDP выбрать конкретный output interface и проверить MPEG-TS service/PID/PCR.
 8. При необходимости включить `Repeat` до старта — расписание будет повторяться до Stop.
 9. Для рекламных врезок выбрать UDP/SRT, включить SCTE-35, задать defaults и расставить Event IDs во вкладке Playlist. Первая метка — не раньше `pre-roll + 2 s`.
 10. Подготовить головную станцию.
 11. Нажать `Start Stream`.
-12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics и карточку SCTE-35 Injector: state, PID, observed/total, last/next Event ID.
+12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output и карточку SCTE-35 Injector: state, PID, observed/total, last/next Event ID.
+
+Для нового UDP-профиля используются безопасные начальные значения: service
+`FluxIO`, service ID `1`, provider `FluxIO`, video PID `256`, audio PID `257`,
+service type `digital_tv`, PCR `20 ms`, Field Order `progressive`. `Upper` — TFF,
+`Lower` — BFF. Приложение получает интерфейсы с того компьютера, где запущен
+media-server; выбирать нужно IP адаптера, подключённого к сети головной станции.
+При `Automatic routing` исходящий интерфейс определяет таблица маршрутизации ОС.
+
+Перед Start приложение отклонит одинаковые video/audio PID и совпадение SCTE-35
+PID с elementary-stream PID. После Start `Transmitted frames` означает, что
+FFmpeg передаёт кадры в output socket; это не является return-feed и не
+доказывает приём потока головной станцией.
 
 SCTE-35 cue-секции реально внедряются TSDuck в UDP/SRT MPEG-TS. До пилота головная станция должна подтвердить PMT registration `CUEI`, выбранный `stream_type 0x86` PID, Event ID, segmentation type, UPID, pre-roll и соответствие IDR. RTMP/FLV для SCTE-35 не используется.
 
@@ -167,6 +201,8 @@ node setup.mjs
 ```
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
+
+Версия текущего этапа — `v4.2.2`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

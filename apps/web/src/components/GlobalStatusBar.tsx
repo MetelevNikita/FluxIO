@@ -1,11 +1,23 @@
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle, Server } from "lucide-react";
 import type { PlayoutStatus } from "@gruber/contracts";
+import type { ConnectionState } from "../App";
 
-export function GlobalStatusBar({ status }: { status: PlayoutStatus | null }) {
+interface GlobalStatusBarProps {
+  connection: ConnectionState;
+  serverAddress: string;
+  status: PlayoutStatus | null;
+}
+
+export function GlobalStatusBar({
+  connection,
+  serverAddress,
+  status,
+}: GlobalStatusBarProps) {
   const progress = status?.progressPercent ?? 0;
   const active = status
     ? ["starting", "running", "stopping"].includes(status.state)
     : false;
+  const serverActive = connection.kind === "ready";
   const remaining = Math.max(
     0,
     ((status?.totalDurationSeconds ?? 0) - (status?.outTimeSeconds ?? 0)) /
@@ -13,6 +25,19 @@ export function GlobalStatusBar({ status }: { status: PlayoutStatus | null }) {
   );
   return (
     <footer className="global-status-bar">
+      <div
+        className={`media-server-status ${serverActive ? "active" : "inactive"}`}
+        title={connection.kind === "error"
+          ? connection.message
+          : `Media server ${serverAddress}`}
+      >
+        <Server aria-hidden="true" size={17} />
+        <span className="server-state-dot" aria-hidden="true" />
+        <span className="media-server-copy">
+          <strong>{serverActive ? "ACTIVE" : "NOT ACTIVE"}</strong>
+          <small>{serverAddress}</small>
+        </span>
+      </div>
       <div className="encoding-file">
         <LoaderCircle className={active ? "spin" : ""} size={16} />
         <span>

@@ -13,13 +13,18 @@ import {
   Video,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import type { FfmpegCapabilities, PlayoutStatus } from "@gruber/contracts";
+import type {
+  FfmpegCapabilities,
+  NetworkInterfaceInfo,
+  PlayoutStatus,
+} from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
 import { mediaApiUrl, mediaPath } from "../runtime";
 import type { BroadcastSettings } from "../types";
 
 interface BroadcastSettingsScreenProps {
   capabilities: FfmpegCapabilities | null;
+  networkInterfaces: NetworkInterfaceInfo[];
   onStart: () => void;
   onStop: () => void;
   operationError: string | null;
@@ -37,6 +42,7 @@ type SettingsUpdater = <Key extends keyof BroadcastSettings>(
 
 export function BroadcastSettingsScreen({
   capabilities,
+  networkInterfaces,
   onStart,
   onStop,
   operationError,
@@ -198,6 +204,16 @@ export function BroadcastSettingsScreen({
             ]}
             value={settings.frameRate}
           />
+          <SelectField
+            label="Field Order"
+            onChange={(value) => update("fieldOrder", value)}
+            options={[
+              { label: "Progressive", value: "progressive" },
+              { label: "Upper field first (TFF)", value: "upper" },
+              { label: "Lower field first (BFF)", value: "lower" },
+            ]}
+            value={settings.fieldOrder}
+          />
           <ToggleField
             checked={settings.deinterlace}
             label="Deinterlace Filter (YADIF)"
@@ -353,7 +369,11 @@ export function BroadcastSettingsScreen({
             value={settings.protocol}
           />
           {settings.protocol === "UDP" ? (
-            <UdpFields settings={settings} update={update} />
+            <UdpFields
+              networkInterfaces={networkInterfaces}
+              settings={settings}
+              update={update}
+            />
           ) : null}
           {settings.protocol === "SRT" ? (
             <SrtFields settings={settings} update={update} />
@@ -482,9 +502,11 @@ export function BroadcastSettingsScreen({
 }
 
 function UdpFields({
+  networkInterfaces,
   settings,
   update,
 }: {
+  networkInterfaces: NetworkInterfaceInfo[];
   settings: BroadcastSettings;
   update: SettingsUpdater;
 }) {
@@ -519,12 +541,69 @@ function UdpFields({
           value={settings.udpTtl}
         />
       </div>
-      <TextField
+      <SelectField
         disabled={disabled}
-        label="Local interface address (optional)"
+        label="Network output interface"
         onChange={(value) => update("udpLocalAddress", value)}
+        options={[
+          { label: "Automatic routing", value: "" },
+          ...networkInterfaces.map((entry) => ({
+            label: `${entry.name} — ${entry.address} (${entry.family}${entry.internal ? ", loopback" : ""})`,
+            value: entry.address,
+          })),
+        ]}
         value={settings.udpLocalAddress}
       />
+      <div className="udp-section-label">MPEG-TS service</div>
+      <div className="two-column-fields">
+        <TextField
+          disabled={disabled}
+          label="Service name"
+          onChange={(value) => update("udpServiceName", value)}
+          value={settings.udpServiceName}
+        />
+        <TextField
+          disabled={disabled}
+          label="Provider"
+          onChange={(value) => update("udpProviderName", value)}
+          value={settings.udpProviderName}
+        />
+      </div>
+      <div className="two-column-fields">
+        <NumberField
+          disabled={disabled}
+          label="Service number / ID"
+          onChange={(value) => update("udpServiceId", value)}
+          value={settings.udpServiceId}
+        />
+        <SelectField
+          disabled={disabled}
+          label="Input stream type"
+          onChange={(value) => update("udpServiceType", value)}
+          options={mpegTsServiceTypeOptions}
+          value={settings.udpServiceType}
+        />
+      </div>
+      <div className="three-column-fields">
+        <NumberField
+          disabled={disabled}
+          label="Video PID"
+          onChange={(value) => update("udpVideoPid", value)}
+          value={settings.udpVideoPid}
+        />
+        <NumberField
+          disabled={disabled}
+          label="Audio PID"
+          onChange={(value) => update("udpAudioPid", value)}
+          value={settings.udpAudioPid}
+        />
+        <NumberField
+          disabled={disabled}
+          label="PCR interval (ms)"
+          onChange={(value) => update("udpPcrPeriodMs", value)}
+          value={settings.udpPcrPeriodMs}
+        />
+      </div>
     </>
   );
 }
@@ -826,7 +905,7 @@ function SelectField({
   disabled?: boolean;
   label: string;
   onChange: (value: string) => void;
-  options: string[];
+  options: SelectOption[];
   value: string;
 }) {
   const id = useId();
@@ -839,13 +918,32 @@ function SelectField({
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
-        {options.map((option) => (
-          <option key={option}>{option}</option>
-        ))}
+        {options.map((option) => {
+          const optionValue = typeof option === "string" ? option : option.value;
+          const optionLabel = typeof option === "string" ? option : option.label;
+          return (
+            <option key={`${optionValue}-${optionLabel}`} value={optionValue}>
+              {optionLabel}
+            </option>
+          );
+        })}
       </select>
     </div>
   );
 }
+
+type SelectOption = string | { label: string; value: string };
+
+const mpegTsServiceTypeOptions: SelectOption[] = [
+  { label: "Digital television", value: "digital_tv" },
+  { label: "Digital radio", value: "digital_radio" },
+  { label: "Teletext", value: "teletext" },
+  { label: "Advanced codec digital radio", value: "advanced_codec_digital_radio" },
+  { label: "MPEG-2 digital HDTV", value: "mpeg2_digital_hdtv" },
+  { label: "Advanced codec digital SDTV", value: "advanced_codec_digital_sdtv" },
+  { label: "Advanced codec digital HDTV", value: "advanced_codec_digital_hdtv" },
+  { label: "HEVC digital HDTV", value: "hevc_digital_hdtv" },
+];
 
 function NumberField({
   disabled = false,

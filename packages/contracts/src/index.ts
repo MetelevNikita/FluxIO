@@ -18,6 +18,22 @@ export const systemMetricsSchema = z.object({
 
 export type SystemMetrics = z.infer<typeof systemMetricsSchema>;
 
+export const networkInterfaceSchema = z.object({
+  name: z.string().min(1),
+  address: z.string().min(1),
+  family: z.enum(["IPv4", "IPv6"]),
+  cidr: z.string().nullable(),
+  netmask: z.string().min(1),
+  mac: z.string().min(1),
+  internal: z.boolean(),
+});
+
+export const networkInterfaceListSchema = z.object({
+  items: z.array(networkInterfaceSchema),
+});
+
+export type NetworkInterfaceInfo = z.infer<typeof networkInterfaceSchema>;
+
 export const mediaProbeSchema = z.object({
   filePath: z.string().min(1),
   name: z.string().min(1),
@@ -120,6 +136,7 @@ export const videoEncodingSchema = z.object({
   profile: z.string().default("high"),
   level: z.string().default("4.1"),
   deinterlace: z.boolean().default(false),
+  fieldOrder: z.enum(["upper", "lower", "progressive"]).default("progressive"),
 });
 
 export const audioEncodingSchema = z.object({
@@ -143,6 +160,40 @@ export const logoOverlaySchema = z.object({
   opacity: z.number().min(0.05).max(1),
 });
 
+export const mpegTsServiceTypes = [
+  "digital_tv",
+  "digital_radio",
+  "teletext",
+  "advanced_codec_digital_radio",
+  "mpeg2_digital_hdtv",
+  "advanced_codec_digital_sdtv",
+  "advanced_codec_digital_hdtv",
+  "hevc_digital_hdtv",
+] as const;
+
+export const defaultMpegTsOutputSettings = {
+  serviceName: "FluxIO",
+  serviceId: 1,
+  providerName: "FluxIO",
+  videoPid: 256,
+  audioPid: 257,
+  serviceType: "digital_tv" as const,
+  pcrPeriodMs: 20,
+};
+
+export const mpegTsOutputSettingsSchema = z.object({
+  serviceName: z.string().trim().min(1).max(64).default("FluxIO"),
+  serviceId: z.number().int().min(1).max(65_535).default(1),
+  providerName: z.string().trim().min(1).max(64).default("FluxIO"),
+  videoPid: z.number().int().min(32).max(8_190).default(256),
+  audioPid: z.number().int().min(32).max(8_190).default(257),
+  serviceType: z.enum(mpegTsServiceTypes).default("digital_tv"),
+  pcrPeriodMs: z.number().int().min(1).max(1_000).default(20),
+}).refine((settings) => settings.videoPid !== settings.audioPid, {
+  message: "Video PID and audio PID must be different",
+  path: ["audioPid"],
+});
+
 export const udpEndpointSchema = z.object({
   protocol: z.literal("udp"),
   host: z.string().min(1),
@@ -150,6 +201,7 @@ export const udpEndpointSchema = z.object({
   packetSize: z.number().int().min(188).max(65_507).default(1316),
   ttl: z.number().int().min(1).max(255).default(16),
   localAddress: z.string().default(""),
+  mpegTs: mpegTsOutputSettingsSchema.default(defaultMpegTsOutputSettings),
 });
 
 export const srtEndpointSchema = z.object({
@@ -303,6 +355,7 @@ export type PlayoutItem = z.infer<typeof playoutItemSchema>;
 export type VideoEncoding = z.infer<typeof videoEncodingSchema>;
 export type AudioEncoding = z.infer<typeof audioEncodingSchema>;
 export type LogoOverlay = z.infer<typeof logoOverlaySchema>;
+export type MpegTsOutputSettings = z.infer<typeof mpegTsOutputSettingsSchema>;
 export type PlayoutEndpoint = z.infer<typeof playoutEndpointSchema>;
 export type Scte35Planning = z.infer<typeof scte35PlanningSchema>;
 export type Scte35InjectorStatus = z.infer<typeof scte35InjectorStatusSchema>;

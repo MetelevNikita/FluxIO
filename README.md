@@ -1,5 +1,7 @@
 # FluxIO
 
+Текущая версия: **v4.2.2**.
+
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
 Electron-интерфейс и installers используют бренд FluxIO: единый жёлто-чёрный antenna mark, wordmark с акцентным `IO` и пятисекундный стартовый экран размером с основное окно. Технические имена окружения `GRUBER_*`, PostgreSQL database и service IDs сохранены для обратной совместимости существующих установок.
@@ -29,7 +31,8 @@ npm run setup
 5. автоматически найденные пути FFmpeg/ffprobe, TSDuck `tsp` и media-service port;
 6. запускать ли typecheck/tests;
 7. собирать ли Electron installer;
-8. устанавливать ли фоновый media-service и запускать ли интерфейс.
+8. создавать ли системный ярлык FluxIO на рабочем столе;
+9. устанавливать ли фоновый media-service и запускать ли интерфейс.
 
 После ответов мастер сам создаёт `.env`, генерирует ключ шифрования, устанавливает npm dependencies, применяет Prisma migrations, собирает проект и запускает сервис.
 
@@ -75,11 +78,12 @@ node setup.mjs
 - прокручиваемая медиатека для большого количества файлов;
 - последовательный realtime FFmpeg playout;
 - H.264, H.265, MPEG-2, AAC, MP2 и AC-3;
-- CBR, VBR, CRF, deinterlace и mono/stereo/5.1;
+- CBR, VBR, CRF, deinterlace, progressive/TFF/BFF field order и mono/stereo/5.1;
 - MPEG-TS по UDP/SRT и FLV по RTMP/RTMPS;
+- выбор реального сетевого адаптера для UDP и настройка MPEG-TS service name/ID/provider, video/audio PID, service type и PCR interval;
 - logo overlay;
 - HLS-preview реально вещаемой программы;
-- Start/Stop, current clip, progress, FPS, bitrate, speed и logs;
+- Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в logs;
 - живой 16:9 program preview и оставшееся время всего плейлиста в Broadcast;
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;
@@ -88,6 +92,9 @@ node setup.mjs
 - реальные CPU и NET-метрики сервера без Fastify access-log шума;
 - PostgreSQL/Prisma для внутреннего состояния и AES-256-GCM endpoint secrets;
 - независимый от Electron media-service;
+- постоянный индикатор `ACTIVE / NOT ACTIVE` и адрес media-server в левом нижнем углу;
+- единый production launcher и ярлык рабочего стола для Windows, macOS и Linux;
+- совместное завершение Electron и media-server по `Ctrl+C` в окне `setup.mjs`;
 - FluxIO splash 1440 × 920 с пятисекундным progress и безопасным ожиданием готовности основного Electron-окна.
 
 SCTE-35 метки сохраняются в PostgreSQL вместе с элементами плейлиста. При включении SCTE-35 FFmpeg формирует CBR MPEG-TS во внутренний loopback UDP, TSDuck добавляет сигнализацию и cue-секции, затем отправляет результат по UDP или SRT. RTMP/FLV не переносит SCTE-35 PID, поэтому такой запуск отклоняется preflight-проверкой.
@@ -100,5 +107,6 @@ SCTE-35 метки сохраняются в PostgreSQL вместе с элем
 - [Production](docs/production-runbook.md)
 - [SCTE-35 для эфирного инженера](docs/scte35-engineer-runbook.md)
 - [Архитектура](docs/architecture.md)
+- [Версионирование](docs/versioning.md)
 
 Проект является одноканальным production-candidate. Перед 24/7 вводом требуются soak-test, резервирование и независимый мониторинг сигнала на приёмной стороне.

@@ -3,6 +3,7 @@ import {
   broadcastConfigurationSummarySchema,
   clipPreviewSessionSchema,
   mediaProbeSchema,
+  networkInterfaceListSchema,
   playoutStatusSchema,
   savedBroadcastConfigurationSchema,
   systemMetricsSchema,
@@ -10,6 +11,7 @@ import {
   type ClipPreviewSession,
   type FfmpegCapabilities,
   type MediaProbe,
+  type NetworkInterfaceInfo,
   type PlayoutStatus,
   type SaveBroadcastConfigurationRequest,
   type SavedBroadcastConfiguration,
@@ -50,6 +52,12 @@ export async function getPlayoutStatus(): Promise<PlayoutStatus> {
 
 export async function getSystemMetrics(): Promise<SystemMetrics> {
   return systemMetricsSchema.parse(await request("/api/system/metrics"));
+}
+
+export async function getNetworkInterfaces(): Promise<NetworkInterfaceInfo[]> {
+  return networkInterfaceListSchema.parse(
+    await request("/api/system/network-interfaces"),
+  ).items;
 }
 
 export function mediaThumbnailUrl(filePath: string, atSeconds?: number): string {

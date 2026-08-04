@@ -46,6 +46,7 @@ export interface BroadcastSettings {
   dimensionsLocked: boolean;
   frameRate: string;
   deinterlace: boolean;
+  fieldOrder: string;
   rateControl: string;
   targetBitrate: number;
   maxBitrate: number;
@@ -65,6 +66,13 @@ export interface BroadcastSettings {
   udpPacketSize: number;
   udpTtl: number;
   udpLocalAddress: string;
+  udpServiceName: string;
+  udpServiceId: number;
+  udpProviderName: string;
+  udpVideoPid: number;
+  udpAudioPid: number;
+  udpServiceType: string;
+  udpPcrPeriodMs: number;
   srtHost: string;
   srtPort: number;
   srtMode: string;

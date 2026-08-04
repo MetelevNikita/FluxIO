@@ -3,7 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
+const applicationVersion = "4.2.2";
 
 export function buildDatabaseUrl({
   database,
@@ -282,6 +283,9 @@ async function main() {
     const buildUnpacked = mode === "production" && offline && !buildInstaller
       ? await prompt.confirm("Собрать offline unpacked Electron application?", true)
       : false;
+    const createShortcut = mode === "production"
+      ? await prompt.confirm("Создать ярлык FluxIO на рабочем столе?", true)
+      : false;
     const serviceKind = platformServiceKind();
     const installBackgroundService =
       mode === "production" &&
@@ -414,10 +418,21 @@ async function main() {
       }
     }
 
-    printSummary({ databaseUrl, installedService, mode, startNow, values });
+    const desktopShortcut = createShortcut
+      ? await createDesktopShortcut()
+      : null;
+
+    printSummary({
+      databaseUrl,
+      desktopShortcut,
+      installedService,
+      mode,
+      startNow,
+      values,
+    });
     if (startNow) {
       if (installBackgroundService) {
-        await launchDesktop(commandEnv);
+        await launchDesktop(commandEnv, installedService);
       } else {
         await launchApplication(mode, commandEnv, values.GRUBER_MEDIA_API_URL);
       }
@@ -476,7 +491,7 @@ async function postgresReady(host, port, pgIsReadyPath) {
 }
 
 function printHeader() {
-  console.log("\nFluxIO — мастер установки");
+  console.log(`\nFluxIO v${applicationVersion} — мастер установки`);
   console.log("=================================");
   console.log("Docker не используется. Пароли не выводятся в итоговый отчёт.");
   if (offline) console.log("Offline mode: сетевые установки и npm ci отключены.");
@@ -1060,6 +1075,7 @@ async function installSystemdService({ environmentPath, serviceUser, start }) {
     await rm(unitPath, { force: true });
   }
   return {
+    kind: "systemd",
     label: "gruber-media.service",
     logs: "journalctl -u gruber-media.service -f",
   };
@@ -1125,8 +1141,11 @@ async function installLaunchAgent({ start }) {
     await runCommand("launchctl", ["print", `${domain}/${label}`]);
   }
   return {
+    domain,
+    kind: "launchd",
     label,
     logs: `tail -f "${path.join(logsDirectory, "media-service.log")}"`,
+    plistPath,
   };
 }
 
@@ -1176,6 +1195,7 @@ async function installWindowsTask({ start }) {
     ]);
   }
   return {
+    kind: "windows-task",
     label: taskName,
     logs: "Get-ScheduledTask -TaskName 'Gruber Playout Media Service'",
   };
@@ -1206,6 +1226,161 @@ function escapeXml(value) {
 
 function escapePowerShell(value) {
   return value.replaceAll("'", "''");
+}
+
+async function createDesktopShortcut() {
+  const launcherPath = path.join(projectRoot, "launch.mjs");
+  if (!existsSync(launcherPath)) {
+    throw new Error(`Launcher не найден: ${launcherPath}`);
+  }
+
+  if (process.platform === "win32") {
+    const command = buildWindowsShortcutCommand({
+      iconPath: path.join(projectRoot, "apps", "desktop", "build", "icon.ico"),
+      launcherPath,
+      nodePath: process.execPath,
+      rootPath: projectRoot,
+    });
+    await runCommand("powershell.exe", ["-NoProfile", "-Command", command]);
+    return "FluxIO.lnk (Windows Desktop)";
+  }
+
+  if (process.platform === "darwin") {
+    const applicationPath = path.join(homedir(), "Desktop", "FluxIO.app");
+    const contentsPath = path.join(applicationPath, "Contents");
+    const plistPath = path.join(contentsPath, "Info.plist");
+    if (existsSync(applicationPath)) {
+      const existingPlist = await readFile(plistPath, "utf8").catch(() => "");
+      if (!existingPlist.includes("live.fluxio.desktop-launcher")) {
+        throw new Error(
+          `Не перезаписываю существующий ${applicationPath}: это не ярлык FluxIO`,
+        );
+      }
+    }
+    const executablePath = path.join(contentsPath, "MacOS", "FluxIOLauncher");
+    await mkdir(path.dirname(executablePath), { recursive: true });
+    await mkdir(path.join(contentsPath, "Resources"), { recursive: true });
+    await writeFile(
+      executablePath,
+      buildMacDesktopLauncher({ launcherPath, nodePath: process.execPath }),
+      { encoding: "utf8", mode: 0o755 },
+    );
+    await chmod(executablePath, 0o755);
+    await writeFile(
+      plistPath,
+      buildMacDesktopLauncherPlist(applicationVersion),
+      "utf8",
+    );
+    await copyFile(
+      path.join(projectRoot, "apps", "desktop", "build", "icon.icns"),
+      path.join(contentsPath, "Resources", "FluxIO.icns"),
+    );
+    return applicationPath;
+  }
+
+  if (process.platform === "linux") {
+    const desktopDirectory = linuxDesktopDirectory();
+    const shortcutPath = path.join(desktopDirectory, "FluxIO.desktop");
+    await mkdir(desktopDirectory, { recursive: true });
+    await writeFile(
+      shortcutPath,
+      buildLinuxDesktopEntry({
+        iconPath: path.join(projectRoot, "apps", "desktop", "build", "icon.png"),
+        launcherPath,
+        nodePath: process.execPath,
+        rootPath: projectRoot,
+      }),
+      { encoding: "utf8", mode: 0o755 },
+    );
+    await chmod(shortcutPath, 0o755);
+    spawnSync("gio", ["set", shortcutPath, "metadata::trusted", "true"], {
+      stdio: "ignore",
+    });
+    return shortcutPath;
+  }
+
+  throw new Error(`Ярлык рабочего стола не поддерживается на ${process.platform}`);
+}
+
+export function buildWindowsShortcutCommand({
+  iconPath,
+  launcherPath,
+  nodePath,
+  rootPath,
+}) {
+  const argumentsValue = `\"${launcherPath}\"`;
+  return [
+    "$desktop = [Environment]::GetFolderPath('Desktop')",
+    "$shell = New-Object -ComObject WScript.Shell",
+    "$shortcut = $shell.CreateShortcut((Join-Path $desktop 'FluxIO.lnk'))",
+    `$shortcut.TargetPath = '${escapePowerShell(nodePath)}'`,
+    `$shortcut.Arguments = '${escapePowerShell(argumentsValue)}'`,
+    `$shortcut.WorkingDirectory = '${escapePowerShell(rootPath)}'`,
+    `$shortcut.IconLocation = '${escapePowerShell(`${iconPath},0`)}'`,
+    "$shortcut.Description = 'FluxIO playout console'",
+    "$shortcut.WindowStyle = 7",
+    "$shortcut.Save()",
+  ].join("; ");
+}
+
+export function buildMacDesktopLauncher({ launcherPath, nodePath }) {
+  return `#!/bin/sh\nexec ${quoteShellArgument(nodePath)} ${quoteShellArgument(launcherPath)}\n`;
+}
+
+export function buildMacDesktopLauncherPlist(version) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>FluxIO</string>
+  <key>CFBundleExecutable</key><string>FluxIOLauncher</string>
+  <key>CFBundleIconFile</key><string>FluxIO</string>
+  <key>CFBundleIdentifier</key><string>live.fluxio.desktop-launcher</string>
+  <key>CFBundleName</key><string>FluxIO</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${escapeXml(version)}</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+`;
+}
+
+export function buildLinuxDesktopEntry({
+  iconPath,
+  launcherPath,
+  nodePath,
+  rootPath,
+}) {
+  return `[Desktop Entry]
+Type=Application
+Version=1.0
+Name=FluxIO
+Comment=FluxIO professional video playout console
+Exec=${quoteDesktopArgument(nodePath)} ${quoteDesktopArgument(launcherPath)}
+Path=${rootPath}
+Icon=${iconPath}
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=true
+StartupWMClass=FluxIO
+`;
+}
+
+function linuxDesktopDirectory() {
+  const result = spawnSync("xdg-user-dir", ["DESKTOP"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const detected = result.status === 0 ? result.stdout.trim() : "";
+  return path.isAbsolute(detected) ? detected : path.join(homedir(), "Desktop");
+}
+
+function quoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+function quoteDesktopArgument(value) {
+  return `"${value.replace(/([\\\"$`])/g, "\\$1")}"`;
 }
 
 function platformServiceKind() {
@@ -1277,26 +1452,73 @@ async function launchApplication(mode, env, mediaApiUrl) {
   await stopProcesses(processes);
 }
 
-async function launchDesktop(env) {
+async function launchDesktop(env, installedService) {
   console.log("\nMedia-service уже работает в фоне. Запускаю Electron…\n");
-  await new Promise((resolve, reject) => {
-    const child = spawn(
-      npmInvocation.command,
-      [...npmInvocation.prefixArgs, "run", "start:desktop"],
-      {
-        cwd: projectRoot,
-        env,
-        shell: npmInvocation.shell,
-        stdio: "inherit",
-      },
-    );
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0 || signal) resolve();
-      else reject(new Error(`Electron завершился с code=${code}`));
-    });
-  });
+  const child = spawnManagedNpm(["run", "start:desktop"], env);
+  const outcome = await waitForProcessOrSignal(child);
+  if (outcome.kind === "signal") {
+    console.log(`\nПолучен ${outcome.signal}. Останавливаю Electron и media-service…`);
+    await stopProcesses([child]);
+    await stopInstalledService(installedService);
+    console.log("Electron и media-service остановлены.");
+    return;
+  }
+  if (outcome.error) throw outcome.error;
+  if (outcome.code !== 0 && outcome.signal == null) {
+    throw new Error(`Electron завершился с code=${outcome.code}`);
+  }
   console.log("Electron закрыт; media-service продолжает работать в фоне.");
+}
+
+function waitForProcessOrSignal(child) {
+  return new Promise((resolve) => {
+    const onSigint = () => finish({ kind: "signal", signal: "SIGINT" });
+    const onSigterm = () => finish({ kind: "signal", signal: "SIGTERM" });
+    const onError = (error) => finish({ kind: "exit", error });
+    const onExit = (code, signal) => finish({ kind: "exit", code, signal });
+
+    function finish(outcome) {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      resolve(outcome);
+    }
+
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+async function stopInstalledService(service) {
+  if (!service) return;
+  const stop = platformServiceStopCommand(service);
+  await runCommand(stop.command, stop.args);
+}
+
+export function platformServiceStopCommand(service) {
+  if (service.kind === "systemd") {
+    return { command: "sudo", args: ["systemctl", "stop", service.label] };
+  }
+  if (service.kind === "launchd") {
+    return {
+      command: "launchctl",
+      args: ["bootout", service.domain, service.plistPath],
+    };
+  }
+  if (service.kind === "windows-task") {
+    return {
+      command: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-Command",
+        `Stop-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -ErrorAction SilentlyContinue`,
+      ],
+    };
+  }
+  throw new Error(`Неизвестный background service: ${service.kind}`);
 }
 
 function spawnManagedNpm(args, env) {
@@ -1322,8 +1544,15 @@ async function stopProcesses(processes) {
   for (const child of processes) {
     if (child.exitCode != null || child.signalCode != null) continue;
     try {
-      if (process.platform === "win32") child.kill("SIGTERM");
-      else process.kill(-child.pid, "SIGTERM");
+      if (process.platform === "win32") {
+        spawnSync(
+          "taskkill.exe",
+          ["/PID", String(child.pid), "/T", "/F"],
+          { stdio: "ignore" },
+        );
+      } else {
+        process.kill(-child.pid, "SIGTERM");
+      }
     } catch {
       // Process already stopped.
     }
@@ -1345,7 +1574,14 @@ async function waitForUrl(url, timeoutMs) {
   throw new Error(`Сервис не стал доступен за ${timeoutMs / 1000} секунд: ${url}`);
 }
 
-function printSummary({ databaseUrl, installedService, mode, startNow, values }) {
+function printSummary({
+  databaseUrl,
+  desktopShortcut,
+  installedService,
+  mode,
+  startNow,
+  values,
+}) {
   console.log("\nУстановка завершена");
   console.log("===================");
   console.log(`Режим: ${mode === "production" ? "production" : "test / development"}`);
@@ -1358,6 +1594,7 @@ function printSummary({ databaseUrl, installedService, mode, startNow, values })
     console.log(`Background service: ${installedService.label}`);
     console.log(`Логи/статус: ${installedService.logs}`);
   }
+  if (desktopShortcut) console.log(`Ярлык: ${desktopShortcut}`);
   if (!startNow) console.log("Запуск пропущен. Повторите npm run setup или используйте команды из документации.");
 }
 

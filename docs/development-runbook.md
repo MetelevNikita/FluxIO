@@ -79,6 +79,8 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 
 Все три development-процесса запускаются из одного terminal. `Ctrl+C` завершает media-service, Vite и Electron. Нативный PostgreSQL service продолжает работать отдельно.
 
+Production-ярлык рабочего стола создаётся только при выборе режима `Production`, поскольку он запускает собранные `dist`-версии интерфейса и media-server. В development используется общий terminal и Vite HMR.
+
 При первом создании Electron-окна FluxIO показывает startup splash 1440 × 920 в течение 5 секунд. Media-service и основной renderer в это время продолжают загружаться; повторное открытие окна через macOS Dock не повторяет splash.
 
 ### Offline-сборка
@@ -112,10 +114,40 @@ node setup.mjs --no-start
 3. Проверить thumbnails, Play/Pause/Seek и порядок в `Playlist`.
 4. В `Broadcast` выбрать video/audio encoder settings.
 5. При необходимости включить logo overlay.
-6. Заполнить только потоковый endpoint UDP, SRT, RTMP или RTMPS.
+6. Заполнить только потоковый endpoint UDP, SRT, RTMP или RTMPS. Для UDP выбрать сетевой интерфейс и проверить параметры MPEG-TS service.
 7. При необходимости включить `Repeat` и/или SCTE-35, затем расставить Event IDs в Playlist. Первая метка должна быть позже `pre-roll + 2 s` от начала программы.
 8. Нажать `Start Stream`.
 9. Проверить 16:9 HLS-preview, current clip, loop, progress, FPS, bitrate, speed, а при SCTE-35 — injector state, PID и счётчик observed cues.
+
+### UDP и MPEG-TS
+
+При открытии приложения media-server читает сетевые адаптеры через `node:os` и
+возвращает их из `GET /api/system/network-interfaces`. Если UDP interface ещё не
+задан, UI выбирает первый внешний IPv4. `Automatic routing` оставляет выбор
+маршрута операционной системе. Выбранный адрес передаётся FFmpeg как UDP
+`localaddr`, а при SCTE-35 — TSDuck как `--local-address`.
+
+Значения UDP MPEG-TS по умолчанию:
+
+- Service name: `FluxIO`;
+- Service number / ID: `1`;
+- Provider: `FluxIO`;
+- Video PID: `256` (`0x0100`);
+- Audio PID: `257` (`0x0101`);
+- Input stream type: `digital_tv`;
+- PCR interval: `20 ms`;
+- Field Order: `progressive`.
+
+`Upper` означает top-field-first (TFF), `Lower` — bottom-field-first (BFF).
+Настройка включает соответствующее encoder signaling для H.264/H.265/MPEG-2.
+YADIF нельзя включать без необходимости: после деинтерлейса исходная полевая
+структура уже удалена. Video PID и Audio PID должны отличаться; SCTE-35 PID при
+включённом injector также не может совпадать с ними.
+
+В `Encoding Monitor → Log Output` каждая запись FFmpeg progress показывает
+переданное число кадров, FPS, bitrate и program time. Это подтверждает работу
+локального encoder/muxer, но доставку до головной станции нужно проверять на
+приёмной стороне.
 
 При включённом SCTE-35 выход доступен только через UDP/SRT MPEG-TS. Внутренний тракт — `FFmpeg → loopback UDP → TSDuck → endpoint`; RTMP preflight отклоняется.
 
@@ -149,6 +181,7 @@ GRUBER_RUN_SCTE35_TESTS=1 npm test -w @gruber/media-server
 curl http://127.0.0.1:4310/api/health
 curl http://127.0.0.1:4310/api/capabilities
 curl http://127.0.0.1:4310/api/playout/status
+curl http://127.0.0.1:4310/api/system/network-interfaces
 ```
 
 ## Типичные ошибки

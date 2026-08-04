@@ -1,9 +1,11 @@
 import path from "node:path";
 import type {
+  MpegTsOutputSettings,
   PlayoutEndpoint,
   StartPlayoutRequest,
   VideoEncoding,
 } from "@gruber/contracts";
+import { defaultMpegTsOutputSettings } from "@gruber/contracts";
 
 export interface PreparedPlayoutItem {
   id: string;
@@ -73,12 +75,6 @@ export function buildFfmpegCommand(
   }
   args.push(...audioEncoderArgs(request.audio.codec, request.audio.bitrateKbps));
   args.push("-ar", String(request.audio.sampleRate), "-ac", String(request.audio.channels));
-  args.push(
-    "-metadata",
-    "service_name=FluxIO",
-    "-metadata",
-    "service_provider=FluxIO",
-  );
   const endpoint = buildEndpoint(
     options.programEndpoint ?? request.endpoint,
     options.transportMuxRateBps,
@@ -205,7 +201,8 @@ function buildFilterGraph(
   filters.push(
     `[${videoSource}]realtime[vrealtime]`,
     "[aconcat]arealtime[arealtime]",
-    "[vrealtime]split=2[vprogram][vpreviewbase]",
+    "[vrealtime]split=2[vprogrambase][vpreviewbase]",
+    `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
     "[arealtime]asplit=2[aprogram][apreview]",
     "[vpreviewbase]scale=960:-2:force_original_aspect_ratio=decrease,setsar=1[vpreview]",
   );
@@ -218,6 +215,8 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
   const common = [
     "-pix_fmt",
     "yuv420p",
+    "-field_order",
+    ffmpegFieldOrder(video.fieldOrder),
     "-g",
     String(gop),
     "-keyint_min",
@@ -243,6 +242,9 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
       "-level:v",
       video.level,
     ];
+    if (video.fieldOrder !== "progressive") {
+      codecArgs.push("-x264-params", `${video.fieldOrder === "upper" ? "tff" : "bff"}=1`);
+    }
   } else if (video.codec === "h265") {
     const profile = video.profile.toLowerCase().includes("10") ? "main10" : "main";
     codecArgs = [
@@ -255,10 +257,21 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
       "-level:v",
       video.level,
       "-x265-params",
-      `keyint=${gop}:min-keyint=${gop}:scenecut=0:repeat-headers=1`,
+      `keyint=${gop}:min-keyint=${gop}:scenecut=0:repeat-headers=1` +
+        (video.fieldOrder === "progressive"
+          ? ""
+          : `:interlace=${video.fieldOrder === "upper" ? "tff" : "bff"}`),
     ];
   } else {
     codecArgs = ["-c:v", "mpeg2video"];
+    if (video.fieldOrder !== "progressive") {
+      codecArgs.push(
+        "-flags:v",
+        "+ilme+ildct",
+        "-top:v",
+        video.fieldOrder === "upper" ? "1" : "0",
+      );
+    }
   }
 
   const rateArgs = rateControlArgs(video);
@@ -311,7 +324,7 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
     }
     const target = `udp://${formatHost(endpoint.host)}:${endpoint.port}?${params}`;
     return {
-      outputArgs: mpegTsOutputArgs(target, transportMuxRateBps),
+      outputArgs: mpegTsOutputArgs(target, endpoint.mpegTs, transportMuxRateBps),
       label: `UDP ${endpoint.host}:${endpoint.port}`,
     };
   }
@@ -331,7 +344,11 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
     }
     const target = `srt://${formatHost(endpoint.host)}:${endpoint.port}?${params}`;
     return {
-      outputArgs: mpegTsOutputArgs(target, transportMuxRateBps),
+      outputArgs: mpegTsOutputArgs(
+        target,
+        defaultMpegTsOutputSettings,
+        transportMuxRateBps,
+      ),
       label: `SRT ${endpoint.mode} ${endpoint.host}:${endpoint.port}`,
     };
   }
@@ -344,26 +361,54 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
   };
 }
 
-function mpegTsOutputArgs(target: string, transportMuxRateBps?: number): string[] {
+function mpegTsOutputArgs(
+  target: string,
+  settings: MpegTsOutputSettings,
+  transportMuxRateBps?: number,
+): string[] {
   const args = [
+    "-metadata",
+    `service_name=${settings.serviceName}`,
+    "-metadata",
+    `service_provider=${settings.providerName}`,
+    "-streamid",
+    `0:${settings.videoPid}`,
+    "-streamid",
+    `1:${settings.audioPid}`,
     "-muxdelay",
     "0.7",
     "-muxpreload",
     "0.5",
     "-mpegts_service_id",
-    "1",
+    String(settings.serviceId),
+    "-mpegts_service_type",
+    settings.serviceType,
     "-mpegts_transport_stream_id",
     "1",
     "-mpegts_original_network_id",
     "1",
     "-mpegts_flags",
     "+resend_headers",
+    "-pcr_period",
+    String(settings.pcrPeriodMs),
   ];
   if (transportMuxRateBps) {
     args.push("-muxrate", String(transportMuxRateBps));
   }
   args.push("-f", "mpegts", target);
   return args;
+}
+
+function filterFieldOrder(fieldOrder: VideoEncoding["fieldOrder"]): string {
+  if (fieldOrder === "upper") return "tff";
+  if (fieldOrder === "lower") return "bff";
+  return "prog";
+}
+
+function ffmpegFieldOrder(fieldOrder: VideoEncoding["fieldOrder"]): string {
+  if (fieldOrder === "upper") return "tt";
+  if (fieldOrder === "lower") return "bb";
+  return "progressive";
 }
 
 function formatHost(host: string): string {
