@@ -142,6 +142,7 @@ curl http://127.0.0.1:4310/api/playout/status
 - FFmpeg test ожидает `/tmp/...`, но получает `\\tmp\\...` — обновить repository: cross-platform проверка HLS paths добавлена на этапе 2.11;
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
+- после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

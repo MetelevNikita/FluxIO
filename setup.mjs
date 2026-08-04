@@ -1073,6 +1073,8 @@ async function installWindowsTask({ start }) {
 export function buildWindowsTaskCommand({ nodePath, rootPath, scriptPath, start, taskName }) {
   const actionArguments = `\"${scriptPath}\"`;
   return [
+    `Stop-ScheduledTask -TaskName '${escapePowerShell(taskName)}' -ErrorAction SilentlyContinue`,
+    "Start-Sleep -Milliseconds 500",
     `$action = New-ScheduledTaskAction -Execute '${escapePowerShell(nodePath)}' -Argument '${escapePowerShell(actionArguments)}' -WorkingDirectory '${escapePowerShell(rootPath)}'`,
     "$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
     "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser",

@@ -170,6 +170,15 @@
 - `-nostats` по-прежнему скрывает ненужный interactive status output;
 - Windows FFmpeg builds без `-stats_period` больше не завершаются при старте.
 
+### 2.14. Windows service update restart
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-14-windows-service-restart.md`](progress/02-14-windows-service-restart.md).
+
+- существующий Scheduled Task останавливается перед перерегистрацией;
+- старый Node.js media-service больше не остаётся в памяти после build;
+- новая задача запускается только с актуальным `dist`;
+- Windows restart order защищён regression-тестом.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

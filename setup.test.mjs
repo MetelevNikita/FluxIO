@@ -173,4 +173,7 @@ test("setup generates macOS and Windows background launch definitions", () => {
   assert.match(windows, /LogonType Interactive/);
   assert.match(windows, /Start-ScheduledTask/);
   assert.match(windows, /C:\\Gruber Project/);
+  assert.ok(
+    windows.indexOf("Stop-ScheduledTask") < windows.indexOf("Register-ScheduledTask"),
+  );
 });
