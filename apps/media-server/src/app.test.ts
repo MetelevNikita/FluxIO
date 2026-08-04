@@ -142,6 +142,14 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   assert.match(rendered, /concat=n=2:v=1:a=1/);
   assert.match(rendered, /anullsrc=r=48000:cl=stereo/);
   assert.match(rendered, /udp:\/\/239\.1\.1\.1:5000\?pkt_size=1316&ttl=16/);
+  assert.equal(command.args.includes("-stats_period"), false);
+  assert.deepEqual(
+    command.args.slice(
+      command.args.indexOf("-progress"),
+      command.args.indexOf("-progress") + 2,
+    ),
+    ["-progress", "pipe:1"],
+  );
   assert.equal(
     command.args.at(-1),
     path.join(previewDirectory, "index.m3u8"),

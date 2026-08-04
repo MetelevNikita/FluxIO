@@ -141,6 +141,7 @@ curl http://127.0.0.1:4310/api/playout/status
 - `spawn EINVAL` сразу после строки `npm.cmd ci` — использовалась старая версия `setup.mjs`; обновить файл из repository и повторить `node setup.mjs`;
 - FFmpeg test ожидает `/tmp/...`, но получает `\\tmp\\...` — обновить repository: cross-platform проверка HLS paths добавлена на этапе 2.11;
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
+- FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

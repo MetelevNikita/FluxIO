@@ -42,8 +42,6 @@ export function buildFfmpegCommand(
     "-loglevel",
     "info",
     "-nostats",
-    "-stats_period",
-    "0.5",
     "-progress",
     "pipe:1",
   ];

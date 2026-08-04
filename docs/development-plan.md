@@ -161,6 +161,15 @@
 - Windows не влияет на generated Linux/macOS service definitions;
 - Windows Task Scheduler продолжает получать native Windows path.
 
+### 2.13. FFmpeg progress compatibility
+
+Статус: завершён 2026-08-04. Отчёт: [`progress/02-13-ffmpeg-progress-compatibility.md`](progress/02-13-ffmpeg-progress-compatibility.md).
+
+- optional `-stats_period` удалён из playout command;
+- machine-readable progress продолжает поступать через `-progress pipe:1`;
+- `-nostats` по-прежнему скрывает ненужный interactive status output;
+- Windows FFmpeg builds без `-stats_period` больше не завершаются при старте.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine
