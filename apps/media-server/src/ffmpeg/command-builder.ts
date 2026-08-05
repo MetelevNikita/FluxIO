@@ -211,7 +211,10 @@ function buildFilterGraph(
 }
 
 function videoEncoderArgs(video: VideoEncoding): string[] {
-  const gop = Math.max(12, Math.round(video.frameRate * 2));
+  const gop = video.gopSize;
+  const sceneChangeThreshold = video.codec === "mpeg2" && video.closedGop
+    ? "1000000000"
+    : "0";
   const common = [
     "-pix_fmt",
     "yuv420p",
@@ -222,7 +225,9 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
     "-keyint_min",
     String(gop),
     "-sc_threshold",
-    "0",
+    sceneChangeThreshold,
+    "-bf",
+    String(video.bFrames),
   ];
   let codecArgs: string[];
 
@@ -235,15 +240,37 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
       "libx264",
       "-preset",
       video.preset,
-      "-tune",
-      "zerolatency",
       "-profile:v",
       profile,
       "-level:v",
       video.level,
     ];
+    if (video.bFrames === 0) {
+      codecArgs.splice(4, 0, "-tune", "zerolatency");
+    }
+    const x264Params: string[] = [
+      `keyint=${gop}`,
+      `min-keyint=${gop}`,
+      "scenecut=0",
+      `open-gop=${video.closedGop ? 0 : 1}`,
+      `bframes=${video.bFrames}`,
+      "b-adapt=0",
+      "b-pyramid=none",
+    ];
     if (video.fieldOrder !== "progressive") {
-      codecArgs.push("-x264-params", `${video.fieldOrder === "upper" ? "tff" : "bff"}=1`);
+      x264Params.push(`${video.fieldOrder === "upper" ? "tff" : "bff"}=1`);
+    }
+    if (video.rateControl === "cbr") {
+      x264Params.push(
+        `vbv-maxrate=${video.targetBitrateKbps}`,
+        `vbv-bufsize=${video.bufferSizeKbps}`,
+        "nal-hrd=cbr",
+        "filler=1",
+        "force-cfr=1",
+      );
+    }
+    if (x264Params.length > 0) {
+      codecArgs.push("-x264-params", x264Params.join(":"));
     }
   } else if (video.codec === "h265") {
     const profile = video.profile.toLowerCase().includes("10") ? "main10" : "main";
@@ -258,19 +285,24 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
       video.level,
       "-x265-params",
       `keyint=${gop}:min-keyint=${gop}:scenecut=0:repeat-headers=1` +
+        `:open-gop=${video.closedGop ? 0 : 1}:bframes=${video.bFrames}:b-adapt=0:b-pyramid=0` +
         (video.fieldOrder === "progressive"
           ? ""
-          : `:interlace=${video.fieldOrder === "upper" ? "tff" : "bff"}`),
+          : `:interlace=${video.fieldOrder === "upper" ? "tff" : "bff"}`) +
+        (video.rateControl === "cbr"
+          ? `:vbv-maxrate=${video.targetBitrateKbps}:vbv-bufsize=${video.bufferSizeKbps}` +
+            ":strict-cbr=1:hrd=1:filler=1"
+          : ""),
     ];
   } else {
     codecArgs = ["-c:v", "mpeg2video"];
+    const mpeg2Flags = video.closedGop ? ["cgop"] : [];
     if (video.fieldOrder !== "progressive") {
-      codecArgs.push(
-        "-flags:v",
-        "+ilme+ildct",
-        "-top:v",
-        video.fieldOrder === "upper" ? "1" : "0",
-      );
+      mpeg2Flags.push("ilme", "ildct");
+      codecArgs.push("-top:v", video.fieldOrder === "upper" ? "1" : "0");
+    }
+    if (mpeg2Flags.length > 0) {
+      codecArgs.push("-flags:v", `+${mpeg2Flags.join("+")}`);
     }
   }
 
@@ -321,6 +353,10 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
     });
     if (endpoint.localAddress) {
       params.set("localaddr", endpoint.localAddress);
+    }
+    if (transportMuxRateBps) {
+      params.set("bitrate", String(transportMuxRateBps));
+      params.set("burst_bits", String(endpoint.packetSize * 8));
     }
     const target = `udp://${formatHost(endpoint.host)}:${endpoint.port}?${params}`;
     return {

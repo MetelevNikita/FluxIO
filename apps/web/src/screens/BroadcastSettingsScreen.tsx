@@ -9,6 +9,7 @@ import {
   LockKeyhole,
   Radio,
   Repeat2,
+  Rows3,
   Square,
   Video,
 } from "lucide-react";
@@ -130,7 +131,13 @@ export function BroadcastSettingsScreen({
         <SettingsCard icon={<Video size={16} />} title="Video Codec">
           <SelectField
             label="Codec"
-            onChange={(value) => update("videoCodec", value)}
+            onChange={(value) => onSettingsChange({
+              ...settings,
+              videoCodec: value,
+              bFrames: value === "MPEG-2 Video"
+                ? Math.min(2, settings.bFrames)
+                : settings.bFrames,
+            })}
             options={codecOptions(capabilities)}
             value={settings.videoCodec}
           />
@@ -221,6 +228,37 @@ export function BroadcastSettingsScreen({
           />
         </SettingsCard>
 
+        <SettingsCard icon={<Rows3 size={16} />} title="GOP Structure (I/P/B)">
+          <div className="three-column-fields">
+            <NumberField
+              label="GOP length (frames)"
+              max={600}
+              min={1}
+              onChange={(value) => update("gopSize", value)}
+              value={settings.gopSize}
+            />
+            <NumberField
+              label="Consecutive B-frames"
+              max={settings.videoCodec === "MPEG-2 Video" ? 2 : 16}
+              min={0}
+              onChange={(value) => update("bFrames", value)}
+              value={settings.bFrames}
+            />
+            <SelectField
+              label="GOP mode"
+              onChange={(value) => update("closedGop", value === "closed")}
+              options={[
+                { label: "Closed GOP", value: "closed" },
+                { label: "Open GOP", value: "open" },
+              ]}
+              value={settings.closedGop ? "closed" : "open"}
+            />
+          </div>
+          <p className="gop-setting-note">
+            {gopStructureSummary(settings)}
+          </p>
+        </SettingsCard>
+
         <SettingsCard
           icon={<ChartNoAxesColumnIncreasing size={16} />}
           title="Bitrate Control"
@@ -246,13 +284,14 @@ export function BroadcastSettingsScreen({
           </div>
           <div className="two-column-fields">
             <NumberField
+              disabled={settings.rateControl !== "VBR"}
               label="Max Bitrate (Mbps)"
               onChange={(value) => update("maxBitrate", value)}
               step={0.5}
               value={settings.maxBitrate}
             />
             <NumberField
-              label="Buffer Size (KB)"
+              label="VBV Buffer (kbit)"
               onChange={(value) => update("bufferSize", value)}
               value={settings.bufferSize}
             />
@@ -513,6 +552,7 @@ function UdpFields({
   update: SettingsUpdater;
 }) {
   const disabled = !settings.streamingEnabled;
+  const autoTransportBitrate = calculateAutoTransportBitrateMbps(settings);
   return (
     <>
       <div className="two-column-fields">
@@ -606,8 +646,29 @@ function UdpFields({
           value={settings.udpPcrPeriodMs}
         />
       </div>
+      <NumberField
+        disabled={disabled}
+        label={`Transport bitrate (Mbps, 0 = Auto ${autoTransportBitrate.toFixed(1)})`}
+        onChange={(value) => update("udpTransportBitrate", value)}
+        step={0.5}
+        value={settings.udpTransportBitrate}
+      />
+      <p className="transport-setting-note">
+        Target Bitrate controls the video elementary stream. Transport bitrate is the final
+        constant MPEG-TS rate including audio, PSI/SI and PID 0x1FFF stuffing.
+      </p>
     </>
   );
+}
+
+function calculateAutoTransportBitrateMbps(settings: BroadcastSettings): number {
+  const videoPeakMbps = settings.rateControl === "CBR"
+    ? settings.targetBitrate
+    : settings.rateControl === "VBR"
+      ? settings.maxBitrate
+      : settings.targetBitrate * 2;
+  const payloadKbps = videoPeakMbps * 1_000 + settings.audioBitrate;
+  return Math.ceil(Math.max(1_000, payloadKbps * 1.18 + 256) / 100) / 10;
 }
 
 function SrtFields({
@@ -950,12 +1011,16 @@ const mpegTsServiceTypeOptions: SelectOption[] = [
 function NumberField({
   disabled = false,
   label,
+  max,
+  min = 0,
   onChange,
   step = 1,
   value,
 }: {
   disabled?: boolean;
   label: string;
+  max?: number;
+  min?: number;
   onChange: (value: number) => void;
   step?: number;
   value: number;
@@ -967,7 +1032,8 @@ function NumberField({
       <input
         disabled={disabled}
         id={id}
-        min={0}
+        max={max}
+        min={min}
         onChange={(event) => onChange(Number(event.target.value))}
         step={step}
         type="number"
@@ -975,6 +1041,16 @@ function NumberField({
       />
     </div>
   );
+}
+
+function gopStructureSummary(settings: BroadcastSettings): string {
+  const frameRate = Number.parseFloat(settings.frameRate) || 25;
+  const duration = settings.gopSize / frameRate;
+  const pattern = settings.bFrames === 0
+    ? "I P P P …"
+    : `I ${Array.from({ length: settings.bFrames }, () => "B").join(" ")} P …`;
+  return `${pattern} · ${settings.gopSize} frames / ${duration.toFixed(2)} s · ` +
+    `${settings.closedGop ? "no references between GOPs" : "inter-GOP references allowed"}`;
 }
 
 function SecretField({

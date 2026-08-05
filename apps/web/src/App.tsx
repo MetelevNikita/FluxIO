@@ -537,6 +537,9 @@ function buildStartRequest(
           audioPid: integerOrDefault(settings.udpAudioPid, 257, 32, 8_190),
           serviceType: normalizeMpegTsServiceType(settings.udpServiceType),
           pcrPeriodMs: integerOrDefault(settings.udpPcrPeriodMs, 20, 1, 1_000),
+          transportBitrateKbps: settings.udpTransportBitrate > 0
+            ? Math.round(settings.udpTransportBitrate * 1_000)
+            : 0,
         },
       }
     : protocol === "srt"
@@ -587,6 +590,9 @@ function buildStartRequest(
       level: settings.level,
       deinterlace: settings.deinterlace,
       fieldOrder: normalizeFieldOrder(settings.fieldOrder),
+      gopSize: Math.max(1, Math.min(600, Math.round(settings.gopSize))),
+      bFrames: Math.max(0, Math.min(16, Math.round(settings.bFrames))),
+      closedGop: settings.closedGop,
     },
     audio: {
       codec: settings.audioCodec === "MP2"

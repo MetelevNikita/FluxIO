@@ -218,9 +218,9 @@ test("setup creates branded desktop launchers on Windows, macOS and Linux", () =
   assert.match(macLauncher, /^#!\/bin\/sh/);
   assert.match(macLauncher, /exec '\/usr\/local\/bin\/node'/);
   assert.match(macLauncher, /'\/Users\/operator\/FluxIO Project\/launch\.mjs'/);
-  const plist = buildMacDesktopLauncherPlist("4.2.3");
+  const plist = buildMacDesktopLauncherPlist("4.2.5");
   assert.match(plist, /live\.fluxio\.desktop-launcher/);
-  assert.match(plist, /<string>4\.2\.3<\/string>/);
+  assert.match(plist, /<string>4\.2\.5<\/string>/);
 
   const linux = buildLinuxDesktopEntry({
     iconPath: "/srv/FluxIO Project/icon.png",

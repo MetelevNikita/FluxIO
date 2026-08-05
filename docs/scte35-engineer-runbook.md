@@ -1,7 +1,7 @@
 # SCTE-35: инструкция эфирного инженера
 
 Версия документа: 2026-08-04  
-Применимо к: FluxIO 4.2.3, однопрограммный MPEG-TS (SPTS)
+Применимо к: FluxIO 4.2.5, однопрограммный MPEG-TS (SPTS)
 
 ## 1. Назначение
 
@@ -164,6 +164,11 @@ pre-roll + 2 секунды startup reserve
 - `TS packet size`, обычно `1316`;
 - `Multicast TTL`;
 - `Local interface address`, если multicast должен выходить через конкретную NIC.
+- `Transport bitrate`: `0` для Auto или точный постоянный TS bitrate головной станции.
+
+Для рекламных стыков рекомендуется Closed GOP. Длина GOP определяет обычный
+интервал I-frame, однако в точке SCTE-35 cue FluxIO дополнительно принудительно
+создаёт IDR независимо от общей длины GOP.
 
 Для SRT заполните:
 
@@ -300,6 +305,10 @@ tsp -I ip --local-address 192.168.10.20 239.10.10.10:5000 \
 В FluxIO выберите адрес передающего адаптера из той же сети. Начиная с v4.2.3
 TSDuck принудительно отправляет multicast через выбранный interface, а PCR
 interval нормализуется после добавления SCTE-35.
+
+Начиная с v4.2.4 FFmpeg создаёт постоянный muxrate с PID `0x1FFF` stuffing, а
+TSDuck регулирует финальную выдачу по тому же bitrate. Cue packets заменяют
+доступные null packets и не увеличивают транспортную скорость.
 
 Unicast receiver на port `5000`:
 

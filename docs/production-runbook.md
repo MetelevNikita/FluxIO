@@ -153,8 +153,8 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 3. Выбрать папку/video files и дождаться зелёного `Done` для каждого материала.
 4. При необходимости проверить thumbnails и Play/Seek в `Playlist & Preview`.
 5. Собрать Playlist.
-6. Настроить video/audio encoder и optional logo.
-7. Настроить UDP, SRT, RTMP или RTMPS endpoint. Для UDP выбрать конкретный output interface и проверить MPEG-TS service/PID/PCR.
+6. Настроить video/audio encoder, GOP Structure (I/P/B) и optional logo.
+7. Настроить UDP, SRT, RTMP или RTMPS endpoint. Для UDP выбрать конкретный output interface и проверить MPEG-TS service/PID/PCR/Transport bitrate.
 8. При необходимости включить `Repeat` до старта — расписание будет повторяться до Stop.
 9. Для рекламных врезок выбрать UDP/SRT, включить SCTE-35, задать defaults и расставить Event IDs во вкладке Playlist. Первая метка — не раньше `pre-roll + 2 s`.
 10. Подготовить головную станцию.
@@ -170,6 +170,21 @@ media-server; выбирать нужно IP адаптера, подключё�
 Для multicast FluxIO принудительно назначает выбранный интерфейс в TSDuck.
 Значение PCR после SCTE-35 injector стабилизируется на указанном интервале;
 Video Target/Max Bitrate меняются с шагом `500 kbps`.
+
+Начальная GOP structure: `48` кадров, `2` последовательных B-frame и Closed
+GOP. При 23.976 fps это примерно две секунды: `I B B P …`. GOP length задаёт
+интервал I-frame; P-frame формируются между группами B-frame. Closed GOP
+рекомендуется для предсказуемого переключения, HLS/головной станции и SCTE-35.
+Увеличение B-frame повышает эффективность кодирования, но добавляет reorder
+latency. Для минимальной задержки установите `B=0`.
+
+`Target Bitrate` — bitrate видеопотока, а не всего транспортного потока.
+`Max Bitrate` активен только для VBR, `VBV Buffer` указывается в kbit.
+`Transport bitrate` задаёт постоянную итоговую скорость MPEG-TS вместе с audio,
+таблицами и служебными пакетами. Значение `0` включает безопасный Auto-расчёт;
+свободная полоса заполняется null packets PID `0x1FFF`. Для точного требования
+головной станции введите её TS bitrate вручную. Если он ниже необходимого для
+video/audio peak, Start будет остановлен preflight-проверкой.
 
 Перед Start приложение отклонит одинаковые video/audio PID и совпадение SCTE-35
 PID с elementary-stream PID. После Start `Transmitted frames` означает, что
@@ -212,7 +227,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v4.2.3`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v4.2.5`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

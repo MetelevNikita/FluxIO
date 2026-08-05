@@ -113,6 +113,7 @@ node setup.mjs --no-start
 2. Дождаться зелёного `Done` для каждого файла; `Proceed` доступен только после успешного анализа.
 3. Проверить thumbnails, Play/Pause/Seek и порядок в `Playlist`.
 4. В `Broadcast` выбрать video/audio encoder settings.
+   В `GOP Structure (I/P/B)` задать длину GOP, число B-кадров и Closed/Open.
 5. При необходимости включить logo overlay.
 6. Заполнить только потоковый endpoint UDP, SRT, RTMP или RTMPS. Для UDP выбрать сетевой интерфейс и проверить параметры MPEG-TS service.
 7. При необходимости включить `Repeat` и/или SCTE-35, затем расставить Event IDs в Playlist. Первая метка должна быть позже `pre-roll + 2 s` от начала программы.
@@ -138,6 +139,7 @@ node setup.mjs --no-start
 - Audio PID: `257` (`0x0101`);
 - Input stream type: `digital_tv`;
 - PCR interval: `20 ms`;
+- Transport bitrate: `0` — Auto;
 - Field Order: `progressive`.
 
 `Upper` означает top-field-first (TFF), `Lower` — bottom-field-first (BFF).
@@ -146,8 +148,18 @@ YADIF нельзя включать без необходимости: посл�
 структура уже удалена. Video PID и Audio PID должны отличаться; SCTE-35 PID при
 включённом injector также не может совпадать с ними.
 
-Video Target/Max Bitrate изменяется с шагом `0.5 Mbps` (`500 kbps`). В тракте
-SCTE-35 указанный PCR interval применяется FFmpeg, а затем повторно
+GOP length задаётся в кадрах и определяет период I-frame. `Consecutive
+B-frames` задаёт число B между опорными I/P; P-frame размещаются encoder'ом по
+этой фиксированной схеме. Closed GOP запрещает ссылки между соседними GOP и
+рекомендуется для головных станций, сегментации и рекламных стыков. Для
+H.264 Baseline разрешено только `B=0`, для MPEG-2 — не более двух B-frame.
+
+Video Target/Max Bitrate изменяется с шагом `0.5 Mbps` (`500 kbps`). Max
+Bitrate используется только в VBR; в CBR предел равен Target. `VBV Buffer`
+задаётся в kbit. Для UDP `Transport bitrate` задаёт постоянную полную скорость
+MPEG-TS, а `0` включает Auto. FFmpeg добавляет `-muxrate`, PID `0x1FFF`
+stuffing и UDP pacing; в тракте TSDuck дополнительно работает `regulate`.
+В тракте SCTE-35 указанный PCR interval применяется FFmpeg, а затем повторно
 контролируется TSDuck `pcradjust` непосредственно перед конечным UDP output.
 
 В `Encoding Monitor → Log Output` каждая запись FFmpeg progress показывает
@@ -169,7 +181,8 @@ npm test
 npm run build
 ```
 
-Реальный FFmpeg integration test:
+Реальный FFmpeg integration test захватывает UDP, проверяет PID `0x1FFF`,
+средний CBR muxrate и отсутствие transport spike на границе двух роликов:
 
 ```bash
 GRUBER_RUN_FFMPEG_TESTS=1 npm test

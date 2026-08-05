@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -45,7 +45,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.3");
+    assert.equal(health.version, "4.2.5");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -214,8 +214,14 @@ test("UDP and field-order defaults are applied to older saved requests", () => {
   };
   delete request.endpoint.mpegTs;
   delete request.video.fieldOrder;
+  delete request.video.gopSize;
+  delete request.video.bFrames;
+  delete request.video.closedGop;
   const parsed = startPlayoutRequestSchema.parse(request);
   assert.equal(parsed.video.fieldOrder, "progressive");
+  assert.equal(parsed.video.gopSize, 50);
+  assert.equal(parsed.video.bFrames, 0);
+  assert.equal(parsed.video.closedGop, true);
   assert.equal(parsed.endpoint.protocol, "udp");
   if (parsed.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
   assert.deepEqual(parsed.endpoint.mpegTs, defaultMpegTsOutputSettings);
@@ -265,6 +271,7 @@ test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () =>
     audioPid: 302,
     serviceType: "advanced_codec_digital_hdtv",
     pcrPeriodMs: 40,
+    transportBitrateKbps: 0,
   };
   const rendered = buildFfmpegCommand(
     request,
@@ -272,7 +279,7 @@ test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () =>
     "/tmp/preview",
   ).args.join(" ");
   assert.match(rendered, /setfield=mode=tff/);
-  assert.match(rendered, /-x264-params tff=1/);
+  assert.match(rendered, /-x264-params .*tff=1/);
   assert.match(rendered, /-field_order tt/);
   assert.match(rendered, /-metadata service_name=News One/);
   assert.match(rendered, /-metadata service_provider=Flux Provider/);
@@ -363,10 +370,86 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
   assert.match(rendered, /pcradjust --bitrate \d+ --min-ms-interval 20/);
+  assert.match(rendered, /regulate --bitrate \d+ --packet-burst 7/);
   assert.match(rendered, /-O ip .*239\.1\.1\.1:5000/);
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
   assert.match(rendered, /--force-local-multicast-outgoing/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
+});
+
+test("CBR transport muxrate uses target bitrate and supports an explicit TS rate", () => {
+  const request = baseRequest();
+  request.video.targetBitrateKbps = 2_500;
+  request.video.maxBitrateKbps = 12_000;
+  request.video.rateControl = "cbr";
+  const automaticRate = calculateTransportMuxRate(request);
+  assert.equal(automaticRate, 3_400_000);
+
+  if (request.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  request.endpoint.mpegTs.transportBitrateKbps = 4_500;
+  assert.equal(calculateTransportMuxRate(request), 4_500_000);
+
+  const rendered = buildFfmpegCommand(request, preparedItems(), "/tmp/preview", {
+    transportMuxRateBps: calculateTransportMuxRate(request),
+  }).args.join(" ");
+  assert.match(rendered, /-muxrate 4500000/);
+  assert.match(rendered, /bitrate=4500000/);
+  assert.match(rendered, /burst_bits=10528/);
+  assert.match(rendered, /nal-hrd=cbr/);
+  assert.match(rendered, /filler=1/);
+});
+
+test("FFmpeg applies deterministic I/P/B GOP settings to all program codecs", () => {
+  for (const codec of ["h264", "h265", "mpeg2"] as const) {
+    const request = baseRequest();
+    request.video.codec = codec;
+    request.video.gopSize = 48;
+    request.video.bFrames = 2;
+    request.video.closedGop = true;
+    const rendered = buildFfmpegCommand(
+      request,
+      preparedItems(),
+      "/tmp/preview",
+    ).args.join(" ");
+    assert.match(
+      rendered,
+      codec === "mpeg2"
+        ? /-g 48 -keyint_min 48 -sc_threshold 1000000000 -bf 2/
+        : /-g 48 -keyint_min 48 -sc_threshold 0 -bf 2/,
+    );
+    if (codec === "h264") {
+      assert.match(rendered, /open-gop=0:bframes=2:b-adapt=0:b-pyramid=none/);
+      assert.doesNotMatch(rendered.split("-map [vpreview]")[0] ?? "", /-tune zerolatency/);
+    } else if (codec === "h265") {
+      assert.match(rendered, /open-gop=0:bframes=2:b-adapt=0:b-pyramid=0/);
+    } else {
+      assert.match(rendered, /-flags:v \+cgop/);
+    }
+  }
+
+  const openRequest = baseRequest();
+  openRequest.video.closedGop = false;
+  assert.match(
+    buildFfmpegCommand(openRequest, preparedItems(), "/tmp/preview").args.join(" "),
+    /open-gop=1/,
+  );
+});
+
+test("GOP contract rejects impossible and codec-incompatible structures", () => {
+  const impossible = baseRequest();
+  impossible.video.gopSize = 2;
+  impossible.video.bFrames = 2;
+  assert.equal(startPlayoutRequestSchema.safeParse(impossible).success, false);
+
+  const mpeg2 = baseRequest();
+  mpeg2.video.codec = "mpeg2";
+  mpeg2.video.bFrames = 3;
+  assert.equal(startPlayoutRequestSchema.safeParse(mpeg2).success, false);
+
+  const baseline = baseRequest();
+  baseline.video.profile = "Baseline";
+  baseline.video.bFrames = 1;
+  assert.equal(startPlayoutRequestSchema.safeParse(baseline).success, false);
 });
 
 test("TSDuck command sends the injected MPEG-TS through SRT caller settings", () => {
@@ -525,6 +608,21 @@ test("FFmpeg preflight rejects MP2 with 5.1 audio", async () => {
   }
 });
 
+test("FFmpeg preflight rejects a manual transport bitrate below the payload peak", async () => {
+  const supervisor = new PlayoutSupervisor(
+    new FfmpegCapabilitiesService(),
+    path.join(tmpdir(), "gruber-invalid-muxrate-preview"),
+  );
+  const request = baseRequest();
+  if (request.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  request.endpoint.mpegTs.transportBitrateKbps = 2_600;
+  try {
+    await assert.rejects(supervisor.start(request), /Transport bitrate .* is too low/);
+  } finally {
+    await supervisor.close();
+  }
+});
+
 test("SCTE-35 preflight rejects an elementary-stream PID collision", async () => {
   const supervisor = new PlayoutSupervisor(
     new FfmpegCapabilitiesService(),
@@ -550,15 +648,26 @@ test("SCTE-35 preflight rejects an elementary-stream PID collision", async () =>
 });
 
 test(
-  "real FFmpeg session plays two clips to UDP and writes HLS preview",
+  "real FFmpeg session keeps a stuffed CBR UDP transport across two clips",
   { skip: process.env.GRUBER_RUN_FFMPEG_TESTS !== "1", timeout: 30_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "gruber-ffmpeg-test-"));
     const clipOne = path.join(directory, "one.mp4");
     const clipTwo = path.join(directory, "two.mp4");
     const logo = path.join(directory, "logo.png");
+    const capture = path.join(directory, "program.ts");
     const previewDirectory = path.join(directory, "preview");
     const clipPreviewDirectory = path.join(directory, "clip-preview");
+    const outputPort = await testUdpPort();
+    const udpReceiver = createSocket("udp4");
+    const udpDatagrams: UdpDatagram[] = [];
+    udpReceiver.on("message", (payload) => {
+      udpDatagrams.push({ payload: Buffer.from(payload), receivedAtMs: Date.now() });
+    });
+    await new Promise<void>((resolve, reject) => {
+      udpReceiver.once("error", reject);
+      udpReceiver.bind(outputPort, "127.0.0.1", resolve);
+    });
     const capabilities = new FfmpegCapabilitiesService();
     const supervisor = new PlayoutSupervisor(capabilities, previewDirectory);
     const mediaPreview = new MediaPreviewService(
@@ -607,10 +716,13 @@ test(
       request.video.maxBitrateKbps = 1_200;
       request.video.bufferSizeKbps = 2_400;
       request.video.fieldOrder = "upper";
+      request.video.gopSize = 25;
+      request.video.bFrames = 2;
+      request.video.closedGop = true;
       request.endpoint = {
         protocol: "udp",
         host: "127.0.0.1",
-        port: 15_500,
+        port: outputPort,
         packetSize: 1_316,
         ttl: 16,
         localAddress: "",
@@ -652,6 +764,25 @@ test(
         Date.now() - wallStartedAt >= 2_300,
         "Playout must be paced close to the combined clip duration",
       );
+      const muxRate = calculateTransportMuxRate(request);
+      const transport = analyzeUdpTransport(udpDatagrams, 1.4);
+      assert.ok(transport.nullPackets > 0, "Expected PID 0x1FFF stuffing packets");
+      assert.ok(
+        Math.abs(transport.averageBitrateBps - muxRate) / muxRate <= 0.08,
+        `Expected ${muxRate} bps CBR transport, received ${transport.averageBitrateBps.toFixed(0)} bps`,
+      );
+      assert.ok(
+        transport.boundaryBitrateBps <= muxRate * 1.12,
+        `Transport spike at clip boundary: ${transport.boundaryBitrateBps.toFixed(0)} bps`,
+      );
+      await writeFile(capture, Buffer.concat(udpDatagrams.map(({ payload }) => payload)));
+      const frameTypes = (await runCommand(capabilities.ffprobePath, [
+        "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pict_type",
+        "-of", "csv=p=0", capture,
+      ])).stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      assert.ok(frameTypes.filter((value) => value === "I").length >= 2, frameTypes.join(""));
+      assert.ok(frameTypes.includes("P"), frameTypes.join(""));
+      assert.ok(frameTypes.includes("B"), frameTypes.join(""));
       assert.match(await readFile(path.join(previewDirectory, "index.m3u8"), "utf8"), /#EXTM3U/);
 
       request.repeatPlaylist = true;
@@ -670,6 +801,7 @@ test(
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } finally {
+      udpReceiver.close();
       await mediaPreview.close();
       await supervisor.close();
       await rm(directory, { force: true, recursive: true });
@@ -731,6 +863,9 @@ test(
       request.video.targetBitrateKbps = 1_200;
       request.video.maxBitrateKbps = 1_200;
       request.video.bufferSizeKbps = 2_400;
+      request.video.gopSize = 25;
+      request.video.bFrames = 2;
+      request.video.closedGop = true;
       request.endpoint = {
         protocol: "udp",
         host: multicastHost,
@@ -990,6 +1125,9 @@ function baseRequest(): StartPlayoutRequest {
       level: "4.1",
       deinterlace: false,
       fieldOrder: "progressive",
+      gopSize: 50,
+      bFrames: 0,
+      closedGop: true,
     },
     audio: {
       codec: "aac",
@@ -1044,6 +1182,38 @@ async function testUdpPort(): Promise<number> {
   assert.notEqual(typeof address, "string");
   socket.close();
   return typeof address === "string" ? 0 : address.port;
+}
+
+interface UdpDatagram {
+  payload: Buffer;
+  receivedAtMs: number;
+}
+
+function analyzeUdpTransport(datagrams: UdpDatagram[], clipBoundarySeconds: number) {
+  assert.ok(datagrams.length > 20, "Expected UDP datagrams from FFmpeg");
+  const firstTime = datagrams[0]!.receivedAtMs;
+  const lastTime = datagrams.at(-1)!.receivedAtMs;
+  const elapsedSeconds = Math.max(0.001, (lastTime - firstTime) / 1_000);
+  let totalBytes = 0;
+  let nullPackets = 0;
+  for (const { payload } of datagrams) {
+    totalBytes += payload.length;
+    for (let offset = 0; offset + 188 <= payload.length; offset += 188) {
+      if (payload[offset] !== 0x47) continue;
+      const pid = ((payload[offset + 1]! & 0x1f) << 8) | payload[offset + 2]!;
+      if (pid === 0x1fff) nullPackets += 1;
+    }
+  }
+  const boundaryStartMs = firstTime + clipBoundarySeconds * 1_000 - 300;
+  const boundaryEndMs = boundaryStartMs + 600;
+  const boundaryBytes = datagrams
+    .filter(({ receivedAtMs }) => receivedAtMs >= boundaryStartMs && receivedAtMs < boundaryEndMs)
+    .reduce((sum, { payload }) => sum + payload.length, 0);
+  return {
+    averageBitrateBps: totalBytes * 8 / elapsedSeconds,
+    boundaryBitrateBps: boundaryBytes * 8 / 0.6,
+    nullPackets,
+  };
 }
 
 function extractPcrIntervalsMs(stream: Buffer): number[] {

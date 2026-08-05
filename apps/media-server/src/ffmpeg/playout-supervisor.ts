@@ -20,6 +20,7 @@ import {
 } from "../tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
+  calculateMinimumTransportMuxRate,
   calculateTransportMuxRate,
 } from "../tsduck/command-builder.js";
 
@@ -120,6 +121,14 @@ export class PlayoutSupervisor {
       await mkdir(this.previewDirectory, { recursive: true });
       await this.#prepareLoopCommands();
       this.#appendEvent(`Starting ${request.playlist.length} clip playout`);
+      if (resolvedRequest.endpoint.protocol === "udp") {
+        const transportRate = calculateTransportMuxRate(resolvedRequest);
+        this.#appendEvent(
+          `UDP CBR transport ${formatMbps(transportRate)} Mbps with null PID 0x1FFF stuffing; ` +
+            `packet ${resolvedRequest.endpoint.packetSize} bytes, ` +
+            `${resolvedRequest.endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "Auto"} muxrate`,
+        );
+      }
       if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
       }
@@ -185,7 +194,16 @@ export class PlayoutSupervisor {
     this.#status.scte35.error = null;
 
     if (!usesTsdDuckTransport(request)) {
-      const command = buildFfmpegCommand(request, this.#items, this.previewDirectory);
+      const command = buildFfmpegCommand(
+        request,
+        this.#items,
+        this.previewDirectory,
+        {
+          transportMuxRateBps: request.endpoint.protocol === "udp"
+            ? calculateTransportMuxRate(request)
+            : undefined,
+        },
+      );
       this.#commandArgs = command.args;
       this.#tsduckArgs = [];
       this.#applyCommandStatus(command.totalDurationSeconds, command.endpointLabel);
@@ -628,6 +646,19 @@ function validateCapabilities(
   if (request.audio.codec === "mp2" && request.audio.channels === 6) {
     throw new PlayoutPreflightError("MP2 output supports mono or stereo audio only");
   }
+  if (
+    request.endpoint.protocol === "udp" &&
+    request.endpoint.mpegTs.transportBitrateKbps > 0
+  ) {
+    const configuredRate = request.endpoint.mpegTs.transportBitrateKbps * 1_000;
+    const minimumRate = calculateMinimumTransportMuxRate(request);
+    if (configuredRate < minimumRate) {
+      throw new PlayoutPreflightError(
+        `Transport bitrate ${formatMbps(configuredRate)} Mbps is too low for the configured ` +
+          `video and audio peak. Use at least ${formatMbps(minimumRate)} Mbps or set 0 for Auto.`,
+      );
+    }
+  }
   if (request.scte35.enabled && request.endpoint.protocol !== "rtmp") {
     const { audioPid, videoPid } = request.endpoint.protocol === "udp"
       ? request.endpoint.mpegTs
@@ -706,6 +737,10 @@ function idleStatus(): PlayoutStatus {
 function numberValue(value: string): number {
   const parsed = Number.parseFloat(value.trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatMbps(bitrateBps: number): string {
+  return (bitrateBps / 1_000_000).toFixed(1);
 }
 
 export function formatFrameProgressLog({

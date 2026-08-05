@@ -47,6 +47,9 @@ export interface BroadcastSettings {
   frameRate: string;
   deinterlace: boolean;
   fieldOrder: string;
+  gopSize: number;
+  bFrames: number;
+  closedGop: boolean;
   rateControl: string;
   targetBitrate: number;
   maxBitrate: number;
@@ -73,6 +76,7 @@ export interface BroadcastSettings {
   udpAudioPid: number;
   udpServiceType: string;
   udpPcrPeriodMs: number;
+  udpTransportBitrate: number;
   srtHost: string;
   srtPort: number;
   srtMode: string;

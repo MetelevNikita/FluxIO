@@ -137,6 +137,31 @@ export const videoEncodingSchema = z.object({
   level: z.string().default("4.1"),
   deinterlace: z.boolean().default(false),
   fieldOrder: z.enum(["upper", "lower", "progressive"]).default("progressive"),
+  gopSize: z.number().int().min(1).max(600).default(50),
+  bFrames: z.number().int().min(0).max(16).default(0),
+  closedGop: z.boolean().default(true),
+}).superRefine((video, context) => {
+  if (video.bFrames >= video.gopSize) {
+    context.addIssue({
+      code: "custom",
+      message: "B-frame count must be smaller than GOP length",
+      path: ["bFrames"],
+    });
+  }
+  if (video.codec === "mpeg2" && video.bFrames > 2) {
+    context.addIssue({
+      code: "custom",
+      message: "MPEG-2 supports at most 2 consecutive B-frames",
+      path: ["bFrames"],
+    });
+  }
+  if (video.profile.toLowerCase().includes("baseline") && video.bFrames > 0) {
+    context.addIssue({
+      code: "custom",
+      message: "H.264 Baseline profile does not support B-frames",
+      path: ["bFrames"],
+    });
+  }
 });
 
 export const audioEncodingSchema = z.object({
@@ -179,6 +204,7 @@ export const defaultMpegTsOutputSettings = {
   audioPid: 257,
   serviceType: "digital_tv" as const,
   pcrPeriodMs: 20,
+  transportBitrateKbps: 0,
 };
 
 export const mpegTsOutputSettingsSchema = z.object({
@@ -189,6 +215,7 @@ export const mpegTsOutputSettingsSchema = z.object({
   audioPid: z.number().int().min(32).max(8_190).default(257),
   serviceType: z.enum(mpegTsServiceTypes).default("digital_tv"),
   pcrPeriodMs: z.number().int().min(1).max(1_000).default(20),
+  transportBitrateKbps: z.number().int().min(0).max(500_000).default(0),
 }).refine((settings) => settings.videoPid !== settings.audioPid, {
   message: "Video PID and audio PID must be different",
   path: ["audioPid"],

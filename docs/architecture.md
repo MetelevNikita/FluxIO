@@ -96,7 +96,7 @@ flowchart LR
 
 ### Program output
 
-- UDP: MPEG-TS, `pkt_size`, TTL, выбранный local interface, service metadata/ID/type, elementary-stream PID и PCR interval;
+- UDP: MPEG-TS, `pkt_size`, TTL, выбранный local interface, service metadata/ID/type, elementary-stream PID, PCR interval и постоянный transport muxrate;
 - SRT: MPEG-TS через обязательный TSDuck relay, caller/listener/rendezvous, latency, optional passphrase и stream ID; libsrt в FFmpeg не требуется;
 - RTMP/RTMPS: FLV, только H.264 + AAC.
 
@@ -111,6 +111,12 @@ Broadcast вычисляет оставшееся время всей прогр
 Program video получает отдельный `setfield` после split. `progressive`, `upper`
 (TFF) и `lower` (BFF) преобразуются в encoder-specific параметры x264, x265 или
 MPEG-2 и в `field_order` FFmpeg; HLS preview при этом остаётся отдельной веткой.
+GOP задаётся как точное число кадров между I-frame, число последовательных
+B-frame перед P-frame и режим Closed/Open. Для детерминированной структуры
+адаптивный выбор B-frame и scenecut отключены. При `B=0` H.264 сохраняет
+zero-latency tune; при `B>0` reorder latency является ожидаемой частью GOP.
+Closed MPEG-2 использует специальный высокий scene-change threshold, поскольку
+encoder FFmpeg не допускает обычный scenecut вместе с `+cgop`.
 Для UDP FFmpeg применяет `service_name`, `service_provider`,
 `mpegts_service_id`, `mpegts_service_type`, `streamid` для video/audio PID и
 `pcr_period`. При SCTE-35 эти параметры формируются до loopback handoff и
@@ -119,6 +125,16 @@ MPEG-2 и в `field_order` FFmpeg; HLS preview при этом остаётся 
 вместо null packets, если промежуток превышает выбранный interval. Для
 multicast выбранный адрес интерфейса закрепляется опцией TSDuck
 `--force-local-multicast-outgoing`.
+
+Program video bitrate и transport bitrate — разные уровни. `Target Bitrate`
+ограничивает elementary video stream; итоговый MPEG-TS также содержит audio,
+PAT/PMT/SDT, TS headers и резерв. FFmpeg получает постоянный `-muxrate` и
+заполняет свободную ёмкость null packets с PID `0x1FFF`. UDP protocol pacing
+использует тот же bitrate и burst не более одного datagram. При SCTE-35/SRT
+TSDuck получает явный input bitrate и процессор `regulate`, поэтому downstream
+сохраняет muxrate после замены части null packets cue-секциями. Режим `Auto`
+вычисляет запас по video peak и audio; ручной Transport bitrate проходит
+preflight и не может быть ниже безопасной вместимости payload.
 
 Каждый блок `-progress` добавляет в rolling Log Output количество переданных
 кадров, FPS, bitrate и output time. Это телеметрия FFmpeg, а не подтверждение

@@ -21,10 +21,13 @@ export function buildTsdDuckCommand({
   request,
 }: TsdDuckCommandOptions): TsdDuckCommand {
   const pid = request.scte35.pid;
+  const transportMuxRate = calculateTransportMuxRate(request);
   const serviceId = request.endpoint.protocol === "udp"
     ? request.endpoint.mpegTs.serviceId
     : 1;
   const args = [
+    "--bitrate",
+    String(transportMuxRate),
     "-I",
     "ip",
     "--local-address",
@@ -74,7 +77,7 @@ export function buildTsdDuckCommand({
       "-P",
       "pcradjust",
       "--bitrate",
-      String(calculateTransportMuxRate(request)),
+      String(transportMuxRate),
       "--min-ms-interval",
       String(request.endpoint.mpegTs.pcrPeriodMs),
     );
@@ -90,6 +93,14 @@ export function buildTsdDuckCommand({
       `--json-line=${monitorPrefix}`,
     );
   }
+  args.push(
+    "-P",
+    "regulate",
+    "--bitrate",
+    String(transportMuxRate),
+    "--packet-burst",
+    String(transportPacketBurst(request.endpoint)),
+  );
   args.push(...buildOutput(request.endpoint, request));
 
   return {
@@ -103,7 +114,7 @@ function buildOutput(
   request: StartPlayoutRequest,
 ): string[] {
   if (endpoint.protocol === "udp") {
-    const packetBurst = Math.max(1, Math.min(128, Math.floor(endpoint.packetSize / 188)));
+    const packetBurst = transportPacketBurst(endpoint);
     const args = [
       "-O",
       "ip",
@@ -155,11 +166,32 @@ function buildOutput(
 }
 
 export function calculateTransportMuxRate(request: StartPlayoutRequest): number {
-  const videoRate = request.video.rateControl === "crf"
-    ? request.video.targetBitrateKbps * 2
-    : Math.max(request.video.targetBitrateKbps, request.video.maxBitrateKbps);
+  if (
+    request.endpoint.protocol === "udp" &&
+    request.endpoint.mpegTs.transportBitrateKbps > 0
+  ) {
+    return request.endpoint.mpegTs.transportBitrateKbps * 1_000;
+  }
+  const videoRate = videoPeakBitrateKbps(request);
   const payloadKbps = videoRate + request.audio.bitrateKbps;
   return Math.ceil(Math.max(1_000, payloadKbps * 1.18 + 256) / 100) * 100_000;
+}
+
+export function calculateMinimumTransportMuxRate(request: StartPlayoutRequest): number {
+  const payloadKbps = videoPeakBitrateKbps(request) + request.audio.bitrateKbps;
+  return Math.ceil(Math.max(1_000, payloadKbps * 1.08 + 128) / 100) * 100_000;
+}
+
+function videoPeakBitrateKbps(request: StartPlayoutRequest): number {
+  if (request.video.rateControl === "cbr") return request.video.targetBitrateKbps;
+  if (request.video.rateControl === "vbr") return request.video.maxBitrateKbps;
+  return request.video.targetBitrateKbps * 2;
+}
+
+function transportPacketBurst(endpoint: PlayoutEndpoint): number {
+  return endpoint.protocol === "udp"
+    ? Math.max(1, Math.min(128, Math.floor(endpoint.packetSize / 188)))
+    : 7;
 }
 
 function endpointLabel(endpoint: PlayoutEndpoint): string {
