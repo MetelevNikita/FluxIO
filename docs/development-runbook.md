@@ -125,7 +125,9 @@ node setup.mjs --no-start
 возвращает их из `GET /api/system/network-interfaces`. Если UDP interface ещё не
 задан, UI выбирает первый внешний IPv4. `Automatic routing` оставляет выбор
 маршрута операционной системе. Выбранный адрес передаётся FFmpeg как UDP
-`localaddr`, а при SCTE-35 — TSDuck как `--local-address`.
+`localaddr`, а при SCTE-35 — TSDuck как `--local-address`. Для multicast TSDuck
+дополнительно получает `--force-local-multicast-outgoing`, чтобы выбранный
+адаптер использовался даже без отдельного multicast route в таблице ОС.
 
 Значения UDP MPEG-TS по умолчанию:
 
@@ -143,6 +145,10 @@ node setup.mjs --no-start
 YADIF нельзя включать без необходимости: после деинтерлейса исходная полевая
 структура уже удалена. Video PID и Audio PID должны отличаться; SCTE-35 PID при
 включённом injector также не может совпадать с ними.
+
+Video Target/Max Bitrate изменяется с шагом `0.5 Mbps` (`500 kbps`). В тракте
+SCTE-35 указанный PCR interval применяется FFmpeg, а затем повторно
+контролируется TSDuck `pcradjust` непосредственно перед конечным UDP output.
 
 В `Encoding Monitor → Log Output` каждая запись FFmpeg progress показывает
 переданное число кадров, FPS, bitrate и program time. Это подтверждает работу
@@ -174,6 +180,9 @@ GRUBER_RUN_FFMPEG_TESTS=1 npm test
 ```bash
 GRUBER_RUN_SCTE35_TESTS=1 npm test -w @gruber/media-server
 ```
+
+Тест использует multicast-приёмник, явно выбранный интерфейс, проверяет video,
+audio, SCTE-35 PID/Event ID и измеряет фактические интервалы PCR в capture.
 
 Проверки API:
 

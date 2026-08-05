@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v4.2.2**.
+Текущая версия: **v4.2.3**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -88,7 +88,9 @@ node setup.mjs
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;
 - SCTE-35 marker planner: Event ID, break start/end, duration, segmentation type и UPID;
+- удаление любого ролика непосредственно из списка Playlist;
 - фактический SCTE-35 injector для UDP/SRT MPEG-TS через TSDuck: `CUEI` в PMT, `stream_type 0x86`, настраиваемый PID, двойная выдача cue и runtime monitor;
+- принудительный multicast output через выбранный адаптер и финальная PCR-нормализация после SCTE-35 injector;
 - реальные CPU и NET-метрики сервера без Fastify access-log шума;
 - PostgreSQL/Prisma для внутреннего состояния и AES-256-GCM endpoint secrets;
 - независимый от Electron media-service;

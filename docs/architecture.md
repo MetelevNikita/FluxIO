@@ -114,7 +114,11 @@ MPEG-2 и в `field_order` FFmpeg; HLS preview при этом остаётся 
 Для UDP FFmpeg применяет `service_name`, `service_provider`,
 `mpegts_service_id`, `mpegts_service_type`, `streamid` для video/audio PID и
 `pcr_period`. При SCTE-35 эти параметры формируются до loopback handoff и
-сохраняются TSDuck; выбранный service ID используется его PMT processor.
+сохраняются TSDuck; выбранный service ID используется его PMT processor. Перед
+конечным UDP output процессор `pcradjust` с известным CBR muxrate добавляет PCR
+вместо null packets, если промежуток превышает выбранный interval. Для
+multicast выбранный адрес интерфейса закрепляется опцией TSDuck
+`--force-local-multicast-outgoing`.
 
 Каждый блок `-progress` добавляет в rolling Log Output количество переданных
 кадров, FPS, bitrate и output time. Это телеметрия FFmpeg, а не подтверждение

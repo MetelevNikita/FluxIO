@@ -69,6 +69,17 @@ export function buildTsdDuckCommand({
     );
   }
 
+  if (request.endpoint.protocol === "udp") {
+    args.push(
+      "-P",
+      "pcradjust",
+      "--bitrate",
+      String(calculateTransportMuxRate(request)),
+      "--min-ms-interval",
+      String(request.endpoint.mpegTs.pcrPeriodMs),
+    );
+  }
+
   if (request.scte35.enabled) {
     args.push(
       "-P",
@@ -103,6 +114,9 @@ function buildOutput(
     ];
     if (endpoint.localAddress) {
       args.push("--local-address", endpoint.localAddress);
+      if (isMulticast(endpoint.host)) {
+        args.push("--force-local-multicast-outgoing");
+      }
     }
     args.push(`${formatHost(endpoint.host)}:${endpoint.port}`);
     return args;
@@ -158,4 +172,9 @@ function endpointLabel(endpoint: PlayoutEndpoint): string {
 
 function formatHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function isMulticast(host: string): boolean {
+  const firstOctet = Number.parseInt(host.split(".")[0] ?? "", 10);
+  return Number.isInteger(firstOctet) && firstOctet >= 224 && firstOctet <= 239;
 }

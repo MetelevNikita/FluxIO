@@ -236,7 +236,8 @@ export function BroadcastSettingsScreen({
             max={50}
             min={1}
             onChange={(value) => update("targetBitrate", value)}
-            suffix={`${settings.targetBitrate} Mbps`}
+            step={0.5}
+            suffix={`${settings.targetBitrate.toFixed(1)} Mbps`}
             value={settings.targetBitrate}
           />
           <div className="range-extremes">
@@ -247,6 +248,7 @@ export function BroadcastSettingsScreen({
             <NumberField
               label="Max Bitrate (Mbps)"
               onChange={(value) => update("maxBitrate", value)}
+              step={0.5}
               value={settings.maxBitrate}
             />
             <NumberField
@@ -949,11 +951,13 @@ function NumberField({
   disabled = false,
   label,
   onChange,
+  step = 1,
   value,
 }: {
   disabled?: boolean;
   label: string;
   onChange: (value: number) => void;
+  step?: number;
   value: number;
 }) {
   const id = useId();
@@ -965,6 +969,7 @@ function NumberField({
         id={id}
         min={0}
         onChange={(event) => onChange(Number(event.target.value))}
+        step={step}
         type="number"
         value={value}
       />
@@ -1059,6 +1064,7 @@ function RangeField({
   max,
   min,
   onChange,
+  step = 1,
   suffix,
   value,
 }: {
@@ -1066,6 +1072,7 @@ function RangeField({
   max: number;
   min: number;
   onChange: (value: number) => void;
+  step?: number;
   suffix: string;
   value: number;
 }) {
@@ -1080,6 +1087,7 @@ function RangeField({
         max={max}
         min={min}
         onChange={(event) => onChange(Number(event.target.value))}
+        step={step}
         type="range"
         value={value}
       />

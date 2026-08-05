@@ -474,6 +474,15 @@ export class PlayoutSupervisor {
         `SCTE-35 injector started with PID ${child.pid ?? "unknown"}; ` +
           `${this.#cues.length} event(s) queued on TS PID ${this.#request?.scte35.pid}`,
       );
+      if (this.#request?.endpoint.protocol === "udp") {
+        const endpoint = this.#request.endpoint;
+        this.#appendEvent(
+          `UDP transport output ${endpoint.host}:${endpoint.port} via ` +
+            `${endpoint.localAddress || "OS routing"}; ` +
+            `service ${endpoint.mpegTs.serviceId}, video PID ${endpoint.mpegTs.videoPid}, ` +
+            `audio PID ${endpoint.mpegTs.audioPid}, PCR ${endpoint.mpegTs.pcrPeriodMs} ms`,
+        );
+      }
     } else {
       this.#appendEvent(`TSDuck SRT relay started with PID ${child.pid ?? "unknown"}`);
     }

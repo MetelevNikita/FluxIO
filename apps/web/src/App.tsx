@@ -280,6 +280,16 @@ export function App() {
     });
   }
 
+  function removePlaylistItem(assetId: string) {
+    const removedIndex = playlist.findIndex((asset) => asset.id === assetId);
+    if (removedIndex < 0) return;
+    const next = playlist.filter((asset) => asset.id !== assetId);
+    setPlaylist(next);
+    if (selectedAssetId === assetId) {
+      setSelectedAssetId(next[removedIndex]?.id ?? next[removedIndex - 1]?.id ?? "");
+    }
+  }
+
   function addScte35Marker(assetId: string, marker: Scte35Marker) {
     setPlaylist((current) => current.map((asset) =>
       asset.id === assetId
@@ -354,6 +364,7 @@ export function App() {
             onAddFiles={addFiles}
             onAddScte35Marker={addScte35Marker}
             onMoveItem={movePlaylistItem}
+            onRemoveItem={removePlaylistItem}
             onRemoveScte35Marker={removeScte35Marker}
             onSelectAsset={setSelectedAssetId}
             scte35Defaults={settings}

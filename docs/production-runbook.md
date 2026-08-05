@@ -167,6 +167,9 @@ service type `digital_tv`, PCR `20 ms`, Field Order `progressive`. `Upper` — T
 `Lower` — BFF. Приложение получает интерфейсы с того компьютера, где запущен
 media-server; выбирать нужно IP адаптера, подключённого к сети головной станции.
 При `Automatic routing` исходящий интерфейс определяет таблица маршрутизации ОС.
+Для multicast FluxIO принудительно назначает выбранный интерфейс в TSDuck.
+Значение PCR после SCTE-35 injector стабилизируется на указанном интервале;
+Video Target/Max Bitrate меняются с шагом `500 kbps`.
 
 Перед Start приложение отклонит одинаковые video/audio PID и совпадение SCTE-35
 PID с elementary-stream PID. После Start `Transmitted frames` означает, что
@@ -178,8 +181,15 @@ SCTE-35 cue-секции реально внедряются TSDuck в UDP/SRT M
 Проверка UDP на отдельном приёмнике с TSDuck:
 
 ```bash
-tsp -I ip 239.10.10.10:5000 -P splicemonitor --all-commands -O drop
+tsp -I ip --local-address <IP-приёмного-интерфейса> 239.10.10.10:5000 \
+  -P splicemonitor --all-commands \
+  -O drop
 ```
+
+После Start в Log Output должна появиться строка `UDP transport output` с
+фактическим destination, интерфейсом, service ID, video/audio PID и PCR. Она
+подтверждает конфигурацию конечного TSDuck output; сетевую доставку подтверждает
+только приёмник или capture на головной станции.
 
 Проверка доступности SRT в TSDuck:
 
@@ -202,7 +212,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v4.2.2`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v4.2.3`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

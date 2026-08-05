@@ -45,7 +45,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.2");
+    assert.equal(health.version, "4.2.3");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -362,8 +362,10 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /--add-pid 500\/0x86/);
   assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
+  assert.match(rendered, /pcradjust --bitrate \d+ --min-ms-interval 20/);
   assert.match(rendered, /-O ip .*239\.1\.1\.1:5000/);
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
+  assert.match(rendered, /--force-local-multicast-outgoing/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
 });
 
@@ -696,9 +698,10 @@ test(
         "-t", "5", "-c:v", "libx264", "-preset", "ultrafast",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip,
       ]);
+      const multicastHost = "239.255.42.42";
       receiver = spawn(tspPath, [
         "-I", "ip", "--local-address", "127.0.0.1",
-        "--receive-timeout", "2000", String(outputPort),
+        "--receive-timeout", "2000", `${multicastHost}:${outputPort}`,
         "-O", "file", capture,
       ], { stdio: ["ignore", "pipe", "pipe"] });
       await new Promise<void>((resolve, reject) => {
@@ -730,12 +733,12 @@ test(
       request.video.bufferSizeKbps = 2_400;
       request.endpoint = {
         protocol: "udp",
-        host: "127.0.0.1",
+        host: multicastHost,
         port: outputPort,
         packetSize: 1_316,
         ttl: 1,
-        localAddress: "",
-        mpegTs: { ...defaultMpegTsOutputSettings },
+        localAddress: "127.0.0.1",
+        mpegTs: { ...defaultMpegTsOutputSettings, pcrPeriodMs: 10 },
       };
       request.scte35 = {
         ...request.scte35,
@@ -765,6 +768,13 @@ test(
       ]);
       assert.match(streams.stdout, /"codec_name": "scte_35"/);
       assert.match(streams.stdout, /"id": "0x1f4"/);
+      const pcrIntervals = extractPcrIntervalsMs(await readFile(capture));
+      assert.ok(pcrIntervals.length > 20, "Expected repeated PCR values in UDP capture");
+      const medianPcrInterval = median(pcrIntervals);
+      assert.ok(
+        Math.abs(medianPcrInterval - 10) <= 1,
+        `Expected 10 ms PCR interval, received ${medianPcrInterval.toFixed(3)} ms`,
+      );
       const keyframes = await runCommand(capabilities.ffprobePath, [
         "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
         "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", capture,
@@ -1034,4 +1044,44 @@ async function testUdpPort(): Promise<number> {
   assert.notEqual(typeof address, "string");
   socket.close();
   return typeof address === "string" ? 0 : address.port;
+}
+
+function extractPcrIntervalsMs(stream: Buffer): number[] {
+  const packetSize = 188;
+  const wrap = (1n << 33n) * 300n;
+  const previousByPid = new Map<number, bigint>();
+  const intervals: number[] = [];
+  for (let offset = 0; offset + packetSize <= stream.length; offset += packetSize) {
+    if (stream[offset] !== 0x47) continue;
+    const pid = ((stream[offset + 1]! & 0x1f) << 8) | stream[offset + 2]!;
+    const adaptationControl = (stream[offset + 3]! >> 4) & 0x03;
+    if (adaptationControl !== 2 && adaptationControl !== 3) continue;
+    const adaptationLength = stream[offset + 4]!;
+    if (adaptationLength < 7 || (stream[offset + 5]! & 0x10) === 0) continue;
+    const start = offset + 6;
+    const base =
+      (BigInt(stream[start]!) << 25n) |
+      (BigInt(stream[start + 1]!) << 17n) |
+      (BigInt(stream[start + 2]!) << 9n) |
+      (BigInt(stream[start + 3]!) << 1n) |
+      (BigInt(stream[start + 4]!) >> 7n);
+    const extension = (BigInt(stream[start + 4]! & 0x01) << 8n) |
+      BigInt(stream[start + 5]!);
+    const value = base * 300n + extension;
+    const previous = previousByPid.get(pid);
+    if (previous != null) {
+      const delta = value >= previous ? value - previous : wrap - previous + value;
+      const milliseconds = Number(delta) / 27_000;
+      if (milliseconds > 0 && milliseconds < 1_000) intervals.push(milliseconds);
+    }
+    previousByPid.set(pid, value);
+  }
+  return intervals;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] ?? 0;
+  return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }

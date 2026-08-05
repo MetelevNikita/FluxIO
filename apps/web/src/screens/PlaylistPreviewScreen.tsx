@@ -25,6 +25,7 @@ interface PlaylistPreviewScreenProps {
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItem: (sourceId: string, targetId: string) => void;
+  onRemoveItem: (assetId: string) => void;
   onRemoveScte35Marker: (assetId: string, markerId: string) => void;
   onSelectAsset: (assetId: string) => void;
   scte35Defaults: BroadcastSettings;
@@ -36,6 +37,7 @@ export function PlaylistPreviewScreen({
   onAddFiles,
   onAddScte35Marker,
   onMoveItem,
+  onRemoveItem,
   onRemoveScte35Marker,
   onSelectAsset,
   scte35Defaults,
@@ -267,11 +269,10 @@ export function PlaylistPreviewScreen({
         </div>
         <div className="playlist-rows">
           {playlist.map((asset) => (
-            <button
+            <div
               className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} status-${asset.status}`}
               draggable
               key={asset.id}
-              onClick={() => onSelectAsset(asset.id)}
               onDragEnd={() => setDraggingId(null)}
               onDragOver={(event) => event.preventDefault()}
               onDragStart={() => setDraggingId(asset.id)}
@@ -281,24 +282,38 @@ export function PlaylistPreviewScreen({
                 }
                 setDraggingId(null);
               }}
-              type="button"
             >
-              <span className="playlist-status-stripe" />
-              <img alt="" src={asset.preview} />
-              <span className="playlist-clip-info">
-                <strong>{asset.name}</strong>
-                <span>
-                  {asset.duration} <i /> {formatPlaylistStatus(asset)}
-                  {(asset.scte35Markers?.length ?? 0) > 0
-                    ? ` · SCTE ${asset.scte35Markers?.length}`
-                    : ""}
+              <button
+                className="playlist-row-select"
+                onClick={() => onSelectAsset(asset.id)}
+                type="button"
+              >
+                <span className="playlist-status-stripe" />
+                <img alt="" src={asset.preview} />
+                <span className="playlist-clip-info">
+                  <strong>{asset.name}</strong>
+                  <span>
+                    {asset.duration} <i /> {formatPlaylistStatus(asset)}
+                    {(asset.scte35Markers?.length ?? 0) > 0
+                      ? ` · SCTE ${asset.scte35Markers?.length}`
+                      : ""}
+                  </span>
                 </span>
-              </span>
-              <span className="playlist-codec">
-                <span>{asset.codecFamily}</span>
-                <span>{asset.codecProfile}</span>
-              </span>
-            </button>
+                <span className="playlist-codec">
+                  <span>{asset.codecFamily}</span>
+                  <span>{asset.codecProfile}</span>
+                </span>
+              </button>
+              <button
+                aria-label={`Remove ${asset.name} from playlist`}
+                className="playlist-remove-button"
+                onClick={() => onRemoveItem(asset.id)}
+                title="Remove clip from playlist"
+                type="button"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           ))}
         </div>
         <div className="playlist-footer">

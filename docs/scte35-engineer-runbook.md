@@ -1,7 +1,7 @@
 # SCTE-35: инструкция эфирного инженера
 
 Версия документа: 2026-08-04  
-Применимо к: FluxIO 4.2.2, однопрограммный MPEG-TS (SPTS)
+Применимо к: FluxIO 4.2.3, однопрограммный MPEG-TS (SPTS)
 
 ## 1. Назначение
 
@@ -297,6 +297,10 @@ tsp -I ip --local-address 192.168.10.20 239.10.10.10:5000 \
   -O drop
 ```
 
+В FluxIO выберите адрес передающего адаптера из той же сети. Начиная с v4.2.3
+TSDuck принудительно отправляет multicast через выбранный interface, а PCR
+interval нормализуется после добавления SCTE-35.
+
 Unicast receiver на port `5000`:
 
 ```bash
@@ -384,7 +388,7 @@ tsp -I file capture.ts \
 | Start недоступен с RTMP | RTMP/FLV не переносит SCTE PID | Выбрать UDP или SRT MPEG-TS либо выключить SCTE-35 |
 | SRT не соединяется | Одинаковые или неверные caller/listener modes | Одна сторона должна быть caller, другая listener; проверить IP/port/firewall |
 | SRT соединяется без видео | Несовместимый codec/profile или высокий bitrate | Сверить encoder profile с vMix/головной станцией |
-| UDP отсутствует | Неверный адрес, port, route, NIC или multicast TTL | Проверить сеть, `Local interface address`, multicast membership и firewall |
+| UDP отсутствует | Неверный destination, port, route, выбранный NIC, multicast membership или TTL | Сверить строку `UDP transport output`, проверить IP передающего адаптера, membership принимающей стороны и firewall |
 | Video/audio есть, cue нет | PID удалён remultiplexer'ом или неверные headend expectations | Проверить TS непосредственно на выходе Gruber и после каждого промежуточного устройства |
 | `Observed cues` не растёт после времени marker | Cue не прошёл локальный injector | Проверить state/error/logs; такой запуск не принимать как успешный |
 | `Observed cues` растёт, но реклама не включается | Gruber выдал cue, downstream его не применил | Сверить Event ID, type, UPID, PID, command, pre-roll и правила сплайсера |

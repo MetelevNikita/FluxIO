@@ -667,13 +667,27 @@ p {
   width: 100%;
   height: 54px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 6px 0 0;
+  color: var(--muted-dark);
+  background: transparent;
+  text-align: left;
+}
+
+.playlist-row-select {
+  min-width: 0;
+  height: 53px;
+  display: grid;
   grid-template-columns: 4px 54px minmax(0, 1fr) 60px;
   align-items: center;
   gap: 8px;
   border: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 0 8px 0 0;
-  color: var(--muted-dark);
+  padding: 0 4px 0 0;
+  color: inherit;
   background: transparent;
   text-align: left;
 }
@@ -686,6 +700,25 @@ p {
 .playlist-row.selected {
   color: var(--text);
   background: var(--accent-soft);
+}
+
+.playlist-remove-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 0;
+  color: var(--muted-dark);
+  background: transparent;
+}
+
+.playlist-remove-button:hover,
+.playlist-remove-button:focus-visible {
+  border-color: rgba(255, 102, 102, 0.3);
+  color: var(--danger);
+  background: rgba(255, 102, 102, 0.08);
 }
 
 .playlist-status-stripe {
