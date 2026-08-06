@@ -655,7 +655,8 @@ function UdpFields({
       />
       <p className="transport-setting-note">
         Target Bitrate controls the video elementary stream. Transport bitrate is the final
-        constant MPEG-TS rate including audio, PSI/SI and PID 0x1FFF stuffing.
+        constant MPEG-TS rate including audio, PSI/SI and PID 0x1FFF stuffing. PCR interval is
+        enforced on the final UDP stream, including when SCTE-35 is disabled.
       </p>
     </>
   );

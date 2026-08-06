@@ -125,8 +125,9 @@ node setup.mjs --no-start
 При открытии приложения media-server читает сетевые адаптеры через `node:os` и
 возвращает их из `GET /api/system/network-interfaces`. Если UDP interface ещё не
 задан, UI выбирает первый внешний IPv4. `Automatic routing` оставляет выбор
-маршрута операционной системе. Выбранный адрес передаётся FFmpeg как UDP
-`localaddr`, а при SCTE-35 — TSDuck как `--local-address`. Для multicast TSDuck
+маршрута операционной системе. FFmpeg передаёт MPEG-TS только во внутренний
+loopback, а выбранный адрес интерфейса применяется к конечному TSDuck UDP
+socket через `--local-address`. Для multicast TSDuck
 дополнительно получает `--force-local-multicast-outgoing`, чтобы выбранный
 адаптер использовался даже без отдельного multicast route в таблице ОС.
 
@@ -158,9 +159,13 @@ Video Target/Max Bitrate изменяется с шагом `0.5 Mbps` (`500 kbp
 Bitrate используется только в VBR; в CBR предел равен Target. `VBV Buffer`
 задаётся в kbit. Для UDP `Transport bitrate` задаёт постоянную полную скорость
 MPEG-TS, а `0` включает Auto. FFmpeg добавляет `-muxrate`, PID `0x1FFF`
-stuffing и UDP pacing; в тракте TSDuck дополнительно работает `regulate`.
-В тракте SCTE-35 указанный PCR interval применяется FFmpeg, а затем повторно
-контролируется TSDuck `pcradjust` непосредственно перед конечным UDP output.
+stuffing и pacing внутреннего handoff; в финальном TSDuck-тракте дополнительно
+работает `regulate`. Для каждого UDP, независимо от SCTE-35, указанный PCR
+interval применяется FFmpeg, а затем контролируется TSDuck `pcradjust`
+непосредственно перед конечным output. Внутренний порог TSDuck на 2 ms меньше
+UI target, поскольку новый PCR занимает следующий доступный null packet.
+Например, для `26 ms` используется порог `24 ms`; анализатор должен видеть
+фактический максимум ниже `40 ms`.
 
 В `Encoding Monitor → Log Output` каждая запись FFmpeg progress показывает
 переданное число кадров, FPS, bitrate и program time. Это подтверждает работу
@@ -172,9 +177,13 @@ Fastify access logs. Во время кодирования строка `[PLAYO
 обновляется раз в 5 секунд и сразу при смене ролика; она содержит имя ролика,
 frame, FPS, bitrate, speed и program time.
 
-При включённом SCTE-35 выход доступен только через UDP/SRT MPEG-TS. Внутренний тракт — `FFmpeg → loopback UDP → TSDuck → endpoint`; RTMP preflight отклоняется.
+UDP и SRT всегда используют тракт `FFmpeg → loopback UDP → TSDuck → endpoint`.
+При включённом SCTE-35 TSDuck дополнительно запускает injector; RTMP preflight
+для SCTE-35 отклоняется.
 
-Для любого SRT, в том числе без SCTE-35, transport открывает TSDuck: `FFmpeg → loopback UDP → TSDuck → SRT`. Поэтому наличие `srt` в `ffmpeg -protocols` не требуется. При выключенном SCTE-35 relay не добавляет CUEI registration, SCTE PID или cue sections.
+Для любого SRT наличие `srt` в `ffmpeg -protocols` не требуется. При
+выключенном SCTE-35 UDP/SRT relay не добавляет CUEI registration, SCTE PID или
+cue sections.
 
 Файлового Output в UI нет: FFmpeg формирует program stream и внутренний HLS-preview, но не сохраняет закодированный файл.
 
@@ -219,7 +228,7 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
-- electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.7 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
+- electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.8 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

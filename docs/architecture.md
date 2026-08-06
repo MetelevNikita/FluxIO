@@ -84,9 +84,11 @@ flowchart LR
   Overlay --> Realtime["video/audio realtime pacing"]
   Realtime --> Split["program/preview split"]
   Split --> Encode["Selected video/audio encoders"]
-  Encode --> Direct["Direct UDP or RTMP(S)"]
-  Encode --> Loopback["Loopback UDP for every SRT"]
-  Loopback --> SrtRelay["TSDuck SRT relay"]
+  Encode --> RTMP["Direct RTMP(S)"]
+  Encode --> Loopback["Loopback UDP for every UDP/SRT"]
+  Loopback --> Transport["TSDuck regulate; UDP PCR adjust"]
+  Transport --> UDP["UDP MPEG-TS"]
+  Transport --> SRT["SRT MPEG-TS"]
   Split --> HLS["Low-latency-oriented H.264/AAC HLS preview"]
 ```
 
@@ -96,7 +98,7 @@ flowchart LR
 
 ### Program output
 
-- UDP: MPEG-TS, `pkt_size`, TTL, выбранный local interface, service metadata/ID/type, elementary-stream PID, PCR interval и постоянный transport muxrate;
+- UDP: MPEG-TS через обязательный TSDuck PCR relay, `pkt_size`, TTL, выбранный local interface, service metadata/ID/type, elementary-stream PID, PCR interval и постоянный transport muxrate;
 - SRT: MPEG-TS через обязательный TSDuck relay, caller/listener/rendezvous, latency, optional passphrase и stream ID; libsrt в FFmpeg не требуется;
 - RTMP/RTMPS: FLV, только H.264 + AAC.
 
@@ -119,20 +121,24 @@ Closed MPEG-2 использует специальный высокий scene-c
 encoder FFmpeg не допускает обычный scenecut вместе с `+cgop`.
 Для UDP FFmpeg применяет `service_name`, `service_provider`,
 `mpegts_service_id`, `mpegts_service_type`, `streamid` для video/audio PID и
-`pcr_period`. При SCTE-35 эти параметры формируются до loopback handoff и
-сохраняются TSDuck; выбранный service ID используется его PMT processor. Перед
-конечным UDP output процессор `pcradjust` с известным CBR muxrate добавляет PCR
-вместо null packets, если промежуток превышает выбранный interval. Для
-multicast выбранный адрес интерфейса закрепляется опцией TSDuck
-`--force-local-multicast-outgoing`.
+`pcr_period`, после чего всегда передаёт MPEG-TS во внутренний loopback UDP.
+TSDuck сохраняет эти параметры и перед конечным UDP output выполняет
+`pcradjust` с известным CBR muxrate и явным video/PCR PID. Поскольку processor
+может вставить PCR только в следующий доступный null packet, его внутренний
+порог равен `max(1, PCR target − 2 ms)`. Так выбранное в UI значение является
+верхней целевой границей, а не порогом, после которого допускается опоздание.
+Для multicast выбранный адрес интерфейса закрепляется опцией TSDuck
+`--force-local-multicast-outgoing`. При выключенном SCTE-35 этот relay не
+изменяет PMT и не добавляет CUEI, cue PID или cue sections.
 
 Program video bitrate и transport bitrate — разные уровни. `Target Bitrate`
 ограничивает elementary video stream; итоговый MPEG-TS также содержит audio,
 PAT/PMT/SDT, TS headers и резерв. FFmpeg получает постоянный `-muxrate` и
 заполняет свободную ёмкость null packets с PID `0x1FFF`. UDP protocol pacing
-использует тот же bitrate и burst не более одного datagram. При SCTE-35/SRT
+использует тот же bitrate и burst не более одного datagram. Для каждого UDP/SRT
 TSDuck получает явный input bitrate и процессор `regulate`, поэтому downstream
-сохраняет muxrate после замены части null packets cue-секциями. Режим `Auto`
+сохраняет muxrate после transport regulation и возможной замены части null
+packets cue-секциями; UDP перед этим проходит PCR-коррекцию. Режим `Auto`
 вычисляет запас по video peak и audio; ручной Transport bitrate проходит
 preflight и не может быть ниже безопасной вместимости payload.
 

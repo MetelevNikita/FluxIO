@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v4.2.7**.
+Текущая версия: **v4.2.8**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -79,7 +79,7 @@ node setup.mjs
 - последовательный realtime FFmpeg playout;
 - H.264, H.265, MPEG-2, AAC, MP2 и AC-3;
 - CBR, VBR, CRF, deinterlace, progressive/TFF/BFF field order, управляемая I/P/B GOP structure и mono/stereo/5.1;
-- CBR MPEG-TS по UDP/SRT с фиксированным muxrate, PID `0x1FFF` stuffing и регулируемой выдачей; FLV по RTMP/RTMPS;
+- CBR MPEG-TS по UDP/SRT с фиксированным muxrate, PID `0x1FFF` stuffing и регулируемой TSDuck-выдачей; UDP дополнительно получает финальную PCR-коррекцию; FLV по RTMP/RTMPS;
 - выбор реального сетевого адаптера для UDP и настройка MPEG-TS service name/ID/provider, video/audio PID, service type, PCR interval и итогового Transport bitrate (`0` — Auto);
 - logo overlay;
 - HLS-preview реально вещаемой программы;
@@ -90,7 +90,7 @@ node setup.mjs
 - SCTE-35 marker planner: Event ID, break start/end, duration, segmentation type и UPID;
 - удаление любого ролика непосредственно из списка Playlist;
 - фактический SCTE-35 injector для UDP/SRT MPEG-TS через TSDuck: `CUEI` в PMT, `stream_type 0x86`, настраиваемый PID, двойная выдача cue и runtime monitor;
-- принудительный multicast output через выбранный адаптер и финальная PCR-нормализация после SCTE-35 injector;
+- принудительный multicast output через выбранный адаптер и финальная PCR-нормализация каждого UDP-потока, независимо от SCTE-35;
 - реальные CPU и NET-метрики сервера без Fastify access-log шума;
 - PostgreSQL/Prisma для внутреннего состояния и AES-256-GCM endpoint secrets;
 - независимый от Electron media-service;
@@ -99,7 +99,11 @@ node setup.mjs
 - совместное завершение Electron и media-server по `Ctrl+C` в окне `setup.mjs`;
 - FluxIO splash 1440 × 920 с пятисекундным progress и безопасным ожиданием готовности основного Electron-окна.
 
-SCTE-35 метки сохраняются в PostgreSQL вместе с элементами плейлиста. При включении SCTE-35 FFmpeg формирует CBR MPEG-TS во внутренний loopback UDP, TSDuck добавляет сигнализацию и cue-секции, затем отправляет результат по UDP или SRT. RTMP/FLV не переносит SCTE-35 PID, поэтому такой запуск отклоняется preflight-проверкой.
+Каждый UDP/SRT поток проходит через `FFmpeg → loopback UDP → TSDuck`, где перед
+endpoint выполняется CBR regulation, а для UDP также PCR-коррекция. SCTE-35
+метки сохраняются в PostgreSQL вместе с элементами плейлиста; при включении injector TSDuck также
+добавляет сигнализацию и cue-секции. RTMP/FLV не переносит SCTE-35 PID, поэтому
+такой запуск отклоняется preflight-проверкой.
 
 Настройки файлового экспорта удалены: приложение формирует только поток на выбранный endpoint.
 

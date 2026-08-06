@@ -34,7 +34,7 @@ export class PlayoutPreflightError extends Error {}
 export type PlayoutEventSink = (entry: string) => void;
 
 export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
-  return request.scte35.enabled || request.endpoint.protocol === "srt";
+  return request.endpoint.protocol === "udp" || request.endpoint.protocol === "srt";
 }
 
 export class PlayoutSupervisor {
@@ -520,17 +520,20 @@ export class PlayoutSupervisor {
         `SCTE-35 injector started with PID ${child.pid ?? "unknown"}; ` +
           `${this.#cues.length} event(s) queued on TS PID ${this.#request?.scte35.pid}`,
       );
-      if (this.#request?.endpoint.protocol === "udp") {
-        const endpoint = this.#request.endpoint;
-        this.#appendEvent(
-          `UDP transport output ${endpoint.host}:${endpoint.port} via ` +
-            `${endpoint.localAddress || "OS routing"}; ` +
-            `service ${endpoint.mpegTs.serviceId}, video PID ${endpoint.mpegTs.videoPid}, ` +
-            `audio PID ${endpoint.mpegTs.audioPid}, PCR ${endpoint.mpegTs.pcrPeriodMs} ms`,
-        );
-      }
     } else {
-      this.#appendEvent(`TSDuck SRT relay started with PID ${child.pid ?? "unknown"}`);
+      const transport = this.#request?.endpoint.protocol === "udp"
+        ? "UDP PCR relay"
+        : "SRT relay";
+      this.#appendEvent(`TSDuck ${transport} started with PID ${child.pid ?? "unknown"}`);
+    }
+    if (this.#request?.endpoint.protocol === "udp") {
+      const endpoint = this.#request.endpoint;
+      this.#appendEvent(
+        `UDP transport output ${endpoint.host}:${endpoint.port} via ` +
+          `${endpoint.localAddress || "OS routing"}; ` +
+          `service ${endpoint.mpegTs.serviceId}, video PID ${endpoint.mpegTs.videoPid}, ` +
+          `audio PID ${endpoint.mpegTs.audioPid}, PCR target ${endpoint.mpegTs.pcrPeriodMs} ms`,
+      );
     }
   }
 
@@ -545,7 +548,11 @@ export class PlayoutSupervisor {
       this.#tsduckKillTimer = null;
     }
     if (this.#expectedTsdDuckStops.has(child)) return;
-    const role = this.#status.scte35.enabled ? "injector" : "SRT relay";
+    const role = this.#status.scte35.enabled
+      ? "injector"
+      : this.#request?.endpoint.protocol === "udp"
+        ? "UDP PCR relay"
+        : "SRT relay";
     const error = `TSDuck ${role} exited with ${code ?? signal ?? "unknown"}`;
     if (this.#status.scte35.enabled) {
       this.#status.scte35.state = "failed";

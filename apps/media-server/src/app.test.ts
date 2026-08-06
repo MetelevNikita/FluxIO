@@ -32,6 +32,7 @@ import { buildScte35CueXml, planScte35Cues } from "./tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
   calculateTransportMuxRate,
+  pcrInsertionThresholdMs,
 } from "./tsduck/command-builder.js";
 
 test("GET /api/health returns the shared service contract", async () => {
@@ -47,7 +48,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.7");
+    assert.equal(health.version, "4.2.8");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -371,7 +372,7 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /--add-pid 500\/0x86/);
   assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
-  assert.match(rendered, /pcradjust --bitrate \d+ --min-ms-interval 20/);
+  assert.match(rendered, /pcradjust --bitrate \d+ --pid 256 --min-ms-interval 18/);
   assert.match(rendered, /regulate --bitrate \d+ --packet-burst 7/);
   assert.match(rendered, /-O ip .*239\.1\.1\.1:5000/);
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
@@ -479,7 +480,7 @@ test("TSDuck command sends the injected MPEG-TS through SRT caller settings", ()
   assert.match(rendered, /--payload-size 1316 --packet-burst 7/);
 });
 
-test("plain SRT uses TSDuck relay without adding SCTE-35 signaling", () => {
+test("plain UDP and SRT use TSDuck relay without adding SCTE-35 signaling", () => {
   const request = baseRequest();
   request.endpoint = {
     protocol: "srt",
@@ -503,7 +504,21 @@ test("plain SRT uses TSDuck relay without adding SCTE-35 signaling", () => {
   assert.doesNotMatch(rendered, /\bpmt\b|spliceinject|splicemonitor/);
 
   const udpRequest = baseRequest();
-  assert.equal(usesTsdDuckTransport(udpRequest), false);
+  assert.equal(usesTsdDuckTransport(udpRequest), true);
+  if (udpRequest.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
+  udpRequest.endpoint.mpegTs.pcrPeriodMs = 26;
+  const udpCommand = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 19_003,
+    request: udpRequest,
+  });
+  const renderedUdp = udpCommand.args.join(" ");
+  assert.match(renderedUdp, /pcradjust --bitrate \d+ --pid 256 --min-ms-interval 24/);
+  assert.match(renderedUdp, /-O ip .*239\.1\.1\.1:5000/);
+  assert.doesNotMatch(renderedUdp, /\bpmt\b|spliceinject|splicemonitor/);
+  assert.equal(pcrInsertionThresholdMs(40), 38);
+  assert.equal(pcrInsertionThresholdMs(2), 1);
 });
 
 test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", () => {
@@ -753,15 +768,19 @@ test(
         { id: "one", name: "one.mp4", filePath: clipOne, trimInSeconds: 0, trimOutSeconds: null, scte35Markers: [] },
         { id: "two", name: "two.mp4", filePath: clipTwo, trimInSeconds: 0, trimOutSeconds: null, scte35Markers: [] },
       ];
-      request.video.width = 640;
-      request.video.height = 360;
-      request.video.targetBitrateKbps = 1_200;
-      request.video.maxBitrateKbps = 1_200;
-      request.video.bufferSizeKbps = 2_400;
-      request.video.fieldOrder = "upper";
+      request.video.width = 1_920;
+      request.video.height = 1_080;
+      request.video.rateControl = "vbr";
+      request.video.targetBitrateKbps = 10_500;
+      request.video.maxBitrateKbps = 10_500;
+      request.video.bufferSizeKbps = 21_000;
+      request.video.fieldOrder = "progressive";
       request.video.gopSize = 25;
-      request.video.bFrames = 2;
+      request.video.bFrames = 5;
       request.video.closedGop = true;
+      request.audio.codec = "mp2";
+      request.audio.sampleRate = 48_000;
+      request.audio.bitrateKbps = 192;
       request.endpoint = {
         protocol: "udp",
         host: "127.0.0.1",
@@ -776,7 +795,7 @@ test(
           providerName: "FluxIO QA",
           videoPid: 301,
           audioPid: 302,
-          pcrPeriodMs: 40,
+          pcrPeriodMs: 26,
         },
       };
       request.logo = {
@@ -804,6 +823,14 @@ test(
         status.logs.slice(-10).join("\n"),
       );
       assert.ok(
+        status.logs.some((line) => line.includes("TSDuck UDP PCR relay started")),
+        status.logs.slice(-10).join("\n"),
+      );
+      assert.ok(
+        status.logs.some((line) => line.includes("PCR target 26 ms")),
+        status.logs.slice(-10).join("\n"),
+      );
+      assert.ok(
         Date.now() - wallStartedAt >= 2_300,
         "Playout must be paced close to the combined clip duration",
       );
@@ -819,6 +846,12 @@ test(
         `Transport spike at clip boundary: ${transport.boundaryBitrateBps.toFixed(0)} bps`,
       );
       await writeFile(capture, Buffer.concat(udpDatagrams.map(({ payload }) => payload)));
+      const pcrIntervals = extractPcrIntervalsMs(await readFile(capture));
+      assert.ok(pcrIntervals.length > 20, "Expected repeated PCR values in plain UDP capture");
+      assert.ok(
+        Math.max(...pcrIntervals) < 40,
+        `PCR interval must remain below 40 ms; max=${Math.max(...pcrIntervals).toFixed(3)} ms`,
+      );
       const frameTypes = (await runCommand(capabilities.ffprobePath, [
         "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pict_type",
         "-of", "csv=p=0", capture,

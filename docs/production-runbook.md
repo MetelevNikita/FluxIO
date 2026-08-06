@@ -178,7 +178,10 @@ service type `digital_tv`, PCR `20 ms`, Field Order `progressive`. `Upper` — T
 media-server; выбирать нужно IP адаптера, подключённого к сети головной станции.
 При `Automatic routing` исходящий интерфейс определяет таблица маршрутизации ОС.
 Для multicast FluxIO принудительно назначает выбранный интерфейс в TSDuck.
-Значение PCR после SCTE-35 injector стабилизируется на указанном интервале;
+Каждый UDP поток проходит финальные `pcradjust` и `regulate`, даже если SCTE-35
+выключен; SRT использует финальный `regulate`. UI target `26 ms` использует
+безопасный внутренний порог `24 ms`, чтобы следующий null packet не вынес PCR
+за допустимые `40 ms`;
 Video Target/Max Bitrate меняются с шагом `500 kbps`.
 
 Начальная GOP structure: `48` кадров, `2` последовательных B-frame и Closed
@@ -211,7 +214,8 @@ tsp -I ip --local-address <IP-приёмного-интерфейса> 239.10.10
   -O drop
 ```
 
-После Start в Log Output должна появиться строка `UDP transport output` с
+После Start в Log Output должны появиться строки `TSDuck UDP PCR relay started`
+и `UDP transport output` с
 фактическим destination, интерфейсом, service ID, video/audio PID и PCR. Она
 подтверждает конфигурацию конечного TSDuck output; сетевую доставку подтверждает
 только приёмник или capture на головной станции.
@@ -222,7 +226,11 @@ tsp -I ip --local-address <IP-приёмного-интерфейса> 239.10.10
 tsversion --support srt
 ```
 
-Весь SRT output, независимо от SCTE-35, открывает TSDuck по схеме `FFmpeg → loopback UDP → TSDuck → SRT`. Поэтому отсутствие `srt` в `ffmpeg -protocols` допустимо. Если SCTE-35 выключен, TSDuck работает как transport relay и не изменяет PMT и не добавляет cue PID.
+Весь UDP/SRT output, независимо от SCTE-35, открывает TSDuck по схеме
+`FFmpeg → loopback UDP → TSDuck → endpoint`. Поэтому отсутствие `srt` в
+`ffmpeg -protocols` допустимо. Если SCTE-35 выключен, TSDuck работает как
+transport relay (для UDP также PCR relay), не изменяет PMT и не добавляет cue
+PID.
 
 PostgreSQL не показывается в Broadcast Settings: база обслуживается media-service и настраивается через `.env`/`setup.mjs`, а не оператором во время эфира.
 
@@ -237,7 +245,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v4.2.7`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v4.2.8`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

@@ -73,13 +73,16 @@ export function buildTsdDuckCommand({
   }
 
   if (request.endpoint.protocol === "udp") {
+    const requestedPcrPeriodMs = request.endpoint.mpegTs.pcrPeriodMs;
     args.push(
       "-P",
       "pcradjust",
       "--bitrate",
       String(transportMuxRate),
+      "--pid",
+      String(request.endpoint.mpegTs.videoPid),
       "--min-ms-interval",
-      String(request.endpoint.mpegTs.pcrPeriodMs),
+      String(pcrInsertionThresholdMs(requestedPcrPeriodMs)),
     );
   }
 
@@ -107,6 +110,13 @@ export function buildTsdDuckCommand({
     args,
     endpointLabel: endpointLabel(request.endpoint),
   };
+}
+
+export function pcrInsertionThresholdMs(requestedPeriodMs: number): number {
+  // pcradjust inserts a PCR into the next available null packet only after the
+  // threshold has elapsed. Keep a small margin so a configured 40 ms maximum
+  // cannot become 40+ ms because of TS packet-grid quantization.
+  return Math.max(1, Math.floor(requestedPeriodMs) - 2);
 }
 
 function buildOutput(

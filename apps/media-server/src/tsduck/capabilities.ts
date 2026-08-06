@@ -32,7 +32,7 @@ export class TsdDuckCapabilitiesService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `TSDuck tsp is required for SRT transport and SCTE-35 injection: ${message}`,
+        `TSDuck tsp is required for UDP/SRT transport and SCTE-35 injection: ${message}`,
       );
     }
   }

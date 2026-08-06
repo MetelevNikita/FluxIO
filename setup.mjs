@@ -16,7 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "4.2.7";
+const applicationVersion = "4.2.8";
 
 export function buildDatabaseUrl({
   database,
@@ -267,7 +267,7 @@ async function main() {
       detectedFfprobePath ?? existingEnv.FFPROBE_PATH ?? "ffprobe",
     );
     const tsduckPath = await prompt.text(
-      "TSDuck tsp (SCTE-35 injector; Enter — найти автоматически)",
+      "TSDuck tsp (UDP/SRT transport и SCTE-35; Enter — найти автоматически)",
       detectedTsdDuckPath ?? existingEnv.TSDUCK_PATH ?? "tsp",
     );
 

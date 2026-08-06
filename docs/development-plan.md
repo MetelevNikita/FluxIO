@@ -187,7 +187,8 @@
 - FFmpeg build больше не обязан содержать libsrt;
 - plain SRT relay не добавляет SCTE-35 signaling или PID;
 - SRT preflight проверяет поддержку через `tsversion --support srt`;
-- UDP без SCTE-35 и RTMP остаются прямыми FFmpeg outputs.
+- RTMP остаётся прямым FFmpeg output; начиная с v4.2.8 любой UDP также идёт
+  через TSDuck для финального PCR adjustment и transport regulation.
 
 ### 2.16. Offline Electron packaging
 
@@ -198,6 +199,15 @@
 - offline preflight проверяет TypeScript, Vite, Prisma, Electron и electron-builder;
 - без toolset cache доступна network-free unpacked application;
 - стандартный offline-мастер всегда собирает unpacked application и никогда не запускает NSIS; полный installer собирается online.
+
+### 2.25. UDP PCR enforcement
+
+Статус: завершён 2026-08-06. Отчёт: [`progress/02-25-pcr-enforcement-v4.2.8.md`](progress/02-25-pcr-enforcement-v4.2.8.md).
+
+- любой UDP output проходит через финальный TSDuck `pcradjust` и `regulate`;
+- UI PCR target применяется независимо от SCTE-35;
+- явный PCR PID и запас 2 ms удерживают фактический интервал ниже 40 ms;
+- реальный тест проверяет PCR в захваченном UDP MPEG-TS на профиле 1080p25.
 
 ## Следующая очередь
 
