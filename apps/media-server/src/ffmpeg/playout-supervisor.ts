@@ -27,6 +27,7 @@ import {
 const previewPath = "/api/playout/preview/index.m3u8";
 const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
+const consoleProgressIntervalSeconds = 5;
 
 export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
@@ -56,6 +57,8 @@ export class PlayoutSupervisor {
   #logBuffer = "";
   #tsduckLogBuffer = "";
   #lastLoggedFrame = -1;
+  #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
+  #lastConsoleItemIndex = -1;
   #eventSink: PlayoutEventSink | null;
 
   constructor(
@@ -285,12 +288,35 @@ export class PlayoutSupervisor {
   #appendFrameProgressLog(): void {
     if (this.#status.frame === this.#lastLoggedFrame) return;
     this.#lastLoggedFrame = this.#status.frame;
-    this.#appendLog(formatFrameProgressLog({
+    const progressLog = formatFrameProgressLog({
       bitrateKbps: this.#status.bitrateKbps,
       fps: this.#status.fps,
       frame: this.#status.frame,
       outTimeSeconds: this.#status.outTimeSeconds,
-    }));
+    });
+    this.#appendLog(progressLog);
+    if (
+      this.#eventSink &&
+      shouldReportEncodingActivity({
+        currentItemIndex: this.#status.currentItemIndex,
+        lastItemIndex: this.#lastConsoleItemIndex,
+        lastOutTimeSeconds: this.#lastConsoleProgressSeconds,
+        outTimeSeconds: this.#status.outTimeSeconds,
+      })
+    ) {
+      this.#lastConsoleProgressSeconds = this.#status.outTimeSeconds;
+      this.#lastConsoleItemIndex = this.#status.currentItemIndex;
+      this.#eventSink(formatEncodingActivity({
+        bitrateKbps: this.#status.bitrateKbps,
+        currentItemIndex: this.#status.currentItemIndex,
+        currentItemName: this.#status.currentItemName,
+        fps: this.#status.fps,
+        frame: this.#status.frame,
+        outTimeSeconds: this.#status.outTimeSeconds,
+        speed: this.#status.speed,
+        totalItems: this.#status.totalItems,
+      }));
+    }
   }
 
   #updateDerivedProgress(): void {
@@ -460,6 +486,8 @@ export class PlayoutSupervisor {
     this.#progressBuffer = "";
     this.#logBuffer = "";
     this.#lastLoggedFrame = -1;
+    this.#lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
+    this.#lastConsoleItemIndex = -1;
     child.stdout.on("data", (chunk: Buffer) => this.#readProgress(chunk));
     child.stderr.on("data", (chunk: Buffer) => this.#readLogs(chunk));
     child.once("spawn", () => {
@@ -757,6 +785,51 @@ export function formatFrameProgressLog({
   return `Transmitted frames: ${Math.max(0, Math.round(frame))} | ` +
     `FPS: ${Math.max(0, fps).toFixed(2)} | ` +
     `bitrate: ${Math.max(0, bitrateKbps).toFixed(0)} kbps | ` +
+    `time: ${formatClock(outTimeSeconds)}`;
+}
+
+export function shouldReportEncodingActivity({
+  currentItemIndex,
+  lastItemIndex,
+  lastOutTimeSeconds,
+  outTimeSeconds,
+}: {
+  currentItemIndex: number;
+  lastItemIndex: number;
+  lastOutTimeSeconds: number;
+  outTimeSeconds: number;
+}): boolean {
+  return currentItemIndex !== lastItemIndex ||
+    !Number.isFinite(lastOutTimeSeconds) ||
+    outTimeSeconds < lastOutTimeSeconds ||
+    outTimeSeconds - lastOutTimeSeconds >= consoleProgressIntervalSeconds;
+}
+
+export function formatEncodingActivity({
+  bitrateKbps,
+  currentItemIndex,
+  currentItemName,
+  fps,
+  frame,
+  outTimeSeconds,
+  speed,
+  totalItems,
+}: {
+  bitrateKbps: number;
+  currentItemIndex: number;
+  currentItemName: string | null;
+  fps: number;
+  frame: number;
+  outTimeSeconds: number;
+  speed: number;
+  totalItems: number;
+}): string {
+  const safeName = (currentItemName ?? "unknown clip").replace(/[\r\n\t]+/g, " ");
+  return `Encoding clip ${currentItemIndex + 1}/${Math.max(1, totalItems)} ` +
+    `"${safeName}" | frame: ${Math.max(0, Math.round(frame))} | ` +
+    `FPS: ${Math.max(0, fps).toFixed(2)} | ` +
+    `bitrate: ${Math.max(0, bitrateKbps).toFixed(0)} kbps | ` +
+    `speed: ${Math.max(0, speed).toFixed(2)}x | ` +
     `time: ${formatClock(outTimeSeconds)}`;
 }
 

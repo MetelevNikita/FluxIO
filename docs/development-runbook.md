@@ -91,9 +91,9 @@ Production-ярлык рабочего стола создаётся тольк�
 node setup.mjs --offline
 ```
 
-Мастер не выполняет `npm ci`, Homebrew/apt/winget installation и другие сетевые установки. Он проверяет локальные TypeScript, Vite, Prisma, Electron runtime и electron-builder. При выборе unpacked application Electron берётся напрямую из `node_modules/electron/dist`, а результат на Windows создаётся в `apps/desktop/release/win-unpacked`.
+Мастер не выполняет `npm ci`, Homebrew/apt/winget installation и другие сетевые установки. Он проверяет локальные TypeScript, Vite, Prisma, Electron runtime и electron-builder, затем автоматически выбирает `package:desktop:offline-dir`. Electron берётся напрямую из `node_modules/electron/dist`, а результат на Windows создаётся в `apps/desktop/release/win-unpacked`.
 
-Полный NSIS installer требует заранее заполненный `%LOCALAPPDATA%\electron-builder\Cache`. Этот cache нужно создать однократной успешной сборкой на Windows-машине с интернетом той же архитектуры, затем перенести целиком на offline-машину. `node_modules` с macOS/Linux нельзя использовать для Windows.
+Обычный `--offline` намеренно не запускает NSIS и WinCodeSign, даже если их cache частично присутствует. Полный installer собирайте обычным `node setup.mjs` на Windows-машине с интернетом. `node_modules` с macOS/Linux нельзя использовать для Windows.
 
 Electron 43 runtime при online setup проверяется отдельно после `npm ci`. Если `node_modules\electron\dist\electron.exe` отсутствует, мастер автоматически запускает `node node_modules\electron\install.js`. В offline mode отсутствие этого файла является ошибкой подготовленного bundle и download не выполняется.
 
@@ -167,6 +167,11 @@ stuffing и UDP pacing; в тракте TSDuck дополнительно раб
 локального encoder/muxer, но доставку до головной станции нужно проверять на
 приёмной стороне.
 
+В terminal media-server печатает только полезную playout-активность без
+Fastify access logs. Во время кодирования строка `[PLAYOUT] Encoding clip ...`
+обновляется раз в 5 секунд и сразу при смене ролика; она содержит имя ролика,
+frame, FPS, bitrate, speed и program time.
+
 При включённом SCTE-35 выход доступен только через UDP/SRT MPEG-TS. Внутренний тракт — `FFmpeg → loopback UDP → TSDuck → endpoint`; RTMP preflight отклоняется.
 
 Для любого SRT, в том числе без SCTE-35, transport открывает TSDuck: `FFmpeg → loopback UDP → TSDuck → SRT`. Поэтому наличие `srt` в `ffmpeg -protocols` не требуется. При выключенном SCTE-35 relay не добавляет CUEI registration, SCTE PID или cue sections.
@@ -214,7 +219,7 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
-- electron-builder завершается `connect ETIMEDOUT ...:443` — использовать `node setup.mjs --offline`; для unpacked build достаточно local Electron runtime, для NSIS перенести `%LOCALAPPDATA%\electron-builder\Cache`;
+- electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.7 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

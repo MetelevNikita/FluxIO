@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v4.2.6**.
+Текущая версия: **v4.2.7**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -42,7 +42,7 @@ npm run setup
 
 Даже в production мастер использует `npm ci --include=dev`: Electron, Vite, TypeScript и Prisma CLI нужны во время сборки. Запущенный media-service при этом работает с `NODE_ENV=production`.
 
-Для изолированной машины с заранее подготовленными platform-native `node_modules` используйте `node setup.mjs --offline`. Electron runtime берётся из `node_modules/electron/dist`; network-free unpacked application создаётся без NSIS, а полный Windows installer требует заранее перенесённый `%LOCALAPPDATA%\electron-builder\Cache`.
+Для изолированной машины с заранее подготовленными platform-native `node_modules` используйте `node setup.mjs --offline`. Мастер автоматически собирает network-free приложение в `apps\desktop\release\win-unpacked`, никогда не запускает NSIS и после установки может сразу открыть интерфейс. Полный Windows installer собирается только обычным online-запуском мастера.
 
 На online-машине мастер после `npm ci` отдельно проверяет Electron runtime и при необходимости запускает `node node_modules/electron/install.js`; это требуется для Electron 43, где наличие npm package ещё не гарантирует наличие platform binary в `dist`.
 
@@ -83,7 +83,7 @@ node setup.mjs
 - выбор реального сетевого адаптера для UDP и настройка MPEG-TS service name/ID/provider, video/audio PID, service type, PCR interval и итогового Transport bitrate (`0` — Auto);
 - logo overlay;
 - HLS-preview реально вещаемой программы;
-- Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в logs;
+- Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в UI и console logs; во время кодирования media-server печатает activity каждые 5 секунд и при смене ролика;
 - живой 16:9 program preview и оставшееся время всего плейлиста в Broadcast;
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;

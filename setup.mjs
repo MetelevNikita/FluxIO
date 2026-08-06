@@ -16,7 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "4.2.6";
+const applicationVersion = "4.2.7";
 
 export function buildDatabaseUrl({
   database,
@@ -84,6 +84,16 @@ export function npmCiArguments() {
   // They are build-time devDependencies even though the resulting service runs
   // with NODE_ENV=production.
   return ["ci", "--include=dev"];
+}
+
+export function desktopPackagingScript({
+  buildInstaller,
+  mode,
+  offlineMode,
+}) {
+  if (mode !== "production") return null;
+  if (offlineMode) return "package:desktop:offline-dir";
+  return buildInstaller ? "package:desktop" : null;
 }
 
 function quoteEnvValue(value) {
@@ -272,17 +282,17 @@ async function main() {
       console.log("  Offline: npm ci и автоматические загрузки отключены.");
     }
     const runChecks = await prompt.confirm("Запустить typecheck и tests?", true);
-    const buildInstaller = mode === "production"
+    const buildInstaller = mode === "production" && !offline
       ? await prompt.confirm(
-          offline
-            ? "Собрать полный Electron installer? Требуется подготовленный electron-builder cache"
-            : "Собрать Electron installer для текущей ОС?",
-          !offline,
+          "Собрать Electron installer для текущей ОС?",
+          true,
         )
       : false;
-    const buildUnpacked = mode === "production" && offline && !buildInstaller
-      ? await prompt.confirm("Собрать offline unpacked Electron application?", true)
-      : false;
+    if (mode === "production" && offline) {
+      console.log(
+        "  Offline: будет автоматически собран запускаемый Electron-каталог без NSIS.",
+      );
+    }
     const createShortcut = mode === "production"
       ? await prompt.confirm("Создать ярлык FluxIO на рабочем столе?", true)
       : false;
@@ -396,13 +406,15 @@ async function main() {
     }
 
     if (mode === "production") {
-      if (buildInstaller) {
-        await runNpmCommand(["run", "package:desktop"], { env: commandEnv });
-      } else if (buildUnpacked) {
-        await runNpmCommand(["run", "package:desktop:offline-dir"], { env: commandEnv });
-      } else {
-        await runNpmCommand(["run", "build"], { env: commandEnv });
-      }
+      const packagingScript = desktopPackagingScript({
+        buildInstaller,
+        mode,
+        offlineMode: offline,
+      });
+      await runNpmCommand(
+        packagingScript ? ["run", packagingScript] : ["run", "build"],
+        { env: commandEnv },
+      );
     }
 
     let installedService = null;

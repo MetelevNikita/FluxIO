@@ -11,6 +11,7 @@ import {
   buildWindowsShortcutCommand,
   buildWindowsTaskCommand,
   commandVersionArguments,
+  desktopPackagingScript,
   electronRuntimePath,
   mergeWindowsPathValues,
   npmCiArguments,
@@ -93,6 +94,41 @@ test("offline setup resolves the platform-native installed Electron runtime", ()
   assert.equal(
     electronRuntimePath("/Applications/FluxIO", "darwin"),
     "/Applications/FluxIO/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+  );
+});
+
+test("offline production setup never invokes the NSIS packaging script", () => {
+  assert.equal(
+    desktopPackagingScript({
+      buildInstaller: true,
+      mode: "production",
+      offlineMode: true,
+    }),
+    "package:desktop:offline-dir",
+  );
+  assert.equal(
+    desktopPackagingScript({
+      buildInstaller: false,
+      mode: "production",
+      offlineMode: true,
+    }),
+    "package:desktop:offline-dir",
+  );
+  assert.equal(
+    desktopPackagingScript({
+      buildInstaller: true,
+      mode: "production",
+      offlineMode: false,
+    }),
+    "package:desktop",
+  );
+  assert.equal(
+    desktopPackagingScript({
+      buildInstaller: false,
+      mode: "test",
+      offlineMode: true,
+    }),
+    null,
   );
 });
 
@@ -218,9 +254,9 @@ test("setup creates branded desktop launchers on Windows, macOS and Linux", () =
   assert.match(macLauncher, /^#!\/bin\/sh/);
   assert.match(macLauncher, /exec '\/usr\/local\/bin\/node'/);
   assert.match(macLauncher, /'\/Users\/operator\/FluxIO Project\/launch\.mjs'/);
-  const plist = buildMacDesktopLauncherPlist("4.2.6");
+  const plist = buildMacDesktopLauncherPlist("4.2.7");
   assert.match(plist, /live\.fluxio\.desktop-launcher/);
-  assert.match(plist, /<string>4\.2\.6<\/string>/);
+  assert.match(plist, /<string>4\.2\.7<\/string>/);
 
   const linux = buildLinuxDesktopEntry({
     iconPath: "/srv/FluxIO Project/icon.png",

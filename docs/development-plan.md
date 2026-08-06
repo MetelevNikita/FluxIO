@@ -197,7 +197,7 @@
 - `node setup.mjs --offline` отключает npm/system downloads;
 - offline preflight проверяет TypeScript, Vite, Prisma, Electron и electron-builder;
 - без toolset cache доступна network-free unpacked application;
-- полный NSIS installer собирается offline с заранее перенесённым electron-builder cache.
+- стандартный offline-мастер всегда собирает unpacked application и никогда не запускает NSIS; полный installer собирается online.
 
 ## Следующая очередь
 

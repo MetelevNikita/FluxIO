@@ -34,10 +34,11 @@ process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
 try {
-  await app.listen({
+  const address = await app.listen({
     host: process.env.GRUBER_HOST ?? "127.0.0.1",
     port: readPort(process.env.GRUBER_PORT),
   });
+  console.info(`[MEDIA] Active at ${address}; waiting for playout`);
 } catch (error) {
   console.error("[MEDIA] Failed to start media-service", error);
   process.exitCode = 1;

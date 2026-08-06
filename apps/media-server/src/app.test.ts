@@ -18,8 +18,10 @@ import { buildFfmpegCommand } from "./ffmpeg/command-builder.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
+  formatEncodingActivity,
   formatFrameProgressLog,
   PlayoutSupervisor,
+  shouldReportEncodingActivity,
   usesTsdDuckTransport,
 } from "./ffmpeg/playout-supervisor.js";
 import { runCommand } from "./ffmpeg/process.js";
@@ -45,7 +47,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.6");
+    assert.equal(health.version, "4.2.7");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -554,6 +556,47 @@ test("playout frame progress is formatted for Log Output", () => {
     }),
     "Transmitted frames: 125 | FPS: 25.00 | bitrate: 2628 kbps | time: 00:00:05",
   );
+});
+
+test("media-server console reports periodic encoding activity and clip changes", () => {
+  assert.equal(
+    formatEncodingActivity({
+      bitrateKbps: 2_628.4,
+      currentItemIndex: 1,
+      currentItemName: "News\nBreak.mp4",
+      fps: 25,
+      frame: 125,
+      outTimeSeconds: 5.4,
+      speed: 0.998,
+      totalItems: 20,
+    }),
+    "Encoding clip 2/20 \"News Break.mp4\" | frame: 125 | FPS: 25.00 | " +
+      "bitrate: 2628 kbps | speed: 1.00x | time: 00:00:05",
+  );
+  assert.equal(shouldReportEncodingActivity({
+    currentItemIndex: 0,
+    lastItemIndex: -1,
+    lastOutTimeSeconds: Number.NEGATIVE_INFINITY,
+    outTimeSeconds: 0.5,
+  }), true);
+  assert.equal(shouldReportEncodingActivity({
+    currentItemIndex: 0,
+    lastItemIndex: 0,
+    lastOutTimeSeconds: 0.5,
+    outTimeSeconds: 4.9,
+  }), false);
+  assert.equal(shouldReportEncodingActivity({
+    currentItemIndex: 0,
+    lastItemIndex: 0,
+    lastOutTimeSeconds: 0.5,
+    outTimeSeconds: 5.5,
+  }), true);
+  assert.equal(shouldReportEncodingActivity({
+    currentItemIndex: 1,
+    lastItemIndex: 0,
+    lastOutTimeSeconds: 5.5,
+    outTimeSeconds: 5.6,
+  }), true);
 });
 
 test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT secrets", () => {

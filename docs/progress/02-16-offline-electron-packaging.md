@@ -69,7 +69,9 @@ npm run package:desktop:offline-dir
 %LOCALAPPDATA%\electron-builder\Cache
 ```
 
-После переноса мастер в offline mode может собрать обычный installer без обращения к сети.
+Начиная с v4.2.7 стандартный `node setup.mjs --offline` намеренно не запускает
+NSIS даже при наличии cache: он всегда выбирает network-free unpacked output.
+Полный installer собирается обычным online-запуском мастера.
 
 ## Проверка
 

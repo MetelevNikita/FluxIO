@@ -159,7 +159,17 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 9. Для рекламных врезок выбрать UDP/SRT, включить SCTE-35, задать defaults и расставить Event IDs во вкладке Playlist. Первая метка — не раньше `pre-roll + 2 s`.
 10. Подготовить головную станцию.
 11. Нажать `Start Stream`.
-12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output и карточку SCTE-35 Injector: state, PID, observed/total, last/next Event ID.
+12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service и карточку SCTE-35 Injector: state, PID, observed/total, last/next Event ID.
+
+Media-service не пишет HTTP access logs. Во время активного кодирования он
+выдаёт одну console-строку каждые 5 секунд и немедленно при смене ролика:
+
+```text
+[PLAYOUT] Encoding clip 2/20 "News.mp4" | frame: 125 | FPS: 25.00 | bitrate: 2628 kbps | speed: 1.00x | time: 00:00:05
+```
+
+На Linux эти строки видны через `journalctl -u gruber-media.service -f`, на
+macOS — в `media-service.log`; при foreground-запуске — прямо в terminal.
 
 Для нового UDP-профиля используются безопасные начальные значения: service
 `FluxIO`, service ID `1`, provider `FluxIO`, video PID `256`, audio PID `257`,
@@ -227,7 +237,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v4.2.6`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v4.2.7`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 
@@ -237,12 +247,15 @@ node setup.mjs
 node setup.mjs --offline
 ```
 
-В режиме offline мастер не выполняет npm/system downloads. Варианты Electron output:
+В режиме offline мастер не выполняет npm/system downloads и всегда создаёт
+запускаемое приложение без NSIS: `apps\desktop\release\win-unpacked\FluxIO.exe`.
+Вопрос о полном installer не задаётся, поэтому `electron-builder` не пытается
+получить NSIS/WinCodeSign с GitHub. Полный `FluxIO Setup *.exe` следует собирать
+обычным `node setup.mjs` на машине с интернетом.
 
-- `offline unpacked` — не требует NSIS/WinCodeSign cache, результат `apps\desktop\release\win-unpacked\FluxIO.exe`;
-- полный NSIS installer — требует перенесённый `%LOCALAPPDATA%\electron-builder\Cache` с Windows-машины той же архитектуры.
-
-Electron runtime для обоих вариантов читается из `node_modules\electron\dist`. Если этот каталог, Prisma CLI, Vite, TypeScript или electron-builder отсутствуют, мастер останавливается до сборки с перечнем недостающих компонентов.
+Electron runtime читается из `node_modules\electron\dist`. Если этот каталог,
+Prisma CLI, Vite, TypeScript или electron-builder отсутствуют, мастер
+останавливается до сборки с перечнем недостающих компонентов.
 
 ## 9. Backup
 
