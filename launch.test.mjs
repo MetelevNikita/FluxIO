@@ -8,14 +8,33 @@ import {
 } from "./launch.mjs";
 
 test("desktop launcher resolves relocatable production entries", () => {
-  const paths = launcherPaths("/srv/FluxIO Project");
+  const posixPaths = launcherPaths("/srv/FluxIO Project");
   assert.equal(
-    paths.mediaEntry,
+    posixPaths.mediaEntry,
     "/srv/FluxIO Project/apps/media-server/dist/index.js",
   );
   assert.equal(
-    paths.electronCli,
+    posixPaths.electronCli,
     "/srv/FluxIO Project/node_modules/electron/cli.js",
+  );
+
+  for (const drive of ["C", "D", "R"]) {
+    const rootPath = `${drive}:\\FluxIO Project`;
+    const windowsPaths = launcherPaths(rootPath);
+    assert.equal(
+      windowsPaths.mediaEntry,
+      `${rootPath}\\apps\\media-server\\dist\\index.js`,
+    );
+    assert.equal(
+      windowsPaths.electronCli,
+      `${rootPath}\\node_modules\\electron\\cli.js`,
+    );
+  }
+
+  const uncRoot = String.raw`\\media-server\FluxIO Project`;
+  assert.equal(
+    launcherPaths(uncRoot).mediaEntry,
+    String.raw`\\media-server\FluxIO Project\apps\media-server\dist\index.js`,
   );
 });
 

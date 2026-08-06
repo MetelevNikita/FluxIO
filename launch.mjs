@@ -10,12 +10,21 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 
 export function launcherPaths(rootPath = projectRoot) {
+  const rootPathApi = pathApiForRoot(rootPath);
   return {
-    desktopDirectory: path.join(rootPath, "apps", "desktop"),
-    electronCli: path.join(rootPath, "node_modules", "electron", "cli.js"),
-    mediaEntry: path.join(rootPath, "apps", "media-server", "dist", "index.js"),
-    webEntry: path.join(rootPath, "apps", "web", "dist", "index.html"),
+    desktopDirectory: rootPathApi.join(rootPath, "apps", "desktop"),
+    electronCli: rootPathApi.join(rootPath, "node_modules", "electron", "cli.js"),
+    mediaEntry: rootPathApi.join(rootPath, "apps", "media-server", "dist", "index.js"),
+    webEntry: rootPathApi.join(rootPath, "apps", "web", "dist", "index.html"),
   };
+}
+
+function pathApiForRoot(rootPath) {
+  if (/^[a-z]:[\\/]/i.test(rootPath) || rootPath.startsWith("\\\\")) {
+    return path.win32;
+  }
+  if (rootPath.startsWith("/")) return path.posix;
+  return path;
 }
 
 export function normalizeMediaApiUrl(value = "http://127.0.0.1:4310") {

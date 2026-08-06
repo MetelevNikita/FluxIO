@@ -25,7 +25,7 @@ import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 
-const serviceVersion = "4.2.5";
+const serviceVersion = "4.2.6";
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
