@@ -220,6 +220,20 @@ tsp -I ip --local-address <IP-приёмного-интерфейса> 239.10.10
 подтверждает конфигурацию конечного TSDuck output; сетевую доставку подтверждает
 только приёмник или capture на головной станции.
 
+Дополнительно проверить `Applied TS bitrate` в Encoding Monitor и строку
+`transport target ... (manual|Auto)`. Для настроенных `12 Mbps` ожидаются
+`12.000 Mbps (manual)`. Значение `12.900 Mbps (auto)` означает, что сервер
+получил Auto (`0`), либо продолжает работать старая сессия/сборка. Значение
+относится к 188-byte MPEG-TS payload; UDP/IP/Ethernet line rate может быть выше
+из-за сетевых заголовков.
+
+При рассыпании изображения проверить `Internal CC errors`. Если счётчик FluxIO
+равен `0`, а DVBControl показывает `Continuity_count_error`, дефект возник после
+TSDuck. Проверить выбранный NIC, кабель/switch port counters, MTU 1500, IGMP
+snooping/querier, multicast VLAN и UDP receive buffer анализатора. Если
+внутренний счётчик растёт, сохранить строки `TSDuck continuity warning`: они
+содержат PID и пропущенные packets.
+
 Проверка доступности SRT в TSDuck:
 
 ```bash
@@ -245,7 +259,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v4.2.8`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v4.2.10`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

@@ -13,6 +13,8 @@ export interface TsdDuckCommand {
   endpointLabel: string;
 }
 
+const udpSocketBufferSizeBytes = 4 * 1_024 * 1_024;
+
 export function buildTsdDuckCommand({
   cueFilePath,
   cueCount,
@@ -30,6 +32,8 @@ export function buildTsdDuckCommand({
     String(transportMuxRate),
     "-I",
     "ip",
+    "--buffer-size",
+    String(udpSocketBufferSizeBytes),
     "--local-address",
     "127.0.0.1",
     String(inputPort),
@@ -96,6 +100,16 @@ export function buildTsdDuckCommand({
       `--json-line=${monitorPrefix}`,
     );
   }
+  const monitoredPids = request.endpoint.protocol === "udp"
+    ? [request.endpoint.mpegTs.videoPid, request.endpoint.mpegTs.audioPid]
+    : [];
+  if (monitoredPids.length > 0) {
+    args.push("-P", "continuity");
+    for (const monitoredPid of monitoredPids) {
+      args.push("--pid", String(monitoredPid));
+    }
+    args.push("--tag", "FluxIO-output");
+  }
   args.push(
     "-P",
     "regulate",
@@ -128,6 +142,9 @@ function buildOutput(
     const args = [
       "-O",
       "ip",
+      "--buffer-size",
+      String(udpSocketBufferSizeBytes),
+      "--enforce-burst",
       "--packet-burst",
       String(packetBurst),
       "--ttl",

@@ -350,6 +350,7 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
     const params = new URLSearchParams({
       pkt_size: String(endpoint.packetSize),
       ttl: String(endpoint.ttl),
+      buffer_size: String(4 * 1_024 * 1_024),
     });
     if (endpoint.localAddress) {
       params.set("localaddr", endpoint.localAddress);

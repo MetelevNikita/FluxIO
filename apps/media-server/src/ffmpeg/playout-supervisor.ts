@@ -99,6 +99,12 @@ export class PlayoutSupervisor {
       startedAt: new Date().toISOString(),
       totalItems: request.playlist.length,
       currentItemName: request.playlist[0]?.name ?? null,
+      transportBitrateBps: request.endpoint.protocol === "udp"
+        ? calculateTransportMuxRate(request)
+        : null,
+      transportBitrateMode: request.endpoint.protocol === "udp"
+        ? request.endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "auto"
+        : null,
       repeatPlaylist: request.repeatPlaylist,
       scte35: {
         ...idleStatus().scte35,
@@ -368,6 +374,10 @@ export class PlayoutSupervisor {
       const marker = line.indexOf(tsduckMonitorPrefix);
       if (marker >= 0) {
         this.#handleTsdDuckMonitorJson(line.slice(marker + tsduckMonitorPrefix.length));
+      } else if (isTsdDuckContinuityWarning(line)) {
+        const message = redactSecrets(line.trim(), this.#request);
+        this.#status.continuityErrors += 1;
+        this.#appendEvent(`TSDuck continuity warning #${this.#status.continuityErrors}: ${message}`);
       } else if (/\b(error|failed|dropping|obsolete)\b/i.test(line)) {
         const message = redactSecrets(line.trim(), this.#request);
         this.#appendEvent(`TSDuck: ${message}`);
@@ -532,7 +542,14 @@ export class PlayoutSupervisor {
         `UDP transport output ${endpoint.host}:${endpoint.port} via ` +
           `${endpoint.localAddress || "OS routing"}; ` +
           `service ${endpoint.mpegTs.serviceId}, video PID ${endpoint.mpegTs.videoPid}, ` +
-          `audio PID ${endpoint.mpegTs.audioPid}, PCR target ${endpoint.mpegTs.pcrPeriodMs} ms`,
+          `audio PID ${endpoint.mpegTs.audioPid}, ` +
+          `transport target ${formatMbps(calculateTransportMuxRate(this.#request))} Mbps ` +
+          `(${endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "Auto"}), ` +
+          `PCR target ${endpoint.mpegTs.pcrPeriodMs} ms`,
+      );
+      this.#appendEvent(
+        `Continuity monitor active on video PID ${endpoint.mpegTs.videoPid} and ` +
+          `audio PID ${endpoint.mpegTs.audioPid}`,
       );
     }
   }
@@ -748,6 +765,9 @@ function idleStatus(): PlayoutStatus {
     frame: 0,
     fps: 0,
     bitrateKbps: 0,
+    transportBitrateBps: null,
+    transportBitrateMode: null,
+    continuityErrors: 0,
     speed: 0,
     endpointLabel: null,
     previewPath: null,
@@ -774,8 +794,12 @@ function numberValue(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function isTsdDuckContinuityWarning(line: string): boolean {
+  return /FluxIO-output/i.test(line) && /\b(continuity|discontinuity|missing)\b/i.test(line);
+}
+
 function formatMbps(bitrateBps: number): string {
-  return (bitrateBps / 1_000_000).toFixed(1);
+  return (bitrateBps / 1_000_000).toFixed(3);
 }
 
 export function formatFrameProgressLog({

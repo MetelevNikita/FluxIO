@@ -656,7 +656,8 @@ function UdpFields({
       <p className="transport-setting-note">
         Target Bitrate controls the video elementary stream. Transport bitrate is the final
         constant MPEG-TS rate including audio, PSI/SI and PID 0x1FFF stuffing. PCR interval is
-        enforced on the final UDP stream, including when SCTE-35 is disabled.
+        enforced on the final UDP stream, including when SCTE-35 is disabled. The applied TS
+        payload rate is shown in Encoding Monitor; UDP/IP/Ethernet line rate can be higher.
       </p>
     </>
   );
@@ -815,11 +816,20 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
           <Stat label="Elapsed" value={formatMonitorTime(status?.outTimeSeconds ?? 0)} />
           <Stat label="Remaining" value={formatMonitorTime(remainingSeconds)} />
           <Stat label="Total" value={formatMonitorTime(status?.totalDurationSeconds ?? 0)} />
+          {status?.transportBitrateBps != null ? (
+            <>
+              <Stat
+                label="Applied TS bitrate"
+                value={`${(status.transportBitrateBps / 1_000_000).toFixed(3)} Mbps (${status.transportBitrateMode ?? "—"})`}
+              />
+              <Stat label="Internal CC errors" value={String(status.continuityErrors)} />
+            </>
+          ) : null}
           {status?.repeatPlaylist ? (
             <Stat label="Repeat cycle" value={String((status.loopCount ?? 0) + 1)} />
           ) : null}
           <div className="bitrate-stat">
-            <span>Bitrate (kbps)</span>
+            <span>FFmpeg reported bitrate (kbps)</span>
             <strong>{(status?.bitrateKbps ?? 0).toFixed(0)}</strong>
             <div><span style={{ width: `${Math.min(100, progress)}%` }} /></div>
           </div>

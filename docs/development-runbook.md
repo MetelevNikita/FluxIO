@@ -172,6 +172,17 @@ UI target, поскольку новый PCR занимает следующий
 локального encoder/muxer, но доставку до головной станции нужно проверять на
 приёмной стороне.
 
+`Encoding Monitor → Applied TS bitrate` показывает значение, которое
+media-server фактически применил к FFmpeg и TSDuck, и источник `manual`/`auto`.
+Для профиля video `10.5 Mbps` + audio `192 kbps` Auto равен примерно
+`12.9 Mbps`; ручное поле `12` должно показывать `12.000 Mbps (manual)`.
+
+`Internal CC errors` контролируется внутри TSDuck перед конечным UDP socket.
+Ноль означает, что локальный transport непрерывен; ошибки только на внешнем
+анализаторе указывают на сеть или receiver buffer. Значение больше нуля
+сопровождается `TSDuck continuity warning` в UI и terminal. Не применять
+continuity `--fix`: он изменит номера, но не восстановит потерянное видео.
+
 В terminal media-server печатает только полезную playout-активность без
 Fastify access logs. Во время кодирования строка `[PLAYOUT] Encoding clip ...`
 обновляется раз в 5 секунд и сразу при смене ролика; она содержит имя ролика,
@@ -228,7 +239,7 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
-- electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.8 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
+- electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.10 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;

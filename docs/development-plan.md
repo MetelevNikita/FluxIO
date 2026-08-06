@@ -209,6 +209,25 @@
 - явный PCR PID и запас 2 ms удерживают фактический интервал ниже 40 ms;
 - реальный тест проверяет PCR в захваченном UDP MPEG-TS на профиле 1080p25.
 
+### 2.26. Transport bitrate verification after TSDuck
+
+Статус: завершён 2026-08-06. Отчёт: [`progress/02-26-transport-bitrate-v4.2.9.md`](progress/02-26-transport-bitrate-v4.2.9.md).
+
+- ручное значение передаётся в FFmpeg muxrate/pacing и TSDuck regulate;
+- реальный capture проверяет wall-clock и PCR-derived bitrate с допуском 2%;
+- сервер возвращает применённые bitrate и режим manual/auto в status;
+- Encoding Monitor отделяет applied TS bitrate от FFmpeg progress bitrate.
+
+### 2.27. UDP continuity hardening
+
+Статус: завершён 2026-08-06. Отчёт: [`progress/02-27-continuity-hardening-v4.2.10.md`](progress/02-27-continuity-hardening-v4.2.10.md).
+
+- loopback receive и endpoint send buffers увеличены до 4 MiB;
+- UDP output использует фиксированный burst 7 × 188 bytes;
+- TSDuck пассивно контролирует CC video/audio PID без маскирующего `--fix`;
+- UI показывает internal CC error counter;
+- реальный capture подтверждает ноль CC errors на конечном output.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

@@ -20,6 +20,7 @@ import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
   formatEncodingActivity,
   formatFrameProgressLog,
+  isTsdDuckContinuityWarning,
   PlayoutSupervisor,
   shouldReportEncodingActivity,
   usesTsdDuckTransport,
@@ -48,7 +49,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.8");
+    assert.equal(health.version, "4.2.10");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -60,7 +61,11 @@ test("GET /api/playout/status starts idle", async () => {
   try {
     const response = await app.inject({ method: "GET", url: "/api/playout/status" });
     assert.equal(response.statusCode, 200);
-    assert.equal(playoutStatusSchema.parse(response.json()).state, "idle");
+    const status = playoutStatusSchema.parse(response.json());
+    assert.equal(status.state, "idle");
+    assert.equal(status.transportBitrateBps, null);
+    assert.equal(status.transportBitrateMode, null);
+    assert.equal(status.continuityErrors, 0);
   } finally {
     await app.close();
   }
@@ -366,15 +371,16 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
     request,
   });
   const rendered = command.args.join(" ");
-  assert.match(rendered, /-I ip --local-address 127\.0\.0\.1 19001/);
+  assert.match(rendered, /-I ip --buffer-size 4194304 --local-address 127\.0\.0\.1 19001/);
   assert.match(rendered, /--add-registration 0x43554549/);
   assert.match(rendered, /--service 42/);
   assert.match(rendered, /--add-pid 500\/0x86/);
   assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
   assert.match(rendered, /pcradjust --bitrate \d+ --pid 256 --min-ms-interval 18/);
+  assert.match(rendered, /continuity --pid 256 --pid 257 --tag FluxIO-output/);
   assert.match(rendered, /regulate --bitrate \d+ --packet-burst 7/);
-  assert.match(rendered, /-O ip .*239\.1\.1\.1:5000/);
+  assert.match(rendered, /-O ip --buffer-size 4194304 --enforce-burst .*239\.1\.1\.1:5000/);
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
   assert.match(rendered, /--force-local-multicast-outgoing/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
@@ -398,6 +404,7 @@ test("CBR transport muxrate uses target bitrate and supports an explicit TS rate
   assert.match(rendered, /-muxrate 4500000/);
   assert.match(rendered, /bitrate=4500000/);
   assert.match(rendered, /burst_bits=10528/);
+  assert.match(rendered, /buffer_size=4194304/);
   assert.match(rendered, /nal-hrd=cbr/);
   assert.match(rendered, /filler=1/);
 });
@@ -499,7 +506,7 @@ test("plain UDP and SRT use TSDuck relay without adding SCTE-35 signaling", () =
   });
   const rendered = command.args.join(" ");
   assert.equal(usesTsdDuckTransport(request), true);
-  assert.match(rendered, /-I ip --local-address 127\.0\.0\.1 19002/);
+  assert.match(rendered, /-I ip --buffer-size 4194304 --local-address 127\.0\.0\.1 19002/);
   assert.match(rendered, /-O srt .*--caller 192\.0\.2\.20:9001/);
   assert.doesNotMatch(rendered, /\bpmt\b|spliceinject|splicemonitor/);
 
@@ -612,6 +619,15 @@ test("media-server console reports periodic encoding activity and clip changes",
     lastOutTimeSeconds: 5.5,
     outTimeSeconds: 5.6,
   }), true);
+});
+
+test("TSDuck continuity monitor warnings are recognized without masking errors", () => {
+  assert.equal(
+    isTsdDuckContinuityWarning("* Error: FluxIO-output: PID 256, missing 7 packets"),
+    true,
+  );
+  assert.equal(isTsdDuckContinuityWarning("FluxIO-output: continuity error on PID 257"), true);
+  assert.equal(isTsdDuckContinuityWarning("SCTE-35 cue emitted"), false);
 });
 
 test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT secrets", () => {
@@ -796,6 +812,7 @@ test(
           videoPid: 301,
           audioPid: 302,
           pcrPeriodMs: 26,
+          transportBitrateKbps: 12_000,
         },
       };
       request.logo = {
@@ -830,15 +847,27 @@ test(
         status.logs.some((line) => line.includes("PCR target 26 ms")),
         status.logs.slice(-10).join("\n"),
       );
+      assert.equal(status.transportBitrateBps, 12_000_000);
+      assert.equal(status.transportBitrateMode, "manual");
+      assert.equal(status.continuityErrors, 0);
+      assert.ok(
+        status.logs.some((line) => line.includes("transport target 12.000 Mbps (manual)")),
+        status.logs.slice(-10).join("\n"),
+      );
       assert.ok(
         Date.now() - wallStartedAt >= 2_300,
         "Playout must be paced close to the combined clip duration",
       );
       const muxRate = calculateTransportMuxRate(request);
       const transport = analyzeUdpTransport(udpDatagrams, 1.4);
+      assert.ok(
+        udpDatagrams.slice(0, -1).every(({ payload }) => payload.length === 1_316),
+        "Every UDP datagram during playout must contain exactly seven 188-byte TS packets",
+      );
+      assert.equal(udpDatagrams.at(-1)!.payload.length % 188, 0);
       assert.ok(transport.nullPackets > 0, "Expected PID 0x1FFF stuffing packets");
       assert.ok(
-        Math.abs(transport.averageBitrateBps - muxRate) / muxRate <= 0.08,
+        Math.abs(transport.averageBitrateBps - muxRate) / muxRate <= 0.02,
         `Expected ${muxRate} bps CBR transport, received ${transport.averageBitrateBps.toFixed(0)} bps`,
       );
       assert.ok(
@@ -846,11 +875,21 @@ test(
         `Transport spike at clip boundary: ${transport.boundaryBitrateBps.toFixed(0)} bps`,
       );
       await writeFile(capture, Buffer.concat(udpDatagrams.map(({ payload }) => payload)));
+      assert.deepEqual(
+        findContinuityCounterErrors(await readFile(capture)),
+        [],
+        "Final UDP capture must not contain video/audio continuity counter errors",
+      );
       const pcrIntervals = extractPcrIntervalsMs(await readFile(capture));
       assert.ok(pcrIntervals.length > 20, "Expected repeated PCR values in plain UDP capture");
       assert.ok(
         Math.max(...pcrIntervals) < 40,
         `PCR interval must remain below 40 ms; max=${Math.max(...pcrIntervals).toFixed(3)} ms`,
+      );
+      const pcrBitrateBps = estimatePcrBitrateBps(await readFile(capture));
+      assert.ok(
+        Math.abs(pcrBitrateBps - muxRate) / muxRate <= 0.02,
+        `PCR-derived bitrate must be ${muxRate} bps; received ${pcrBitrateBps.toFixed(0)} bps`,
       );
       const frameTypes = (await runCommand(capabilities.ffprobePath, [
         "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pict_type",
@@ -1323,6 +1362,88 @@ function extractPcrIntervalsMs(stream: Buffer): number[] {
     previousByPid.set(pid, value);
   }
   return intervals;
+}
+
+function findContinuityCounterErrors(stream: Buffer): Array<{
+  actual: number;
+  expected: number;
+  packetIndex: number;
+  pid: number;
+}> {
+  const packetSize = 188;
+  const previousByPid = new Map<number, number>();
+  const errors: Array<{
+    actual: number;
+    expected: number;
+    packetIndex: number;
+    pid: number;
+  }> = [];
+  for (let offset = 0; offset + packetSize <= stream.length; offset += packetSize) {
+    if (stream[offset] !== 0x47) continue;
+    const pid = ((stream[offset + 1]! & 0x1f) << 8) | stream[offset + 2]!;
+    if (pid === 0x1fff) continue;
+    const adaptationControl = (stream[offset + 3]! >> 4) & 0x03;
+    const hasPayload = adaptationControl === 1 || adaptationControl === 3;
+    if (!hasPayload) continue;
+    const continuityCounter = stream[offset + 3]! & 0x0f;
+    const adaptationLength = adaptationControl === 3 ? stream[offset + 4]! : 0;
+    const discontinuity = adaptationControl === 3 && adaptationLength > 0 &&
+      (stream[offset + 5]! & 0x80) !== 0;
+    const previous = previousByPid.get(pid);
+    if (previous != null && !discontinuity) {
+      const expected = (previous + 1) & 0x0f;
+      if (continuityCounter !== expected) {
+        errors.push({
+          actual: continuityCounter,
+          expected,
+          packetIndex: offset / packetSize,
+          pid,
+        });
+      }
+    }
+    previousByPid.set(pid, continuityCounter);
+  }
+  return errors;
+}
+
+function estimatePcrBitrateBps(stream: Buffer): number {
+  const packetSize = 188;
+  const wrap = (1n << 33n) * 300n;
+  const firstByPid = new Map<number, { packetIndex: number; value: bigint }>();
+  const lastByPid = new Map<number, { packetIndex: number; value: bigint }>();
+  for (let offset = 0; offset + packetSize <= stream.length; offset += packetSize) {
+    if (stream[offset] !== 0x47) continue;
+    const pid = ((stream[offset + 1]! & 0x1f) << 8) | stream[offset + 2]!;
+    const adaptationControl = (stream[offset + 3]! >> 4) & 0x03;
+    if (adaptationControl !== 2 && adaptationControl !== 3) continue;
+    const adaptationLength = stream[offset + 4]!;
+    if (adaptationLength < 7 || (stream[offset + 5]! & 0x10) === 0) continue;
+    const start = offset + 6;
+    const base =
+      (BigInt(stream[start]!) << 25n) |
+      (BigInt(stream[start + 1]!) << 17n) |
+      (BigInt(stream[start + 2]!) << 9n) |
+      (BigInt(stream[start + 3]!) << 1n) |
+      (BigInt(stream[start + 4]!) >> 7n);
+    const extension = (BigInt(stream[start + 4]! & 0x01) << 8n) |
+      BigInt(stream[start + 5]!);
+    const sample = { packetIndex: offset / packetSize, value: base * 300n + extension };
+    firstByPid.set(pid, firstByPid.get(pid) ?? sample);
+    lastByPid.set(pid, sample);
+  }
+  const estimates: number[] = [];
+  for (const [pid, first] of firstByPid) {
+    const last = lastByPid.get(pid);
+    if (!last || last.packetIndex <= first.packetIndex) continue;
+    const ticks = last.value >= first.value
+      ? last.value - first.value
+      : wrap - first.value + last.value;
+    if (ticks <= 0n) continue;
+    const packetBits = BigInt(last.packetIndex - first.packetIndex) * 188n * 8n;
+    estimates.push(Number(packetBits * 27_000_000n / ticks));
+  }
+  assert.ok(estimates.length > 0, "Expected PCR samples for bitrate estimation");
+  return median(estimates);
 }
 
 function median(values: number[]): number {

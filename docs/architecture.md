@@ -142,9 +142,18 @@ packets cue-секциями; UDP перед этим проходит PCR-ко�
 вычисляет запас по video peak и audio; ручной Transport bitrate проходит
 preflight и не может быть ниже безопасной вместимости payload.
 
+FFmpeg loopback send, TSDuck loopback receive и endpoint UDP send используют
+увеличенные socket buffers; output объединяет семь 188-byte TS packets в
+1316-byte datagram. Перед `regulate` пассивный TSDuck `continuity` проверяет
+video/audio PID. Он не переписывает CC: найденные gaps попадают в status и logs,
+а счётчик `Internal CC errors` позволяет отделить локальную ошибку от packet
+loss после сетевого адаптера.
+
 Каждый блок `-progress` добавляет в rolling Log Output количество переданных
 кадров, FPS, bitrate и output time. Это телеметрия FFmpeg, а не подтверждение
-приёма endpoint.
+приёма endpoint и не измерение конечного TS. Для UDP status отдельно содержит
+применённый сервером `transportBitrateBps` и режим `manual/auto`; эти значения
+одинаково передаются в FFmpeg muxrate/pacing и TSDuck fixed-bitrate `regulate`.
 
 При включённом `Repeat` supervisor после штатного завершения FFmpeg увеличивает `loopCount`, сбрасывает прогресс цикла и повторно запускает заранее проверенную команду с первого ролика. Это бесконечное расписание до команды Stop. Между двумя FFmpeg-процессами возможен короткий стык, поэтому бесшовный 24/7 loop остаётся задачей rolling scheduler.
 

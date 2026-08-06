@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v4.2.8**.
+Текущая версия: **v4.2.10**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -84,6 +84,8 @@ node setup.mjs
 - logo overlay;
 - HLS-preview реально вещаемой программы;
 - Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в UI и console logs; во время кодирования media-server печатает activity каждые 5 секунд и при смене ролика;
+- подтверждённый сервером `Applied TS bitrate` и режим `manual/auto` в Encoding Monitor;
+- `Internal CC errors`, пассивный TSDuck continuity monitor и увеличенные UDP socket buffers для диагностики packet loss;
 - живой 16:9 program preview и оставшееся время всего плейлиста в Broadcast;
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;
