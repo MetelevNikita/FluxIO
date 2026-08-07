@@ -49,6 +49,7 @@ export const initialBroadcastSettings: BroadcastSettings = {
   srtStreamId: "",
   rtmpServerUrl: "rtmp://127.0.0.1/live",
   rtmpStreamKey: "gruber-live",
+  ageTitleDurationSeconds: 10,
   logoEnabled: false,
   logoPath: "",
   logoPosition: "top-right",

@@ -236,37 +236,63 @@ export function App() {
 
   function restoreWorkspaceSnapshot(session: SavedWorkspaceSession) {
     const snapshot = session.snapshot;
+    const restoredSettings = {
+      ...initialBroadcastSettings,
+      ...snapshot.settings,
+    } as BroadcastSettings;
+    const hasPlaylistLogoAssignments = [...snapshot.currentPlaylist, ...snapshot.futurePlaylist]
+      .some((asset) => Boolean(asset.itemLogo));
+    const restoredAgeAssets = mapAgeAssetPaths(snapshot.ageLibrary?.imagePaths ?? []);
+    const restoreLegacyLogo = (items: MediaAsset[]) => (
+      !hasPlaylistLogoAssignments && restoredSettings.logoEnabled && restoredSettings.logoPath
+        ? assignChannelLogo(items, restoredSettings.logoPath, restoredSettings)
+        : items
+    );
+    const restoredCurrentPlaylist = restoreLegacyLogo(assignAgeAssets(
+      snapshot.currentPlaylist,
+      restoredAgeAssets,
+      restoredSettings.ageTitleDurationSeconds,
+    ));
+    const restoredFuturePlaylist = restoreLegacyLogo(assignAgeAssets(
+      snapshot.futurePlaylist,
+      restoredAgeAssets,
+      restoredSettings.ageTitleDurationSeconds,
+    ));
     const restoredAssets = snapshot.assets.length > 0
       ? snapshot.assets
-      : mergeAssets([], [...snapshot.currentPlaylist, ...snapshot.futurePlaylist]);
+      : mergeAssets([], [...restoredCurrentPlaylist, ...restoredFuturePlaylist]);
     const checkpointSelection = session.checkpoint && (
       session.checkpoint.interrupted ||
       ["starting", "running", "stopping"].includes(session.checkpoint.state)
     )
-      ? recoveryPointForPlaylist(snapshot.currentPlaylist, session.checkpoint)
+      ? recoveryPointForPlaylist(restoredCurrentPlaylist, session.checkpoint)
       : null;
     setAssets(restoredAssets);
-    setPlaylist(snapshot.currentPlaylist);
-    setFuturePlaylist(snapshot.futurePlaylist);
+    setPlaylist(restoredCurrentPlaylist);
+    setFuturePlaylist(restoredFuturePlaylist);
     setCurrentScheduleMetadata(snapshot.currentScheduleMetadata);
     setFutureScheduleMetadata(snapshot.futureScheduleMetadata);
-    setScheduleLogoPath(snapshot.scheduleLogoPath);
-    setScheduleLogoSource(snapshot.scheduleLogoSource);
+    setScheduleLogoPath(
+      snapshot.scheduleLogoPath || (restoredSettings.logoEnabled ? restoredSettings.logoPath : ""),
+    );
+    setScheduleLogoSource(
+      snapshot.scheduleLogoSource || (restoredSettings.logoEnabled ? restoredSettings.logoPath : ""),
+    );
     setAgeLibrary(snapshot.ageLibrary);
     setScheduleStartMarker(
-      snapshot.startMarker && snapshot.currentPlaylist.some(
+      snapshot.startMarker && restoredCurrentPlaylist.some(
         (asset) => asset.id === snapshot.startMarker?.assetId,
       )
         ? snapshot.startMarker
         : null,
     );
-    setSettings({ ...initialBroadcastSettings, ...snapshot.settings } as BroadcastSettings);
+    setSettings(restoredSettings);
     setActiveSchedule(checkpointSelection ? "current" : snapshot.activeSchedule);
     setSelectedAssetId(
       checkpointSelection?.asset.id ??
       snapshot.selectedAssetId ??
-      snapshot.currentPlaylist[0]?.id ??
-      snapshot.futurePlaylist[0]?.id ??
+      restoredCurrentPlaylist[0]?.id ??
+      restoredFuturePlaylist[0]?.id ??
       "",
     );
     setSavedWorkspaceSession(session);
@@ -278,7 +304,7 @@ export function App() {
           ? `Active playout reattached at ${formatClock(session.checkpoint.outTimeSeconds)}.`
           : `Session restored from ${new Date(session.updatedAt).toLocaleString()}.`,
     );
-    if (snapshot.currentPlaylist.length > 0 || snapshot.futurePlaylist.length > 0) {
+    if (restoredCurrentPlaylist.length > 0 || restoredFuturePlaylist.length > 0) {
       setView("playlist");
     }
   }
@@ -372,7 +398,9 @@ export function App() {
           scheduleLineNumber: item.lineNumber,
           ageTitle: ageText
             ? {
-                durationSeconds: 5,
+                durationSeconds: clampAgeDuration(
+                  item.ageTitleDurationSeconds ?? settings.ageTitleDurationSeconds,
+                ),
                 enabled: true,
                 filePath: ageAssets.get(ageText) ?? null,
                 text: ageText,
@@ -382,10 +410,10 @@ export function App() {
             ? {
                 enabled: true,
                 filePath: logoPath,
-                margin: 24,
-                opacity: 1,
-                position: "top-right" as const,
-                widthPercent: 12,
+                margin: settings.logoMargin,
+                opacity: settings.logoOpacity,
+                position: normalizeLogoPosition(settings.logoPosition),
+                widthPercent: settings.logoWidthPercent,
               }
             : undefined,
         } satisfies MediaAsset;
@@ -444,10 +472,14 @@ export function App() {
   }
 
   function addProbes(probes: MediaProbe[], slot: ScheduleSlot = "current") {
-    const imported = assignAgeAssets(
+    const ageAssigned = assignAgeAssets(
       probes.map(probeToAsset),
       mapAgeAssetPaths(ageLibrary?.imagePaths ?? []),
+      settings.ageTitleDurationSeconds,
     );
+    const imported = settings.logoEnabled && settings.logoPath
+      ? assignChannelLogo(ageAssigned, settings.logoPath, settings)
+      : ageAssigned;
     setAssets((current) => mergeAssets(current, imported));
     if (slot === "current") setPlaylist((current) => mergeAssets(current, imported));
     else setFuturePlaylist((current) => mergeAssets(current, imported));
@@ -514,6 +546,7 @@ export function App() {
     setFutureScheduleMetadata(null);
     setScheduleLogoPath("");
     setScheduleLogoSource("");
+    setSettings((current) => ({ ...current, logoEnabled: false, logoPath: "" }));
     setAgeLibrary(null);
     setScheduleStartMarker(null);
     setScheduleActionMessage(null);
@@ -618,7 +651,9 @@ export function App() {
       return {
         ...asset,
         ageTitle: {
-          durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+          durationSeconds: clampAgeDuration(
+            asset.ageTitle?.durationSeconds ?? settings.ageTitleDurationSeconds,
+          ),
           enabled: true,
           filePath: ageAssets.get(rating) ?? null,
           text: rating,
@@ -656,10 +691,10 @@ export function App() {
         itemLogo: {
           enabled: true,
           filePath,
-          margin: asset.itemLogo?.margin ?? 24,
-          opacity: asset.itemLogo?.opacity ?? 1,
-          position: asset.itemLogo?.position ?? "top-right",
-          widthPercent: asset.itemLogo?.widthPercent ?? 12,
+          margin: asset.itemLogo?.margin ?? settings.logoMargin,
+          opacity: asset.itemLogo?.opacity ?? settings.logoOpacity,
+          position: asset.itemLogo?.position ?? normalizeLogoPosition(settings.logoPosition),
+          widthPercent: asset.itemLogo?.widthPercent ?? settings.logoWidthPercent,
         },
       };
     }));
@@ -705,18 +740,70 @@ export function App() {
     setOperationError(null);
     setScheduleLogoPath(filePath);
     setScheduleLogoSource(source);
+    setSettings((current) => ({
+      ...current,
+      logoEnabled: true,
+      logoPath: filePath,
+    }));
     updateActivePlaylist((items) => items.map((asset) => ({
       ...asset,
       itemLogo: {
         enabled: asset.itemLogo?.enabled ?? true,
         filePath,
-        margin: asset.itemLogo?.margin ?? 24,
-        opacity: asset.itemLogo?.opacity ?? 1,
-        position: asset.itemLogo?.position ?? "top-right",
-        widthPercent: asset.itemLogo?.widthPercent ?? 12,
+        margin: asset.itemLogo?.margin ?? settings.logoMargin,
+        opacity: asset.itemLogo?.opacity ?? settings.logoOpacity,
+        position: asset.itemLogo?.position ?? normalizeLogoPosition(settings.logoPosition),
+        widthPercent: asset.itemLogo?.widthPercent ?? settings.logoWidthPercent,
       },
     })));
     setScheduleActionMessage(`Channel logo assigned to ${activeSchedule} schedule.`);
+  }
+
+  function updateAgeDuration(value: number) {
+    const durationSeconds = clampAgeDuration(value);
+    setSettings((current) => ({ ...current, ageTitleDurationSeconds: durationSeconds }));
+    const update = (items: MediaAsset[]) => items.map((asset) => asset.ageTitle
+      ? { ...asset, ageTitle: { ...asset.ageTitle, durationSeconds } }
+      : asset);
+    setPlaylist(update);
+    setFuturePlaylist(update);
+    setScheduleActionMessage(
+      `AGE duration set to ${durationSeconds}s for Current and Future schedules.`,
+    );
+  }
+
+  function updateScheduleLogoSettings(
+    patch: Partial<Pick<
+      BroadcastSettings,
+      "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+    >>,
+  ) {
+    const next = {
+      logoPosition: patch.logoPosition ?? settings.logoPosition,
+      logoWidthPercent: clampNumber(
+        patch.logoWidthPercent ?? settings.logoWidthPercent,
+        1,
+        50,
+      ),
+      logoMargin: Math.round(clampNumber(patch.logoMargin ?? settings.logoMargin, 0, 500)),
+      logoOpacity: clampNumber(patch.logoOpacity ?? settings.logoOpacity, 0.05, 1),
+    };
+    setSettings((current) => ({ ...current, ...next }));
+    const update = (items: MediaAsset[]) => items.map((asset) => asset.itemLogo
+      ? {
+          ...asset,
+          itemLogo: {
+            ...asset.itemLogo,
+            margin: next.logoMargin,
+            opacity: next.logoOpacity,
+            position: normalizeLogoPosition(next.logoPosition),
+            widthPercent: next.logoWidthPercent,
+          },
+        }
+      : asset);
+    setPlaylist(update);
+    setFuturePlaylist(update);
+    setScheduleActionMessage("Channel logo appearance updated for Current and Future schedules.");
   }
 
   async function selectAgeDirectory() {
@@ -724,8 +811,16 @@ export function App() {
     if (!selection) return;
     const ageAssets = mapAgeAssetPaths(selection.imagePaths);
     setAgeLibrary(selection);
-    setPlaylist((items) => assignAgeAssets(items, ageAssets));
-    setFuturePlaylist((items) => assignAgeAssets(items, ageAssets));
+    setPlaylist((items) => assignAgeAssets(
+      items,
+      ageAssets,
+      settings.ageTitleDurationSeconds,
+    ));
+    setFuturePlaylist((items) => assignAgeAssets(
+      items,
+      ageAssets,
+      settings.ageTitleDurationSeconds,
+    ));
     setOperationError(null);
     setScheduleActionMessage(
       `AGE folder loaded: ${ageAssets.size} rating graphic(s), filename markers updated.`,
@@ -751,7 +846,11 @@ export function App() {
           declaredDurationSeconds: asset.declaredDurationSeconds ?? asset.durationSeconds,
           filePath: asset.filePath,
           ageTitle: asset.ageTitle
-            ? { enabled: asset.ageTitle.enabled, text: asset.ageTitle.text }
+            ? {
+                durationSeconds: clampAgeDuration(asset.ageTitle.durationSeconds),
+                enabled: asset.ageTitle.enabled,
+                text: asset.ageTitle.text,
+              }
             : null,
           logoPath: asset.itemLogo?.enabled ? asset.itemLogo.filePath : null,
         })),
@@ -789,7 +888,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "5.0.4",
+        connection.kind === "ready" ? connection.health.version : "5.0.5",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -837,7 +936,19 @@ export function App() {
         sourceName = selection.filePath;
       }
       const profile = parseEncodingSettingsProfile(content);
-      setSettings(applyEncodingSettingsProfile(profile, initialBroadcastSettings));
+      const importedSettings = applyEncodingSettingsProfile(profile, initialBroadcastSettings);
+      setSettings(importedSettings);
+      if (importedSettings.logoEnabled && importedSettings.logoPath) {
+        setScheduleLogoPath(importedSettings.logoPath);
+        setScheduleLogoSource(importedSettings.logoPath);
+        const applyImportedLogo = (items: MediaAsset[]) => assignChannelLogo(
+          items,
+          importedSettings.logoPath,
+          importedSettings,
+        );
+        setPlaylist(applyImportedLogo);
+        setFuturePlaylist(applyImportedLogo);
+      }
       setSettingsProfileMessage(
         `Settings imported from ${sourceName}. SRT/RTMP secrets must be entered again.`,
       );
@@ -994,6 +1105,7 @@ export function App() {
               ? selectScheduleLogoFile
               : undefined}
             onUpdateItem={updatePlaylistItem}
+            ageDurationSeconds={settings.ageTitleDurationSeconds}
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
             scheduleBusy={mediaBusy}
@@ -1010,7 +1122,10 @@ export function App() {
             }
             scheduleLogoSource={scheduleLogoSource || scheduleLogoPath}
             scheduleLogoPath={scheduleLogoPath}
+            logoSettings={settings}
             scte35Defaults={settings}
+            onAgeDurationChange={updateAgeDuration}
+            onLogoSettingsChange={updateScheduleLogoSettings}
             onClearStartMarker={clearStartMarker}
             onStartFromItem={startFromPlaylistItem}
           />
@@ -1341,15 +1456,7 @@ function buildStartRequest(
           : 2,
       bitrateKbps: settings.audioBitrate,
     },
-    logo: settings.logoEnabled && settings.logoPath
-      ? {
-          filePath: settings.logoPath,
-          position: normalizeLogoPosition(settings.logoPosition),
-          widthPercent: settings.logoWidthPercent,
-          margin: settings.logoMargin,
-          opacity: settings.logoOpacity,
-        }
-      : null,
+    logo: null,
     endpoint,
     repeatPlaylist: settings.repeatSchedule,
     scte35: {
@@ -1586,6 +1693,7 @@ function mapAgeAssetPaths(imagePaths: string[]): Map<string, string> {
 function assignAgeAssets(
   playlist: MediaAsset[],
   ageAssets: Map<string, string>,
+  defaultDurationSeconds = 10,
 ): MediaAsset[] {
   return playlist.map((asset) => {
     const text = asset.ageTitle?.text ?? ageRatingFromFileName(asset.name);
@@ -1593,7 +1701,9 @@ function assignAgeAssets(
     return {
       ...asset,
       ageTitle: {
-        durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+        durationSeconds: clampAgeDuration(
+          asset.ageTitle?.durationSeconds ?? defaultDurationSeconds,
+        ),
         enabled: asset.ageTitle?.enabled ?? true,
         filePath: ageAssets.get(text) ?? asset.ageTitle?.filePath ?? null,
         text,
@@ -1602,11 +1712,41 @@ function assignAgeAssets(
   });
 }
 
+function clampAgeDuration(value: number): number {
+  return Math.round(clampNumber(value, 10, 60));
+}
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 function preferredLogoPath(imagePaths: string[]): string | null {
   return imagePaths.find((imagePath) => {
     const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
     return /^(?:logo|channel|brand)(?:[-_. ].*)?\.(?:png|webp|jpe?g)$/i.test(fileName);
   }) ?? imagePaths[0] ?? null;
+}
+
+function assignChannelLogo(
+  playlist: MediaAsset[],
+  filePath: string,
+  settings: Pick<
+    BroadcastSettings,
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+  >,
+): MediaAsset[] {
+  return playlist.map((asset) => ({
+    ...asset,
+    itemLogo: {
+      enabled: asset.itemLogo?.enabled ?? true,
+      filePath,
+      margin: settings.logoMargin,
+      opacity: settings.logoOpacity,
+      position: normalizeLogoPosition(settings.logoPosition),
+      widthPercent: settings.logoWidthPercent,
+    },
+  }));
 }
 
 function inferScheduleType(seconds: number): "movie" | "chop" | "clip" {

@@ -13,7 +13,9 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
 
   for (const item of schedule.items) {
     if (item.ageTitle?.enabled) {
-      lines.push(`insertAgeTitle {${item.ageTitle.text}}`);
+      lines.push(
+        `insertAgeTitle {${item.ageTitle.text}} duration {${item.ageTitle.durationSeconds}}`,
+      );
     }
     if (item.logoPath) {
       lines.push(`insertLogoTitle {${item.logoPath}}`);

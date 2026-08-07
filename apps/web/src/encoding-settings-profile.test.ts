@@ -13,6 +13,7 @@ test("encoding settings profile round-trips every portable setting and omits sec
     ...initialBroadcastSettings,
     protocol: "UDP",
     targetBitrate: 10.5,
+    ageTitleDurationSeconds: 30,
     udpHost: "239.20.20.20",
     udpPcrPeriodMs: 26,
     streamKey: "legacy-secret",
@@ -21,7 +22,7 @@ test("encoding settings profile round-trips every portable setting and omits sec
   };
   const profile = createEncodingSettingsProfile(
     source,
-    "5.0.4",
+    "5.0.5",
     new Date("2026-08-07T12:00:00.000Z"),
   );
   const serialized = serializeEncodingSettingsProfile(profile);
@@ -33,6 +34,7 @@ test("encoding settings profile round-trips every portable setting and omits sec
   );
   assert.equal(restored.protocol, "UDP");
   assert.equal(restored.targetBitrate, 10.5);
+  assert.equal(restored.ageTitleDurationSeconds, 30);
   assert.equal(restored.udpHost, "239.20.20.20");
   assert.equal(restored.udpPcrPeriodMs, 26);
   assert.equal(restored.srtPassphrase, "");

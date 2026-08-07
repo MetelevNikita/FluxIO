@@ -61,7 +61,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.4");
+    assert.equal(health.version, "5.0.5");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -296,7 +296,7 @@ test("production API accepts Electron file origin preflight", async () => {
 test("schedule parser reads rundown metadata, overlays and 168-hour variance", () => {
   const schedule = parseScheduleText([
     "start on 12:00:00.00 - delay 5",
-    "insertAgeTitle {16+}",
+    "insertAgeTitle {16+} duration {25}",
     "insertLogoTitle {C:\\\\branding\\channel.png}movie 00:06:00.00 \\\\utv2\\films\\one.mp4",
     "chop 00:00:10.00 \\\\utv2\\bumpers\\ident.mp4",
     "clip 00:01:00.00 \\\\utv2\\clips\\short.mp4",
@@ -306,6 +306,7 @@ test("schedule parser reads rundown metadata, overlays and 168-hour variance", (
   assert.equal(schedule.delaySeconds, 5);
   assert.equal(schedule.items.length, 3);
   assert.equal(schedule.items[0]?.ageTitle, "16+");
+  assert.equal(schedule.items[0]?.ageTitleDurationSeconds, 25);
   assert.equal(schedule.items[0]?.logoPath, "C:\\\\branding\\channel.png");
   assert.equal(schedule.items[0]?.filePath, "\\\\utv2\\films\\one.mp4");
   assert.equal(schedule.items[1]?.ageTitle, null);
@@ -322,6 +323,23 @@ test("schedule parser warns about type timing and rejects missing header", () =>
   assert.throws(
     () => parseScheduleText("clip 00:01:00.00 /media/clip.mp4"),
     ScheduleParseError,
+  );
+});
+
+test("schedule parser defaults legacy AGE duration and validates the supported range", () => {
+  const parsed = parseScheduleText([
+    "start on 12:00:00.00 - delay 0",
+    "insertAgeTitle {6+}",
+    "clip 00:01:00.00 /media/clip [6+].mp4",
+  ].join("\n"));
+  assert.equal(parsed.items[0]?.ageTitleDurationSeconds, 10);
+  assert.throws(
+    () => parseScheduleText([
+      "start on 12:00:00.00 - delay 0",
+      "insertAgeTitle {6+} duration {9}",
+      "clip 00:01:00.00 /media/clip.mp4",
+    ].join("\n")),
+    /10 to 60 seconds/,
   );
 });
 
@@ -363,14 +381,14 @@ test("schedule serializer preserves reordered items and enabled AGE/LOGO markup"
         type: "clip",
         declaredDurationSeconds: 60.25,
         filePath: "\\\\utv2\\clips\\Trip [16+].mp4",
-        ageTitle: { enabled: true, text: "16+" },
+        ageTitle: { durationSeconds: 25, enabled: true, text: "16+" },
         logoPath: "C:\\FluxIO\\logo.png",
       },
       {
         type: "chop",
         declaredDurationSeconds: 10,
         filePath: "C:\\media\\ident.mp4",
-        ageTitle: { enabled: false, text: "6+" },
+        ageTitle: { durationSeconds: 10, enabled: false, text: "6+" },
         logoPath: null,
       },
     ],
@@ -378,7 +396,7 @@ test("schedule serializer preserves reordered items and enabled AGE/LOGO markup"
 
   assert.equal(serialized.extension, "air");
   assert.match(serialized.content, /^start on 12:00:00\.00 - delay 5\r\n/);
-  assert.match(serialized.content, /insertAgeTitle \{16\+\}\r\ninsertLogoTitle \{C:\\FluxIO\\logo\.png\}/);
+  assert.match(serialized.content, /insertAgeTitle \{16\+\} duration \{25\}\r\ninsertLogoTitle \{C:\\FluxIO\\logo\.png\}/);
   assert.match(serialized.content, /clip 00:01:00\.25 \\\\utv2\\clips\\Trip \[16\+\]\.mp4/);
   assert.doesNotMatch(serialized.content, /insertAgeTitle \{6\+\}/);
   assert.match(serialized.content, /chop 00:00:10\.00 C:\\media\\ident\.mp4\r\n$/);
@@ -398,7 +416,7 @@ test("POST /api/schedule/serialize returns editable .txt content", async () => {
           type: "movie",
           declaredDurationSeconds: 360,
           filePath: "/media/movie [12+].mp4",
-          ageTitle: { enabled: true, text: "12+" },
+          ageTitle: { durationSeconds: 10, enabled: true, text: "12+" },
           logoPath: "/branding/logo.png",
         }],
       },

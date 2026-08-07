@@ -662,10 +662,10 @@ p {
 }
 
 .schedule-resource-toolbar {
-  min-height: 92px;
+  min-height: 136px;
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: 170px minmax(150px, 1fr) minmax(150px, 1fr) 220px 230px minmax(270px, 1.2fr);
+  grid-template-columns: 160px minmax(320px, 1.5fr) minmax(180px, 0.8fr) 205px 215px minmax(260px, 1.2fr);
   gap: 10px;
   align-items: stretch;
   border-bottom: 1px solid var(--border);
@@ -758,6 +758,73 @@ p {
   display: flex;
   gap: 5px;
   align-items: center;
+}
+
+.logo-source-control {
+  justify-content: flex-start;
+}
+
+.schedule-source-actions button {
+  flex: 1;
+}
+
+.logo-appearance-controls {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px !important;
+}
+
+.logo-appearance-controls label,
+.age-duration-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.logo-appearance-controls label {
+  justify-content: space-between;
+}
+
+.logo-appearance-controls label > span,
+.age-duration-control > span {
+  overflow: hidden;
+  color: var(--muted-dark);
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logo-appearance-controls label > span b {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.logo-appearance-controls select {
+  min-width: 88px;
+  max-width: 96px;
+}
+
+.logo-appearance-controls input[type="number"],
+.age-duration-control input {
+  width: 54px;
+  min-height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 5px;
+  color: var(--text);
+  background: var(--surface-strong);
+  font-size: 8px;
+}
+
+.logo-appearance-controls input[type="range"] {
+  min-width: 70px;
+  width: 82px;
+  accent-color: var(--accent);
+}
+
+.age-duration-control {
+  justify-content: space-between;
 }
 
 .schedule-resource-toolbar button,
@@ -2633,7 +2700,7 @@ input[type="range"] {
   }
 
   .schedule-resource-toolbar {
-    grid-template-columns: repeat(6, minmax(185px, 1fr));
+    grid-template-columns: 185px 340px 190px 220px 230px 270px;
     overflow-x: auto;
   }
 

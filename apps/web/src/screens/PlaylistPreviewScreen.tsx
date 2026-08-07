@@ -46,9 +46,14 @@ interface PlaylistPreviewScreenProps {
   currentCount: number;
   futureCount: number;
   scheduleMetadata: ScheduleMetadata | null;
+  ageDurationSeconds: number;
   ageLibrary: ScheduleOverlayLibrary | null;
   scheduleLogoSource: string;
   scheduleLogoPath: string;
+  logoSettings: Pick<
+    BroadcastSettings,
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+  >;
   scheduleActionMessage: string | null;
   scheduleBusy: boolean;
   workspaceBusy: boolean;
@@ -63,6 +68,11 @@ interface PlaylistPreviewScreenProps {
   onMoveItem: (sourceId: string, targetId: string) => void;
   onBulkAgeChange: (assetIds: string[], rating: string | null) => void;
   onBulkLogoChange: (assetIds: string[], enabled: boolean) => void;
+  onAgeDurationChange: (durationSeconds: number) => void;
+  onLogoSettingsChange: (patch: Partial<Pick<
+    BroadcastSettings,
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+  >>) => void;
   onRemoveItem: (assetId: string) => void;
   onRemoveScte35Marker: (assetId: string, markerId: string) => void;
   onSelectAsset: (assetId: string) => void;
@@ -88,9 +98,11 @@ export function PlaylistPreviewScreen({
   currentCount,
   futureCount,
   scheduleMetadata,
+  ageDurationSeconds,
   ageLibrary,
   scheduleLogoSource,
   scheduleLogoPath,
+  logoSettings,
   scheduleActionMessage,
   scheduleBusy,
   workspaceBusy,
@@ -105,6 +117,8 @@ export function PlaylistPreviewScreen({
   onMoveItem,
   onBulkAgeChange,
   onBulkLogoChange,
+  onAgeDurationChange,
+  onLogoSettingsChange,
   onRemoveItem,
   onRemoveScte35Marker,
   onSelectAsset,
@@ -385,13 +399,67 @@ export function PlaylistPreviewScreen({
           <strong title={scheduleLogoSource || undefined}>
             {shortPath(scheduleLogoSource) || "Not selected"}
           </strong>
-          <div>
+          <div className="schedule-source-actions">
             <button disabled={!onSelectScheduleLogoFile || scheduleBusy} onClick={() => void onSelectScheduleLogoFile?.()} type="button">
               <Image size={13} /> File
             </button>
             <button disabled={!onSelectScheduleLogoDirectory || scheduleBusy} onClick={() => void onSelectScheduleLogoDirectory?.()} type="button">
               <FolderOpen size={13} /> Folder
             </button>
+          </div>
+          <div className="logo-appearance-controls">
+            <label>
+              <span>Position</span>
+              <select
+                aria-label="Channel logo position"
+                onChange={(event) => onLogoSettingsChange({ logoPosition: event.target.value })}
+                value={logoSettings.logoPosition}
+              >
+                <option value="top-left">Top left</option>
+                <option value="top-right">Top right</option>
+                <option value="bottom-left">Bottom left</option>
+                <option value="bottom-right">Bottom right</option>
+                <option value="center">Center</option>
+              </select>
+            </label>
+            <label>
+              <span>Width <b>{logoSettings.logoWidthPercent}%</b></span>
+              <input
+                aria-label="Channel logo width percent"
+                max={50}
+                min={1}
+                onChange={(event) => onLogoSettingsChange({
+                  logoWidthPercent: Number(event.target.value),
+                })}
+                type="range"
+                value={logoSettings.logoWidthPercent}
+              />
+            </label>
+            <label>
+              <span>Margin</span>
+              <input
+                aria-label="Channel logo margin pixels"
+                defaultValue={logoSettings.logoMargin}
+                key={`logo-margin-${logoSettings.logoMargin}`}
+                max={500}
+                min={0}
+                onBlur={(event) => onLogoSettingsChange({ logoMargin: Number(event.target.value) })}
+                type="number"
+              />
+            </label>
+            <label>
+              <span>Opacity <b>{Math.round(logoSettings.logoOpacity * 100)}%</b></span>
+              <input
+                aria-label="Channel logo opacity percent"
+                max={100}
+                min={5}
+                onChange={(event) => onLogoSettingsChange({
+                  logoOpacity: Number(event.target.value) / 100,
+                })}
+                type="range"
+                value={Math.round(logoSettings.logoOpacity * 100)}
+              />
+            </label>
           </div>
         </div>
         <div className="schedule-resource-control age-source-control">
@@ -404,6 +472,18 @@ export function PlaylistPreviewScreen({
           <button disabled={!onSelectAgeDirectory || scheduleBusy} onClick={() => void onSelectAgeDirectory?.()} type="button">
             <FolderOpen size={13} /> Select folder
           </button>
+          <label className="age-duration-control">
+            <span>Duration, sec</span>
+            <input
+              aria-label="AGE overlay duration seconds"
+              defaultValue={ageDurationSeconds}
+              key={`age-duration-${ageDurationSeconds}`}
+              max={60}
+              min={10}
+              onBlur={(event) => onAgeDurationChange(Number(event.target.value))}
+              type="number"
+            />
+          </label>
         </div>
         <div className="schedule-save-control">
           <span>Export edited schedule</span>
@@ -620,7 +700,7 @@ export function PlaylistPreviewScreen({
                       }
                       onUpdateItem(asset.id, {
                         ageTitle: {
-                          durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+                          durationSeconds: asset.ageTitle?.durationSeconds ?? ageDurationSeconds,
                           enabled: true,
                           filePath: ageAssetPaths.get(rating) ?? null,
                           text: rating,

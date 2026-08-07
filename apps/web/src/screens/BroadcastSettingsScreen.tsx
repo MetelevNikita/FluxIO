@@ -6,7 +6,6 @@ import {
   EyeOff,
   FlagTriangleRight,
   Grid2X2,
-  Image as ImageIcon,
   LockKeyhole,
   MapPin,
   Radio,
@@ -82,13 +81,6 @@ export function BroadcastSettingsScreen({
     onSettingsChange({ ...settings, [key]: value });
   }
 
-  async function selectLogo() {
-    const filePath = await window.gruberDesktop?.selectLogoFile();
-    if (filePath) {
-      onSettingsChange({ ...settings, logoEnabled: true, logoPath: filePath });
-    }
-  }
-
   const active = playoutStatus
     ? ["starting", "running", "stopping"].includes(playoutStatus.state)
     : false;
@@ -102,7 +94,7 @@ export function BroadcastSettingsScreen({
           <div>
             <h1>Encoding Settings</h1>
             <p>
-              Configure video, audio, branding, and streaming parameters for
+              Configure video, audio, transport, and streaming parameters for
               your broadcast pipeline.
             </p>
           </div>
@@ -430,55 +422,6 @@ export function BroadcastSettingsScreen({
           <div className="range-extremes">
             <span>64 kbps</span>
             <span>320 kbps</span>
-          </div>
-        </SettingsCard>
-
-        <SettingsCard
-          headerAction={
-            <ToggleField
-              checked={settings.logoEnabled}
-              compact
-              label="Enabled"
-              onChange={(checked) => update("logoEnabled", checked)}
-            />
-          }
-          icon={<ImageIcon size={16} />}
-          title="Logo Overlay"
-        >
-          <TextField
-            actionLabel="Browse"
-            disabled={!settings.logoEnabled}
-            label="Logo image (PNG/WebP/JPEG)"
-            onAction={() => void selectLogo()}
-            onChange={(value) => update("logoPath", value)}
-            value={settings.logoPath}
-          />
-          <SelectField
-            disabled={!settings.logoEnabled}
-            label="Position"
-            onChange={(value) => update("logoPosition", value)}
-            options={["top-left", "top-right", "bottom-left", "bottom-right", "center"]}
-            value={settings.logoPosition}
-          />
-          <RangeField
-            label="Logo width"
-            max={50}
-            min={1}
-            onChange={(value) => update("logoWidthPercent", value)}
-            suffix={`${settings.logoWidthPercent}%`}
-            value={settings.logoWidthPercent}
-          />
-          <div className="two-column-fields">
-            <NumberField
-              label="Margin (px)"
-              onChange={(value) => update("logoMargin", value)}
-              value={settings.logoMargin}
-            />
-            <NumberField
-              label="Opacity (%)"
-              onChange={(value) => update("logoOpacity", Math.min(1, Math.max(0.05, value / 100)))}
-              value={Math.round(settings.logoOpacity * 100)}
-            />
           </div>
         </SettingsCard>
 

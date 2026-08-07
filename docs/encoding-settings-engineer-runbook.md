@@ -1,6 +1,6 @@
 # Перенос Encoding Settings через `.txt`
 
-Применимо к FluxIO **v5.0.4**.
+Применимо к FluxIO **v5.0.5**.
 
 ## 1. Назначение
 
@@ -16,7 +16,7 @@
 - audio codec, sample rate, channels и bitrate;
 - выбранный UDP/SRT/RTMP/RTMPS protocol и его несекретные параметры;
 - UDP interface, service metadata, PID, PCR и transport bitrate;
-- logo overlay, Repeat и SCTE-35 planner defaults.
+- AGE duration, logo appearance, Repeat и SCTE-35 planner defaults.
 
 Путь логотипа и IP выбранного сетевого интерфейса сохраняются буквально. После
 переноса на другой компьютер проверьте, что файл логотипа существует, а такой
@@ -36,7 +36,7 @@
 ## 4. Сохранение
 
 1. Открыть **Broadcast Settings**.
-2. Настроить encoder, audio, output и SCTE-35.
+2. Настроить encoder, audio, output и SCTE-35; AGE/LOGO находятся в Playlist.
 3. В панели **Encoding settings profile** нажать **Save .TXT**.
 4. Выбрать каталог и имя файла.
 
@@ -53,8 +53,10 @@ FluxIO предлагает имя вида
 6. Для SRT/RTMP повторно ввести passphrase/stream key.
 7. Перед production-запуском выполнить тест на резервном endpoint.
 
-Импорт заменяет текущие настройки Broadcast целиком. Playlist и медиафайлы при
-этом не меняются.
+Импорт заменяет текущие настройки encoder/output целиком. Если профиль содержит
+включённый logo path, FluxIO также назначает этот логотип материалам Current и
+Future с сохранёнными position/width/margin/opacity. Медиафайлы и порядок
+Playlist не меняются.
 
 ## 6. Проверка файла
 

@@ -119,6 +119,7 @@ export interface BroadcastSettings {
   srtStreamId: string;
   rtmpServerUrl: string;
   rtmpStreamKey: string;
+  ageTitleDurationSeconds: number;
   logoEnabled: boolean;
   logoPath: string;
   logoPosition: string;

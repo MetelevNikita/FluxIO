@@ -89,6 +89,7 @@ export const portableEncodingSettingsSchema = z.object({
   srtLatencyMs: z.number().int().min(20).max(60_000),
   srtStreamId: profileTextSchema,
   rtmpServerUrl: profileTextSchema,
+  ageTitleDurationSeconds: z.number().int().min(10).max(60).default(10),
   logoEnabled: z.boolean(),
   logoPath: profileTextSchema,
   logoPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center"]),
@@ -249,6 +250,7 @@ export const parsedScheduleItemSchema = z.object({
   declaredDuration: z.string().min(1),
   filePath: z.string().min(1),
   ageTitle: z.string().nullable(),
+  ageTitleDurationSeconds: z.number().int().min(10).max(60).nullable(),
   logoPath: z.string().nullable(),
   lineNumber: z.number().int().positive(),
   warnings: z.array(z.string()),
@@ -280,6 +282,7 @@ export const scheduleExportItemSchema = z.object({
     text: z.string().trim().min(1).max(32).refine((value) => !/[\r\n{}]/.test(value), {
       message: "AGE title must not contain braces or line breaks",
     }),
+    durationSeconds: z.number().int().min(10).max(60).default(10),
   }).nullable().optional(),
   logoPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "Logo path must not contain braces or line breaks",

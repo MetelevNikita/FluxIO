@@ -23,7 +23,7 @@ export const initialAssets: MediaAsset[] = [
     sha256: "b18a0e...9c22",
     scheduleType: "clip",
     declaredDurationSeconds: 252,
-    ageTitle: { durationSeconds: 5, enabled: true, text: "16+" },
+    ageTitle: { durationSeconds: 10, enabled: true, text: "16+" },
     itemLogo: {
       enabled: true,
       filePath: "/MEDIA/BRANDING/channel.png",
@@ -54,7 +54,7 @@ export const initialAssets: MediaAsset[] = [
     sha256: "f82c31...117a",
     scheduleType: "movie",
     declaredDurationSeconds: 4_445,
-    ageTitle: { durationSeconds: 5, enabled: true, text: "16+" },
+    ageTitle: { durationSeconds: 10, enabled: true, text: "16+" },
   },
   {
     id: "production",

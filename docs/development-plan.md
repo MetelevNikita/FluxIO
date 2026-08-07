@@ -283,6 +283,16 @@
 - блокировка импорта во время активного playout;
 - исправление переполнения текста карточки Schedule resources.
 
+### 3.6. AGE duration и перенос LOGO в Playlist v5.0.5
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-06-age-logo-playlist-v5.0.5.md`](progress/03-06-age-logo-playlist-v5.0.5.md).
+
+- автоматическое сопоставление `[0+]`…`[18+]` с файлами AGE-папки;
+- длительность AGE от 10 до 60 секунд для Current/Future;
+- обратимо совместимая разметка `insertAgeTitle {rating} duration {seconds}`;
+- position/width/margin/opacity логотипа перенесены из Broadcast в Playlist;
+- исключено двойное наложение channel logo в FFmpeg program output.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

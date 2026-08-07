@@ -11,7 +11,7 @@ const targetDurationSeconds = 7 * 24 * 60 * 60;
 const maximumScheduleBytes = 5 * 1024 * 1024;
 const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*delay\s+(\d+(?:\.\d+)?)\s*$/i;
 const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
-const agePattern = /^insertAgeTitle\s*\{([^}]*)\}\s*$/i;
+const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
 
 export class ScheduleParseError extends Error {}
@@ -59,6 +59,7 @@ export function parseScheduleText(
   let startSeconds = 0;
   let delaySeconds = 0;
   let pendingAgeTitle: string | null = null;
+  let pendingAgeTitleDurationSeconds: number | null = null;
   let pendingLogoPath: string | null = null;
   const items: ParsedScheduleItem[] = [];
   const warnings: string[] = [];
@@ -82,6 +83,7 @@ export function parseScheduleText(
     const age = line.match(agePattern);
     if (age) {
       pendingAgeTitle = requiredDirectiveValue(age[1], "insertAgeTitle", entry.lineNumber);
+      pendingAgeTitleDurationSeconds = parseAgeDuration(age[2], entry.lineNumber);
       continue;
     }
     const logo = line.match(logoPattern);
@@ -107,6 +109,9 @@ export function parseScheduleText(
       const itemWarnings = validateTypeDuration(type, declaredDurationSeconds, entry.lineNumber);
       items.push({
         ageTitle: pendingAgeTitle,
+        ageTitleDurationSeconds: pendingAgeTitle
+          ? pendingAgeTitleDurationSeconds ?? 10
+          : null,
         declaredDuration,
         declaredDurationSeconds,
         filePath,
@@ -117,6 +122,7 @@ export function parseScheduleText(
       });
       warnings.push(...itemWarnings);
       pendingAgeTitle = null;
+      pendingAgeTitleDurationSeconds = null;
       pendingLogoPath = null;
       continue;
     }
@@ -185,6 +191,17 @@ function requiredDirectiveValue(
   const result = value?.trim() ?? "";
   if (!result) throw new ScheduleParseError(`Line ${lineNumber}: ${directive} value is empty`);
   return result;
+}
+
+function parseAgeDuration(value: string | undefined, lineNumber: number): number | null {
+  if (value === undefined) return null;
+  const duration = Number(value);
+  if (!Number.isInteger(duration) || duration < 10 || duration > 60) {
+    throw new ScheduleParseError(
+      `Line ${lineNumber}: AGE duration must be an integer from 10 to 60 seconds`,
+    );
+  }
+  return duration;
 }
 
 function validateTypeDuration(
