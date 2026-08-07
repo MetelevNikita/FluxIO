@@ -476,6 +476,11 @@ export const workspaceOverlayLibrarySchema = z.object({
   imagePaths: z.array(z.string().min(1)).max(100),
 });
 
+export const scheduleStartMarkerSchema = z.object({
+  assetId: z.string().min(1),
+  updatedAt: z.iso.datetime(),
+});
+
 const workspaceSettingValueSchema = z.union([
   z.string(),
   z.number(),
@@ -494,6 +499,7 @@ export const workspaceSessionSnapshotSchema = z.object({
   scheduleLogoPath: z.string(),
   scheduleLogoSource: z.string(),
   ageLibrary: workspaceOverlayLibrarySchema.nullable(),
+  startMarker: scheduleStartMarkerSchema.nullable().default(null),
   settings: z.record(z.string(), workspaceSettingValueSchema),
 });
 
@@ -569,6 +575,7 @@ export type StartPlayoutRequest = z.infer<typeof startPlayoutRequestSchema>;
 export type PlayoutStatus = z.infer<typeof playoutStatusSchema>;
 export type WorkspaceSessionAsset = z.infer<typeof workspaceSessionAssetSchema>;
 export type WorkspaceSessionSnapshot = z.infer<typeof workspaceSessionSnapshotSchema>;
+export type ScheduleStartMarker = z.infer<typeof scheduleStartMarkerSchema>;
 export type WorkspaceSessionCheckpoint = z.infer<typeof workspaceSessionCheckpointSchema>;
 export type WorkspaceSessionSaveRequest = z.infer<typeof workspaceSessionSaveRequestSchema>;
 export type SavedWorkspaceSession = z.infer<typeof savedWorkspaceSessionSchema>;

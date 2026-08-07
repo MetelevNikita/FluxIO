@@ -33,6 +33,11 @@ export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
 export type PlayoutEventSink = (entry: string) => void;
 
+interface PreparedRequest {
+  items: PreparedPlayoutItem[];
+  request: StartPlayoutRequest;
+}
+
 export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
   return request.endpoint.protocol === "udp" || request.endpoint.protocol === "srt";
 }
@@ -59,6 +64,7 @@ export class PlayoutSupervisor {
   #lastLoggedFrame = -1;
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
+  #takeInProgress = false;
   #eventSink: PlayoutEventSink | null;
 
   constructor(
@@ -83,6 +89,40 @@ export class PlayoutSupervisor {
   }
 
   async start(request: StartPlayoutRequest): Promise<PlayoutStatus> {
+    if (this.#takeInProgress) {
+      throw new PlayoutConflictError("A hot take is already in progress");
+    }
+    return this.#startPrepared(request);
+  }
+
+  async take(request: StartPlayoutRequest): Promise<PlayoutStatus> {
+    if (this.#takeInProgress) {
+      throw new PlayoutConflictError("A hot take is already in progress");
+    }
+    const active = Boolean(this.#child || this.#tsduckChild) ||
+      ["starting", "running", "stopping"].includes(this.#status.state);
+    if (!active) return this.start(request);
+
+    this.#takeInProgress = true;
+    try {
+      // Validate and probe the replacement before interrupting the on-air process.
+      const prepared = await this.#prepareRequest(request);
+      this.#appendEvent(`Hot take requested from clip "${request.playlist[0]?.name ?? "unknown"}"`);
+      await this.stop();
+      await waitForPlayoutStop(() => Boolean(this.#child || this.#tsduckChild) ||
+        ["starting", "running", "stopping"].includes(this.#status.state));
+      const status = await this.#startPrepared(request, prepared);
+      this.#appendEvent(`Hot take is on air from clip "${request.playlist[0]?.name ?? "unknown"}"`);
+      return status;
+    } finally {
+      this.#takeInProgress = false;
+    }
+  }
+
+  async #startPrepared(
+    request: StartPlayoutRequest,
+    prepared?: PreparedRequest,
+  ): Promise<PlayoutStatus> {
     if (
       this.#child ||
       this.#tsduckChild ||
@@ -115,17 +155,10 @@ export class PlayoutSupervisor {
     };
 
     try {
-      const capabilities = await this.capabilities.get();
-      validateCapabilities(capabilities, request);
-      if (usesTsdDuckTransport(request)) {
-        await this.tsduckCapabilities.getVersion();
-        if (request.endpoint.protocol === "srt") {
-          await this.tsduckCapabilities.assertSrtSupport();
-        }
-      }
-      const resolvedRequest = await resolveLogos(request);
+      const next = prepared ?? await this.#prepareRequest(request);
+      const resolvedRequest = next.request;
       this.#request = resolvedRequest;
-      this.#items = await prepareItems(resolvedRequest, this.capabilities.ffprobePath);
+      this.#items = next.items;
       await rm(this.previewDirectory, { force: true, recursive: true });
       await mkdir(this.previewDirectory, { recursive: true });
       await this.#prepareLoopCommands();
@@ -157,6 +190,22 @@ export class PlayoutSupervisor {
       this.#appendEvent(`Start failed: ${this.#status.error}`);
       throw error;
     }
+  }
+
+  async #prepareRequest(request: StartPlayoutRequest): Promise<PreparedRequest> {
+    const capabilities = await this.capabilities.get();
+    validateCapabilities(capabilities, request);
+    if (usesTsdDuckTransport(request)) {
+      await this.tsduckCapabilities.getVersion();
+      if (request.endpoint.protocol === "srt") {
+        await this.tsduckCapabilities.assertSrtSupport();
+      }
+    }
+    const resolvedRequest = await resolveLogos(request);
+    return {
+      items: await prepareItems(resolvedRequest, this.capabilities.ffprobePath),
+      request: resolvedRequest,
+    };
   }
 
   async stop(): Promise<PlayoutStatus> {
@@ -893,6 +942,20 @@ function formatClock(seconds: number): string {
   return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+export async function waitForPlayoutStop(
+  isActive: () => boolean,
+  timeoutMs = 8_000,
+  pollIntervalMs = 25,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (isActive()) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out while stopping the active playout for a hot take");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
 }
 
 function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {

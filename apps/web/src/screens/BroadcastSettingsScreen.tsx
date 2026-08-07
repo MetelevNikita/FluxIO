@@ -7,6 +7,7 @@ import {
   Grid2X2,
   Image as ImageIcon,
   LockKeyhole,
+  MapPin,
   Radio,
   Repeat2,
   Rows3,
@@ -18,6 +19,7 @@ import type {
   FfmpegCapabilities,
   NetworkInterfaceInfo,
   PlayoutStatus,
+  ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
@@ -34,6 +36,8 @@ interface BroadcastSettingsScreenProps {
   playlistLength: number;
   playoutStatus: PlayoutStatus | null;
   recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
+  scheduleStartMarker: ScheduleStartMarker | null;
+  scheduleStartItemName: string | null;
   scte35MarkerCount: number;
   settings: BroadcastSettings;
   onSettingsChange: (settings: BroadcastSettings) => void;
@@ -54,6 +58,8 @@ export function BroadcastSettingsScreen({
   playlistLength,
   playoutStatus,
   recoveryCheckpoint,
+  scheduleStartMarker,
+  scheduleStartItemName,
   scte35MarkerCount,
   settings,
   onSettingsChange,
@@ -123,7 +129,11 @@ export function BroadcastSettingsScreen({
                 onClick={onStart}
                 type="button"
               >
-                <Radio size={15} /> {recoveryCheckpoint ? "Resume Stream" : "Start Stream"}
+                <Radio size={15} /> {recoveryCheckpoint
+                  ? "Resume Stream"
+                  : scheduleStartMarker
+                    ? "Start from Marker"
+                    : "Start Stream"}
               </button>
             )}
           </div>
@@ -138,6 +148,18 @@ export function BroadcastSettingsScreen({
                 {" · "}{formatMonitorTime(recoveryCheckpoint.outTimeSeconds)} elapsed
                 {" · "}{recoveryCheckpoint.progressPercent.toFixed(1)}%
               </span>
+            </div>
+            <button disabled={active} onClick={onStartFresh} type="button">
+              Start from beginning
+            </button>
+          </div>
+        ) : null}
+
+        {!recoveryCheckpoint && scheduleStartMarker ? (
+          <div className="recovery-resume-banner schedule-start-banner" role="status">
+            <div>
+              <strong><MapPin size={14} /> Schedule start clip selected</strong>
+              <span>{scheduleStartItemName ?? scheduleStartMarker.assetId}</span>
             </div>
             <button disabled={active} onClick={onStartFresh} type="button">
               Start from beginning

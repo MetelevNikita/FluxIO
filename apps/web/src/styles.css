@@ -785,6 +785,13 @@ p {
   border-color: rgba(255, 102, 102, 0.45);
   color: var(--danger);
 }
+.schedule-session-control .schedule-start-clear {
+  min-height: 19px;
+  justify-content: flex-start;
+  border-color: rgba(56, 189, 248, 0.34);
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.06);
+}
 .bulk-selection-actions { position: absolute; top: 6px; right: 8px; }
 .schedule-bulk-control { position: relative; }
 .bulk-selection-actions button { min-height: 19px; padding: 2px 5px; }
@@ -953,6 +960,41 @@ p {
 .schedule-type-chop .playlist-item-metadata select { color: #fda4af; border-color: rgba(244, 63, 94, 0.45); }
 .schedule-type-clip .playlist-item-metadata select { color: #7dd3fc; border-color: rgba(14, 165, 233, 0.45); }
 
+.schedule-start-chip,
+.playlist-start-button {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  border-radius: 4px;
+  padding: 0 6px;
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.07);
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.playlist-start-button {
+  margin-left: auto;
+  cursor: pointer;
+}
+
+.playlist-start-button:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.7);
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.playlist-start-button.on-air {
+  border-color: rgba(245, 213, 101, 0.55);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.playlist-start-button:disabled { cursor: not-allowed; opacity: 0.42; }
+
 .overlay-chip {
   height: 22px;
   display: inline-flex;
@@ -1014,6 +1056,11 @@ p {
 
 .playlist-row.selected.bulk-selected {
   background: linear-gradient(90deg, rgba(14, 165, 233, 0.09), var(--accent-soft));
+}
+
+.playlist-row.schedule-start-row {
+  box-shadow: inset 3px 0 0 #38bdf8;
+  background: linear-gradient(90deg, rgba(14, 165, 233, 0.1), transparent 72%);
 }
 
 .playlist-remove-button {
@@ -1708,6 +1755,11 @@ input[type="range"] {
 }
 
 .recovery-resume-banner strong { color: var(--warning); font-size: 11px; }
+.recovery-resume-banner strong:has(svg) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .recovery-resume-banner span {
   overflow: hidden;
   color: var(--muted);
@@ -1727,6 +1779,15 @@ input[type="range"] {
   font-size: 10px;
   font-weight: 700;
 }
+
+.schedule-start-banner {
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(14, 165, 233, 0.06);
+}
+
+.schedule-start-banner strong,
+.schedule-start-banner button { color: #7dd3fc; }
+.schedule-start-banner button { border-color: rgba(56, 189, 248, 0.34); }
 
 .settings-card,
 .monitor-card,

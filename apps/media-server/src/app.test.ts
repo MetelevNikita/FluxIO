@@ -25,6 +25,7 @@ import {
   PlayoutSupervisor,
   shouldReportEncodingActivity,
   usesTsdDuckTransport,
+  waitForPlayoutStop,
 } from "./ffmpeg/playout-supervisor.js";
 import { runCommand } from "./ffmpeg/process.js";
 import {
@@ -60,7 +61,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.2");
+    assert.equal(health.version, "5.0.3");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -114,6 +115,10 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
     scheduleLogoPath: "",
     scheduleLogoSource: "",
     ageLibrary: null,
+    startMarker: {
+      assetId: asset.id,
+      updatedAt: "2026-08-07T12:00:00.000Z",
+    },
     settings: {
       protocol: "SRT",
       streamKey: "legacy-secret",
@@ -124,6 +129,7 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
   });
   const protectedSnapshot = sanitizeWorkspaceSnapshot(snapshot);
   assert.equal(protectedSnapshot.sanitized.currentPlaylist[0]?.filePath, asset.filePath);
+  assert.equal(protectedSnapshot.sanitized.startMarker?.assetId, asset.id);
   assert.equal(protectedSnapshot.sanitized.settings.srtPassphrase, "");
   assert.equal(protectedSnapshot.secrets.srtPassphrase, "session-secret");
   assert.doesNotMatch(JSON.stringify(protectedSnapshot.sanitized), /session-secret|rtmp-secret/);
@@ -153,6 +159,15 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
   assert.equal(checkpoint.interrupted, false);
 });
 
+test("hot-take wait continues until the active playout has stopped", async () => {
+  let checks = 0;
+  await waitForPlayoutStop(() => {
+    checks += 1;
+    return checks < 3;
+  }, 100, 1);
+  assert.equal(checks, 3);
+});
+
 test("GET /api/playout/status starts idle", async () => {
   const app = buildApp({ logger: false });
   try {
@@ -163,6 +178,21 @@ test("GET /api/playout/status starts idle", async () => {
     assert.equal(status.transportBitrateBps, null);
     assert.equal(status.transportBitrateMode, null);
     assert.equal(status.continuityErrors, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /api/playout/take validates the replacement playout request", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/playout/take",
+      payload: {},
+    });
+    assert.equal(response.statusCode, 400);
+    assert.notEqual(response.statusCode, 404);
   } finally {
     await app.close();
   }

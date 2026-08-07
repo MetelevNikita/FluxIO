@@ -126,6 +126,18 @@ export async function startPlayout(
   );
 }
 
+export async function takePlayout(
+  requestBody: StartPlayoutRequest,
+): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(
+    await request("/api/playout/take", {
+      body: JSON.stringify(requestBody),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
 export async function stopPlayout(): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
     await request("/api/playout/stop", { method: "POST" }),

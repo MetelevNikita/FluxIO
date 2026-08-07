@@ -261,12 +261,23 @@
 - `Save session list` и безопасный `New playlist`;
 - AES-256-GCM защита SRT/RTMP secrets.
 
+### 3.4. Стартовый ролик и hot take v5.0.3
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-04-schedule-start-marker-v5.0.3.md`](progress/03-04-schedule-start-marker-v5.0.3.md).
+
+- runtime-маркер стартового ролика Current Playlist;
+- сохранение маркера в PostgreSQL workspace session;
+- `Start from Marker` и явный `Start from beginning`;
+- `Take on air` с предварительной проверкой и последовательным restart FFmpeg/TSDuck;
+- приоритет аварийного Resume над ручным маркером;
+- визуальная индикация точки старта в строке Playlist.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;
-- skip/next и planned transitions;
+- бесшовные skip/next и planned transitions без restart gap;
 - black/slate fallback при ошибке файла;
 - watchdog FFmpeg и политика restart;
 - watchdog и автоматическая политика restart поверх ручного recovery v5.0.2;

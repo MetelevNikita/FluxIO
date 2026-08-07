@@ -30,7 +30,7 @@ import { listNetworkInterfaces } from "./network-interfaces.js";
 import { parseScheduleFile } from "./schedule/parser.js";
 import { serializeSchedule } from "./schedule/serializer.js";
 
-const serviceVersion = "5.0.2";
+const serviceVersion = "5.0.3";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {
@@ -240,6 +240,29 @@ export function buildApp(options: FastifyServerOptions = {}) {
           await database.recordSessionStart(body, status);
         } catch (error) {
           console.error("[DATABASE] Failed to persist broadcast session start", error);
+        }
+      }
+      return status;
+    } catch (error) {
+      if (error instanceof PlayoutConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      if (error instanceof PlayoutPreflightError) {
+        return reply.code(400).send({ error: error.message });
+      }
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/playout/take", async (request, reply) => {
+    try {
+      const body = startPlayoutRequestSchema.parse(request.body);
+      const status = await playout.take(body);
+      if (database) {
+        try {
+          await database.recordSessionStart(body, status);
+        } catch (error) {
+          console.error("[DATABASE] Failed to persist hot-take session start", error);
         }
       }
       return status;

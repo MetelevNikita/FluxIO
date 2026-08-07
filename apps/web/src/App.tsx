@@ -9,6 +9,7 @@ import {
   type NetworkInterfaceInfo,
   type PlayoutStatus,
   type SavedWorkspaceSession,
+  type ScheduleStartMarker,
   type ServiceHealth,
   type StartPlayoutRequest,
   type SystemMetrics,
@@ -41,6 +42,7 @@ import {
   deleteWorkspaceSession as deletePersistedWorkspaceSession,
   startPlayout as startPlayoutSession,
   stopPlayout as stopPlayoutSession,
+  takePlayout as takePlayoutSession,
 } from "./media-api";
 import type {
   AppView,
@@ -101,7 +103,9 @@ export function App() {
   const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
   const [savedWorkspaceSession, setSavedWorkspaceSession] = useState<SavedWorkspaceSession | null>(null);
   const [recoveryCheckpoint, setRecoveryCheckpoint] = useState<WorkspaceSessionCheckpoint | null>(null);
+  const [scheduleStartMarker, setScheduleStartMarker] = useState<ScheduleStartMarker | null>(null);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [takeBusy, setTakeBusy] = useState(false);
   const workspaceRestoreStarted = useRef(false);
 
   useEffect(() => {
@@ -241,6 +245,13 @@ export function App() {
     setScheduleLogoPath(snapshot.scheduleLogoPath);
     setScheduleLogoSource(snapshot.scheduleLogoSource);
     setAgeLibrary(snapshot.ageLibrary);
+    setScheduleStartMarker(
+      snapshot.startMarker && snapshot.currentPlaylist.some(
+        (asset) => asset.id === snapshot.startMarker?.assetId,
+      )
+        ? snapshot.startMarker
+        : null,
+    );
     setSettings({ ...initialBroadcastSettings, ...snapshot.settings } as BroadcastSettings);
     setActiveSchedule(checkpointSelection ? "current" : snapshot.activeSchedule);
     setSelectedAssetId(
@@ -376,6 +387,7 @@ export function App() {
       if (slot === "current") {
         setPlaylist(scheduledAssets);
         setCurrentScheduleMetadata(metadata);
+        setScheduleStartMarker(null);
       } else {
         setFuturePlaylist(scheduledAssets);
         setFutureScheduleMetadata(metadata);
@@ -458,6 +470,10 @@ export function App() {
     if (removedIndex < 0) return;
     const next = visiblePlaylist.filter((asset) => asset.id !== assetId);
     setActivePlaylist(next);
+    if (activeSchedule === "current" && scheduleStartMarker?.assetId === assetId) {
+      setScheduleStartMarker(null);
+      setScheduleActionMessage("Schedule start marker was removed with its clip.");
+    }
     if (selectedAssetId === assetId) {
       setSelectedAssetId(next[removedIndex]?.id ?? next[removedIndex - 1]?.id ?? "");
     }
@@ -491,6 +507,7 @@ export function App() {
     setScheduleLogoPath("");
     setScheduleLogoSource("");
     setAgeLibrary(null);
+    setScheduleStartMarker(null);
     setScheduleActionMessage(null);
     setSelectedAssetId("");
   }
@@ -516,6 +533,7 @@ export function App() {
           scheduleLogoPath,
           scheduleLogoSource,
           ageLibrary,
+          startMarker: scheduleStartMarker,
           settings: primitiveSettings(settings),
         },
       };
@@ -756,19 +774,85 @@ export function App() {
     }
   }
 
-  async function startPlayout(resumeFromCheckpoint = false) {
+  function setStartMarker(assetId: string) {
+    if (activeSchedule !== "current") {
+      setOperationError("A schedule start marker can only be set in the Current playlist.");
+      return;
+    }
+    const asset = playlist.find((item) => item.id === assetId);
+    if (!asset) return;
+    setScheduleStartMarker({ assetId, updatedAt: new Date().toISOString() });
+    setOperationError(null);
+    setScheduleActionMessage(`Schedule will start from "${asset.name}".`);
+  }
+
+  function clearStartMarker() {
+    setScheduleStartMarker(null);
+    setScheduleActionMessage("Schedule start marker cleared.");
+  }
+
+  async function startFromPlaylistItem(assetId: string) {
+    if (activeSchedule !== "current") {
+      setOperationError("Hot take is only available from the Current playlist.");
+      return;
+    }
+    const asset = playlist.find((item) => item.id === assetId);
+    if (!asset) return;
+    if (asset.status !== "analyzed") {
+      setOperationError("Analyze the selected clip successfully before using it as a start point.");
+      return;
+    }
+    const active = playoutStatus
+      ? ["starting", "running", "stopping"].includes(playoutStatus.state)
+      : false;
+    if (!active) {
+      setStartMarker(assetId);
+      return;
+    }
+    if (!window.confirm(
+      `Take "${asset.name}" on air now? The current playout process will be restarted.`,
+    )) return;
+
+    setStartMarker(assetId);
+    setTakeBusy(true);
+    setOperationError(null);
+    try {
+      const request = buildStartRequestFromAsset(
+        buildStartRequest(playlist, settings),
+        playlist,
+        assetId,
+      );
+      setPlayoutStatus(await takePlayoutSession(request));
+      setRecoveryCheckpoint(null);
+      setScheduleActionMessage(`Hot take is on air from "${asset.name}".`);
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setTakeBusy(false);
+    }
+  }
+
+  async function startPlayout(mode: "default" | "resume" | "beginning" = "default") {
     setOperationError(null);
     try {
       const baseRequest = buildStartRequest(playlist, settings);
-      const request = resumeFromCheckpoint && recoveryCheckpoint
+      const request = mode === "resume" && recoveryCheckpoint
         ? buildRecoveryStartRequest(baseRequest, playlist, recoveryCheckpoint)
-        : baseRequest;
+        : mode === "default" && scheduleStartMarker
+          ? buildStartRequestFromAsset(
+              baseRequest,
+              playlist,
+              scheduleStartMarker.assetId,
+            )
+          : baseRequest;
       setPlayoutStatus(await startPlayoutSession(request));
       setRecoveryCheckpoint(null);
       setScheduleActionMessage(
-        resumeFromCheckpoint
+        mode === "resume"
           ? `Playout resumed from ${formatClock(recoveryCheckpoint?.outTimeSeconds ?? 0)}.`
-          : "Playout started from the beginning.",
+          : mode === "default" && scheduleStartMarker
+            ? `Playout started from "${playlist.find((asset) => asset.id === scheduleStartMarker.assetId)?.name ?? "marked clip"}".`
+            : "Playout started from the beginning.",
       );
     } catch (error) {
       setOperationError(errorMessage(error));
@@ -840,8 +924,11 @@ export function App() {
             scheduleActionMessage={scheduleActionMessage}
             scheduleBusy={mediaBusy}
             workspaceBusy={workspaceBusy}
+            takeBusy={takeBusy}
             savedSessionUpdatedAt={savedWorkspaceSession?.updatedAt ?? null}
             recoveryCheckpoint={recoveryCheckpoint}
+            scheduleStartMarker={scheduleStartMarker}
+            playoutActive={Boolean(playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state))}
             initialPreviewTimeSeconds={
               recoverySelection?.asset.id === selectedAsset.id
                 ? recoverySelection.itemOffsetSeconds
@@ -850,6 +937,8 @@ export function App() {
             scheduleLogoSource={scheduleLogoSource || scheduleLogoPath}
             scheduleLogoPath={scheduleLogoPath}
             scte35Defaults={settings}
+            onClearStartMarker={clearStartMarker}
+            onStartFromItem={startFromPlaylistItem}
           />
         ) : (
           <EmptyPlaylist
@@ -868,8 +957,8 @@ export function App() {
           networkInterfaces={networkInterfaces}
           capabilities={capabilities}
           onSettingsChange={setSettings}
-          onStart={() => void startPlayout(Boolean(recoveryCheckpoint))}
-          onStartFresh={() => void startPlayout(false)}
+          onStart={() => void startPlayout(recoveryCheckpoint ? "resume" : "default")}
+          onStartFresh={() => void startPlayout("beginning")}
           onStop={() => void stopPlayout()}
           operationError={operationError}
           playlistLength={playlist.length}
@@ -879,6 +968,10 @@ export function App() {
           )}
           playoutStatus={playoutStatus}
           recoveryCheckpoint={recoveryCheckpoint}
+          scheduleStartMarker={scheduleStartMarker}
+          scheduleStartItemName={playlist.find(
+            (asset) => asset.id === scheduleStartMarker?.assetId,
+          )?.name ?? null}
         />
       ) : null}
 
@@ -1261,6 +1354,23 @@ function buildRecoveryStartRequest(
       (marker) => marker.positionSeconds >= trimInSeconds,
     ),
   };
+  return { ...request, playlist: remaining };
+}
+
+function buildStartRequestFromAsset(
+  request: StartPlayoutRequest,
+  playlist: MediaAsset[],
+  assetId: string,
+): StartPlayoutRequest {
+  if (!playlist.some((asset) => asset.id === assetId)) {
+    throw new Error("The selected start clip is no longer present in the Current playlist");
+  }
+  const itemIndex = request.playlist.findIndex((item) => item.id === assetId);
+  if (itemIndex < 0) {
+    throw new Error("The selected start clip could not be mapped to the playout request");
+  }
+  const remaining = request.playlist.slice(itemIndex);
+  if (remaining.length === 0) throw new Error("No media remains after the selected start clip");
   return { ...request, playlist: remaining };
 }
 

@@ -6,9 +6,11 @@ import {
   Image,
   Maximize2,
   LoaderCircle,
+  MapPin,
   Pause,
   Play,
   Repeat2,
+  RadioTower,
   Save,
   SkipBack,
   SkipForward,
@@ -33,6 +35,7 @@ import type {
 } from "../types";
 import type {
   ScheduleExportExtension,
+  ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 
@@ -49,8 +52,11 @@ interface PlaylistPreviewScreenProps {
   scheduleActionMessage: string | null;
   scheduleBusy: boolean;
   workspaceBusy: boolean;
+  takeBusy: boolean;
   savedSessionUpdatedAt: string | null;
   recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
+  scheduleStartMarker: ScheduleStartMarker | null;
+  playoutActive: boolean;
   initialPreviewTimeSeconds: number | null;
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
@@ -64,6 +70,8 @@ interface PlaylistPreviewScreenProps {
   onSaveSchedule: (extension: ScheduleExportExtension) => Promise<void>;
   onSaveSessionList: () => Promise<void>;
   onNewPlaylist: () => Promise<void>;
+  onClearStartMarker: () => void;
+  onStartFromItem: (assetId: string) => Promise<void>;
   onSelectAgeDirectory?: () => Promise<void>;
   onSelectScheduleLogoDirectory?: () => Promise<void>;
   onSelectScheduleLogoFile?: () => Promise<void>;
@@ -86,8 +94,11 @@ export function PlaylistPreviewScreen({
   scheduleActionMessage,
   scheduleBusy,
   workspaceBusy,
+  takeBusy,
   savedSessionUpdatedAt,
   recoveryCheckpoint,
+  scheduleStartMarker,
+  playoutActive,
   initialPreviewTimeSeconds,
   onAddFiles,
   onAddScte35Marker,
@@ -101,6 +112,8 @@ export function PlaylistPreviewScreen({
   onSaveSchedule,
   onSaveSessionList,
   onNewPlaylist,
+  onClearStartMarker,
+  onStartFromItem,
   onSelectAgeDirectory,
   onSelectScheduleLogoDirectory,
   onSelectScheduleLogoFile,
@@ -438,6 +451,16 @@ export function PlaylistPreviewScreen({
             </button>
           </div>
           <small>Checkpoint updates every 5 seconds while playout is active</small>
+          {scheduleStartMarker ? (
+            <button
+              className="schedule-start-clear"
+              onClick={onClearStartMarker}
+              title="Clear the selected schedule start clip"
+              type="button"
+            >
+              <MapPin size={12} /> Start clip set · Clear
+            </button>
+          ) : null}
         </div>
         <div className="schedule-bulk-control">
           <span>Bulk actions</span>
@@ -514,7 +537,7 @@ export function PlaylistPreviewScreen({
         <div className="playlist-rows">
           {playlist.map((asset) => (
             <div
-              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               draggable
               key={asset.id}
               onDragEnd={() => setDraggingId(null)}
@@ -550,6 +573,7 @@ export function PlaylistPreviewScreen({
                   <strong>{asset.name}</strong>
                   <span>
                     {asset.duration} <i /> {formatPlaylistStatus(asset)}
+                    {scheduleStartMarker?.assetId === asset.id ? " · START" : ""}
                     {(asset.scte35Markers?.length ?? 0) > 0
                       ? ` · SCTE ${asset.scte35Markers?.length}`
                       : ""}
@@ -561,6 +585,11 @@ export function PlaylistPreviewScreen({
                 </span>
               </button>
               <div className="playlist-item-metadata">
+                {scheduleStartMarker?.assetId === asset.id ? (
+                  <span className="schedule-start-chip" title="This clip is the selected schedule start point">
+                    <MapPin size={12} /> START
+                  </span>
+                ) : null}
                 <select
                   aria-label={`Schedule type for ${asset.name}`}
                   onChange={(event) => onUpdateItem(asset.id, {
@@ -619,6 +648,22 @@ export function PlaylistPreviewScreen({
                   />
                   LOGO
                 </label>
+                <button
+                  className={`playlist-start-button ${playoutActive ? "on-air" : ""}`}
+                  disabled={activeSchedule !== "current" || takeBusy || asset.status !== "analyzed"}
+                  onClick={() => void onStartFromItem(asset.id)}
+                  title={asset.status !== "analyzed"
+                    ? "Analyze the clip successfully before selecting it as a start point"
+                    : playoutActive
+                      ? `Restart the on-air playout from ${asset.name}`
+                      : `Set ${asset.name} as the schedule start clip`}
+                  type="button"
+                >
+                  {takeBusy ? <LoaderCircle className="spin" size={13} /> : playoutActive
+                    ? <RadioTower size={13} />
+                    : <MapPin size={13} />}
+                  {playoutActive ? "Take on air" : "Start here"}
+                </button>
               </div>
               <button
                 aria-label={`Remove ${asset.name} from playlist`}

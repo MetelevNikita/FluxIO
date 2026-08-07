@@ -1,6 +1,6 @@
 {
   "name": "gruber-playout",
-  "version": "5.0.2",
+  "version": "5.0.3",
   "private": true,
   "description": "FluxIO server-first desktop playout application powered by Node.js and FFmpeg",
   "workspaces": [
