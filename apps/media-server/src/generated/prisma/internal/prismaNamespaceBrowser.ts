@@ -119,7 +119,8 @@ export const PlaylistItemScalarFieldEnum = {
   position: 'position',
   trimInSeconds: 'trimInSeconds',
   trimOutSeconds: 'trimOutSeconds',
-  scte35Markers: 'scte35Markers'
+  scte35Markers: 'scte35Markers',
+  scheduleMetadata: 'scheduleMetadata'
 } as const
 
 export type PlaylistItemScalarFieldEnum = (typeof PlaylistItemScalarFieldEnum)[keyof typeof PlaylistItemScalarFieldEnum]

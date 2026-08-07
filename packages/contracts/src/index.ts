@@ -103,6 +103,32 @@ export const scte35MarkerSchema = z.object({
   upid: z.string().max(255).default(""),
 });
 
+export const scheduleItemTypeSchema = z.enum(["movie", "chop", "clip"]);
+
+export const logoOverlaySchema = z.object({
+  filePath: z.string().min(1),
+  position: z.enum([
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+    "center",
+  ]),
+  widthPercent: z.number().min(1).max(50),
+  margin: z.number().int().min(0).max(500),
+  opacity: z.number().min(0.05).max(1),
+});
+
+export const ageTitleOverlaySchema = z.object({
+  enabled: z.boolean().default(true),
+  text: z.string().trim().min(1).max(32),
+  durationSeconds: z.number().positive().max(60).default(5),
+});
+
+export const itemLogoOverlaySchema = logoOverlaySchema.extend({
+  enabled: z.boolean().default(true),
+});
+
 export const playoutItemSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -110,6 +136,38 @@ export const playoutItemSchema = z.object({
   trimInSeconds: z.number().nonnegative().default(0),
   trimOutSeconds: z.number().positive().nullable().default(null),
   scte35Markers: z.array(scte35MarkerSchema).max(1_000).default([]),
+  scheduleType: scheduleItemTypeSchema.nullable().optional(),
+  declaredDurationSeconds: z.number().positive().nullable().optional(),
+  ageTitle: ageTitleOverlaySchema.nullable().optional(),
+  itemLogo: itemLogoOverlaySchema.nullable().optional(),
+});
+
+export const parseScheduleRequestSchema = z.object({
+  filePath: z.string().min(1),
+});
+
+export const parsedScheduleItemSchema = z.object({
+  type: scheduleItemTypeSchema,
+  declaredDurationSeconds: z.number().positive(),
+  declaredDuration: z.string().min(1),
+  filePath: z.string().min(1),
+  ageTitle: z.string().nullable(),
+  logoPath: z.string().nullable(),
+  lineNumber: z.number().int().positive(),
+  warnings: z.array(z.string()),
+});
+
+export const parsedScheduleSchema = z.object({
+  sourceFilePath: z.string().min(1),
+  encoding: z.enum(["utf-8", "windows-1251"]),
+  startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
+  startSeconds: z.number().nonnegative().max(86_400),
+  delaySeconds: z.number().nonnegative(),
+  targetDurationSeconds: z.literal(604_800),
+  totalDurationSeconds: z.number().nonnegative(),
+  varianceSeconds: z.number(),
+  items: z.array(parsedScheduleItemSchema).min(1),
+  warnings: z.array(z.string()),
 });
 
 export const videoEncodingSchema = z.object({
@@ -169,20 +227,6 @@ export const audioEncodingSchema = z.object({
   sampleRate: z.number().int().min(8_000).max(192_000),
   channels: z.union([z.literal(1), z.literal(2), z.literal(6)]),
   bitrateKbps: z.number().int().min(32).max(640),
-});
-
-export const logoOverlaySchema = z.object({
-  filePath: z.string().min(1),
-  position: z.enum([
-    "top-left",
-    "top-right",
-    "bottom-left",
-    "bottom-right",
-    "center",
-  ]),
-  widthPercent: z.number().min(1).max(50),
-  margin: z.number().int().min(0).max(500),
-  opacity: z.number().min(0.05).max(1),
 });
 
 export const mpegTsServiceTypes = [
@@ -381,6 +425,11 @@ export const broadcastConfigurationSummarySchema = z.object({
 export type MediaProbe = z.infer<typeof mediaProbeSchema>;
 export type FfmpegCapabilities = z.infer<typeof ffmpegCapabilitiesSchema>;
 export type Scte35Marker = z.infer<typeof scte35MarkerSchema>;
+export type ScheduleItemType = z.infer<typeof scheduleItemTypeSchema>;
+export type AgeTitleOverlay = z.infer<typeof ageTitleOverlaySchema>;
+export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
+export type ParsedScheduleItem = z.infer<typeof parsedScheduleItemSchema>;
+export type ParsedSchedule = z.infer<typeof parsedScheduleSchema>;
 export type PlayoutItem = z.infer<typeof playoutItemSchema>;
 export type VideoEncoding = z.infer<typeof videoEncodingSchema>;
 export type AudioEncoding = z.infer<typeof audioEncodingSchema>;

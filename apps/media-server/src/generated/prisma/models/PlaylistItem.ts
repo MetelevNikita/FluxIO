@@ -64,6 +64,7 @@ export type PlaylistItemCountAggregateOutputType = {
   trimInSeconds: number
   trimOutSeconds: number
   scte35Markers: number
+  scheduleMetadata: number
   _all: number
 }
 
@@ -106,6 +107,7 @@ export type PlaylistItemCountAggregateInputType = {
   trimInSeconds?: true
   trimOutSeconds?: true
   scte35Markers?: true
+  scheduleMetadata?: true
   _all?: true
 }
 
@@ -203,6 +205,7 @@ export type PlaylistItemGroupByOutputType = {
   trimInSeconds: number
   trimOutSeconds: number | null
   scte35Markers: runtime.JsonValue
+  scheduleMetadata: runtime.JsonValue
   _count: PlaylistItemCountAggregateOutputType | null
   _avg: PlaylistItemAvgAggregateOutputType | null
   _sum: PlaylistItemSumAggregateOutputType | null
@@ -236,6 +239,7 @@ export type PlaylistItemWhereInput = {
   trimInSeconds?: Prisma.FloatFilter<"PlaylistItem"> | number
   trimOutSeconds?: Prisma.FloatNullableFilter<"PlaylistItem"> | number | null
   scte35Markers?: Prisma.JsonFilter<"PlaylistItem">
+  scheduleMetadata?: Prisma.JsonFilter<"PlaylistItem">
   playlist?: Prisma.XOR<Prisma.PlaylistScalarRelationFilter, Prisma.PlaylistWhereInput>
   mediaAsset?: Prisma.XOR<Prisma.MediaAssetScalarRelationFilter, Prisma.MediaAssetWhereInput>
 }
@@ -248,6 +252,7 @@ export type PlaylistItemOrderByWithRelationInput = {
   trimInSeconds?: Prisma.SortOrder
   trimOutSeconds?: Prisma.SortOrderInput | Prisma.SortOrder
   scte35Markers?: Prisma.SortOrder
+  scheduleMetadata?: Prisma.SortOrder
   playlist?: Prisma.PlaylistOrderByWithRelationInput
   mediaAsset?: Prisma.MediaAssetOrderByWithRelationInput
 }
@@ -264,6 +269,7 @@ export type PlaylistItemWhereUniqueInput = Prisma.AtLeast<{
   trimInSeconds?: Prisma.FloatFilter<"PlaylistItem"> | number
   trimOutSeconds?: Prisma.FloatNullableFilter<"PlaylistItem"> | number | null
   scte35Markers?: Prisma.JsonFilter<"PlaylistItem">
+  scheduleMetadata?: Prisma.JsonFilter<"PlaylistItem">
   playlist?: Prisma.XOR<Prisma.PlaylistScalarRelationFilter, Prisma.PlaylistWhereInput>
   mediaAsset?: Prisma.XOR<Prisma.MediaAssetScalarRelationFilter, Prisma.MediaAssetWhereInput>
 }, "id" | "playlistId_position">
@@ -276,6 +282,7 @@ export type PlaylistItemOrderByWithAggregationInput = {
   trimInSeconds?: Prisma.SortOrder
   trimOutSeconds?: Prisma.SortOrderInput | Prisma.SortOrder
   scte35Markers?: Prisma.SortOrder
+  scheduleMetadata?: Prisma.SortOrder
   _count?: Prisma.PlaylistItemCountOrderByAggregateInput
   _avg?: Prisma.PlaylistItemAvgOrderByAggregateInput
   _max?: Prisma.PlaylistItemMaxOrderByAggregateInput
@@ -294,6 +301,7 @@ export type PlaylistItemScalarWhereWithAggregatesInput = {
   trimInSeconds?: Prisma.FloatWithAggregatesFilter<"PlaylistItem"> | number
   trimOutSeconds?: Prisma.FloatNullableWithAggregatesFilter<"PlaylistItem"> | number | null
   scte35Markers?: Prisma.JsonWithAggregatesFilter<"PlaylistItem">
+  scheduleMetadata?: Prisma.JsonWithAggregatesFilter<"PlaylistItem">
 }
 
 export type PlaylistItemCreateInput = {
@@ -302,6 +310,7 @@ export type PlaylistItemCreateInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   playlist: Prisma.PlaylistCreateNestedOneWithoutItemsInput
   mediaAsset: Prisma.MediaAssetCreateNestedOneWithoutPlaylistItemsInput
 }
@@ -314,6 +323,7 @@ export type PlaylistItemUncheckedCreateInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUpdateInput = {
@@ -322,6 +332,7 @@ export type PlaylistItemUpdateInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   playlist?: Prisma.PlaylistUpdateOneRequiredWithoutItemsNestedInput
   mediaAsset?: Prisma.MediaAssetUpdateOneRequiredWithoutPlaylistItemsNestedInput
 }
@@ -334,6 +345,7 @@ export type PlaylistItemUncheckedUpdateInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemCreateManyInput = {
@@ -344,6 +356,7 @@ export type PlaylistItemCreateManyInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUpdateManyMutationInput = {
@@ -352,6 +365,7 @@ export type PlaylistItemUpdateManyMutationInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUncheckedUpdateManyInput = {
@@ -362,6 +376,7 @@ export type PlaylistItemUncheckedUpdateManyInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemListRelationFilter = {
@@ -387,6 +402,7 @@ export type PlaylistItemCountOrderByAggregateInput = {
   trimInSeconds?: Prisma.SortOrder
   trimOutSeconds?: Prisma.SortOrder
   scte35Markers?: Prisma.SortOrder
+  scheduleMetadata?: Prisma.SortOrder
 }
 
 export type PlaylistItemAvgOrderByAggregateInput = {
@@ -517,6 +533,7 @@ export type PlaylistItemCreateWithoutMediaAssetInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   playlist: Prisma.PlaylistCreateNestedOneWithoutItemsInput
 }
 
@@ -527,6 +544,7 @@ export type PlaylistItemUncheckedCreateWithoutMediaAssetInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemCreateOrConnectWithoutMediaAssetInput = {
@@ -566,6 +584,7 @@ export type PlaylistItemScalarWhereInput = {
   trimInSeconds?: Prisma.FloatFilter<"PlaylistItem"> | number
   trimOutSeconds?: Prisma.FloatNullableFilter<"PlaylistItem"> | number | null
   scte35Markers?: Prisma.JsonFilter<"PlaylistItem">
+  scheduleMetadata?: Prisma.JsonFilter<"PlaylistItem">
 }
 
 export type PlaylistItemCreateWithoutPlaylistInput = {
@@ -574,6 +593,7 @@ export type PlaylistItemCreateWithoutPlaylistInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   mediaAsset: Prisma.MediaAssetCreateNestedOneWithoutPlaylistItemsInput
 }
 
@@ -584,6 +604,7 @@ export type PlaylistItemUncheckedCreateWithoutPlaylistInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemCreateOrConnectWithoutPlaylistInput = {
@@ -619,6 +640,7 @@ export type PlaylistItemCreateManyMediaAssetInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUpdateWithoutMediaAssetInput = {
@@ -627,6 +649,7 @@ export type PlaylistItemUpdateWithoutMediaAssetInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   playlist?: Prisma.PlaylistUpdateOneRequiredWithoutItemsNestedInput
 }
 
@@ -637,6 +660,7 @@ export type PlaylistItemUncheckedUpdateWithoutMediaAssetInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUncheckedUpdateManyWithoutMediaAssetInput = {
@@ -646,6 +670,7 @@ export type PlaylistItemUncheckedUpdateManyWithoutMediaAssetInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemCreateManyPlaylistInput = {
@@ -655,6 +680,7 @@ export type PlaylistItemCreateManyPlaylistInput = {
   trimInSeconds?: number
   trimOutSeconds?: number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUpdateWithoutPlaylistInput = {
@@ -663,6 +689,7 @@ export type PlaylistItemUpdateWithoutPlaylistInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
   mediaAsset?: Prisma.MediaAssetUpdateOneRequiredWithoutPlaylistItemsNestedInput
 }
 
@@ -673,6 +700,7 @@ export type PlaylistItemUncheckedUpdateWithoutPlaylistInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type PlaylistItemUncheckedUpdateManyWithoutPlaylistInput = {
@@ -682,6 +710,7 @@ export type PlaylistItemUncheckedUpdateManyWithoutPlaylistInput = {
   trimInSeconds?: Prisma.FloatFieldUpdateOperationsInput | number
   trimOutSeconds?: Prisma.NullableFloatFieldUpdateOperationsInput | number | null
   scte35Markers?: Prisma.JsonNullValueInput | runtime.InputJsonValue
+  scheduleMetadata?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 
@@ -694,6 +723,7 @@ export type PlaylistItemSelect<ExtArgs extends runtime.Types.Extensions.Internal
   trimInSeconds?: boolean
   trimOutSeconds?: boolean
   scte35Markers?: boolean
+  scheduleMetadata?: boolean
   playlist?: boolean | Prisma.PlaylistDefaultArgs<ExtArgs>
   mediaAsset?: boolean | Prisma.MediaAssetDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["playlistItem"]>
@@ -706,6 +736,7 @@ export type PlaylistItemSelectCreateManyAndReturn<ExtArgs extends runtime.Types.
   trimInSeconds?: boolean
   trimOutSeconds?: boolean
   scte35Markers?: boolean
+  scheduleMetadata?: boolean
   playlist?: boolean | Prisma.PlaylistDefaultArgs<ExtArgs>
   mediaAsset?: boolean | Prisma.MediaAssetDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["playlistItem"]>
@@ -718,6 +749,7 @@ export type PlaylistItemSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.
   trimInSeconds?: boolean
   trimOutSeconds?: boolean
   scte35Markers?: boolean
+  scheduleMetadata?: boolean
   playlist?: boolean | Prisma.PlaylistDefaultArgs<ExtArgs>
   mediaAsset?: boolean | Prisma.MediaAssetDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["playlistItem"]>
@@ -730,9 +762,10 @@ export type PlaylistItemSelectScalar = {
   trimInSeconds?: boolean
   trimOutSeconds?: boolean
   scte35Markers?: boolean
+  scheduleMetadata?: boolean
 }
 
-export type PlaylistItemOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "playlistId" | "mediaAssetId" | "position" | "trimInSeconds" | "trimOutSeconds" | "scte35Markers", ExtArgs["result"]["playlistItem"]>
+export type PlaylistItemOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "playlistId" | "mediaAssetId" | "position" | "trimInSeconds" | "trimOutSeconds" | "scte35Markers" | "scheduleMetadata", ExtArgs["result"]["playlistItem"]>
 export type PlaylistItemInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   playlist?: boolean | Prisma.PlaylistDefaultArgs<ExtArgs>
   mediaAsset?: boolean | Prisma.MediaAssetDefaultArgs<ExtArgs>
@@ -760,6 +793,7 @@ export type $PlaylistItemPayload<ExtArgs extends runtime.Types.Extensions.Intern
     trimInSeconds: number
     trimOutSeconds: number | null
     scte35Markers: runtime.JsonValue
+    scheduleMetadata: runtime.JsonValue
   }, ExtArgs["result"]["playlistItem"]>
   composites: {}
 }
@@ -1192,6 +1226,7 @@ export interface PlaylistItemFieldRefs {
   readonly trimInSeconds: Prisma.FieldRef<"PlaylistItem", 'Float'>
   readonly trimOutSeconds: Prisma.FieldRef<"PlaylistItem", 'Float'>
   readonly scte35Markers: Prisma.FieldRef<"PlaylistItem", 'Json'>
+  readonly scheduleMetadata: Prisma.FieldRef<"PlaylistItem", 'Json'>
 }
     
 

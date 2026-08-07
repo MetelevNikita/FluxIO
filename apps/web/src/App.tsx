@@ -3,6 +3,7 @@ import {
   serviceHealthSchema,
   type FfmpegCapabilities,
   type MediaProbe,
+  type ParsedSchedule,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
   type ServiceHealth,
@@ -26,6 +27,7 @@ import {
   getPlayoutStatus,
   getSystemMetrics,
   mediaThumbnailUrl,
+  parseScheduleFile,
   probeMediaPaths,
   scanMediaDirectory,
   startPlayout as startPlayoutSession,
@@ -35,6 +37,8 @@ import type {
   AppView,
   BroadcastSettings,
   MediaAsset,
+  ScheduleMetadata,
+  ScheduleSlot,
   Scte35Marker,
 } from "./types";
 
@@ -65,6 +69,10 @@ export function App() {
   const [playlist, setPlaylist] = useState<MediaAsset[]>(() =>
     demoDataEnabled ? initialPlaylist : [],
   );
+  const [futurePlaylist, setFuturePlaylist] = useState<MediaAsset[]>([]);
+  const [activeSchedule, setActiveSchedule] = useState<ScheduleSlot>("current");
+  const [currentScheduleMetadata, setCurrentScheduleMetadata] = useState<ScheduleMetadata | null>(null);
+  const [futureScheduleMetadata, setFutureScheduleMetadata] = useState<ScheduleMetadata | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState(() =>
     demoDataEnabled ? "production" : "",
   );
@@ -160,10 +168,11 @@ export function App() {
     };
   }, [connection.kind]);
 
+  const visiblePlaylist = activeSchedule === "current" ? playlist : futurePlaylist;
   const selectedAsset = useMemo(
     () =>
-      playlist.find((asset) => asset.id === selectedAssetId) ?? playlist[0],
-    [playlist, selectedAssetId],
+      visiblePlaylist.find((asset) => asset.id === selectedAssetId) ?? visiblePlaylist[0],
+    [visiblePlaylist, selectedAssetId],
   );
 
   const addFiles = useCallback((files: File[]) => {
@@ -231,15 +240,74 @@ export function App() {
     }
   }
 
-  async function analyzePaths(paths: string[]) {
+  async function importNativeSchedule(slot: ScheduleSlot) {
+    const schedulePath = await window.gruberDesktop?.selectScheduleFile();
+    if (!schedulePath) return;
+    setMediaBusy(true);
+    setOperationError(null);
+    try {
+      const parsed = await parseScheduleFile(schedulePath);
+      const probesByPath = await probeSchedulePaths(parsed);
+      const scheduledAssets = parsed.items.map((item, index) => {
+        const probe = probesByPath.get(item.filePath);
+        const base = probe
+          ? probeToAsset(probe)
+          : { ...pendingAssetFromPath(item.filePath), status: "error" as const, progress: undefined };
+        return {
+          ...base,
+          id: `schedule-${slot}-${hashString(parsed.sourceFilePath)}-${index}`,
+          scheduleType: item.type,
+          declaredDurationSeconds: item.declaredDurationSeconds,
+          scheduleLineNumber: item.lineNumber,
+          ageTitle: item.ageTitle
+            ? { durationSeconds: 5, enabled: true, text: item.ageTitle }
+            : undefined,
+          itemLogo: item.logoPath
+            ? {
+                enabled: true,
+                filePath: item.logoPath,
+                margin: 24,
+                opacity: 1,
+                position: "top-right" as const,
+                widthPercent: 12,
+              }
+            : undefined,
+        } satisfies MediaAsset;
+      });
+      const metadata = scheduleMetadata(parsed);
+      setAssets((current) => mergeAssets(current, scheduledAssets));
+      if (slot === "current") {
+        setPlaylist(scheduledAssets);
+        setCurrentScheduleMetadata(metadata);
+      } else {
+        setFuturePlaylist(scheduledAssets);
+        setFutureScheduleMetadata(metadata);
+      }
+      setActiveSchedule(slot);
+      setSelectedAssetId(scheduledAssets[0]?.id ?? "");
+      const failed = scheduledAssets.filter((asset) => asset.status === "error");
+      if (failed.length > 0) {
+        setOperationError(
+          `Schedule imported, but ${failed.length} of ${scheduledAssets.length} media files could not be analyzed.`,
+        );
+      }
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
+  async function analyzePaths(paths: string[], slot: ScheduleSlot = "current") {
     setMediaBusy(true);
     setOperationError(null);
     const pathSet = new Set(paths);
     const pending = paths.map(pendingAssetFromPath);
     setAssets((current) => mergeAssets(current, pending));
-    setPlaylist((current) => mergeAssets(current, pending));
+    if (slot === "current") setPlaylist((current) => mergeAssets(current, pending));
+    else setFuturePlaylist((current) => mergeAssets(current, pending));
     try {
-      addProbes(await probeMediaPaths(paths));
+      addProbes(await probeMediaPaths(paths), slot);
     } catch (error) {
       setOperationError(errorMessage(error));
       const markFailed = (items: MediaAsset[]) => items.map((item) =>
@@ -248,21 +316,23 @@ export function App() {
           : item
       );
       setAssets(markFailed);
-      setPlaylist(markFailed);
+      if (slot === "current") setPlaylist(markFailed);
+      else setFuturePlaylist(markFailed);
     } finally {
       setMediaBusy(false);
     }
   }
 
-  function addProbes(probes: MediaProbe[]) {
+  function addProbes(probes: MediaProbe[], slot: ScheduleSlot = "current") {
     const imported = probes.map(probeToAsset);
     setAssets((current) => mergeAssets(current, imported));
-    setPlaylist((current) => mergeAssets(current, imported));
+    if (slot === "current") setPlaylist((current) => mergeAssets(current, imported));
+    else setFuturePlaylist((current) => mergeAssets(current, imported));
     setSelectedAssetId((current) => current || imported[0]?.id || "");
   }
 
   function movePlaylistItem(sourceId: string, targetId: string) {
-    setPlaylist((current) => {
+    updateActivePlaylist((current) => {
       const sourceIndex = current.findIndex((item) => item.id === sourceId);
       const targetIndex = current.findIndex((item) => item.id === targetId);
 
@@ -281,17 +351,17 @@ export function App() {
   }
 
   function removePlaylistItem(assetId: string) {
-    const removedIndex = playlist.findIndex((asset) => asset.id === assetId);
+    const removedIndex = visiblePlaylist.findIndex((asset) => asset.id === assetId);
     if (removedIndex < 0) return;
-    const next = playlist.filter((asset) => asset.id !== assetId);
-    setPlaylist(next);
+    const next = visiblePlaylist.filter((asset) => asset.id !== assetId);
+    setActivePlaylist(next);
     if (selectedAssetId === assetId) {
       setSelectedAssetId(next[removedIndex]?.id ?? next[removedIndex - 1]?.id ?? "");
     }
   }
 
   function addScte35Marker(assetId: string, marker: Scte35Marker) {
-    setPlaylist((current) => current.map((asset) =>
+    updateActivePlaylist((current) => current.map((asset) =>
       asset.id === assetId
         ? { ...asset, scte35Markers: [...(asset.scte35Markers ?? []), marker] }
         : asset
@@ -299,7 +369,7 @@ export function App() {
   }
 
   function removeScte35Marker(assetId: string, markerId: string) {
-    setPlaylist((current) => current.map((asset) =>
+    updateActivePlaylist((current) => current.map((asset) =>
       asset.id === assetId
         ? {
             ...asset,
@@ -312,7 +382,43 @@ export function App() {
   function clearMedia() {
     setAssets([]);
     setPlaylist([]);
+    setFuturePlaylist([]);
+    setCurrentScheduleMetadata(null);
+    setFutureScheduleMetadata(null);
     setSelectedAssetId("");
+  }
+
+  function addFilesToActiveSchedule(files: File[]) {
+    if (activeSchedule === "current" || !window.gruberDesktop) {
+      addFiles(files);
+      return;
+    }
+    const paths = files
+      .map((file) => window.gruberDesktop?.getMediaFilePath(file) ?? "")
+      .filter(Boolean);
+    if (paths.length > 0) void analyzePaths(paths, "future");
+  }
+
+  function updatePlaylistItem(assetId: string, patch: Partial<MediaAsset>) {
+    updateActivePlaylist((current) => current.map((asset) =>
+      asset.id === assetId ? { ...asset, ...patch } : asset
+    ));
+  }
+
+  function setScheduleTab(slot: ScheduleSlot) {
+    setActiveSchedule(slot);
+    const target = slot === "current" ? playlist : futurePlaylist;
+    setSelectedAssetId(target[0]?.id ?? "");
+  }
+
+  function setActivePlaylist(next: MediaAsset[]) {
+    if (activeSchedule === "current") setPlaylist(next);
+    else setFuturePlaylist(next);
+  }
+
+  function updateActivePlaylist(updater: (current: MediaAsset[]) => MediaAsset[]) {
+    if (activeSchedule === "current") setPlaylist(updater);
+    else setFuturePlaylist(updater);
   }
 
   async function startPlayout() {
@@ -351,6 +457,7 @@ export function App() {
           onClear={clearMedia}
           onSelectDirectory={window.gruberDesktop ? addNativeDirectory : undefined}
           onSelectFiles={window.gruberDesktop ? addNativeFiles : undefined}
+          onSelectSchedule={window.gruberDesktop ? importNativeSchedule : undefined}
           onProceed={() => setView("playlist")}
           operationError={operationError}
         />
@@ -359,18 +466,30 @@ export function App() {
       {view === "playlist" ? (
         selectedAsset ? (
           <PlaylistPreviewScreen
-            playlist={playlist}
+            playlist={visiblePlaylist}
             selectedAsset={selectedAsset}
-            onAddFiles={addFiles}
+            activeSchedule={activeSchedule}
+            currentCount={playlist.length}
+            futureCount={futurePlaylist.length}
+            scheduleMetadata={activeSchedule === "current" ? currentScheduleMetadata : futureScheduleMetadata}
+            onAddFiles={addFilesToActiveSchedule}
             onAddScte35Marker={addScte35Marker}
             onMoveItem={movePlaylistItem}
             onRemoveItem={removePlaylistItem}
             onRemoveScte35Marker={removeScte35Marker}
             onSelectAsset={setSelectedAssetId}
+            onScheduleChange={setScheduleTab}
+            onUpdateItem={updatePlaylistItem}
             scte35Defaults={settings}
           />
         ) : (
-          <EmptyPlaylist onOpenLibrary={() => setView("import")} />
+          <EmptyPlaylist
+            activeSchedule={activeSchedule}
+            currentCount={playlist.length}
+            futureCount={futurePlaylist.length}
+            onOpenLibrary={() => setView("import")}
+            onScheduleChange={setScheduleTab}
+          />
         )
       ) : null}
 
@@ -401,10 +520,34 @@ export function App() {
   );
 }
 
-function EmptyPlaylist({ onOpenLibrary }: { onOpenLibrary: () => void }) {
+function EmptyPlaylist({
+  activeSchedule,
+  currentCount,
+  futureCount,
+  onOpenLibrary,
+  onScheduleChange,
+}: {
+  activeSchedule: ScheduleSlot;
+  currentCount: number;
+  futureCount: number;
+  onOpenLibrary: () => void;
+  onScheduleChange: (slot: ScheduleSlot) => void;
+}) {
   return (
     <main className="empty-playlist screen-body">
       <div>
+        <div className="schedule-tabs empty-schedule-tabs">
+          <button
+            className={activeSchedule === "current" ? "active" : ""}
+            onClick={() => onScheduleChange("current")}
+            type="button"
+          >Current schedule <span>{currentCount}</span></button>
+          <button
+            className={activeSchedule === "future" ? "active" : ""}
+            onClick={() => onScheduleChange("future")}
+            type="button"
+          >Future schedule <span>{futureCount}</span></button>
+        </div>
         <span className="empty-playlist-mark">00</span>
         <h1>Playlist is empty</h1>
         <p>Add video files in Media Library before building the rundown.</p>
@@ -478,11 +621,46 @@ function probeToAsset(probe: MediaProbe): MediaAsset {
   };
 }
 
+async function probeSchedulePaths(
+  schedule: ParsedSchedule,
+): Promise<Map<string, MediaProbe | null>> {
+  const paths = [...new Set(schedule.items.map((item) => item.filePath))];
+  const probes = new Map<string, MediaProbe | null>();
+  const concurrency = 8;
+  for (let offset = 0; offset < paths.length; offset += concurrency) {
+    const batch = paths.slice(offset, offset + concurrency);
+    const results = await Promise.all(batch.map(async (filePath) => {
+      try {
+        return (await probeMediaPaths([filePath]))[0] ?? null;
+      } catch {
+        return null;
+      }
+    }));
+    batch.forEach((filePath, index) => probes.set(filePath, results[index] ?? null));
+  }
+  return probes;
+}
+
+function scheduleMetadata(schedule: ParsedSchedule): ScheduleMetadata {
+  return {
+    delaySeconds: schedule.delaySeconds,
+    encoding: schedule.encoding,
+    sourceFilePath: schedule.sourceFilePath,
+    sourceName: schedule.sourceFilePath.split(/[\\/]/).at(-1) ?? schedule.sourceFilePath,
+    startTime: schedule.startTime,
+    targetDurationSeconds: schedule.targetDurationSeconds,
+    warnings: schedule.warnings,
+  };
+}
+
 function mergeAssets(current: MediaAsset[], incoming: MediaAsset[]): MediaAsset[] {
   const incomingByPath = new Map(incoming.map((asset) => [asset.filePath, asset]));
   const merged = current.map((asset) => incomingByPath.get(asset.filePath) ?? asset);
   const currentPaths = new Set(current.map((asset) => asset.filePath));
-  return [...merged, ...incoming.filter((asset) => !currentPaths.has(asset.filePath))];
+  return [
+    ...merged,
+    ...[...incomingByPath.values()].filter((asset) => !currentPaths.has(asset.filePath)),
+  ];
 }
 
 function pendingAssetFromPath(filePath: string): MediaAsset {
@@ -564,8 +742,20 @@ function buildStartRequest(
       name: asset.name,
       filePath: asset.filePath,
       trimInSeconds: 0,
-      trimOutSeconds: null,
+      trimOutSeconds: asset.declaredDurationSeconds ?? null,
       scte35Markers: asset.scte35Markers ?? [],
+      scheduleType: asset.scheduleType ?? null,
+      declaredDurationSeconds: asset.declaredDurationSeconds ?? null,
+      ageTitle: asset.ageTitle?.enabled
+        ? {
+            durationSeconds: asset.ageTitle.durationSeconds,
+            enabled: true,
+            text: asset.ageTitle.text,
+          }
+        : null,
+      itemLogo: asset.itemLogo?.enabled
+        ? { ...asset.itemLogo, enabled: true }
+        : null,
     })),
     video: {
       codec: settings.videoCodec === "H.264"

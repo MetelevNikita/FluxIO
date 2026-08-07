@@ -114,6 +114,7 @@ endpoint выполняется CBR regulation, а для UDP также PCR-к�
 - [Development](docs/development-runbook.md)
 - [Production](docs/production-runbook.md)
 - [SCTE-35 для эфирного инженера](docs/scte35-engineer-runbook.md)
+- [Импорт недельного расписания .AIR/.TXT](docs/schedule-import-engineer-runbook.md)
 - [Архитектура](docs/architecture.md)
 - [Версионирование](docs/versioning.md)
 

@@ -29,6 +29,11 @@ import { runCommand } from "./ffmpeg/process.js";
 import { DatabaseService } from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
+import {
+  decodeScheduleBuffer,
+  parseScheduleText,
+  ScheduleParseError,
+} from "./schedule/parser.js";
 import { buildScte35CueXml, planScte35Cues } from "./tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
@@ -49,7 +54,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "4.2.10");
+    assert.equal(health.version, "5.0.0");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -166,6 +171,66 @@ test("production API accepts Electron file origin preflight", async () => {
   }
 });
 
+test("schedule parser reads rundown metadata, overlays and 168-hour variance", () => {
+  const schedule = parseScheduleText([
+    "start on 12:00:00.00 - delay 5",
+    "insertAgeTitle {16+}",
+    "insertLogoTitle {C:\\\\branding\\channel.png}movie 00:06:00.00 \\\\utv2\\films\\one.mp4",
+    "chop 00:00:10.00 \\\\utv2\\bumpers\\ident.mp4",
+    "clip 00:01:00.00 \\\\utv2\\clips\\short.mp4",
+  ].join("\n"), "C:\\schedule.air");
+
+  assert.equal(schedule.startTime, "12:00:00.00");
+  assert.equal(schedule.delaySeconds, 5);
+  assert.equal(schedule.items.length, 3);
+  assert.equal(schedule.items[0]?.ageTitle, "16+");
+  assert.equal(schedule.items[0]?.logoPath, "C:\\\\branding\\channel.png");
+  assert.equal(schedule.items[0]?.filePath, "\\\\utv2\\films\\one.mp4");
+  assert.equal(schedule.items[1]?.ageTitle, null);
+  assert.equal(schedule.totalDurationSeconds, 435);
+  assert.equal(schedule.varianceSeconds, 435 - 604_800);
+});
+
+test("schedule parser warns about type timing and rejects missing header", () => {
+  const parsed = parseScheduleText([
+    "start on 00:00:00.00 - delay 0",
+    "movie 00:01:00.00 /media/too-short.mp4",
+  ].join("\n"));
+  assert.match(parsed.warnings[0] ?? "", /movie duration should be longer/);
+  assert.throws(
+    () => parseScheduleText("clip 00:01:00.00 /media/clip.mp4"),
+    ScheduleParseError,
+  );
+});
+
+test("schedule decoder falls back to Windows-1251", () => {
+  const decoded = decodeScheduleBuffer(Uint8Array.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]));
+  assert.equal(decoded.encoding, "windows-1251");
+  assert.equal(decoded.text, "Привет");
+});
+
+test("POST /api/schedule/parse reads .air schedule files", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-schedule-"));
+  const schedulePath = path.join(directory, "week.air");
+  await writeFile(schedulePath, [
+    "start on 12:00:00.00 - delay 5",
+    "movie 00:06:00.00 /media/movie.mp4",
+  ].join("\n"), "utf8");
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: { filePath: schedulePath },
+      url: "/api/schedule/parse",
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().items[0].type, "movie");
+  } finally {
+    await app.close();
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () => {
   const request = baseRequest();
   const previewDirectory = "/tmp/gruber-test-preview";
@@ -264,6 +329,37 @@ test("FFmpeg command burns logo before program and preview split", () => {
   assert.match(filter, /\[vbranded\]realtime\[vrealtime\]/);
   assert.match(filter, /\[vrealtime\]split=2\[vprogrambase\]\[vpreviewbase\]/);
   assert.match(filter, /\[vprogrambase\]setfield=mode=prog\[vprogram\]/);
+});
+
+test("FFmpeg command applies per-item AGE and logo before playlist concat", () => {
+  const request = baseRequest();
+  const command = buildFfmpegCommand(
+    request,
+    [{
+      id: "one",
+      name: "one.mp4",
+      filePath: "/media/one.mp4",
+      trimInSeconds: 0,
+      durationSeconds: 20,
+      hasAudio: true,
+      ageTitle: { enabled: true, text: "16+", durationSeconds: 5 },
+      itemLogo: {
+        enabled: true,
+        filePath: "/media/item-logo.png",
+        position: "top-right",
+        widthPercent: 12,
+        margin: 24,
+        opacity: 0.8,
+      },
+    }],
+    "/tmp/gruber-test-preview",
+  );
+  const filter = command.args[command.args.indexOf("-filter_complex") + 1] ?? "";
+  assert.match(filter, /drawtext=text='16\+'/);
+  assert.match(filter, /enable='between\(t,0,5\)'/);
+  assert.match(filter, /\[1:v:0\].*\[itemlogo0\]/);
+  assert.match(filter, /\[vage0\]\[itemlogo0\]overlay=.*\[v0\]/);
+  assert.ok(command.args.includes("/media/item-logo.png"));
 });
 
 test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () => {
@@ -1224,6 +1320,10 @@ function baseRequest(): StartPlayoutRequest {
       trimInSeconds: 0,
       trimOutSeconds: null,
       scte35Markers: [],
+      scheduleType: null,
+      declaredDurationSeconds: null,
+      ageTitle: null,
+      itemLogo: null,
     }],
     video: {
       codec: "h264",

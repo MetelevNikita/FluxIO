@@ -1,6 +1,8 @@
 export type AppView = "import" | "playlist" | "broadcast";
 
 export type AssetStatus = "analyzed" | "pending" | "error" | "queued";
+export type ScheduleSlot = "current" | "future";
+export type ScheduleItemType = "movie" | "chop" | "clip";
 
 export type Scte35MarkerKind = "break-start" | "break-end";
 
@@ -34,6 +36,32 @@ export interface MediaAsset {
   audio: string;
   sha256: string;
   scte35Markers?: Scte35Marker[];
+  scheduleType?: ScheduleItemType;
+  declaredDurationSeconds?: number;
+  scheduleLineNumber?: number;
+  ageTitle?: {
+    durationSeconds: number;
+    enabled: boolean;
+    text: string;
+  };
+  itemLogo?: {
+    enabled: boolean;
+    filePath: string;
+    margin: number;
+    opacity: number;
+    position: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
+    widthPercent: number;
+  };
+}
+
+export interface ScheduleMetadata {
+  sourceFilePath: string;
+  sourceName: string;
+  encoding: "utf-8" | "windows-1251";
+  startTime: string;
+  delaySeconds: number;
+  targetDurationSeconds: number;
+  warnings: string[];
 }
 
 export interface BroadcastSettings {

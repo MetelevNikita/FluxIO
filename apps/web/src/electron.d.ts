@@ -10,6 +10,7 @@ declare global {
       selectLogoFile: () => Promise<string | null>;
       selectMediaDirectory: () => Promise<string | null>;
       selectMediaFiles: () => Promise<string[]>;
+      selectScheduleFile: () => Promise<string | null>;
     };
   }
 }

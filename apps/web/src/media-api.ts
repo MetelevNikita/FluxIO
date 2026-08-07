@@ -7,12 +7,14 @@ import {
   playoutStatusSchema,
   savedBroadcastConfigurationSchema,
   systemMetricsSchema,
+  parsedScheduleSchema,
   type BroadcastConfigurationSummary,
   type ClipPreviewSession,
   type FfmpegCapabilities,
   type MediaProbe,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
+  type ParsedSchedule,
   type SaveBroadcastConfigurationRequest,
   type SavedBroadcastConfiguration,
   type StartPlayoutRequest,
@@ -40,6 +42,16 @@ export async function scanMediaDirectory(
   return parseProbeResponse(
     await request("/api/media/scan", {
       body: JSON.stringify({ directoryPath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+export async function parseScheduleFile(filePath: string): Promise<ParsedSchedule> {
+  return parsedScheduleSchema.parse(
+    await request("/api/schedule/parse", {
+      body: JSON.stringify({ filePath }),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),

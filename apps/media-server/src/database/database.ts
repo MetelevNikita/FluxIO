@@ -150,6 +150,12 @@ export class DatabaseService {
             trimInSeconds: item.trimInSeconds,
             trimOutSeconds: item.trimOutSeconds,
             scte35Markers: jsonValue(item.scte35Markers),
+            scheduleMetadata: jsonValue({
+              ageTitle: item.ageTitle,
+              declaredDurationSeconds: item.declaredDurationSeconds,
+              itemLogo: item.itemLogo,
+              scheduleType: item.scheduleType,
+            }),
           },
         });
       }
@@ -204,14 +210,21 @@ export class DatabaseService {
         : "",
     );
     const request = startPlayoutRequestSchema.parse({
-      playlist: configuration.playlist.items.map((item) => ({
-        id: item.id,
-        name: item.mediaAsset.name,
-        filePath: item.mediaAsset.filePath,
-        trimInSeconds: item.trimInSeconds,
-        trimOutSeconds: item.trimOutSeconds,
-        scte35Markers: item.scte35Markers,
-      })),
+      playlist: configuration.playlist.items.map((item) => {
+        const schedule = item.scheduleMetadata as Record<string, unknown>;
+        return {
+          id: item.id,
+          name: item.mediaAsset.name,
+          filePath: item.mediaAsset.filePath,
+          trimInSeconds: item.trimInSeconds,
+          trimOutSeconds: item.trimOutSeconds,
+          scte35Markers: item.scte35Markers,
+          scheduleType: schedule.scheduleType ?? null,
+          declaredDurationSeconds: schedule.declaredDurationSeconds ?? null,
+          ageTitle: schedule.ageTitle ?? null,
+          itemLogo: schedule.itemLogo ?? null,
+        };
+      }),
       video: profile.video,
       audio: profile.audio,
       logo: profile.logo ?? null,

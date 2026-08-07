@@ -1,6 +1,6 @@
-import { Check, ChevronRight, LoaderCircle, Package, Plus, TriangleAlert } from "lucide-react";
+import { CalendarClock, Check, ChevronRight, LoaderCircle, Package, Plus, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
-import type { MediaAsset } from "../types";
+import type { MediaAsset, ScheduleSlot } from "../types";
 
 interface ImportAnalyzeScreenProps {
   assets: MediaAsset[];
@@ -10,6 +10,7 @@ interface ImportAnalyzeScreenProps {
   onProceed: () => void;
   onSelectDirectory?: () => Promise<void>;
   onSelectFiles?: () => Promise<void>;
+  onSelectSchedule?: (slot: ScheduleSlot) => Promise<void>;
   operationError: string | null;
 }
 
@@ -21,6 +22,7 @@ export function ImportAnalyzeScreen({
   onProceed,
   onSelectDirectory,
   onSelectFiles,
+  onSelectSchedule,
   operationError,
 }: ImportAnalyzeScreenProps) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -52,21 +54,41 @@ export function ImportAnalyzeScreen({
             stream parsing.
           </p>
         </div>
-        <button
-          className="secondary-button"
-          disabled={busy}
-          onClick={() => {
-            if (onSelectFiles) {
-              void onSelectFiles();
-            } else {
-              fileInput.current?.click();
-            }
-          }}
-          type="button"
-        >
-          <Plus size={16} />
-          {busy ? "Analyzing…" : "Add Standalone Files"}
-        </button>
+        <div className="library-heading-actions">
+          <button
+            className="secondary-button schedule-import-button"
+            disabled={busy || !onSelectSchedule}
+            onClick={() => void onSelectSchedule?.("current")}
+            title={onSelectSchedule ? undefined : "Schedule import is available in Electron"}
+            type="button"
+          >
+            <CalendarClock size={16} /> Current .AIR/.TXT
+          </button>
+          <button
+            className="secondary-button schedule-import-button"
+            disabled={busy || !onSelectSchedule}
+            onClick={() => void onSelectSchedule?.("future")}
+            title={onSelectSchedule ? undefined : "Schedule import is available in Electron"}
+            type="button"
+          >
+            <CalendarClock size={16} /> Future .AIR/.TXT
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => {
+              if (onSelectFiles) {
+                void onSelectFiles();
+              } else {
+                fileInput.current?.click();
+              }
+            }}
+            type="button"
+          >
+            <Plus size={16} />
+            {busy ? "Analyzing…" : "Add Standalone Files"}
+          </button>
+        </div>
         <span className={`library-readiness ${allReady ? "ready" : busy ? "busy" : ""}`}>
           {busy ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
           {busy ? "Analyzing…" : `${readyCount}/${assets.length} ready`}

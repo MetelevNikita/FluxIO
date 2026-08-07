@@ -1,5 +1,7 @@
 import path from "node:path";
 import type {
+  AgeTitleOverlay,
+  ItemLogoOverlay,
   MpegTsOutputSettings,
   PlayoutEndpoint,
   StartPlayoutRequest,
@@ -14,6 +16,8 @@ export interface PreparedPlayoutItem {
   trimInSeconds: number;
   durationSeconds: number;
   hasAudio: boolean;
+  ageTitle?: AgeTitleOverlay;
+  itemLogo?: ItemLogoOverlay;
 }
 
 export interface FfmpegCommand {
@@ -50,6 +54,18 @@ export function buildFfmpegCommand(
 
   for (const item of items) {
     args.push("-i", item.filePath);
+  }
+  for (const item of items) {
+    if (item.itemLogo?.enabled) {
+      args.push(
+        "-loop",
+        "1",
+        "-framerate",
+        decimal(request.video.frameRate),
+        "-i",
+        item.itemLogo.filePath,
+      );
+    }
   }
   if (request.logo) {
     args.push(
@@ -156,16 +172,47 @@ function buildFilterGraph(
       ? "5.1"
       : "stereo";
   const deinterlace = request.video.deinterlace ? ",yadif=0:-1:0" : "";
+  let nextOverlayInput = items.length;
 
   items.forEach((item, index) => {
     const start = decimal(item.trimInSeconds);
     const duration = decimal(item.durationSeconds);
+    const requiresItemOverlay = Boolean(item.ageTitle?.enabled || item.itemLogo?.enabled);
+    const normalizedLabel = requiresItemOverlay ? `vbase${index}` : `v${index}`;
     filters.push(
       `[${index}:v:0]trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS${deinterlace},` +
         `scale=${request.video.width}:${request.video.height}:force_original_aspect_ratio=decrease,` +
         `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,` +
-        `fps=${decimal(request.video.frameRate)},format=yuv420p[v${index}]`,
+        `fps=${decimal(request.video.frameRate)},format=yuv420p[${normalizedLabel}]`,
     );
+
+    let itemVideoSource = normalizedLabel;
+    if (item.ageTitle?.enabled) {
+      const ageLabel = item.itemLogo?.enabled ? `vage${index}` : `v${index}`;
+      const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
+      filters.push(
+        `[${itemVideoSource}]drawtext=text='${escapeDrawtext(item.ageTitle.text)}':` +
+          "x=48:y=48:fontsize=h*0.065:fontcolor=white:" +
+          "box=1:boxcolor=black@0.68:boxborderw=18:" +
+          `enable='between(t,0,${decimal(displayDuration)})'[${ageLabel}]`,
+      );
+      itemVideoSource = ageLabel;
+    }
+    if (item.itemLogo?.enabled) {
+      const logoInputIndex = nextOverlayInput;
+      nextOverlayInput += 1;
+      const logoWidth = Math.max(
+        2,
+        Math.round(request.video.width * (item.itemLogo.widthPercent / 100)),
+      );
+      const [x, y] = logoPosition(item.itemLogo.position, item.itemLogo.margin);
+      filters.push(
+        `[${logoInputIndex}:v:0]format=rgba,` +
+          `colorchannelmixer=aa=${decimal(item.itemLogo.opacity)},scale=${logoWidth}:-1[itemlogo${index}]`,
+        `[${itemVideoSource}][itemlogo${index}]overlay=x=${x}:y=${y}:` +
+          `shortest=1:eof_action=pass:format=auto,format=yuv420p[v${index}]`,
+      );
+    }
 
     if (item.hasAudio) {
       filters.push(
@@ -185,7 +232,7 @@ function buildFilterGraph(
   filters.push(`${concatInputs}concat=n=${items.length}:v=1:a=1[vconcat][aconcat]`);
   let videoSource = "vconcat";
   if (request.logo) {
-    const logoInputIndex = items.length;
+    const logoInputIndex = nextOverlayInput;
     const logoWidth = Math.max(
       2,
       Math.round(request.video.width * (request.logo.widthPercent / 100)),
@@ -208,6 +255,14 @@ function buildFilterGraph(
   );
 
   return filters.join(";");
+}
+
+function escapeDrawtext(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll(":", "\\:")
+    .replaceAll("'", "\\'")
+    .replaceAll("%", "\\%");
 }
 
 function videoEncoderArgs(video: VideoEncoding): string[] {

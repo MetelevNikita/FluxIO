@@ -25,6 +25,17 @@ export const initialAssets: MediaAsset[] = [
     colorSpace: "Rec. 709",
     audio: "PCM 48kHz 24b",
     sha256: "b18a0e...9c22",
+    scheduleType: "clip",
+    declaredDurationSeconds: 252,
+    ageTitle: { durationSeconds: 5, enabled: true, text: "16+" },
+    itemLogo: {
+      enabled: true,
+      filePath: "/MEDIA/BRANDING/channel.png",
+      margin: 24,
+      opacity: 1,
+      position: "top-right",
+      widthPercent: 12,
+    },
   },
   {
     id: "interview",
@@ -45,6 +56,9 @@ export const initialAssets: MediaAsset[] = [
     colorSpace: "Rec. 709",
     audio: "AAC 48kHz Stereo",
     sha256: "f82c31...117a",
+    scheduleType: "movie",
+    declaredDurationSeconds: 4_445,
+    ageTitle: { durationSeconds: 5, enabled: true, text: "16+" },
   },
   {
     id: "production",
@@ -65,6 +79,16 @@ export const initialAssets: MediaAsset[] = [
     colorSpace: "Rec. 709",
     audio: "PCM 48kHz 24b",
     sha256: "a3f9c2...d41e",
+    scheduleType: "movie",
+    declaredDurationSeconds: 1_120,
+    itemLogo: {
+      enabled: true,
+      filePath: "/MEDIA/BRANDING/channel.png",
+      margin: 24,
+      opacity: 1,
+      position: "top-right",
+      widthPercent: 12,
+    },
   },
   {
     id: "reef",
@@ -85,6 +109,7 @@ export const initialAssets: MediaAsset[] = [
     colorSpace: "Rec. 2020",
     audio: "AAC 48kHz Stereo",
     sha256: "d72bc8...c020",
+    scheduleType: "movie",
   },
   {
     id: "city",
@@ -104,6 +129,7 @@ export const initialAssets: MediaAsset[] = [
     colorSpace: "Rec. 709",
     audio: "No audio stream",
     sha256: "91dca6...02ae",
+    scheduleType: "clip",
   },
 ];
 

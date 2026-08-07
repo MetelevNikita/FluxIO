@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   saveBroadcastConfigurationRequestSchema,
   networkInterfaceListSchema,
+  parseScheduleRequestSchema,
   probeMediaRequestSchema,
   scanMediaRequestSchema,
   serviceHealthSchema,
@@ -24,8 +25,9 @@ import { probeMedia, scanMediaDirectory } from "./ffmpeg/probe.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
+import { parseScheduleFile } from "./schedule/parser.js";
 
-const serviceVersion = "4.2.10";
+const serviceVersion = "5.0.0";
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
@@ -121,6 +123,15 @@ export function buildApp(options: FastifyServerOptions = {}) {
         probes.push(probe);
       }
       return { items: probes };
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/schedule/parse", async (request, reply) => {
+    try {
+      const body = parseScheduleRequestSchema.parse(request.body);
+      return await parseScheduleFile(body.filePath);
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }

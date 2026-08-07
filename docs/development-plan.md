@@ -228,6 +228,17 @@
 - UI показывает internal CC error counter;
 - реальный capture подтверждает ноль CC errors на конечном output.
 
+### 3.1. Недельные расписания v5.0.0
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-01-weekly-schedule-v5.0.0.md`](progress/03-01-weekly-schedule-v5.0.0.md).
+
+- импорт `.air` / `.txt`, UTF-8 и Windows-1251;
+- Current/Future Playlist с окном 168 часов;
+- Overrun/Underrun и типы movie/chop/clip;
+- per-item AGE/LOGO с управлением после импорта;
+- реальные AGE/LOGO overlays в FFmpeg program и preview;
+- PostgreSQL/Prisma persistence per-item metadata.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

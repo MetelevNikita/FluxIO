@@ -69,6 +69,7 @@ model PlaylistItem {
   trimInSeconds  Float      @default(0)
   trimOutSeconds Float?
   scte35Markers  Json       @default("[]")
+  scheduleMetadata Json     @default("{}")
   playlist       Playlist   @relation(fields: [playlistId], references: [id], onDelete: Cascade)
   mediaAsset     MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
 

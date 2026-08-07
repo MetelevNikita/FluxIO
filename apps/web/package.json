@@ -1,6 +1,6 @@
 {
   "name": "@gruber/web",
-  "version": "4.2.10",
+  "version": "5.0.0",
   "private": true,
   "type": "module",
   "scripts": {

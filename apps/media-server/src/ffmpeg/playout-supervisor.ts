@@ -123,7 +123,7 @@ export class PlayoutSupervisor {
           await this.tsduckCapabilities.assertSrtSupport();
         }
       }
-      const resolvedRequest = await resolveLogo(request);
+      const resolvedRequest = await resolveLogos(request);
       this.#request = resolvedRequest;
       this.#items = await prepareItems(resolvedRequest, this.capabilities.ffprobePath);
       await rm(this.previewDirectory, { force: true, recursive: true });
@@ -625,18 +625,31 @@ export class PlayoutSupervisor {
   }
 }
 
-async function resolveLogo(request: StartPlayoutRequest): Promise<StartPlayoutRequest> {
-  if (!request.logo) return request;
-  if (!path.isAbsolute(request.logo.filePath)) {
+async function resolveLogos(request: StartPlayoutRequest): Promise<StartPlayoutRequest> {
+  const logo = request.logo ? await resolveLogoOverlay(request.logo) : null;
+  const playlist: StartPlayoutRequest["playlist"] = [];
+  for (const item of request.playlist) {
+    playlist.push({
+      ...item,
+      itemLogo: item.itemLogo?.enabled
+        ? await resolveLogoOverlay(item.itemLogo)
+        : item.itemLogo,
+    });
+  }
+  return { ...request, logo, playlist };
+}
+
+async function resolveLogoOverlay<T extends { filePath: string }>(logo: T): Promise<T> {
+  if (!path.isAbsolute(logo.filePath)) {
     throw new PlayoutPreflightError("Logo path must be absolute");
   }
-  const resolvedPath = await realpath(request.logo.filePath);
+  const resolvedPath = await realpath(logo.filePath);
   const logoStat = await stat(resolvedPath);
   if (!logoStat.isFile()) throw new PlayoutPreflightError("Logo path is not a file");
   if (!new Set([".png", ".webp", ".jpg", ".jpeg"]).has(path.extname(resolvedPath).toLowerCase())) {
     throw new PlayoutPreflightError("Logo must be PNG, WebP, JPEG or JPG");
   }
-  return { ...request, logo: { ...request.logo, filePath: resolvedPath } };
+  return { ...logo, filePath: resolvedPath };
 }
 
 async function prepareItems(
@@ -656,6 +669,8 @@ async function prepareItems(
       trimInSeconds: item.trimInSeconds,
       durationSeconds: duration,
       hasAudio: probe.hasAudio,
+      ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
+      itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
     });
   }
   return prepared;

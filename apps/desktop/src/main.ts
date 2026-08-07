@@ -4,6 +4,7 @@ import path from "node:path";
 const SELECT_LOGO_CHANNEL = "dialog:select-logo";
 const SELECT_MEDIA_DIRECTORY_CHANNEL = "dialog:select-media-directory";
 const SELECT_MEDIA_FILES_CHANNEL = "dialog:select-media-files";
+const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 const SERVICE_HEALTH_CHANNEL = "service:get-health";
 const SPLASH_DURATION_MS = 5_000;
 const loadProductionBuild =
@@ -144,6 +145,15 @@ void app.whenReady().then(() => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],
       title: "Select media directory",
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(SELECT_SCHEDULE_FILE_CHANNEL, async () => {
+    const result = await dialog.showOpenDialog({
+      filters: [{ name: "FluxIO schedules", extensions: ["air", "txt"] }],
+      properties: ["openFile"],
+      title: "Select weekly schedule",
     });
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });

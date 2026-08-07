@@ -17,29 +17,48 @@ import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
-import type { BroadcastSettings, MediaAsset, Scte35Marker, Scte35MarkerKind } from "../types";
+import type {
+  BroadcastSettings,
+  MediaAsset,
+  ScheduleMetadata,
+  ScheduleSlot,
+  Scte35Marker,
+  Scte35MarkerKind,
+} from "../types";
 
 interface PlaylistPreviewScreenProps {
   playlist: MediaAsset[];
   selectedAsset: MediaAsset;
+  activeSchedule: ScheduleSlot;
+  currentCount: number;
+  futureCount: number;
+  scheduleMetadata: ScheduleMetadata | null;
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItem: (sourceId: string, targetId: string) => void;
   onRemoveItem: (assetId: string) => void;
   onRemoveScte35Marker: (assetId: string, markerId: string) => void;
   onSelectAsset: (assetId: string) => void;
+  onScheduleChange: (slot: ScheduleSlot) => void;
+  onUpdateItem: (assetId: string, patch: Partial<MediaAsset>) => void;
   scte35Defaults: BroadcastSettings;
 }
 
 export function PlaylistPreviewScreen({
   playlist,
   selectedAsset,
+  activeSchedule,
+  currentCount,
+  futureCount,
+  scheduleMetadata,
   onAddFiles,
   onAddScte35Marker,
   onMoveItem,
   onRemoveItem,
   onRemoveScte35Marker,
   onSelectAsset,
+  onScheduleChange,
+  onUpdateItem,
   scte35Defaults,
 }: PlaylistPreviewScreenProps) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -133,12 +152,19 @@ export function PlaylistPreviewScreen({
     selectedAsset.id === "production"
       ? mediaPath("program-preview.png")
       : selectedAsset.preview;
-  const realMediaPreview = selectedAsset.id.startsWith("media-");
+  const realMediaPreview = selectedAsset.status === "analyzed" && selectedAsset.id !== "production";
   const scte35Markers = selectedAsset.scte35Markers ?? [];
   const playlistDuration = playlist.reduce(
-    (total, asset) => total + asset.durationSeconds,
-    0,
+    (total, asset) => total + (asset.declaredDurationSeconds ?? asset.durationSeconds),
+    scheduleMetadata?.delaySeconds ?? 0,
   );
+  const scheduleTarget = scheduleMetadata?.targetDurationSeconds ?? 604_800;
+  const scheduleVariance = playlistDuration - scheduleTarget;
+  const scheduleCoverage = Math.abs(scheduleVariance) < 0.01
+    ? "exact"
+    : scheduleVariance > 0
+      ? "over"
+      : "under";
 
   async function startPreview(position: number): Promise<void> {
     if (!realMediaPreview) {
@@ -261,6 +287,38 @@ export function PlaylistPreviewScreen({
   return (
     <main className="playlist-screen">
       <aside className="playlist-sidebar">
+        <div className="schedule-tabs">
+          <button
+            className={activeSchedule === "current" ? "active" : ""}
+            onClick={() => onScheduleChange("current")}
+            type="button"
+          >Current <span>{currentCount}</span></button>
+          <button
+            className={activeSchedule === "future" ? "active" : ""}
+            onClick={() => onScheduleChange("future")}
+            type="button"
+          >Future <span>{futureCount}</span></button>
+        </div>
+        <div className={`schedule-coverage ${scheduleCoverage}`}>
+          <span>
+            <b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b>
+            {" → "}<b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b> +7 days
+          </span>
+          <strong>{formatHours(playlistDuration)} / 168:00:00</strong>
+          <em>
+            {scheduleCoverage === "exact"
+              ? "Schedule fits the 168-hour window"
+              : `${scheduleCoverage === "over" ? "Overrun" : "Underrun"} ${formatHours(Math.abs(scheduleVariance))}`}
+          </em>
+          {scheduleMetadata ? (
+            <small title={scheduleMetadata.sourceFilePath}>
+              {scheduleMetadata.sourceName} · {scheduleMetadata.encoding} · delay {scheduleMetadata.delaySeconds}s
+              {scheduleMetadata.warnings.length > 0
+                ? ` · ${scheduleMetadata.warnings.length} warning(s)`
+                : ""}
+            </small>
+          ) : <small>No .AIR/.TXT schedule loaded</small>}
+        </div>
         <div className="playlist-table-header">
           <span>Prev</span>
           <span>Clip name</span>
@@ -270,7 +328,7 @@ export function PlaylistPreviewScreen({
         <div className="playlist-rows">
           {playlist.map((asset) => (
             <div
-              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} status-${asset.status}`}
+              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               draggable
               key={asset.id}
               onDragEnd={() => setDraggingId(null)}
@@ -304,6 +362,47 @@ export function PlaylistPreviewScreen({
                   <span>{asset.codecProfile}</span>
                 </span>
               </button>
+              <div className="playlist-item-metadata">
+                <select
+                  aria-label={`Schedule type for ${asset.name}`}
+                  onChange={(event) => onUpdateItem(asset.id, {
+                    scheduleType: event.target.value as MediaAsset["scheduleType"],
+                  })}
+                  value={asset.scheduleType ?? "clip"}
+                >
+                  <option value="movie">MOVIE</option>
+                  <option value="chop">CHOP</option>
+                  <option value="clip">CLIP</option>
+                </select>
+                <label
+                  className={`overlay-chip age ${asset.ageTitle?.enabled ? "enabled" : ""}`}
+                  title={asset.ageTitle?.text ?? "No age title assigned"}
+                >
+                  <input
+                    checked={asset.ageTitle?.enabled ?? false}
+                    disabled={!asset.ageTitle}
+                    onChange={(event) => asset.ageTitle && onUpdateItem(asset.id, {
+                      ageTitle: { ...asset.ageTitle, enabled: event.target.checked },
+                    })}
+                    type="checkbox"
+                  />
+                  AGE {asset.ageTitle?.text ?? "—"}
+                </label>
+                <label
+                  className={`overlay-chip logo ${asset.itemLogo?.enabled ? "enabled" : ""}`}
+                  title={asset.itemLogo?.filePath ?? "No item logo assigned"}
+                >
+                  <input
+                    checked={asset.itemLogo?.enabled ?? false}
+                    disabled={!asset.itemLogo}
+                    onChange={(event) => asset.itemLogo && onUpdateItem(asset.id, {
+                      itemLogo: { ...asset.itemLogo, enabled: event.target.checked },
+                    })}
+                    type="checkbox"
+                  />
+                  LOGO
+                </label>
+              </div>
               <button
                 aria-label={`Remove ${asset.name} from playlist`}
                 className="playlist-remove-button"
@@ -710,6 +809,16 @@ function formatTimecode(seconds: number, fpsLabel: string): string {
   const frameRate = Math.max(1, Math.round(Number.parseFloat(fpsLabel) || 25));
   const frames = Math.floor((seconds % 1) * frameRate);
   return [hours, minutes, secs, frames]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+}
+
+function formatHours(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(safeSeconds / 3_600);
+  const minutes = Math.floor((safeSeconds % 3_600) / 60);
+  const remaining = safeSeconds % 60;
+  return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
 }
