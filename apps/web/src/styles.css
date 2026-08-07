@@ -720,6 +720,7 @@ p {
 .schedule-resource-heading strong { color: var(--text); font-size: 11px; }
 .schedule-resource-heading small,
 .schedule-resource-control > span,
+.schedule-resource-control > small,
 .schedule-save-control > span,
 .schedule-save-control > small,
 .schedule-session-control > span,

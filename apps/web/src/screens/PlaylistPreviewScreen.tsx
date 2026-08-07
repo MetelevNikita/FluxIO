@@ -391,7 +391,7 @@ export function PlaylistPreviewScreen({
           <FileText size={16} />
           <span>
             <strong>Schedule resources</strong>
-            <small>AGE is detected from filename suffixes such as [16+]</small>
+            <small>Full-frame AGE canvas is detected from suffixes such as [16+]</small>
           </span>
         </div>
         <div className="schedule-resource-control logo-source-control">
@@ -463,7 +463,7 @@ export function PlaylistPreviewScreen({
           </div>
         </div>
         <div className="schedule-resource-control age-source-control">
-          <span>AGE graphics folder</span>
+          <span>AGE full-frame folder</span>
           <strong title={ageLibrary?.directoryPath}>
             {ageLibrary
               ? `${shortPath(ageLibrary.directoryPath)} · ${ageAssetPaths.size} matched`
@@ -472,6 +472,7 @@ export function PlaylistPreviewScreen({
           <button disabled={!onSelectAgeDirectory || scheduleBusy} onClick={() => void onSelectAgeDirectory?.()} type="button">
             <FolderOpen size={13} /> Select folder
           </button>
+          <small>1920×1080 or 3840×2160 PNG/WebP with alpha</small>
           <label className="age-duration-control">
             <span>Duration, sec</span>
             <input

@@ -203,10 +203,10 @@ function buildFilterGraph(
       if (item.ageTitle.filePath) {
         const ageInputIndex = nextOverlayInput;
         nextOverlayInput += 1;
-        const ageWidth = Math.max(2, Math.round(request.video.width * 0.12));
         filters.push(
-          `[${ageInputIndex}:v:0]format=rgba,scale=${ageWidth}:-1[ageasset${index}]`,
-          `[${itemVideoSource}][ageasset${index}]overlay=x=48:y=48:` +
+          `[${ageInputIndex}:v:0]format=rgba,` +
+            `scale=${request.video.width}:${request.video.height}:flags=lanczos[ageasset${index}]`,
+          `[${itemVideoSource}][ageasset${index}]overlay=x=0:y=0:` +
             `shortest=1:eof_action=pass:format=auto:` +
             `enable='between(t,0,${decimal(displayDuration)})',format=yuv420p[${ageLabel}]`,
         );

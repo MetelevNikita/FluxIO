@@ -61,7 +61,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.5");
+    assert.equal(health.version, "5.0.6");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -531,7 +531,7 @@ test("FFmpeg command burns logo before program and preview split", () => {
   assert.match(filter, /\[vprogrambase\]setfield=mode=prog\[vprogram\]/);
 });
 
-test("FFmpeg command applies per-item AGE and logo before playlist concat", () => {
+test("FFmpeg scales a full-frame AGE canvas to output and applies logo before concat", () => {
   const request = baseRequest();
   const command = buildFfmpegCommand(
     request,
@@ -545,7 +545,7 @@ test("FFmpeg command applies per-item AGE and logo before playlist concat", () =
       ageTitle: {
         enabled: true,
         text: "16+",
-        durationSeconds: 5,
+        durationSeconds: 10,
         filePath: "/media/age-16.png",
       },
       itemLogo: {
@@ -560,9 +560,9 @@ test("FFmpeg command applies per-item AGE and logo before playlist concat", () =
     "/tmp/gruber-test-preview",
   );
   const filter = command.args[command.args.indexOf("-filter_complex") + 1] ?? "";
-  assert.match(filter, /\[1:v:0\].*\[ageasset0\]/);
-  assert.match(filter, /\[vbase0\]\[ageasset0\]overlay=x=48:y=48/);
-  assert.match(filter, /enable='between\(t,0,5\)'/);
+  assert.match(filter, /\[1:v:0\]format=rgba,scale=1280:720:flags=lanczos\[ageasset0\]/);
+  assert.match(filter, /\[vbase0\]\[ageasset0\]overlay=x=0:y=0/);
+  assert.match(filter, /enable='between\(t,0,10\)'/);
   assert.match(filter, /\[2:v:0\].*\[itemlogo0\]/);
   assert.match(filter, /\[vage0\]\[itemlogo0\]overlay=.*\[v0\]/);
   assert.ok(command.args.includes("/media/age-16.png"));

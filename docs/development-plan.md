@@ -293,6 +293,16 @@
 - position/width/margin/opacity логотипа перенесены из Broadcast в Playlist;
 - исключено двойное наложение channel logo в FFmpeg program output.
 
+### 3.7. Полноэкранный AGE canvas v5.0.6
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-07-full-frame-age-v5.0.6.md`](progress/03-07-full-frame-age-v5.0.6.md).
+
+- AGE-файлы трактуются как готовый RGBA-холст 1920×1080 или 3840×2160;
+- FFmpeg масштабирует холст в output resolution и накладывает в `0:0`;
+- позиция и размер плашки задаются внутри PNG/WebP дизайнером;
+- JPEG/JPG исключены из AGE-сопоставления и preflight;
+- текстовый fallback сохраняется, если графика рейтинга не найдена.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

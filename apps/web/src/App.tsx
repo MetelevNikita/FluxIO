@@ -888,7 +888,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "5.0.5",
+        connection.kind === "ready" ? connection.health.version : "5.0.6",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1682,6 +1682,7 @@ function mapAgeAssetPaths(imagePaths: string[]): Map<string, string> {
   const assets = new Map<string, string>();
   for (const imagePath of imagePaths) {
     const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
+    if (!/\.(?:png|webp)$/i.test(fileName)) continue;
     const match = fileName.match(/(?:^|[^0-9])(0|6|12|16|18)\+(?:[^0-9]|$)/i);
     if (match?.[1] && !assets.has(`${match[1]}+`)) {
       assets.set(`${match[1]}+`, imagePath);

@@ -683,7 +683,7 @@ async function resolveLogos(request: StartPlayoutRequest): Promise<StartPlayoutR
       ageTitle: item.ageTitle?.enabled && item.ageTitle.filePath
         ? {
             ...item.ageTitle,
-            filePath: (await resolveLogoOverlay({ filePath: item.ageTitle.filePath })).filePath,
+            filePath: (await resolveAgeOverlay({ filePath: item.ageTitle.filePath })).filePath,
           }
         : item.ageTitle,
       itemLogo: item.itemLogo?.enabled
@@ -705,6 +705,19 @@ async function resolveLogoOverlay<T extends { filePath: string }>(logo: T): Prom
     throw new PlayoutPreflightError("Logo must be PNG, WebP, JPEG or JPG");
   }
   return { ...logo, filePath: resolvedPath };
+}
+
+async function resolveAgeOverlay<T extends { filePath: string }>(overlay: T): Promise<T> {
+  if (!path.isAbsolute(overlay.filePath)) {
+    throw new PlayoutPreflightError("AGE overlay path must be absolute");
+  }
+  const resolvedPath = await realpath(overlay.filePath);
+  const overlayStat = await stat(resolvedPath);
+  if (!overlayStat.isFile()) throw new PlayoutPreflightError("AGE overlay path is not a file");
+  if (!new Set([".png", ".webp"]).has(path.extname(resolvedPath).toLowerCase())) {
+    throw new PlayoutPreflightError("AGE overlay must be a full-frame PNG or WebP with alpha");
+  }
+  return { ...overlay, filePath: resolvedPath };
 }
 
 async function prepareItems(

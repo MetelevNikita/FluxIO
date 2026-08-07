@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v5.0.5**.
+Текущая версия: **v5.0.6**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -81,7 +81,7 @@ node setup.mjs
 - CBR, VBR, CRF, deinterlace, progressive/TFF/BFF field order, управляемая I/P/B GOP structure и mono/stereo/5.1;
 - CBR MPEG-TS по UDP/SRT с фиксированным muxrate, PID `0x1FFF` stuffing и регулируемой TSDuck-выдачей; UDP дополнительно получает финальную PCR-коррекцию; FLV по RTMP/RTMPS;
 - выбор реального сетевого адаптера для UDP и настройка MPEG-TS service name/ID/provider, video/audio PID, service type, PCR interval и итогового Transport bitrate (`0` — Auto);
-- автоматический AGE по суффиксам `[0+]`…`[18+]`, сопоставление с папкой графики и длительность 10–60 секунд;
+- автоматический AGE по суффиксам `[0+]`…`[18+]`: полноэкранный PNG/WebP 1920×1080 или 3840×2160 с готовой позицией и alpha масштабируется в выходной кадр, длительность 10–60 секунд;
 - per-item logo overlay с выбором файла/папки и настройками позиции, размера, отступа и прозрачности прямо в Playlist;
 - HLS-preview реально вещаемой программы;
 - Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в UI и console logs; во время кодирования media-server печатает activity каждые 5 секунд и при смене ролика;
