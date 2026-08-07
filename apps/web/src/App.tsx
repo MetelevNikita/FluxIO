@@ -21,8 +21,14 @@ import { GlobalStatusBar } from "./components/GlobalStatusBar";
 import {
   additionalPlaylistAssets,
   initialAssets,
-  initialBroadcastSettings,
 } from "./demo-data";
+import { initialBroadcastSettings } from "./default-broadcast-settings";
+import {
+  applyEncodingSettingsProfile,
+  createEncodingSettingsProfile,
+  parseEncodingSettingsProfile,
+  serializeEncodingSettingsProfile,
+} from "./encoding-settings-profile";
 import { BroadcastSettingsScreen } from "./screens/BroadcastSettingsScreen";
 import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
@@ -106,6 +112,8 @@ export function App() {
   const [scheduleStartMarker, setScheduleStartMarker] = useState<ScheduleStartMarker | null>(null);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [takeBusy, setTakeBusy] = useState(false);
+  const [settingsProfileBusy, setSettingsProfileBusy] = useState(false);
+  const [settingsProfileMessage, setSettingsProfileMessage] = useState<string | null>(null);
   const workspaceRestoreStarted = useRef(false);
 
   useEffect(() => {
@@ -774,6 +782,72 @@ export function App() {
     }
   }
 
+  async function saveEncodingSettingsProfile() {
+    setSettingsProfileBusy(true);
+    setOperationError(null);
+    setSettingsProfileMessage(null);
+    try {
+      const profile = createEncodingSettingsProfile(
+        settings,
+        connection.kind === "ready" ? connection.health.version : "5.0.4",
+      );
+      const content = serializeEncodingSettingsProfile(profile);
+      const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
+      const defaultName = `FluxIO-encoding-settings-${timestamp}.txt`;
+      let outputPath: string | null = null;
+      if (window.gruberDesktop) {
+        outputPath = await window.gruberDesktop.saveEncodingSettingsFile({
+          content,
+          defaultName,
+        });
+      } else {
+        downloadSchedule(content, defaultName);
+        outputPath = defaultName;
+      }
+      if (outputPath) {
+        setSettingsProfileMessage(`Settings saved: ${outputPath}`);
+      }
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setSettingsProfileBusy(false);
+    }
+  }
+
+  async function importEncodingSettingsProfile(browserFile?: File) {
+    setSettingsProfileBusy(true);
+    setOperationError(null);
+    setSettingsProfileMessage(null);
+    try {
+      let content: string;
+      let sourceName: string;
+      if (browserFile) {
+        if (!browserFile.name.toLowerCase().endsWith(".txt")) {
+          throw new Error("Encoding settings must be imported from a .txt file");
+        }
+        if (browserFile.size === 0 || browserFile.size > 1024 * 1024) {
+          throw new Error("Encoding settings file must be between 1 byte and 1 MB");
+        }
+        content = await browserFile.text();
+        sourceName = browserFile.name;
+      } else {
+        const selection = await window.gruberDesktop?.selectEncodingSettingsFile();
+        if (!selection) return;
+        content = selection.content;
+        sourceName = selection.filePath;
+      }
+      const profile = parseEncodingSettingsProfile(content);
+      setSettings(applyEncodingSettingsProfile(profile, initialBroadcastSettings));
+      setSettingsProfileMessage(
+        `Settings imported from ${sourceName}. SRT/RTMP secrets must be entered again.`,
+      );
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setSettingsProfileBusy(false);
+    }
+  }
+
   function setStartMarker(assetId: string) {
     if (activeSchedule !== "current") {
       setOperationError("A schedule start marker can only be set in the Current playlist.");
@@ -968,6 +1042,10 @@ export function App() {
           )}
           playoutStatus={playoutStatus}
           recoveryCheckpoint={recoveryCheckpoint}
+          settingsProfileBusy={settingsProfileBusy}
+          settingsProfileMessage={settingsProfileMessage}
+          onImportSettings={importEncodingSettingsProfile}
+          onSaveSettings={saveEncodingSettingsProfile}
           scheduleStartMarker={scheduleStartMarker}
           scheduleStartItemName={playlist.find(
             (asset) => asset.id === scheduleStartMarker?.assetId,

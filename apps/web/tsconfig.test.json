@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist-test",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": [
+    "src/default-broadcast-settings.ts",
+    "src/encoding-settings-profile.ts",
+    "src/encoding-settings-profile.test.ts",
+    "src/types.ts"
+  ]
+}

@@ -7,6 +7,8 @@ const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
 const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
 const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
+const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-file";
+const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
 const SERVICE_HEALTH_CHANNEL = "service:get-health";
 
 contextBridge.exposeInMainWorld("gruberDesktop", {
@@ -24,6 +26,11 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
     ipcRenderer.invoke(SELECT_MEDIA_FILES_CHANNEL) as Promise<string[]>,
   selectScheduleFile: (): Promise<string | null> =>
     ipcRenderer.invoke(SELECT_SCHEDULE_FILE_CHANNEL) as Promise<string | null>,
+  selectEncodingSettingsFile: (): Promise<{ content: string; filePath: string } | null> =>
+    ipcRenderer.invoke(SELECT_ENCODING_SETTINGS_FILE_CHANNEL) as Promise<{
+      content: string;
+      filePath: string;
+    } | null>,
   selectScheduleLogoDirectory: (): Promise<{ directoryPath: string; imagePaths: string[] } | null> =>
     ipcRenderer.invoke(SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL) as Promise<{
       directoryPath: string;
@@ -40,4 +47,9 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
     extension: "air" | "txt";
   }): Promise<string | null> =>
     ipcRenderer.invoke(SAVE_SCHEDULE_FILE_CHANNEL, input) as Promise<string | null>,
+  saveEncodingSettingsFile: (input: {
+    content: string;
+    defaultName: string;
+  }): Promise<string | null> =>
+    ipcRenderer.invoke(SAVE_ENCODING_SETTINGS_FILE_CHANNEL, input) as Promise<string | null>,
 });

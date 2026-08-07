@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
-import { readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const SELECT_LOGO_CHANNEL = "dialog:select-logo";
@@ -9,6 +9,8 @@ const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
 const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
 const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
+const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-file";
+const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
 const SERVICE_HEALTH_CHANNEL = "service:get-health";
 const SPLASH_DURATION_MS = 5_000;
 const loadProductionBuild =
@@ -186,6 +188,36 @@ void app.whenReady().then(() => {
     return outputPath;
   });
 
+  ipcMain.handle(SELECT_ENCODING_SETTINGS_FILE_CHANNEL, async () => {
+    const result = await dialog.showOpenDialog({
+      filters: [{ name: "FluxIO encoding settings", extensions: ["txt"] }],
+      properties: ["openFile"],
+      title: "Import encoding settings",
+    });
+    const filePath = result.filePaths[0];
+    if (result.canceled || !filePath) return null;
+    const content = await readFile(filePath);
+    if (content.byteLength === 0 || content.byteLength > 1024 * 1024) {
+      throw new Error("Encoding settings file must be between 1 byte and 1 MB");
+    }
+    return { content: content.toString("utf8"), filePath };
+  });
+
+  ipcMain.handle(SAVE_ENCODING_SETTINGS_FILE_CHANNEL, async (_event, value: unknown) => {
+    const input = textFileSaveInput(value);
+    const result = await dialog.showSaveDialog({
+      defaultPath: input.defaultName,
+      filters: [{ name: "FluxIO encoding settings", extensions: ["txt"] }],
+      title: "Save encoding settings",
+    });
+    if (result.canceled || !result.filePath) return null;
+    const outputPath = result.filePath.toLowerCase().endsWith(".txt")
+      ? result.filePath
+      : `${result.filePath}.txt`;
+    await writeFile(outputPath, input.content, "utf8");
+    return outputPath;
+  });
+
   ipcMain.handle(SELECT_LOGO_CHANNEL, async () => {
     const result = await dialog.showOpenDialog({
       filters: [
@@ -261,6 +293,23 @@ function scheduleSaveInput(value: unknown): {
     throw new Error("Invalid schedule file name");
   }
   return { content, defaultName, extension };
+}
+
+function textFileSaveInput(value: unknown): {
+  content: string;
+  defaultName: string;
+} {
+  if (!value || typeof value !== "object") throw new Error("Invalid text file save request");
+  const candidate = value as Record<string, unknown>;
+  const content = candidate.content;
+  const defaultName = candidate.defaultName;
+  if (typeof content !== "string" || content.length === 0 || content.length > 1024 * 1024) {
+    throw new Error("Encoding settings content must be between 1 byte and 1 MB");
+  }
+  if (typeof defaultName !== "string" || !defaultName.trim() || /[\\/:*?"<>|]/.test(defaultName)) {
+    throw new Error("Invalid encoding settings file name");
+  }
+  return { content, defaultName };
 }
 
 app.on("window-all-closed", () => {

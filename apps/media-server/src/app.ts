@@ -30,7 +30,7 @@ import { listNetworkInterfaces } from "./network-interfaces.js";
 import { parseScheduleFile } from "./schedule/parser.js";
 import { serializeSchedule } from "./schedule/serializer.js";
 
-const serviceVersion = "5.0.3";
+const serviceVersion = "5.0.4";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {

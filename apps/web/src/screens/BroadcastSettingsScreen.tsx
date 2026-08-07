@@ -1,6 +1,7 @@
 import {
   AudioLines,
   ChartNoAxesColumnIncreasing,
+  Download,
   Eye,
   EyeOff,
   FlagTriangleRight,
@@ -12,6 +13,7 @@ import {
   Repeat2,
   Rows3,
   Square,
+  Upload,
   Video,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
@@ -41,6 +43,10 @@ interface BroadcastSettingsScreenProps {
   scte35MarkerCount: number;
   settings: BroadcastSettings;
   onSettingsChange: (settings: BroadcastSettings) => void;
+  onImportSettings: (file?: File) => Promise<void>;
+  onSaveSettings: () => Promise<void>;
+  settingsProfileBusy: boolean;
+  settingsProfileMessage: string | null;
 }
 
 type SettingsUpdater = <Key extends keyof BroadcastSettings>(
@@ -63,7 +69,12 @@ export function BroadcastSettingsScreen({
   scte35MarkerCount,
   settings,
   onSettingsChange,
+  onImportSettings,
+  onSaveSettings,
+  settingsProfileBusy,
+  settingsProfileMessage,
 }: BroadcastSettingsScreenProps) {
+  const settingsFileInput = useRef<HTMLInputElement>(null);
   function update<Key extends keyof BroadcastSettings>(
     key: Key,
     value: BroadcastSettings[Key],
@@ -136,6 +147,44 @@ export function BroadcastSettingsScreen({
                     : "Start Stream"}
               </button>
             )}
+          </div>
+        </div>
+
+        <div className="encoding-profile-toolbar">
+          <div>
+            <strong>Encoding settings profile</strong>
+            <span title={settingsProfileMessage ?? undefined}>
+              {settingsProfileMessage ?? "Portable .txt profile · passwords are never exported"}
+            </span>
+          </div>
+          <div className="encoding-profile-actions">
+            <button
+              disabled={settingsProfileBusy}
+              onClick={() => void onSaveSettings()}
+              type="button"
+            >
+              <Download size={14} /> Save .TXT
+            </button>
+            <button
+              disabled={active || settingsProfileBusy}
+              onClick={() => window.gruberDesktop
+                ? void onImportSettings()
+                : settingsFileInput.current?.click()}
+              type="button"
+            >
+              <Upload size={14} /> Import .TXT
+            </button>
+            <input
+              accept=".txt,text/plain"
+              className="visually-hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void onImportSettings(file);
+                event.target.value = "";
+              }}
+              ref={settingsFileInput}
+              type="file"
+            />
           </div>
         </div>
 

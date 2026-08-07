@@ -34,6 +34,102 @@ export const networkInterfaceListSchema = z.object({
 
 export type NetworkInterfaceInfo = z.infer<typeof networkInterfaceSchema>;
 
+const profileTextSchema = z.string().max(4_096);
+
+export const portableEncodingSettingsSchema = z.object({
+  videoCodec: z.enum(["H.264", "H.265", "MPEG-2 Video"]),
+  profile: z.enum(["Main Profile", "High Profile", "Main 10"]),
+  level: z.enum(["4.0", "4.1", "5.0", "5.1", "5.2"]),
+  preset: z.number().min(0).max(100),
+  width: z.number().int().min(16).max(16_384),
+  height: z.number().int().min(16).max(16_384),
+  dimensionsLocked: z.boolean(),
+  frameRate: z.enum([
+    "23.976 fps",
+    "24.000 fps",
+    "25.000 fps",
+    "29.970 fps",
+    "50.000 fps",
+    "59.940 fps",
+  ]),
+  deinterlace: z.boolean(),
+  fieldOrder: z.enum(["progressive", "upper", "lower"]),
+  gopSize: z.number().int().min(1).max(600),
+  bFrames: z.number().int().min(0).max(16),
+  closedGop: z.boolean(),
+  rateControl: z.enum(["CBR", "VBR", "CRF"]),
+  targetBitrate: z.number().positive().max(1_000),
+  maxBitrate: z.number().positive().max(1_000),
+  bufferSize: z.number().int().positive().max(1_000_000_000),
+  crf: z.number().min(0).max(51),
+  audioCodec: z.enum(["AAC-LC", "MP2", "AC-3"]),
+  sampleRate: z.enum(["44100 Hz", "48000 Hz", "96000 Hz"]),
+  channels: z.enum(["Mono", "Stereo (L/R)", "5.1"]),
+  audioBitrate: z.number().int().min(32).max(1_536),
+  streamingEnabled: z.boolean(),
+  protocol: z.enum(["SRT", "UDP", "RTMP", "RTMPS"]),
+  serverUrl: profileTextSchema,
+  latency: profileTextSchema,
+  udpHost: profileTextSchema,
+  udpPort: z.number().int().min(1).max(65_535),
+  udpPacketSize: z.number().int().min(188).max(65_507),
+  udpTtl: z.number().int().min(0).max(255),
+  udpLocalAddress: profileTextSchema,
+  udpServiceName: profileTextSchema,
+  udpServiceId: z.number().int().min(1).max(65_535),
+  udpProviderName: profileTextSchema,
+  udpVideoPid: z.number().int().min(32).max(8_190),
+  udpAudioPid: z.number().int().min(32).max(8_190),
+  udpServiceType: profileTextSchema,
+  udpPcrPeriodMs: z.number().int().min(1).max(1_000),
+  udpTransportBitrate: z.number().min(0).max(1_000),
+  srtHost: profileTextSchema,
+  srtPort: z.number().int().min(1).max(65_535),
+  srtMode: z.enum(["caller", "listener", "rendezvous"]),
+  srtLatencyMs: z.number().int().min(20).max(60_000),
+  srtStreamId: profileTextSchema,
+  rtmpServerUrl: profileTextSchema,
+  logoEnabled: z.boolean(),
+  logoPath: profileTextSchema,
+  logoPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center"]),
+  logoWidthPercent: z.number().min(1).max(50),
+  logoMargin: z.number().int().min(0).max(500),
+  logoOpacity: z.number().min(0.05).max(1),
+  repeatSchedule: z.boolean(),
+  scte35PlanningEnabled: z.boolean(),
+  scte35Command: z.enum([
+    "time_signal + segmentation_descriptor",
+    "splice_insert (legacy)",
+  ]),
+  scte35Owner: z.enum(["Provider", "Distributor"]),
+  scte35Pid: z.number().int().min(32).max(8_190),
+  scte35PreRollMs: z.number().int().min(0).max(60_000),
+  scte35DefaultEventId: z.number().int().min(0).max(4_294_967_295),
+  scte35DefaultBreakDuration: z.number().int().min(1).max(86_400),
+  scte35UpidType: z.enum(["Ad-ID", "UUID", "URI", "None"]),
+  scte35DefaultUpid: z.string().max(255),
+  scte35LoopEventStrategy: z.enum([
+    "Increment each loop",
+    "Reuse playlist Event IDs",
+  ]),
+}).strict();
+
+export const encodingSettingsFileSchema = z.object({
+  format: z.literal("fluxio-encoding-settings"),
+  formatVersion: z.literal(1),
+  applicationVersion: z.string().min(1).max(64),
+  exportedAt: z.iso.datetime(),
+  secretsOmitted: z.array(z.enum([
+    "streamKey",
+    "srtPassphrase",
+    "rtmpStreamKey",
+  ])).max(3),
+  settings: portableEncodingSettingsSchema,
+}).strict();
+
+export type PortableEncodingSettings = z.infer<typeof portableEncodingSettingsSchema>;
+export type EncodingSettingsFile = z.infer<typeof encodingSettingsFileSchema>;
+
 export const mediaProbeSchema = z.object({
   filePath: z.string().min(1),
   name: z.string().min(1),

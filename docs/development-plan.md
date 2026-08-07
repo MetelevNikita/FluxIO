@@ -272,6 +272,17 @@
 - приоритет аварийного Resume над ручным маркером;
 - визуальная индикация точки старта в строке Playlist.
 
+### 3.5. Перенос encoding settings v5.0.4
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-05-encoding-settings-profile-v5.0.4.md`](progress/03-05-encoding-settings-profile-v5.0.4.md).
+
+- versioned `.txt` profile для encoder/output/SCTE-35 settings;
+- строгая contract-валидация файла и ограничение размера 1 MB;
+- Electron open/save dialogs и browser development fallback;
+- исключение SRT passphrase и RTMP stream keys из переносимого файла;
+- блокировка импорта во время активного playout;
+- исправление переполнения текста карточки Schedule resources.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

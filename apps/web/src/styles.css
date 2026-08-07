@@ -692,6 +692,13 @@ p {
   gap: 9px;
   padding: 10px;
   color: var(--accent);
+  overflow: hidden;
+}
+
+.schedule-resource-heading > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .schedule-resource-heading > span,
@@ -706,7 +713,10 @@ p {
 }
 
 .schedule-resource-heading strong,
-.schedule-resource-heading small { display: block; }
+.schedule-resource-heading small {
+  max-width: 100%;
+  display: block;
+}
 .schedule-resource-heading strong { color: var(--text); font-size: 11px; }
 .schedule-resource-heading small,
 .schedule-resource-control > span,
@@ -1734,6 +1744,67 @@ input[type="range"] {
   border-color: rgba(239, 68, 68, 0.5);
   color: #fb7185;
 }
+
+.encoding-profile-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--surface);
+}
+
+.encoding-profile-toolbar > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.encoding-profile-toolbar strong,
+.encoding-profile-toolbar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.encoding-profile-toolbar strong { color: var(--text); font-size: 10px; }
+.encoding-profile-toolbar span {
+  color: var(--muted-dark);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.encoding-profile-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.encoding-profile-actions button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 9px;
+  color: var(--muted);
+  background: var(--surface-strong);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.encoding-profile-actions button:hover:not(:disabled) {
+  border-color: rgba(245, 213, 101, 0.42);
+  color: var(--accent);
+}
+
+.encoding-profile-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .recovery-resume-banner {
   display: flex;
