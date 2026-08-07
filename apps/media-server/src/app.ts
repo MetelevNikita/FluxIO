@@ -6,6 +6,7 @@ import {
   saveBroadcastConfigurationRequestSchema,
   networkInterfaceListSchema,
   parseScheduleRequestSchema,
+  serializeScheduleRequestSchema,
   probeMediaRequestSchema,
   scanMediaRequestSchema,
   serviceHealthSchema,
@@ -26,8 +27,9 @@ import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 import { parseScheduleFile } from "./schedule/parser.js";
+import { serializeSchedule } from "./schedule/serializer.js";
 
-const serviceVersion = "5.0.0";
+const serviceVersion = "5.0.1";
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
@@ -132,6 +134,14 @@ export function buildApp(options: FastifyServerOptions = {}) {
     try {
       const body = parseScheduleRequestSchema.parse(request.body);
       return await parseScheduleFile(body.filePath);
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/schedule/serialize", async (request, reply) => {
+    try {
+      return serializeSchedule(serializeScheduleRequestSchema.parse(request.body));
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }

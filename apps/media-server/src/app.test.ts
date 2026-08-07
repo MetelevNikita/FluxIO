@@ -34,6 +34,7 @@ import {
   parseScheduleText,
   ScheduleParseError,
 } from "./schedule/parser.js";
+import { formatScheduleTimecode, serializeSchedule } from "./schedule/serializer.js";
 import { buildScte35CueXml, planScte35Cues } from "./tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
@@ -54,7 +55,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.0");
+    assert.equal(health.version, "5.0.1");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -231,6 +232,66 @@ test("POST /api/schedule/parse reads .air schedule files", async () => {
   }
 });
 
+test("schedule serializer preserves reordered items and enabled AGE/LOGO markup", () => {
+  const serialized = serializeSchedule({
+    extension: "air",
+    startTime: "12:00:00.00",
+    delaySeconds: 5,
+    items: [
+      {
+        type: "clip",
+        declaredDurationSeconds: 60.25,
+        filePath: "\\\\utv2\\clips\\Trip [16+].mp4",
+        ageTitle: { enabled: true, text: "16+" },
+        logoPath: "C:\\FluxIO\\logo.png",
+      },
+      {
+        type: "chop",
+        declaredDurationSeconds: 10,
+        filePath: "C:\\media\\ident.mp4",
+        ageTitle: { enabled: false, text: "6+" },
+        logoPath: null,
+      },
+    ],
+  });
+
+  assert.equal(serialized.extension, "air");
+  assert.match(serialized.content, /^start on 12:00:00\.00 - delay 5\r\n/);
+  assert.match(serialized.content, /insertAgeTitle \{16\+\}\r\ninsertLogoTitle \{C:\\FluxIO\\logo\.png\}/);
+  assert.match(serialized.content, /clip 00:01:00\.25 \\\\utv2\\clips\\Trip \[16\+\]\.mp4/);
+  assert.doesNotMatch(serialized.content, /insertAgeTitle \{6\+\}/);
+  assert.match(serialized.content, /chop 00:00:10\.00 C:\\media\\ident\.mp4\r\n$/);
+  assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
+});
+
+test("POST /api/schedule/serialize returns editable .txt content", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        extension: "txt",
+        startTime: "12:00:00.00",
+        delaySeconds: 0,
+        items: [{
+          type: "movie",
+          declaredDurationSeconds: 360,
+          filePath: "/media/movie [12+].mp4",
+          ageTitle: { enabled: true, text: "12+" },
+          logoPath: "/branding/logo.png",
+        }],
+      },
+      url: "/api/schedule/serialize",
+    });
+    assert.equal(response.statusCode, 200);
+    const payload = response.json() as { extension: string; content: string };
+    assert.equal(payload.extension, "txt");
+    assert.match(payload.content, /movie 00:06:00\.00 \/media\/movie \[12\+\]\.mp4/);
+  } finally {
+    await app.close();
+  }
+});
+
 test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () => {
   const request = baseRequest();
   const previewDirectory = "/tmp/gruber-test-preview";
@@ -342,7 +403,12 @@ test("FFmpeg command applies per-item AGE and logo before playlist concat", () =
       trimInSeconds: 0,
       durationSeconds: 20,
       hasAudio: true,
-      ageTitle: { enabled: true, text: "16+", durationSeconds: 5 },
+      ageTitle: {
+        enabled: true,
+        text: "16+",
+        durationSeconds: 5,
+        filePath: "/media/age-16.png",
+      },
       itemLogo: {
         enabled: true,
         filePath: "/media/item-logo.png",
@@ -355,10 +421,12 @@ test("FFmpeg command applies per-item AGE and logo before playlist concat", () =
     "/tmp/gruber-test-preview",
   );
   const filter = command.args[command.args.indexOf("-filter_complex") + 1] ?? "";
-  assert.match(filter, /drawtext=text='16\+'/);
+  assert.match(filter, /\[1:v:0\].*\[ageasset0\]/);
+  assert.match(filter, /\[vbase0\]\[ageasset0\]overlay=x=48:y=48/);
   assert.match(filter, /enable='between\(t,0,5\)'/);
-  assert.match(filter, /\[1:v:0\].*\[itemlogo0\]/);
+  assert.match(filter, /\[2:v:0\].*\[itemlogo0\]/);
   assert.match(filter, /\[vage0\]\[itemlogo0\]overlay=.*\[v0\]/);
+  assert.ok(command.args.includes("/media/age-16.png"));
   assert.ok(command.args.includes("/media/item-logo.png"));
 });
 

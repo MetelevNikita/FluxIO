@@ -1,10 +1,14 @@
 import {
   FlagTriangleRight,
+  FileText,
+  FolderOpen,
+  Image,
   Maximize2,
   LoaderCircle,
   Pause,
   Play,
   Repeat2,
+  Save,
   SkipBack,
   SkipForward,
   Square,
@@ -21,10 +25,12 @@ import type {
   BroadcastSettings,
   MediaAsset,
   ScheduleMetadata,
+  ScheduleOverlayLibrary,
   ScheduleSlot,
   Scte35Marker,
   Scte35MarkerKind,
 } from "../types";
+import type { ScheduleExportExtension } from "@gruber/contracts";
 
 interface PlaylistPreviewScreenProps {
   playlist: MediaAsset[];
@@ -33,16 +39,29 @@ interface PlaylistPreviewScreenProps {
   currentCount: number;
   futureCount: number;
   scheduleMetadata: ScheduleMetadata | null;
+  ageLibrary: ScheduleOverlayLibrary | null;
+  scheduleLogoSource: string;
+  scheduleLogoPath: string;
+  scheduleActionMessage: string | null;
+  scheduleBusy: boolean;
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItem: (sourceId: string, targetId: string) => void;
+  onBulkAgeChange: (assetIds: string[], rating: string | null) => void;
+  onBulkLogoChange: (assetIds: string[], enabled: boolean) => void;
   onRemoveItem: (assetId: string) => void;
   onRemoveScte35Marker: (assetId: string, markerId: string) => void;
   onSelectAsset: (assetId: string) => void;
   onScheduleChange: (slot: ScheduleSlot) => void;
+  onSaveSchedule: (extension: ScheduleExportExtension) => Promise<void>;
+  onSelectAgeDirectory?: () => Promise<void>;
+  onSelectScheduleLogoDirectory?: () => Promise<void>;
+  onSelectScheduleLogoFile?: () => Promise<void>;
   onUpdateItem: (assetId: string, patch: Partial<MediaAsset>) => void;
   scte35Defaults: BroadcastSettings;
 }
+
+const AGE_RATINGS = ["0+", "6+", "12+", "16+", "18+"] as const;
 
 export function PlaylistPreviewScreen({
   playlist,
@@ -51,13 +70,24 @@ export function PlaylistPreviewScreen({
   currentCount,
   futureCount,
   scheduleMetadata,
+  ageLibrary,
+  scheduleLogoSource,
+  scheduleLogoPath,
+  scheduleActionMessage,
+  scheduleBusy,
   onAddFiles,
   onAddScte35Marker,
   onMoveItem,
+  onBulkAgeChange,
+  onBulkLogoChange,
   onRemoveItem,
   onRemoveScte35Marker,
   onSelectAsset,
   onScheduleChange,
+  onSaveSchedule,
+  onSelectAgeDirectory,
+  onSelectScheduleLogoDirectory,
+  onSelectScheduleLogoFile,
   onUpdateItem,
   scte35Defaults,
 }: PlaylistPreviewScreenProps) {
@@ -85,6 +115,31 @@ export function PlaylistPreviewScreen({
     scte35Defaults.scte35DefaultBreakDuration,
   );
   const [markerUpid, setMarkerUpid] = useState(scte35Defaults.scte35DefaultUpid);
+  const [scheduleExportExtension, setScheduleExportExtension] = useState<ScheduleExportExtension>("air");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set([selectedAsset.id]));
+  const [bulkAgeRating, setBulkAgeRating] = useState<string>("16+");
+  const ageAssetPaths = ageAssetMap(ageLibrary?.imagePaths ?? []);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const available = new Set(playlist.map((asset) => asset.id));
+      const next = new Set([...current].filter((id) => available.has(id)));
+      if (next.size === 0 && selectedAsset.id) next.add(selectedAsset.id);
+      return next;
+    });
+  }, [playlist, selectedAsset.id]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, select, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      setSelectedIds(new Set(playlist.map((asset) => asset.id)));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [playlist]);
 
   useEffect(() => {
     const demoTimeline = selectedAsset.id === "production";
@@ -286,6 +341,91 @@ export function PlaylistPreviewScreen({
 
   return (
     <main className="playlist-screen">
+      <section className="schedule-resource-toolbar">
+        <div className="schedule-resource-heading">
+          <FileText size={16} />
+          <span>
+            <strong>Schedule resources</strong>
+            <small>AGE is detected from filename suffixes such as [16+]</small>
+          </span>
+        </div>
+        <div className="schedule-resource-control logo-source-control">
+          <span>Channel logo</span>
+          <strong title={scheduleLogoSource || undefined}>
+            {shortPath(scheduleLogoSource) || "Not selected"}
+          </strong>
+          <div>
+            <button disabled={!onSelectScheduleLogoFile || scheduleBusy} onClick={() => void onSelectScheduleLogoFile?.()} type="button">
+              <Image size={13} /> File
+            </button>
+            <button disabled={!onSelectScheduleLogoDirectory || scheduleBusy} onClick={() => void onSelectScheduleLogoDirectory?.()} type="button">
+              <FolderOpen size={13} /> Folder
+            </button>
+          </div>
+        </div>
+        <div className="schedule-resource-control age-source-control">
+          <span>AGE graphics folder</span>
+          <strong title={ageLibrary?.directoryPath}>
+            {ageLibrary
+              ? `${shortPath(ageLibrary.directoryPath)} · ${ageAssetPaths.size} matched`
+              : "Not selected"}
+          </strong>
+          <button disabled={!onSelectAgeDirectory || scheduleBusy} onClick={() => void onSelectAgeDirectory?.()} type="button">
+            <FolderOpen size={13} /> Select folder
+          </button>
+        </div>
+        <div className="schedule-save-control">
+          <span>Export edited schedule</span>
+          <div>
+            <select
+              aria-label="Schedule export extension"
+              onChange={(event) => setScheduleExportExtension(event.target.value as ScheduleExportExtension)}
+              value={scheduleExportExtension}
+            >
+              <option value="air">.AIR</option>
+              <option value="txt">.TXT</option>
+            </select>
+            <button disabled={scheduleBusy || playlist.length === 0} onClick={() => void onSaveSchedule(scheduleExportExtension)} type="button">
+              <Save size={14} /> Save schedule
+            </button>
+          </div>
+          <small title={scheduleActionMessage ?? undefined}>
+            {scheduleBusy ? "Preparing schedule…" : scheduleActionMessage ?? "Exports current tab and item order"}
+          </small>
+        </div>
+        <div className="schedule-bulk-control">
+          <span>Bulk actions</span>
+          <strong>{selectedIds.size} / {playlist.length} selected</strong>
+          <div className="bulk-selection-actions">
+            <button onClick={() => setSelectedIds(new Set(playlist.map((asset) => asset.id)))} type="button">
+              Select all
+            </button>
+            <button disabled={selectedIds.size === 0} onClick={() => setSelectedIds(new Set())} type="button">
+              Clear
+            </button>
+          </div>
+          <div className="bulk-overlay-actions">
+            <select aria-label="Bulk AGE rating" onChange={(event) => setBulkAgeRating(event.target.value)} value={bulkAgeRating}>
+              <option value="off">AGE OFF</option>
+              {AGE_RATINGS.map((rating) => <option key={rating} value={rating}>AGE {rating}</option>)}
+            </select>
+            <button
+              disabled={selectedIds.size === 0}
+              onClick={() => onBulkAgeChange([...selectedIds], bulkAgeRating === "off" ? null : bulkAgeRating)}
+              type="button"
+            >Apply AGE</button>
+            <button
+              disabled={selectedIds.size === 0 || (!scheduleLogoPath && !playlist.some((asset) => asset.itemLogo?.filePath))}
+              onClick={() => onBulkLogoChange([...selectedIds], true)}
+              type="button"
+            >LOGO ON</button>
+            <button disabled={selectedIds.size === 0} onClick={() => onBulkLogoChange([...selectedIds], false)} type="button">
+              LOGO OFF
+            </button>
+          </div>
+          <small>Ctrl+A / Cmd+A selects every item in the active schedule</small>
+        </div>
+      </section>
       <aside className="playlist-sidebar">
         <div className="schedule-tabs">
           <button
@@ -328,7 +468,7 @@ export function PlaylistPreviewScreen({
         <div className="playlist-rows">
           {playlist.map((asset) => (
             <div
-              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               draggable
               key={asset.id}
               onDragEnd={() => setDraggingId(null)}
@@ -343,7 +483,19 @@ export function PlaylistPreviewScreen({
             >
               <button
                 className="playlist-row-select"
-                onClick={() => onSelectAsset(asset.id)}
+                onClick={(event) => {
+                  if (event.ctrlKey || event.metaKey) {
+                    setSelectedIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(asset.id)) next.delete(asset.id);
+                      else next.add(asset.id);
+                      return next;
+                    });
+                  } else {
+                    setSelectedIds(new Set([asset.id]));
+                  }
+                  onSelectAsset(asset.id);
+                }}
                 type="button"
               >
                 <span className="playlist-status-stripe" />
@@ -375,18 +527,37 @@ export function PlaylistPreviewScreen({
                   <option value="clip">CLIP</option>
                 </select>
                 <label
-                  className={`overlay-chip age ${asset.ageTitle?.enabled ? "enabled" : ""}`}
-                  title={asset.ageTitle?.text ?? "No age title assigned"}
+                  className={`overlay-chip age age-rating-control ${asset.ageTitle?.enabled ? "enabled" : ""}`}
+                  title={asset.ageTitle?.filePath ?? asset.ageTitle?.text ?? "No age title assigned"}
                 >
-                  <input
-                    checked={asset.ageTitle?.enabled ?? false}
-                    disabled={!asset.ageTitle}
-                    onChange={(event) => asset.ageTitle && onUpdateItem(asset.id, {
-                      ageTitle: { ...asset.ageTitle, enabled: event.target.checked },
-                    })}
-                    type="checkbox"
-                  />
-                  AGE {asset.ageTitle?.text ?? "—"}
+                  <span>AGE</span>
+                  <select
+                    aria-label={`Age rating for ${asset.name}`}
+                    onChange={(event) => {
+                      const rating = event.target.value;
+                      if (!rating) {
+                        onUpdateItem(asset.id, {
+                          ageTitle: asset.ageTitle
+                            ? { ...asset.ageTitle, enabled: false }
+                            : undefined,
+                        });
+                        return;
+                      }
+                      onUpdateItem(asset.id, {
+                        ageTitle: {
+                          durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+                          enabled: true,
+                          filePath: ageAssetPaths.get(rating) ?? null,
+                          text: rating,
+                        },
+                      });
+                    }}
+                    value={asset.ageTitle?.enabled ? asset.ageTitle.text : ""}
+                  >
+                    <option value="">OFF</option>
+                    {AGE_RATINGS.map((rating) => <option key={rating} value={rating}>{rating}</option>)}
+                  </select>
+                  <i className={asset.ageTitle?.filePath ? "matched" : "fallback"} />
                 </label>
                 <label
                   className={`overlay-chip logo ${asset.itemLogo?.enabled ? "enabled" : ""}`}
@@ -821,4 +992,23 @@ function formatHours(seconds: number): string {
   return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+function ageAssetMap(imagePaths: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const imagePath of imagePaths) {
+    const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
+    const match = fileName.match(/(?:^|[^0-9])(0|6|12|16|18)\+(?:[^0-9]|$)/i);
+    if (match?.[1] && !result.has(`${match[1]}+`)) {
+      result.set(`${match[1]}+`, imagePath);
+    }
+  }
+  return result;
+}
+
+function shortPath(value: string): string {
+  if (!value) return "";
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return value;
+  return `…/${parts.slice(-2).join("/")}`;
 }

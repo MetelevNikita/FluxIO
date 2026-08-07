@@ -1,10 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const SELECT_LOGO_CHANNEL = "dialog:select-logo";
 const SELECT_MEDIA_DIRECTORY_CHANNEL = "dialog:select-media-directory";
 const SELECT_MEDIA_FILES_CHANNEL = "dialog:select-media-files";
 const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
+const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
+const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
+const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
 const SERVICE_HEALTH_CHANNEL = "service:get-health";
 const SPLASH_DURATION_MS = 5_000;
 const loadProductionBuild =
@@ -158,6 +162,30 @@ void app.whenReady().then(() => {
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
 
+  ipcMain.handle(SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL, async () =>
+    selectImageDirectory("Select folder with channel logos"));
+
+  ipcMain.handle(SELECT_AGE_DIRECTORY_CHANNEL, async () =>
+    selectImageDirectory("Select folder with AGE graphics"));
+
+  ipcMain.handle(SAVE_SCHEDULE_FILE_CHANNEL, async (_event, value: unknown) => {
+    const input = scheduleSaveInput(value);
+    const result = await dialog.showSaveDialog({
+      defaultPath: input.defaultName,
+      filters: [{
+        name: input.extension === "air" ? "FluxIO AIR schedule" : "Text schedule",
+        extensions: [input.extension],
+      }],
+      title: "Save edited weekly schedule",
+    });
+    if (result.canceled || !result.filePath) return null;
+    const outputPath = path.extname(result.filePath)
+      ? result.filePath
+      : `${result.filePath}.${input.extension}`;
+    await writeFile(outputPath, input.content, "utf8");
+    return outputPath;
+  });
+
   ipcMain.handle(SELECT_LOGO_CHANNEL, async () => {
     const result = await dialog.showOpenDialog({
       filters: [
@@ -190,6 +218,50 @@ void app.whenReady().then(() => {
     }
   });
 });
+
+async function selectImageDirectory(title: string): Promise<{
+  directoryPath: string;
+  imagePaths: string[];
+} | null> {
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory"],
+    title,
+  });
+  const directoryPath = result.filePaths[0];
+  if (result.canceled || !directoryPath) return null;
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  const imagePaths = entries
+    .filter((entry) => entry.isFile() && isSupportedImage(entry.name))
+    .map((entry) => path.join(directoryPath, entry.name))
+    .sort((left, right) => left.localeCompare(right));
+  return { directoryPath, imagePaths };
+}
+
+function isSupportedImage(fileName: string): boolean {
+  return new Set([".png", ".webp", ".jpg", ".jpeg"]).has(
+    path.extname(fileName).toLowerCase(),
+  );
+}
+
+function scheduleSaveInput(value: unknown): {
+  content: string;
+  defaultName: string;
+  extension: "air" | "txt";
+} {
+  if (!value || typeof value !== "object") throw new Error("Invalid schedule save request");
+  const candidate = value as Record<string, unknown>;
+  const extension = candidate.extension;
+  const content = candidate.content;
+  const defaultName = candidate.defaultName;
+  if (extension !== "air" && extension !== "txt") throw new Error("Invalid schedule extension");
+  if (typeof content !== "string" || content.length === 0 || content.length > 10 * 1024 * 1024) {
+    throw new Error("Schedule content must be between 1 byte and 10 MB");
+  }
+  if (typeof defaultName !== "string" || !defaultName.trim() || /[\\/:*?\"<>|]/.test(defaultName)) {
+    throw new Error("Invalid schedule file name");
+  }
+  return { content, defaultName, extension };
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

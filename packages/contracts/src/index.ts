@@ -123,6 +123,7 @@ export const ageTitleOverlaySchema = z.object({
   enabled: z.boolean().default(true),
   text: z.string().trim().min(1).max(32),
   durationSeconds: z.number().positive().max(60).default(5),
+  filePath: z.string().min(1).nullable().optional(),
 });
 
 export const itemLogoOverlaySchema = logoOverlaySchema.extend({
@@ -168,6 +169,37 @@ export const parsedScheduleSchema = z.object({
   varianceSeconds: z.number(),
   items: z.array(parsedScheduleItemSchema).min(1),
   warnings: z.array(z.string()),
+});
+
+export const scheduleExportExtensionSchema = z.enum(["air", "txt"]);
+
+export const scheduleExportItemSchema = z.object({
+  type: scheduleItemTypeSchema,
+  declaredDurationSeconds: z.number().positive(),
+  filePath: z.string().min(1).refine((value) => !/[\r\n]/.test(value), {
+    message: "Media path must not contain line breaks",
+  }),
+  ageTitle: z.object({
+    enabled: z.boolean(),
+    text: z.string().trim().min(1).max(32).refine((value) => !/[\r\n{}]/.test(value), {
+      message: "AGE title must not contain braces or line breaks",
+    }),
+  }).nullable().optional(),
+  logoPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
+    message: "Logo path must not contain braces or line breaks",
+  }).nullable().optional(),
+});
+
+export const serializeScheduleRequestSchema = z.object({
+  extension: scheduleExportExtensionSchema,
+  startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
+  delaySeconds: z.number().nonnegative(),
+  items: z.array(scheduleExportItemSchema).min(1),
+});
+
+export const serializedScheduleSchema = z.object({
+  extension: scheduleExportExtensionSchema,
+  content: z.string().min(1),
 });
 
 export const videoEncodingSchema = z.object({
@@ -430,6 +462,9 @@ export type AgeTitleOverlay = z.infer<typeof ageTitleOverlaySchema>;
 export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
 export type ParsedScheduleItem = z.infer<typeof parsedScheduleItemSchema>;
 export type ParsedSchedule = z.infer<typeof parsedScheduleSchema>;
+export type ScheduleExportExtension = z.infer<typeof scheduleExportExtensionSchema>;
+export type SerializeScheduleRequest = z.infer<typeof serializeScheduleRequestSchema>;
+export type SerializedSchedule = z.infer<typeof serializedScheduleSchema>;
 export type PlayoutItem = z.infer<typeof playoutItemSchema>;
 export type VideoEncoding = z.infer<typeof videoEncodingSchema>;
 export type AudioEncoding = z.infer<typeof audioEncodingSchema>;

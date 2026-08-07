@@ -4,6 +4,8 @@ import {
   type FfmpegCapabilities,
   type MediaProbe,
   type ParsedSchedule,
+  type ScheduleExportExtension,
+  type SerializeScheduleRequest,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
   type ServiceHealth,
@@ -30,6 +32,7 @@ import {
   parseScheduleFile,
   probeMediaPaths,
   scanMediaDirectory,
+  serializeScheduleFile,
   startPlayout as startPlayoutSession,
   stopPlayout as stopPlayoutSession,
 } from "./media-api";
@@ -38,6 +41,7 @@ import type {
   BroadcastSettings,
   MediaAsset,
   ScheduleMetadata,
+  ScheduleOverlayLibrary,
   ScheduleSlot,
   Scte35Marker,
 } from "./types";
@@ -85,6 +89,10 @@ export function App() {
   const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterfaceInfo[]>([]);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [mediaBusy, setMediaBusy] = useState(false);
+  const [scheduleLogoPath, setScheduleLogoPath] = useState("");
+  const [scheduleLogoSource, setScheduleLogoSource] = useState("");
+  const [ageLibrary, setAgeLibrary] = useState<ScheduleOverlayLibrary | null>(null);
+  const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,24 +256,32 @@ export function App() {
     try {
       const parsed = await parseScheduleFile(schedulePath);
       const probesByPath = await probeSchedulePaths(parsed);
+      const ageAssets = mapAgeAssetPaths(ageLibrary?.imagePaths ?? []);
       const scheduledAssets = parsed.items.map((item, index) => {
         const probe = probesByPath.get(item.filePath);
         const base = probe
           ? probeToAsset(probe)
           : { ...pendingAssetFromPath(item.filePath), status: "error" as const, progress: undefined };
+        const ageText = item.ageTitle ?? ageRatingFromFileName(base.name);
+        const logoPath = (item.logoPath ?? scheduleLogoPath) || undefined;
         return {
           ...base,
           id: `schedule-${slot}-${hashString(parsed.sourceFilePath)}-${index}`,
           scheduleType: item.type,
           declaredDurationSeconds: item.declaredDurationSeconds,
           scheduleLineNumber: item.lineNumber,
-          ageTitle: item.ageTitle
-            ? { durationSeconds: 5, enabled: true, text: item.ageTitle }
+          ageTitle: ageText
+            ? {
+                durationSeconds: 5,
+                enabled: true,
+                filePath: ageAssets.get(ageText) ?? null,
+                text: ageText,
+              }
             : undefined,
-          itemLogo: item.logoPath
+          itemLogo: logoPath
             ? {
                 enabled: true,
-                filePath: item.logoPath,
+                filePath: logoPath,
                 margin: 24,
                 opacity: 1,
                 position: "top-right" as const,
@@ -285,6 +301,9 @@ export function App() {
       }
       setActiveSchedule(slot);
       setSelectedAssetId(scheduledAssets[0]?.id ?? "");
+      setScheduleActionMessage(
+        `${slot === "current" ? "Current" : "Future"} schedule imported: ${scheduledAssets.length} items.`,
+      );
       const failed = scheduledAssets.filter((asset) => asset.status === "error");
       if (failed.length > 0) {
         setOperationError(
@@ -324,7 +343,10 @@ export function App() {
   }
 
   function addProbes(probes: MediaProbe[], slot: ScheduleSlot = "current") {
-    const imported = probes.map(probeToAsset);
+    const imported = assignAgeAssets(
+      probes.map(probeToAsset),
+      mapAgeAssetPaths(ageLibrary?.imagePaths ?? []),
+    );
     setAssets((current) => mergeAssets(current, imported));
     if (slot === "current") setPlaylist((current) => mergeAssets(current, imported));
     else setFuturePlaylist((current) => mergeAssets(current, imported));
@@ -385,6 +407,10 @@ export function App() {
     setFuturePlaylist([]);
     setCurrentScheduleMetadata(null);
     setFutureScheduleMetadata(null);
+    setScheduleLogoPath("");
+    setScheduleLogoSource("");
+    setAgeLibrary(null);
+    setScheduleActionMessage(null);
     setSelectedAssetId("");
   }
 
@@ -405,6 +431,70 @@ export function App() {
     ));
   }
 
+  function updateBulkAge(assetIds: string[], rating: string | null) {
+    const selected = new Set(assetIds);
+    const ageAssets = mapAgeAssetPaths(ageLibrary?.imagePaths ?? []);
+    updateActivePlaylist((items) => items.map((asset) => {
+      if (!selected.has(asset.id)) return asset;
+      if (!rating) {
+        return asset.ageTitle
+          ? { ...asset, ageTitle: { ...asset.ageTitle, enabled: false } }
+          : asset;
+      }
+      return {
+        ...asset,
+        ageTitle: {
+          durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+          enabled: true,
+          filePath: ageAssets.get(rating) ?? null,
+          text: rating,
+        },
+      };
+    }));
+    setScheduleActionMessage(
+      rating
+        ? `AGE ${rating} assigned to ${assetIds.length} selected item(s).`
+        : `AGE disabled for ${assetIds.length} selected item(s).`,
+    );
+  }
+
+  function updateBulkLogo(assetIds: string[], enabled: boolean) {
+    const selected = new Set(assetIds);
+    const fallbackPath = scheduleLogoPath
+      || visiblePlaylist.find((asset) => selected.has(asset.id) && asset.itemLogo?.filePath)?.itemLogo?.filePath
+      || visiblePlaylist.find((asset) => asset.itemLogo?.filePath)?.itemLogo?.filePath
+      || "";
+    if (enabled && !fallbackPath) {
+      setOperationError("Select a channel logo file or folder before enabling LOGO in bulk.");
+      return;
+    }
+    updateActivePlaylist((items) => items.map((asset) => {
+      if (!selected.has(asset.id)) return asset;
+      if (!enabled) {
+        return asset.itemLogo
+          ? { ...asset, itemLogo: { ...asset.itemLogo, enabled: false } }
+          : asset;
+      }
+      const filePath = asset.itemLogo?.filePath || fallbackPath;
+      if (!filePath) return asset;
+      return {
+        ...asset,
+        itemLogo: {
+          enabled: true,
+          filePath,
+          margin: asset.itemLogo?.margin ?? 24,
+          opacity: asset.itemLogo?.opacity ?? 1,
+          position: asset.itemLogo?.position ?? "top-right",
+          widthPercent: asset.itemLogo?.widthPercent ?? 12,
+        },
+      };
+    }));
+    setOperationError(null);
+    setScheduleActionMessage(
+      `LOGO ${enabled ? "enabled" : "disabled"} for ${assetIds.length} selected item(s).`,
+    );
+  }
+
   function setScheduleTab(slot: ScheduleSlot) {
     setActiveSchedule(slot);
     const target = slot === "current" ? playlist : futurePlaylist;
@@ -419,6 +509,103 @@ export function App() {
   function updateActivePlaylist(updater: (current: MediaAsset[]) => MediaAsset[]) {
     if (activeSchedule === "current") setPlaylist(updater);
     else setFuturePlaylist(updater);
+  }
+
+  async function selectScheduleLogoFile() {
+    const filePath = await window.gruberDesktop?.selectLogoFile();
+    if (filePath) applyScheduleLogo(filePath, filePath);
+  }
+
+  async function selectScheduleLogoDirectory() {
+    const selection = await window.gruberDesktop?.selectScheduleLogoDirectory();
+    if (!selection) return;
+    const logoPath = preferredLogoPath(selection.imagePaths);
+    if (!logoPath) {
+      setOperationError("The selected logo folder contains no PNG, WebP or JPEG images.");
+      return;
+    }
+    applyScheduleLogo(logoPath, selection.directoryPath);
+  }
+
+  function applyScheduleLogo(filePath: string, source: string) {
+    setOperationError(null);
+    setScheduleLogoPath(filePath);
+    setScheduleLogoSource(source);
+    updateActivePlaylist((items) => items.map((asset) => ({
+      ...asset,
+      itemLogo: {
+        enabled: asset.itemLogo?.enabled ?? true,
+        filePath,
+        margin: asset.itemLogo?.margin ?? 24,
+        opacity: asset.itemLogo?.opacity ?? 1,
+        position: asset.itemLogo?.position ?? "top-right",
+        widthPercent: asset.itemLogo?.widthPercent ?? 12,
+      },
+    })));
+    setScheduleActionMessage(`Channel logo assigned to ${activeSchedule} schedule.`);
+  }
+
+  async function selectAgeDirectory() {
+    const selection = await window.gruberDesktop?.selectAgeDirectory();
+    if (!selection) return;
+    const ageAssets = mapAgeAssetPaths(selection.imagePaths);
+    setAgeLibrary(selection);
+    setPlaylist((items) => assignAgeAssets(items, ageAssets));
+    setFuturePlaylist((items) => assignAgeAssets(items, ageAssets));
+    setOperationError(null);
+    setScheduleActionMessage(
+      `AGE folder loaded: ${ageAssets.size} rating graphic(s), filename markers updated.`,
+    );
+  }
+
+  async function saveActiveSchedule(extension: ScheduleExportExtension) {
+    if (visiblePlaylist.length === 0) return;
+    setMediaBusy(true);
+    setOperationError(null);
+    setScheduleActionMessage(null);
+    try {
+      const metadata = activeSchedule === "current"
+        ? currentScheduleMetadata
+        : futureScheduleMetadata;
+      const request: SerializeScheduleRequest = {
+        delaySeconds: metadata?.delaySeconds ?? 0,
+        extension,
+        items: visiblePlaylist.map((asset) => ({
+          type: asset.scheduleType ?? inferScheduleType(
+            asset.declaredDurationSeconds ?? asset.durationSeconds,
+          ),
+          declaredDurationSeconds: asset.declaredDurationSeconds ?? asset.durationSeconds,
+          filePath: asset.filePath,
+          ageTitle: asset.ageTitle
+            ? { enabled: asset.ageTitle.enabled, text: asset.ageTitle.text }
+            : null,
+          logoPath: asset.itemLogo?.enabled ? asset.itemLogo.filePath : null,
+        })),
+        startTime: metadata?.startTime ?? "12:00:00.00",
+      };
+      const serialized = await serializeScheduleFile(request);
+      const sourceBase = (metadata?.sourceName ?? `${activeSchedule}-schedule`)
+        .replace(/\.(?:air|txt)$/i, "") || `${activeSchedule}-schedule`;
+      const defaultName = `${sourceBase}-edited.${extension}`;
+      let outputPath: string | null = null;
+      if (window.gruberDesktop) {
+        outputPath = await window.gruberDesktop.saveScheduleFile({
+          content: serialized.content,
+          defaultName,
+          extension,
+        });
+      } else {
+        downloadSchedule(serialized.content, defaultName);
+        outputPath = defaultName;
+      }
+      if (outputPath) {
+        setScheduleActionMessage(`Schedule saved: ${outputPath}`);
+      }
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
   }
 
   async function startPlayout() {
@@ -475,11 +662,26 @@ export function App() {
             onAddFiles={addFilesToActiveSchedule}
             onAddScte35Marker={addScte35Marker}
             onMoveItem={movePlaylistItem}
+            onBulkAgeChange={updateBulkAge}
+            onBulkLogoChange={updateBulkLogo}
             onRemoveItem={removePlaylistItem}
             onRemoveScte35Marker={removeScte35Marker}
             onSelectAsset={setSelectedAssetId}
             onScheduleChange={setScheduleTab}
+            onSaveSchedule={saveActiveSchedule}
+            onSelectAgeDirectory={window.gruberDesktop ? selectAgeDirectory : undefined}
+            onSelectScheduleLogoDirectory={window.gruberDesktop
+              ? selectScheduleLogoDirectory
+              : undefined}
+            onSelectScheduleLogoFile={window.gruberDesktop
+              ? selectScheduleLogoFile
+              : undefined}
             onUpdateItem={updatePlaylistItem}
+            ageLibrary={ageLibrary}
+            scheduleActionMessage={scheduleActionMessage}
+            scheduleBusy={mediaBusy}
+            scheduleLogoSource={scheduleLogoSource || scheduleLogoPath}
+            scheduleLogoPath={scheduleLogoPath}
             scte35Defaults={settings}
           />
         ) : (
@@ -750,6 +952,7 @@ function buildStartRequest(
         ? {
             durationSeconds: asset.ageTitle.durationSeconds,
             enabled: true,
+            filePath: asset.ageTitle.filePath ?? null,
             text: asset.ageTitle.text,
           }
         : null,
@@ -919,6 +1122,64 @@ function hashString(value: string): string {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
   }
   return hash.toString(16);
+}
+
+function ageRatingFromFileName(fileName: string): string | null {
+  const match = fileName.match(/\[(0|6|12|16|18)\+\](?=\.[^.]+$|$)/i);
+  return match?.[1] ? `${match[1]}+` : null;
+}
+
+function mapAgeAssetPaths(imagePaths: string[]): Map<string, string> {
+  const assets = new Map<string, string>();
+  for (const imagePath of imagePaths) {
+    const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
+    const match = fileName.match(/(?:^|[^0-9])(0|6|12|16|18)\+(?:[^0-9]|$)/i);
+    if (match?.[1] && !assets.has(`${match[1]}+`)) {
+      assets.set(`${match[1]}+`, imagePath);
+    }
+  }
+  return assets;
+}
+
+function assignAgeAssets(
+  playlist: MediaAsset[],
+  ageAssets: Map<string, string>,
+): MediaAsset[] {
+  return playlist.map((asset) => {
+    const text = asset.ageTitle?.text ?? ageRatingFromFileName(asset.name);
+    if (!text) return asset;
+    return {
+      ...asset,
+      ageTitle: {
+        durationSeconds: asset.ageTitle?.durationSeconds ?? 5,
+        enabled: asset.ageTitle?.enabled ?? true,
+        filePath: ageAssets.get(text) ?? asset.ageTitle?.filePath ?? null,
+        text,
+      },
+    };
+  });
+}
+
+function preferredLogoPath(imagePaths: string[]): string | null {
+  return imagePaths.find((imagePath) => {
+    const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
+    return /^(?:logo|channel|brand)(?:[-_. ].*)?\.(?:png|webp|jpe?g)$/i.test(fileName);
+  }) ?? imagePaths[0] ?? null;
+}
+
+function inferScheduleType(seconds: number): "movie" | "chop" | "clip" {
+  if (seconds < 30) return "chop";
+  if (seconds > 300) return "movie";
+  return "clip";
+}
+
+function downloadSchedule(content: string, fileName: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function errorMessage(error: unknown): string {

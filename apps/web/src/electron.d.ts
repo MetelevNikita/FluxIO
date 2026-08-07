@@ -11,6 +11,19 @@ declare global {
       selectMediaDirectory: () => Promise<string | null>;
       selectMediaFiles: () => Promise<string[]>;
       selectScheduleFile: () => Promise<string | null>;
+      selectScheduleLogoDirectory: () => Promise<{
+        directoryPath: string;
+        imagePaths: string[];
+      } | null>;
+      selectAgeDirectory: () => Promise<{
+        directoryPath: string;
+        imagePaths: string[];
+      } | null>;
+      saveScheduleFile: (input: {
+        content: string;
+        defaultName: string;
+        extension: "air" | "txt";
+      }) => Promise<string | null>;
     };
   }
 }

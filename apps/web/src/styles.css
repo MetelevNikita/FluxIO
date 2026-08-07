@@ -657,8 +657,120 @@ p {
   min-height: 0;
   display: grid;
   grid-template-columns: 420px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
+
+.schedule-resource-toolbar {
+  min-height: 92px;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 210px minmax(190px, 1fr) minmax(190px, 1fr) 260px minmax(320px, 1.2fr);
+  gap: 10px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  background: #090b0d;
+}
+
+.schedule-resource-heading,
+.schedule-resource-control,
+.schedule-save-control,
+.schedule-bulk-control {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.schedule-resource-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  color: var(--accent);
+}
+
+.schedule-resource-heading > span,
+.schedule-resource-control,
+.schedule-save-control,
+.schedule-bulk-control {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+}
+
+.schedule-resource-heading strong,
+.schedule-resource-heading small { display: block; }
+.schedule-resource-heading strong { color: var(--text); font-size: 11px; }
+.schedule-resource-heading small,
+.schedule-resource-control > span,
+.schedule-save-control > span,
+.schedule-save-control > small,
+.schedule-bulk-control > span,
+.schedule-bulk-control > small {
+  overflow: hidden;
+  color: var(--muted-dark);
+  font-size: 8px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-resource-control,
+.schedule-save-control,
+.schedule-bulk-control { padding: 7px 9px; }
+
+.schedule-resource-control > strong,
+.schedule-bulk-control > strong {
+  overflow: hidden;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-resource-control > div,
+.schedule-save-control > div,
+.bulk-selection-actions,
+.bulk-overlay-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.schedule-resource-toolbar button,
+.schedule-resource-toolbar select {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: var(--surface-strong);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.schedule-resource-toolbar button:hover:not(:disabled) {
+  border-color: rgba(245, 213, 101, 0.4);
+  color: var(--accent);
+}
+
+.schedule-resource-toolbar button:disabled { cursor: not-allowed; opacity: 0.4; }
+.schedule-save-control select { width: 66px; }
+.schedule-save-control button { flex: 1; color: #111; background: var(--accent); }
+.bulk-selection-actions { position: absolute; top: 6px; right: 8px; }
+.schedule-bulk-control { position: relative; }
+.bulk-selection-actions button { min-height: 19px; padding: 2px 5px; }
+.bulk-overlay-actions { padding-top: 1px; }
+.bulk-overlay-actions select { width: 76px; }
+.bulk-overlay-actions button { flex: 1; min-width: 0; padding-inline: 4px; }
 
 .playlist-sidebar {
   min-height: 0;
@@ -667,6 +779,7 @@ p {
   overflow: hidden;
   border-right: 1px solid var(--border);
   background: var(--surface-deep);
+  grid-row: 2;
 }
 
 .schedule-tabs {
@@ -839,6 +952,31 @@ p {
 .overlay-chip.enabled { border-color: rgba(245, 213, 101, 0.45); color: var(--accent); }
 .overlay-chip:has(input:disabled) { opacity: 0.35; }
 
+.age-rating-control {
+  gap: 3px;
+  padding-right: 3px;
+}
+
+.age-rating-control select {
+  width: 46px;
+  height: 18px;
+  border: 0;
+  padding: 0 2px;
+  color: inherit;
+  background: transparent;
+  font-size: 8px;
+}
+
+.age-rating-control i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted-dark);
+}
+
+.age-rating-control i.matched { background: #4ade80; }
+.age-rating-control i.fallback { background: var(--warning); }
+
 .playlist-row:hover {
   color: var(--muted);
   background: var(--surface-hover);
@@ -847,6 +985,15 @@ p {
 .playlist-row.selected {
   color: var(--text);
   background: var(--accent-soft);
+}
+
+.playlist-row.bulk-selected {
+  box-shadow: inset 2px 0 0 #38bdf8;
+  background: rgba(14, 165, 233, 0.055);
+}
+
+.playlist-row.selected.bulk-selected {
+  background: linear-gradient(90deg, rgba(14, 165, 233, 0.09), var(--accent-soft));
 }
 
 .playlist-remove-button {
@@ -958,6 +1105,7 @@ p {
   min-height: 0;
   overflow: auto;
   background: var(--background);
+  grid-row: 2;
 }
 
 .preview-stage {
@@ -2290,6 +2438,11 @@ input[type="range"] {
 
   .playlist-screen {
     grid-template-columns: 340px minmax(420px, 1fr);
+  }
+
+  .schedule-resource-toolbar {
+    grid-template-columns: repeat(5, minmax(185px, 1fr));
+    overflow-x: auto;
   }
 
   .playlist-table-header {

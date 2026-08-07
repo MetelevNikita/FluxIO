@@ -239,6 +239,17 @@
 - реальные AGE/LOGO overlays в FFmpeg program и preview;
 - PostgreSQL/Prisma persistence per-item metadata.
 
+### 3.2. Round-trip расписания v5.0.1
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-02-schedule-roundtrip-v5.0.1.md`](progress/03-02-schedule-roundtrip-v5.0.1.md).
+
+- экспорт изменённого Current/Future в `.air` или `.txt`;
+- выбор LOGO-файла/папки и AGE-папки;
+- AGE по суффиксу `[0+]`…`[18+]`;
+- графическая AGE-плашка в FFmpeg и текстовый fallback;
+- Ctrl/Cmd+A, множественное выделение и массовые AGE/LOGO операции;
+- Figma-макет и документация v5.0.1.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine

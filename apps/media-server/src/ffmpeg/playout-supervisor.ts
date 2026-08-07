@@ -631,6 +631,12 @@ async function resolveLogos(request: StartPlayoutRequest): Promise<StartPlayoutR
   for (const item of request.playlist) {
     playlist.push({
       ...item,
+      ageTitle: item.ageTitle?.enabled && item.ageTitle.filePath
+        ? {
+            ...item.ageTitle,
+            filePath: (await resolveLogoOverlay({ filePath: item.ageTitle.filePath })).filePath,
+          }
+        : item.ageTitle,
       itemLogo: item.itemLogo?.enabled
         ? await resolveLogoOverlay(item.itemLogo)
         : item.itemLogo,

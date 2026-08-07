@@ -43,6 +43,7 @@ export interface MediaAsset {
     durationSeconds: number;
     enabled: boolean;
     text: string;
+    filePath?: string | null;
   };
   itemLogo?: {
     enabled: boolean;
@@ -52,6 +53,11 @@ export interface MediaAsset {
     position: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
     widthPercent: number;
   };
+}
+
+export interface ScheduleOverlayLibrary {
+  directoryPath: string;
+  imagePaths: string[];
 }
 
 export interface ScheduleMetadata {

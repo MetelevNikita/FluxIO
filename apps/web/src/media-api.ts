@@ -8,6 +8,7 @@ import {
   savedBroadcastConfigurationSchema,
   systemMetricsSchema,
   parsedScheduleSchema,
+  serializedScheduleSchema,
   type BroadcastConfigurationSummary,
   type ClipPreviewSession,
   type FfmpegCapabilities,
@@ -15,6 +16,8 @@ import {
   type NetworkInterfaceInfo,
   type PlayoutStatus,
   type ParsedSchedule,
+  type SerializeScheduleRequest,
+  type SerializedSchedule,
   type SaveBroadcastConfigurationRequest,
   type SavedBroadcastConfiguration,
   type StartPlayoutRequest,
@@ -52,6 +55,18 @@ export async function parseScheduleFile(filePath: string): Promise<ParsedSchedul
   return parsedScheduleSchema.parse(
     await request("/api/schedule/parse", {
       body: JSON.stringify({ filePath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+export async function serializeScheduleFile(
+  schedule: SerializeScheduleRequest,
+): Promise<SerializedSchedule> {
+  return serializedScheduleSchema.parse(
+    await request("/api/schedule/serialize", {
+      body: JSON.stringify(schedule),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),

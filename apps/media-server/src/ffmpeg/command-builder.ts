@@ -56,6 +56,16 @@ export function buildFfmpegCommand(
     args.push("-i", item.filePath);
   }
   for (const item of items) {
+    if (item.ageTitle?.enabled && item.ageTitle.filePath) {
+      args.push(
+        "-loop",
+        "1",
+        "-framerate",
+        decimal(request.video.frameRate),
+        "-i",
+        item.ageTitle.filePath,
+      );
+    }
     if (item.itemLogo?.enabled) {
       args.push(
         "-loop",
@@ -190,12 +200,24 @@ function buildFilterGraph(
     if (item.ageTitle?.enabled) {
       const ageLabel = item.itemLogo?.enabled ? `vage${index}` : `v${index}`;
       const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
-      filters.push(
-        `[${itemVideoSource}]drawtext=text='${escapeDrawtext(item.ageTitle.text)}':` +
-          "x=48:y=48:fontsize=h*0.065:fontcolor=white:" +
-          "box=1:boxcolor=black@0.68:boxborderw=18:" +
-          `enable='between(t,0,${decimal(displayDuration)})'[${ageLabel}]`,
-      );
+      if (item.ageTitle.filePath) {
+        const ageInputIndex = nextOverlayInput;
+        nextOverlayInput += 1;
+        const ageWidth = Math.max(2, Math.round(request.video.width * 0.12));
+        filters.push(
+          `[${ageInputIndex}:v:0]format=rgba,scale=${ageWidth}:-1[ageasset${index}]`,
+          `[${itemVideoSource}][ageasset${index}]overlay=x=48:y=48:` +
+            `shortest=1:eof_action=pass:format=auto:` +
+            `enable='between(t,0,${decimal(displayDuration)})',format=yuv420p[${ageLabel}]`,
+        );
+      } else {
+        filters.push(
+          `[${itemVideoSource}]drawtext=text='${escapeDrawtext(item.ageTitle.text)}':` +
+            "x=48:y=48:fontsize=h*0.065:fontcolor=white:" +
+            "box=1:boxcolor=black@0.68:boxborderw=18:" +
+            `enable='between(t,0,${decimal(displayDuration)})'[${ageLabel}]`,
+        );
+      }
       itemVideoSource = ageLabel;
     }
     if (item.itemLogo?.enabled) {
