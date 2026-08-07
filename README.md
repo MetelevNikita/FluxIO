@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v5.0.1**.
+Текущая версия: **v5.0.2**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -95,6 +95,7 @@ node setup.mjs
 - принудительный multicast output через выбранный адаптер и финальная PCR-нормализация каждого UDP-потока, независимо от SCTE-35;
 - реальные CPU и NET-метрики сервера без Fastify access-log шума;
 - PostgreSQL/Prisma для внутреннего состояния и AES-256-GCM endpoint secrets;
+- сохранение Current/Future через `Save session list`, server-side checkpoint каждые 5 секунд и ручное Resume после сбоя;
 - независимый от Electron media-service;
 - постоянный индикатор `ACTIVE / NOT ACTIVE` и адрес media-server в левом нижнем углу;
 - единый production launcher и ярлык рабочего стола для Windows, macOS и Linux;
@@ -115,6 +116,7 @@ endpoint выполняется CBR regulation, а для UDP также PCR-к�
 - [Production](docs/production-runbook.md)
 - [SCTE-35 для эфирного инженера](docs/scte35-engineer-runbook.md)
 - [Импорт недельного расписания .AIR/.TXT](docs/schedule-import-engineer-runbook.md)
+- [Восстановление Playlist-сессии](docs/session-recovery-engineer-runbook.md)
 - [Архитектура](docs/architecture.md)
 - [Версионирование](docs/versioning.md)
 

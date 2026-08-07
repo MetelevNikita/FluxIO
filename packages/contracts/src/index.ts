@@ -434,6 +434,98 @@ export const playoutStatusSchema = z.object({
   logs: z.array(z.string()),
 });
 
+export const workspaceSessionAssetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  duration: z.string(),
+  durationSeconds: z.number().nonnegative(),
+  codec: z.string(),
+  codecFamily: z.string(),
+  codecProfile: z.string(),
+  resolution: z.string(),
+  fps: z.string(),
+  bitrate: z.string(),
+  size: z.string(),
+  status: z.enum(["analyzed", "pending", "error", "queued"]),
+  progress: z.number().min(0).max(100).optional(),
+  preview: z.string().min(1),
+  filePath: z.string().min(1),
+  colorSpace: z.string(),
+  audio: z.string(),
+  sha256: z.string(),
+  scte35Markers: z.array(scte35MarkerSchema).max(1_000).optional(),
+  scheduleType: scheduleItemTypeSchema.optional(),
+  declaredDurationSeconds: z.number().positive().optional(),
+  scheduleLineNumber: z.number().int().positive().optional(),
+  ageTitle: ageTitleOverlaySchema.optional(),
+  itemLogo: itemLogoOverlaySchema.optional(),
+});
+
+export const workspaceScheduleMetadataSchema = z.object({
+  sourceFilePath: z.string(),
+  sourceName: z.string(),
+  encoding: z.enum(["utf-8", "windows-1251"]),
+  startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
+  delaySeconds: z.number().nonnegative(),
+  targetDurationSeconds: z.number().positive(),
+  warnings: z.array(z.string()),
+});
+
+export const workspaceOverlayLibrarySchema = z.object({
+  directoryPath: z.string().min(1),
+  imagePaths: z.array(z.string().min(1)).max(100),
+});
+
+const workspaceSettingValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+]);
+
+export const workspaceSessionSnapshotSchema = z.object({
+  version: z.literal(1),
+  assets: z.array(workspaceSessionAssetSchema).max(1_000),
+  currentPlaylist: z.array(workspaceSessionAssetSchema).max(500),
+  futurePlaylist: z.array(workspaceSessionAssetSchema).max(500),
+  activeSchedule: z.enum(["current", "future"]),
+  selectedAssetId: z.string().min(1).nullable(),
+  currentScheduleMetadata: workspaceScheduleMetadataSchema.nullable(),
+  futureScheduleMetadata: workspaceScheduleMetadataSchema.nullable(),
+  scheduleLogoPath: z.string(),
+  scheduleLogoSource: z.string(),
+  ageLibrary: workspaceOverlayLibrarySchema.nullable(),
+  settings: z.record(z.string(), workspaceSettingValueSchema),
+});
+
+export const workspaceSessionCheckpointSchema = z.object({
+  sessionId: z.string().nullable(),
+  state: playoutStateSchema,
+  currentItemIndex: z.number().int().nonnegative(),
+  currentItemName: z.string().nullable(),
+  outTimeSeconds: z.number().nonnegative(),
+  totalDurationSeconds: z.number().nonnegative(),
+  progressPercent: z.number().min(0).max(100),
+  loopCount: z.number().int().nonnegative(),
+  updatedAt: z.iso.datetime(),
+  interrupted: z.boolean().default(false),
+});
+
+export const workspaceSessionSaveRequestSchema = z.object({
+  snapshot: workspaceSessionSnapshotSchema,
+});
+
+export const savedWorkspaceSessionSchema = z.object({
+  id: z.string().uuid(),
+  snapshot: workspaceSessionSnapshotSchema,
+  checkpoint: workspaceSessionCheckpointSchema.nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+export const workspaceSessionEnvelopeSchema = z.object({
+  session: savedWorkspaceSessionSchema.nullable(),
+});
+
 export const saveBroadcastConfigurationRequestSchema = startPlayoutRequestSchema.extend({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120),
@@ -475,6 +567,11 @@ export type Scte35Planning = z.infer<typeof scte35PlanningSchema>;
 export type Scte35InjectorStatus = z.infer<typeof scte35InjectorStatusSchema>;
 export type StartPlayoutRequest = z.infer<typeof startPlayoutRequestSchema>;
 export type PlayoutStatus = z.infer<typeof playoutStatusSchema>;
+export type WorkspaceSessionAsset = z.infer<typeof workspaceSessionAssetSchema>;
+export type WorkspaceSessionSnapshot = z.infer<typeof workspaceSessionSnapshotSchema>;
+export type WorkspaceSessionCheckpoint = z.infer<typeof workspaceSessionCheckpointSchema>;
+export type WorkspaceSessionSaveRequest = z.infer<typeof workspaceSessionSaveRequestSchema>;
+export type SavedWorkspaceSession = z.infer<typeof savedWorkspaceSessionSchema>;
 export type SaveBroadcastConfigurationRequest = z.infer<
   typeof saveBroadcastConfigurationRequestSchema
 >;

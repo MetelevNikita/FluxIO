@@ -18,6 +18,7 @@ import type {
   FfmpegCapabilities,
   NetworkInterfaceInfo,
   PlayoutStatus,
+  WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
 import { mediaApiUrl, mediaPath } from "../runtime";
@@ -27,10 +28,12 @@ interface BroadcastSettingsScreenProps {
   capabilities: FfmpegCapabilities | null;
   networkInterfaces: NetworkInterfaceInfo[];
   onStart: () => void;
+  onStartFresh: () => void;
   onStop: () => void;
   operationError: string | null;
   playlistLength: number;
   playoutStatus: PlayoutStatus | null;
+  recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
   scte35MarkerCount: number;
   settings: BroadcastSettings;
   onSettingsChange: (settings: BroadcastSettings) => void;
@@ -45,10 +48,12 @@ export function BroadcastSettingsScreen({
   capabilities,
   networkInterfaces,
   onStart,
+  onStartFresh,
   onStop,
   operationError,
   playlistLength,
   playoutStatus,
+  recoveryCheckpoint,
   scte35MarkerCount,
   settings,
   onSettingsChange,
@@ -118,11 +123,27 @@ export function BroadcastSettingsScreen({
                 onClick={onStart}
                 type="button"
               >
-                <Radio size={15} /> Start Stream
+                <Radio size={15} /> {recoveryCheckpoint ? "Resume Stream" : "Start Stream"}
               </button>
             )}
           </div>
         </div>
+
+        {recoveryCheckpoint ? (
+          <div className="recovery-resume-banner" role="status">
+            <div>
+              <strong>Interrupted playout checkpoint found</strong>
+              <span>
+                Clip {recoveryCheckpoint.currentItemIndex + 1}: {recoveryCheckpoint.currentItemName ?? "Unknown"}
+                {" · "}{formatMonitorTime(recoveryCheckpoint.outTimeSeconds)} elapsed
+                {" · "}{recoveryCheckpoint.progressPercent.toFixed(1)}%
+              </span>
+            </div>
+            <button disabled={active} onClick={onStartFresh} type="button">
+              Start from beginning
+            </button>
+          </div>
+        ) : null}
 
         {operationError ? (
           <div className="operation-error" role="alert">{operationError}</div>

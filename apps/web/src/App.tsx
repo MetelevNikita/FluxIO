@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   serviceHealthSchema,
   type FfmpegCapabilities,
@@ -8,9 +8,12 @@ import {
   type SerializeScheduleRequest,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
+  type SavedWorkspaceSession,
   type ServiceHealth,
   type StartPlayoutRequest,
   type SystemMetrics,
+  type WorkspaceSessionCheckpoint,
+  type WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
 import { AppHeader } from "./components/AppHeader";
 import { GlobalStatusBar } from "./components/GlobalStatusBar";
@@ -28,11 +31,14 @@ import {
   getNetworkInterfaces,
   getPlayoutStatus,
   getSystemMetrics,
+  getWorkspaceSession,
   mediaThumbnailUrl,
   parseScheduleFile,
   probeMediaPaths,
   scanMediaDirectory,
   serializeScheduleFile,
+  saveWorkspaceSession as persistWorkspaceSession,
+  deleteWorkspaceSession as deletePersistedWorkspaceSession,
   startPlayout as startPlayoutSession,
   stopPlayout as stopPlayoutSession,
 } from "./media-api";
@@ -93,6 +99,10 @@ export function App() {
   const [scheduleLogoSource, setScheduleLogoSource] = useState("");
   const [ageLibrary, setAgeLibrary] = useState<ScheduleOverlayLibrary | null>(null);
   const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
+  const [savedWorkspaceSession, setSavedWorkspaceSession] = useState<SavedWorkspaceSession | null>(null);
+  const [recoveryCheckpoint, setRecoveryCheckpoint] = useState<WorkspaceSessionCheckpoint | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const workspaceRestoreStarted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -176,12 +186,83 @@ export function App() {
     };
   }, [connection.kind]);
 
+  useEffect(() => {
+    if (
+      connection.kind !== "ready" ||
+      connection.health.status !== "ready" ||
+      demoDataEnabled ||
+      workspaceRestoreStarted.current
+    ) {
+      return;
+    }
+    workspaceRestoreStarted.current = true;
+    let cancelled = false;
+    void getWorkspaceSession()
+      .then((session) => {
+        if (!cancelled && session) restoreWorkspaceSnapshot(session);
+      })
+      .catch((error) => {
+        if (!cancelled) setOperationError(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connection]);
+
   const visiblePlaylist = activeSchedule === "current" ? playlist : futurePlaylist;
   const selectedAsset = useMemo(
     () =>
       visiblePlaylist.find((asset) => asset.id === selectedAssetId) ?? visiblePlaylist[0],
     [visiblePlaylist, selectedAssetId],
   );
+  const recoverySelection = useMemo(
+    () => recoveryCheckpoint
+      ? recoveryPointForPlaylist(playlist, recoveryCheckpoint)
+      : null,
+    [playlist, recoveryCheckpoint],
+  );
+
+  function restoreWorkspaceSnapshot(session: SavedWorkspaceSession) {
+    const snapshot = session.snapshot;
+    const restoredAssets = snapshot.assets.length > 0
+      ? snapshot.assets
+      : mergeAssets([], [...snapshot.currentPlaylist, ...snapshot.futurePlaylist]);
+    const checkpointSelection = session.checkpoint && (
+      session.checkpoint.interrupted ||
+      ["starting", "running", "stopping"].includes(session.checkpoint.state)
+    )
+      ? recoveryPointForPlaylist(snapshot.currentPlaylist, session.checkpoint)
+      : null;
+    setAssets(restoredAssets);
+    setPlaylist(snapshot.currentPlaylist);
+    setFuturePlaylist(snapshot.futurePlaylist);
+    setCurrentScheduleMetadata(snapshot.currentScheduleMetadata);
+    setFutureScheduleMetadata(snapshot.futureScheduleMetadata);
+    setScheduleLogoPath(snapshot.scheduleLogoPath);
+    setScheduleLogoSource(snapshot.scheduleLogoSource);
+    setAgeLibrary(snapshot.ageLibrary);
+    setSettings({ ...initialBroadcastSettings, ...snapshot.settings } as BroadcastSettings);
+    setActiveSchedule(checkpointSelection ? "current" : snapshot.activeSchedule);
+    setSelectedAssetId(
+      checkpointSelection?.asset.id ??
+      snapshot.selectedAssetId ??
+      snapshot.currentPlaylist[0]?.id ??
+      snapshot.futurePlaylist[0]?.id ??
+      "",
+    );
+    setSavedWorkspaceSession(session);
+    setRecoveryCheckpoint(session.checkpoint?.interrupted ? session.checkpoint : null);
+    setScheduleActionMessage(
+      session.checkpoint?.interrupted
+        ? `Interrupted session restored at ${formatClock(session.checkpoint.outTimeSeconds)}.`
+        : checkpointSelection && session.checkpoint
+          ? `Active playout reattached at ${formatClock(session.checkpoint.outTimeSeconds)}.`
+          : `Session restored from ${new Date(session.updatedAt).toLocaleString()}.`,
+    );
+    if (snapshot.currentPlaylist.length > 0 || snapshot.futurePlaylist.length > 0) {
+      setView("playlist");
+    }
+  }
 
   const addFiles = useCallback((files: File[]) => {
     const accepted = files.filter(
@@ -414,6 +495,73 @@ export function App() {
     setSelectedAssetId("");
   }
 
+  async function saveSessionList() {
+    if (playlist.length === 0 && futurePlaylist.length === 0) {
+      setOperationError("Add media to Current or Future before saving a session list.");
+      return;
+    }
+    setWorkspaceBusy(true);
+    setOperationError(null);
+    try {
+      const request: WorkspaceSessionSaveRequest = {
+        snapshot: {
+          version: 1,
+          assets,
+          currentPlaylist: playlist,
+          futurePlaylist,
+          activeSchedule,
+          selectedAssetId: selectedAssetId || null,
+          currentScheduleMetadata,
+          futureScheduleMetadata,
+          scheduleLogoPath,
+          scheduleLogoSource,
+          ageLibrary,
+          settings: primitiveSettings(settings),
+        },
+      };
+      const saved = await persistWorkspaceSession(request);
+      setSavedWorkspaceSession(saved);
+      setRecoveryCheckpoint(saved.checkpoint?.interrupted ? saved.checkpoint : null);
+      setScheduleActionMessage(
+        `Session list saved at ${new Date(saved.updatedAt).toLocaleString()}.`,
+      );
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function createNewPlaylist() {
+    const hasWorkspace = playlist.length > 0 || futurePlaylist.length > 0 || savedWorkspaceSession;
+    if (
+      hasWorkspace &&
+      !window.confirm(
+        "Create a new playlist? The saved recovery session and both Current/Future schedules will be cleared.",
+      )
+    ) {
+      return;
+    }
+    setWorkspaceBusy(true);
+    setOperationError(null);
+    try {
+      if (playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state)) {
+        await stopPlayoutSession();
+      }
+      await deletePersistedWorkspaceSession();
+      clearMedia();
+      setSettings(initialBroadcastSettings);
+      setActiveSchedule("current");
+      setSavedWorkspaceSession(null);
+      setRecoveryCheckpoint(null);
+      setView("import");
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   function addFilesToActiveSchedule(files: File[]) {
     if (activeSchedule === "current" || !window.gruberDesktop) {
       addFiles(files);
@@ -608,11 +756,20 @@ export function App() {
     }
   }
 
-  async function startPlayout() {
+  async function startPlayout(resumeFromCheckpoint = false) {
     setOperationError(null);
     try {
-      const request = buildStartRequest(playlist, settings);
+      const baseRequest = buildStartRequest(playlist, settings);
+      const request = resumeFromCheckpoint && recoveryCheckpoint
+        ? buildRecoveryStartRequest(baseRequest, playlist, recoveryCheckpoint)
+        : baseRequest;
       setPlayoutStatus(await startPlayoutSession(request));
+      setRecoveryCheckpoint(null);
+      setScheduleActionMessage(
+        resumeFromCheckpoint
+          ? `Playout resumed from ${formatClock(recoveryCheckpoint?.outTimeSeconds ?? 0)}.`
+          : "Playout started from the beginning.",
+      );
     } catch (error) {
       setOperationError(errorMessage(error));
     }
@@ -669,6 +826,8 @@ export function App() {
             onSelectAsset={setSelectedAssetId}
             onScheduleChange={setScheduleTab}
             onSaveSchedule={saveActiveSchedule}
+            onSaveSessionList={saveSessionList}
+            onNewPlaylist={createNewPlaylist}
             onSelectAgeDirectory={window.gruberDesktop ? selectAgeDirectory : undefined}
             onSelectScheduleLogoDirectory={window.gruberDesktop
               ? selectScheduleLogoDirectory
@@ -680,6 +839,14 @@ export function App() {
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
             scheduleBusy={mediaBusy}
+            workspaceBusy={workspaceBusy}
+            savedSessionUpdatedAt={savedWorkspaceSession?.updatedAt ?? null}
+            recoveryCheckpoint={recoveryCheckpoint}
+            initialPreviewTimeSeconds={
+              recoverySelection?.asset.id === selectedAsset.id
+                ? recoverySelection.itemOffsetSeconds
+                : null
+            }
             scheduleLogoSource={scheduleLogoSource || scheduleLogoPath}
             scheduleLogoPath={scheduleLogoPath}
             scte35Defaults={settings}
@@ -701,7 +868,8 @@ export function App() {
           networkInterfaces={networkInterfaces}
           capabilities={capabilities}
           onSettingsChange={setSettings}
-          onStart={() => void startPlayout()}
+          onStart={() => void startPlayout(Boolean(recoveryCheckpoint))}
+          onStartFresh={() => void startPlayout(false)}
           onStop={() => void stopPlayout()}
           operationError={operationError}
           playlistLength={playlist.length}
@@ -710,6 +878,7 @@ export function App() {
             0,
           )}
           playoutStatus={playoutStatus}
+          recoveryCheckpoint={recoveryCheckpoint}
         />
       ) : null}
 
@@ -1035,6 +1204,91 @@ function buildStartRequest(
         : "increment",
     },
   };
+}
+
+interface RecoveryPoint {
+  asset: MediaAsset;
+  itemIndex: number;
+  itemOffsetSeconds: number;
+}
+
+function recoveryPointForPlaylist(
+  playlist: MediaAsset[],
+  checkpoint: WorkspaceSessionCheckpoint,
+): RecoveryPoint | null {
+  if (playlist.length === 0) return null;
+  let itemIndex = Math.min(checkpoint.currentItemIndex, playlist.length - 1);
+  let elapsedBeforeItem = playlist
+    .slice(0, itemIndex)
+    .reduce((total, asset) => total + effectiveAssetDuration(asset), 0);
+  let itemOffsetSeconds = Math.max(0, checkpoint.outTimeSeconds - elapsedBeforeItem);
+  let asset = playlist[itemIndex];
+  if (!asset) return null;
+  const duration = effectiveAssetDuration(asset);
+  if (itemOffsetSeconds >= duration - 0.04 && itemIndex < playlist.length - 1) {
+    elapsedBeforeItem += duration;
+    itemIndex += 1;
+    asset = playlist[itemIndex];
+    if (!asset) return null;
+    itemOffsetSeconds = Math.max(0, checkpoint.outTimeSeconds - elapsedBeforeItem);
+  }
+  return {
+    asset,
+    itemIndex,
+    itemOffsetSeconds: Math.min(
+      Math.max(0, effectiveAssetDuration(asset) - 0.04),
+      itemOffsetSeconds,
+    ),
+  };
+}
+
+function buildRecoveryStartRequest(
+  request: StartPlayoutRequest,
+  playlist: MediaAsset[],
+  checkpoint: WorkspaceSessionCheckpoint,
+): StartPlayoutRequest {
+  const point = recoveryPointForPlaylist(playlist, checkpoint);
+  if (!point) throw new Error("Saved recovery checkpoint does not match the current playlist");
+  const remaining = request.playlist.slice(point.itemIndex);
+  const first = remaining[0];
+  if (!first) throw new Error("No media remains after the saved recovery checkpoint");
+  const trimInSeconds = first.trimInSeconds + point.itemOffsetSeconds;
+  remaining[0] = {
+    ...first,
+    trimInSeconds,
+    ageTitle: point.itemOffsetSeconds > 0 ? null : first.ageTitle,
+    scte35Markers: first.scte35Markers.filter(
+      (marker) => marker.positionSeconds >= trimInSeconds,
+    ),
+  };
+  return { ...request, playlist: remaining };
+}
+
+function effectiveAssetDuration(asset: MediaAsset): number {
+  return Math.max(
+    0,
+    Math.min(asset.declaredDurationSeconds ?? asset.durationSeconds, asset.durationSeconds),
+  );
+}
+
+function primitiveSettings(
+  settings: BroadcastSettings,
+): Record<string, string | number | boolean> {
+  return Object.fromEntries(
+    Object.entries(settings).filter((entry): entry is [string, string | number | boolean] =>
+      ["string", "number", "boolean"].includes(typeof entry[1])
+    ),
+  );
+}
+
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3_600);
+  const minutes = Math.floor((whole % 3_600) / 60);
+  const remaining = whole % 60;
+  return [hours, minutes, remaining]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
 }
 
 function integerOrDefault(

@@ -1,5 +1,6 @@
 import {
   FlagTriangleRight,
+  FilePlus2,
   FileText,
   FolderOpen,
   Image,
@@ -30,7 +31,10 @@ import type {
   Scte35Marker,
   Scte35MarkerKind,
 } from "../types";
-import type { ScheduleExportExtension } from "@gruber/contracts";
+import type {
+  ScheduleExportExtension,
+  WorkspaceSessionCheckpoint,
+} from "@gruber/contracts";
 
 interface PlaylistPreviewScreenProps {
   playlist: MediaAsset[];
@@ -44,6 +48,10 @@ interface PlaylistPreviewScreenProps {
   scheduleLogoPath: string;
   scheduleActionMessage: string | null;
   scheduleBusy: boolean;
+  workspaceBusy: boolean;
+  savedSessionUpdatedAt: string | null;
+  recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
+  initialPreviewTimeSeconds: number | null;
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItem: (sourceId: string, targetId: string) => void;
@@ -54,6 +62,8 @@ interface PlaylistPreviewScreenProps {
   onSelectAsset: (assetId: string) => void;
   onScheduleChange: (slot: ScheduleSlot) => void;
   onSaveSchedule: (extension: ScheduleExportExtension) => Promise<void>;
+  onSaveSessionList: () => Promise<void>;
+  onNewPlaylist: () => Promise<void>;
   onSelectAgeDirectory?: () => Promise<void>;
   onSelectScheduleLogoDirectory?: () => Promise<void>;
   onSelectScheduleLogoFile?: () => Promise<void>;
@@ -75,6 +85,10 @@ export function PlaylistPreviewScreen({
   scheduleLogoPath,
   scheduleActionMessage,
   scheduleBusy,
+  workspaceBusy,
+  savedSessionUpdatedAt,
+  recoveryCheckpoint,
+  initialPreviewTimeSeconds,
   onAddFiles,
   onAddScte35Marker,
   onMoveItem,
@@ -85,6 +99,8 @@ export function PlaylistPreviewScreen({
   onSelectAsset,
   onScheduleChange,
   onSaveSchedule,
+  onSaveSessionList,
+  onNewPlaylist,
   onSelectAgeDirectory,
   onSelectScheduleLogoDirectory,
   onSelectScheduleLogoFile,
@@ -143,7 +159,9 @@ export function PlaylistPreviewScreen({
 
   useEffect(() => {
     const demoTimeline = selectedAsset.id === "production";
-    const initialTime = demoTimeline ? 932 : 0;
+    const initialTime = initialPreviewTimeSeconds == null
+      ? demoTimeline ? 932 : 0
+      : Math.min(initialPreviewTimeSeconds, selectedAsset.durationSeconds);
     setCurrentTime(Math.min(initialTime, selectedAsset.durationSeconds));
     setTrimIn(demoTimeline ? Math.min(130, selectedAsset.durationSeconds) : 0);
     setTrimOut(
@@ -162,7 +180,7 @@ export function PlaylistPreviewScreen({
     setPreviewError(null);
     setPlaying(false);
     void stopClipPreview().catch(() => undefined);
-  }, [selectedAsset.id, selectedAsset.durationSeconds]);
+  }, [initialPreviewTimeSeconds, selectedAsset.id, selectedAsset.durationSeconds]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -392,6 +410,34 @@ export function PlaylistPreviewScreen({
           <small title={scheduleActionMessage ?? undefined}>
             {scheduleBusy ? "Preparing schedule…" : scheduleActionMessage ?? "Exports current tab and item order"}
           </small>
+        </div>
+        <div className={`schedule-session-control ${recoveryCheckpoint ? "recovery-pending" : ""}`}>
+          <span>Recovery session</span>
+          <strong>
+            {recoveryCheckpoint
+              ? `Interrupted · ${formatHours(recoveryCheckpoint.outTimeSeconds)}`
+              : savedSessionUpdatedAt
+                ? `Saved · ${new Date(savedSessionUpdatedAt).toLocaleString()}`
+                : "Not saved"}
+          </strong>
+          <div>
+            <button
+              disabled={workspaceBusy || currentCount + futureCount === 0}
+              onClick={() => void onSaveSessionList()}
+              type="button"
+            >
+              <Save size={13} /> Save session list
+            </button>
+            <button
+              className="new-playlist-button"
+              disabled={workspaceBusy}
+              onClick={() => void onNewPlaylist()}
+              type="button"
+            >
+              <FilePlus2 size={13} /> New playlist
+            </button>
+          </div>
+          <small>Checkpoint updates every 5 seconds while playout is active</small>
         </div>
         <div className="schedule-bulk-control">
           <span>Bulk actions</span>

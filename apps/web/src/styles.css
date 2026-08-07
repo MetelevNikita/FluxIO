@@ -665,17 +665,20 @@ p {
   min-height: 92px;
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: 210px minmax(190px, 1fr) minmax(190px, 1fr) 260px minmax(320px, 1.2fr);
+  grid-template-columns: 170px minmax(150px, 1fr) minmax(150px, 1fr) 220px 230px minmax(270px, 1.2fr);
   gap: 10px;
   align-items: stretch;
   border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   background: #090b0d;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .schedule-resource-heading,
 .schedule-resource-control,
 .schedule-save-control,
+.schedule-session-control,
 .schedule-bulk-control {
   min-width: 0;
   border: 1px solid var(--border);
@@ -694,6 +697,7 @@ p {
 .schedule-resource-heading > span,
 .schedule-resource-control,
 .schedule-save-control,
+.schedule-session-control,
 .schedule-bulk-control {
   display: flex;
   flex-direction: column;
@@ -708,6 +712,8 @@ p {
 .schedule-resource-control > span,
 .schedule-save-control > span,
 .schedule-save-control > small,
+.schedule-session-control > span,
+.schedule-session-control > small,
 .schedule-bulk-control > span,
 .schedule-bulk-control > small {
   overflow: hidden;
@@ -720,9 +726,11 @@ p {
 
 .schedule-resource-control,
 .schedule-save-control,
+.schedule-session-control,
 .schedule-bulk-control { padding: 7px 9px; }
 
 .schedule-resource-control > strong,
+.schedule-session-control > strong,
 .schedule-bulk-control > strong {
   overflow: hidden;
   color: var(--text);
@@ -734,6 +742,7 @@ p {
 
 .schedule-resource-control > div,
 .schedule-save-control > div,
+.schedule-session-control > div,
 .bulk-selection-actions,
 .bulk-overlay-actions {
   display: flex;
@@ -765,6 +774,17 @@ p {
 .schedule-resource-toolbar button:disabled { cursor: not-allowed; opacity: 0.4; }
 .schedule-save-control select { width: 66px; }
 .schedule-save-control button { flex: 1; color: #111; background: var(--accent); }
+.schedule-session-control > div { display: grid; grid-template-columns: 1.2fr 1fr; }
+.schedule-session-control button { min-width: 0; padding-inline: 5px; }
+.schedule-session-control.recovery-pending {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.06);
+}
+.schedule-session-control.recovery-pending > strong { color: var(--warning); }
+.schedule-session-control .new-playlist-button:hover:not(:disabled) {
+  border-color: rgba(255, 102, 102, 0.45);
+  color: var(--danger);
+}
 .bulk-selection-actions { position: absolute; top: 6px; right: 8px; }
 .schedule-bulk-control { position: relative; }
 .bulk-selection-actions button { min-height: 19px; padding: 2px 5px; }
@@ -1668,6 +1688,46 @@ input[type="range"] {
   color: #fb7185;
 }
 
+.recovery-resume-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: -4px 0 16px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(251, 191, 36, 0.07);
+}
+
+.recovery-resume-banner > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.recovery-resume-banner strong { color: var(--warning); font-size: 11px; }
+.recovery-resume-banner span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-resume-banner button {
+  flex: 0 0 auto;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 5px;
+  padding: 7px 10px;
+  color: var(--warning);
+  background: var(--surface-deep);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .settings-card,
 .monitor-card,
 .monitor-preview-card {
@@ -2441,7 +2501,7 @@ input[type="range"] {
   }
 
   .schedule-resource-toolbar {
-    grid-template-columns: repeat(5, minmax(185px, 1fr));
+    grid-template-columns: repeat(6, minmax(185px, 1fr));
     overflow-x: auto;
   }
 

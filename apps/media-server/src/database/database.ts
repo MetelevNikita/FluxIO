@@ -7,13 +7,18 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import {
   savedBroadcastConfigurationSchema,
   startPlayoutRequestSchema,
+  savedWorkspaceSessionSchema,
+  workspaceSessionCheckpointSchema,
+  workspaceSessionSaveRequestSchema,
   type BroadcastConfigurationSummary,
   type MediaProbe,
   type PlayoutEndpoint,
   type PlayoutStatus,
   type SaveBroadcastConfigurationRequest,
   type SavedBroadcastConfiguration,
+  type SavedWorkspaceSession,
   type StartPlayoutRequest,
+  type WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
 import {
   Prisma,
@@ -252,6 +257,54 @@ export class DatabaseService {
     });
   }
 
+  async saveWorkspaceSession(
+    input: WorkspaceSessionSaveRequest,
+    status: PlayoutStatus,
+  ): Promise<SavedWorkspaceSession> {
+    const request = workspaceSessionSaveRequestSchema.parse(input);
+    const { sanitized, secrets } = sanitizeWorkspaceSnapshot(request.snapshot);
+    const encryptedSecrets = Object.keys(secrets).length > 0
+      ? this.#encrypt(JSON.stringify(secrets))
+      : null;
+    const checkpoint = status.sessionId ? checkpointFromStatus(status) : null;
+    const session = await this.client.workspaceSession.upsert({
+      create: {
+        slot: "last",
+        snapshot: jsonValue(sanitized),
+        checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull,
+        encryptedSecrets,
+      },
+      update: {
+        snapshot: jsonValue(sanitized),
+        checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull,
+        encryptedSecrets,
+      },
+      where: { slot: "last" },
+    });
+    return this.#restoreWorkspaceSession(session, status);
+  }
+
+  async getWorkspaceSession(
+    status: PlayoutStatus,
+  ): Promise<SavedWorkspaceSession | null> {
+    const session = await this.client.workspaceSession.findUnique({
+      where: { slot: "last" },
+    });
+    return session ? this.#restoreWorkspaceSession(session, status) : null;
+  }
+
+  async deleteWorkspaceSession(): Promise<void> {
+    await this.client.workspaceSession.deleteMany({ where: { slot: "last" } });
+  }
+
+  async syncWorkspaceCheckpoint(status: PlayoutStatus): Promise<void> {
+    if (!status.sessionId) return;
+    await this.client.workspaceSession.updateMany({
+      data: { checkpoint: jsonValue(checkpointFromStatus(status)) },
+      where: { slot: "last" },
+    });
+  }
+
   async recordSessionStart(
     request: StartPlayoutRequest,
     status: PlayoutStatus,
@@ -280,6 +333,48 @@ export class DatabaseService {
         runtimeSessionId: status.sessionId,
         stoppedAt: null,
       },
+    });
+  }
+
+  #restoreWorkspaceSession(
+    session: {
+      id: string;
+      snapshot: Prisma.JsonValue;
+      checkpoint: Prisma.JsonValue | null;
+      encryptedSecrets: string | null;
+      createdAt: Date;
+      updatedAt: Date;
+    },
+    currentStatus: PlayoutStatus,
+  ): SavedWorkspaceSession {
+    const snapshot = session.snapshot as Record<string, unknown>;
+    const settings = {
+      ...((snapshot.settings as Record<string, unknown> | undefined) ?? {}),
+    };
+    if (session.encryptedSecrets) {
+      const secrets = JSON.parse(this.#decrypt(session.encryptedSecrets)) as Record<string, string>;
+      Object.assign(settings, secrets);
+    }
+    const checkpoint = session.checkpoint
+      ? workspaceSessionCheckpointSchema.parse(session.checkpoint)
+      : null;
+    const activeStoredState = checkpoint
+      ? ["starting", "running", "stopping"].includes(checkpoint.state)
+      : false;
+    const sameRuntimeSession = Boolean(
+      checkpoint?.sessionId &&
+      currentStatus.sessionId === checkpoint.sessionId &&
+      ["starting", "running", "stopping"].includes(currentStatus.state),
+    );
+    const interrupted = Boolean(
+      checkpoint && (checkpoint.state === "failed" || (activeStoredState && !sameRuntimeSession)),
+    );
+    return savedWorkspaceSessionSchema.parse({
+      id: session.id,
+      snapshot: { ...snapshot, settings },
+      checkpoint: checkpoint ? { ...checkpoint, interrupted } : null,
+      createdAt: session.createdAt.toISOString(),
+      updatedAt: session.updatedAt.toISOString(),
     });
   }
 
@@ -315,6 +410,37 @@ export class DatabaseService {
       decipher.final(),
     ]).toString("utf8");
   }
+}
+
+export function sanitizeWorkspaceSnapshot(
+  snapshot: WorkspaceSessionSaveRequest["snapshot"],
+): {
+  sanitized: WorkspaceSessionSaveRequest["snapshot"];
+  secrets: Record<string, string>;
+} {
+  const settings = { ...snapshot.settings };
+  const secrets: Record<string, string> = {};
+  for (const key of ["streamKey", "srtPassphrase", "rtmpStreamKey"] as const) {
+    const value = settings[key];
+    if (typeof value === "string" && value) secrets[key] = value;
+    settings[key] = "";
+  }
+  return { sanitized: { ...snapshot, settings }, secrets };
+}
+
+export function checkpointFromStatus(status: PlayoutStatus) {
+  return workspaceSessionCheckpointSchema.parse({
+    sessionId: status.sessionId,
+    state: status.state,
+    currentItemIndex: status.currentItemIndex,
+    currentItemName: status.currentItemName,
+    outTimeSeconds: status.outTimeSeconds,
+    totalDurationSeconds: status.totalDurationSeconds,
+    progressPercent: status.progressPercent,
+    loopCount: status.loopCount,
+    updatedAt: new Date().toISOString(),
+    interrupted: false,
+  });
 }
 
 function mediaAssetData(probe: MediaProbe) {

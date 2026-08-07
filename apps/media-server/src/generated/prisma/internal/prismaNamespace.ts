@@ -403,7 +403,8 @@ export const ModelName = {
   EncodingProfile: 'EncodingProfile',
   OutputEndpoint: 'OutputEndpoint',
   BroadcastConfiguration: 'BroadcastConfiguration',
-  BroadcastSession: 'BroadcastSession'
+  BroadcastSession: 'BroadcastSession',
+  WorkspaceSession: 'WorkspaceSession'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -419,7 +420,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "mediaAsset" | "playlist" | "playlistItem" | "encodingProfile" | "outputEndpoint" | "broadcastConfiguration" | "broadcastSession"
+    modelProps: "mediaAsset" | "playlist" | "playlistItem" | "encodingProfile" | "outputEndpoint" | "broadcastConfiguration" | "broadcastSession" | "workspaceSession"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -941,6 +942,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    WorkspaceSession: {
+      payload: Prisma.$WorkspaceSessionPayload<ExtArgs>
+      fields: Prisma.WorkspaceSessionFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.WorkspaceSessionFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.WorkspaceSessionFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        findFirst: {
+          args: Prisma.WorkspaceSessionFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.WorkspaceSessionFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        findMany: {
+          args: Prisma.WorkspaceSessionFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>[]
+        }
+        create: {
+          args: Prisma.WorkspaceSessionCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        createMany: {
+          args: Prisma.WorkspaceSessionCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.WorkspaceSessionCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>[]
+        }
+        delete: {
+          args: Prisma.WorkspaceSessionDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        update: {
+          args: Prisma.WorkspaceSessionUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        deleteMany: {
+          args: Prisma.WorkspaceSessionDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.WorkspaceSessionUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.WorkspaceSessionUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>[]
+        }
+        upsert: {
+          args: Prisma.WorkspaceSessionUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WorkspaceSessionPayload>
+        }
+        aggregate: {
+          args: Prisma.WorkspaceSessionAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateWorkspaceSession>
+        }
+        groupBy: {
+          args: Prisma.WorkspaceSessionGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.WorkspaceSessionGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.WorkspaceSessionCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.WorkspaceSessionCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -1085,6 +1160,19 @@ export const BroadcastSessionScalarFieldEnum = {
 export type BroadcastSessionScalarFieldEnum = (typeof BroadcastSessionScalarFieldEnum)[keyof typeof BroadcastSessionScalarFieldEnum]
 
 
+export const WorkspaceSessionScalarFieldEnum = {
+  id: 'id',
+  slot: 'slot',
+  snapshot: 'snapshot',
+  checkpoint: 'checkpoint',
+  encryptedSecrets: 'encryptedSecrets',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type WorkspaceSessionScalarFieldEnum = (typeof WorkspaceSessionScalarFieldEnum)[keyof typeof WorkspaceSessionScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -1098,6 +1186,14 @@ export const JsonNullValueInput = {
 } as const
 
 export type JsonNullValueInput = (typeof JsonNullValueInput)[keyof typeof JsonNullValueInput]
+
+
+export const NullableJsonNullValueInput = {
+  DbNull: DbNull,
+  JsonNull: JsonNull
+} as const
+
+export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
 
 
 export const QueryMode = {
@@ -1407,6 +1503,7 @@ export type GlobalOmitConfig = {
   outputEndpoint?: Prisma.OutputEndpointOmit
   broadcastConfiguration?: Prisma.BroadcastConfigurationOmit
   broadcastSession?: Prisma.BroadcastSessionOmit
+  workspaceSession?: Prisma.WorkspaceSessionOmit
 }
 
 /* Types for Logging */

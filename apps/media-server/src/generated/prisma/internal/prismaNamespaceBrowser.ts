@@ -57,7 +57,8 @@ export const ModelName = {
   EncodingProfile: 'EncodingProfile',
   OutputEndpoint: 'OutputEndpoint',
   BroadcastConfiguration: 'BroadcastConfiguration',
-  BroadcastSession: 'BroadcastSession'
+  BroadcastSession: 'BroadcastSession',
+  WorkspaceSession: 'WorkspaceSession'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -181,6 +182,19 @@ export const BroadcastSessionScalarFieldEnum = {
 export type BroadcastSessionScalarFieldEnum = (typeof BroadcastSessionScalarFieldEnum)[keyof typeof BroadcastSessionScalarFieldEnum]
 
 
+export const WorkspaceSessionScalarFieldEnum = {
+  id: 'id',
+  slot: 'slot',
+  snapshot: 'snapshot',
+  checkpoint: 'checkpoint',
+  encryptedSecrets: 'encryptedSecrets',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type WorkspaceSessionScalarFieldEnum = (typeof WorkspaceSessionScalarFieldEnum)[keyof typeof WorkspaceSessionScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -194,6 +208,14 @@ export const JsonNullValueInput = {
 } as const
 
 export type JsonNullValueInput = (typeof JsonNullValueInput)[keyof typeof JsonNullValueInput]
+
+
+export const NullableJsonNullValueInput = {
+  DbNull: DbNull,
+  JsonNull: JsonNull
+} as const
+
+export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
 
 
 export const QueryMode = {

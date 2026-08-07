@@ -13,6 +13,7 @@ import {
   startPlayoutRequestSchema,
   startClipPreviewRequestSchema,
   systemMetricsSchema,
+  workspaceSessionSaveRequestSchema,
   type ServiceHealth,
 } from "@gruber/contracts";
 import { DatabaseService } from "./database/database.js";
@@ -29,7 +30,8 @@ import { listNetworkInterfaces } from "./network-interfaces.js";
 import { parseScheduleFile } from "./schedule/parser.js";
 import { serializeSchedule } from "./schedule/serializer.js";
 
-const serviceVersion = "5.0.1";
+const serviceVersion = "5.0.2";
+const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
@@ -37,6 +39,8 @@ export function buildApp(options: FastifyServerOptions = {}) {
   const capabilities = new FfmpegCapabilitiesService();
   const database = DatabaseService.fromEnvironment();
   const syncedSessions = new Set<string>();
+  let workspaceCheckpointTimer: NodeJS.Timeout | null = null;
+  let checkpointErrorReported = false;
   const previewDirectory = process.env.GRUBER_PREVIEW_DIR ??
     path.join(tmpdir(), "gruber-playout-preview");
   const mediaPreview = new MediaPreviewService(
@@ -76,6 +80,19 @@ export function buildApp(options: FastifyServerOptions = {}) {
   app.addHook("onReady", async () => {
     if (database) {
       await database.connect();
+      workspaceCheckpointTimer = setInterval(() => {
+        void database.syncWorkspaceCheckpoint(playout.getStatus())
+          .then(() => {
+            checkpointErrorReported = false;
+          })
+          .catch((error) => {
+            if (!checkpointErrorReported) {
+              console.error("[DATABASE] Failed to update recovery checkpoint", error);
+              checkpointErrorReported = true;
+            }
+          });
+      }, workspaceCheckpointIntervalMs);
+      workspaceCheckpointTimer.unref();
     }
   });
 
@@ -239,6 +256,33 @@ export function buildApp(options: FastifyServerOptions = {}) {
 
   app.post("/api/playout/stop", async () => playout.stop());
 
+  app.get("/api/workspace-session", async (_request, reply) => {
+    if (!database) {
+      return databaseUnavailable(reply);
+    }
+    return { session: await database.getWorkspaceSession(playout.getStatus()) };
+  });
+
+  app.put("/api/workspace-session", async (request, reply) => {
+    if (!database) {
+      return databaseUnavailable(reply);
+    }
+    try {
+      const body = workspaceSessionSaveRequestSchema.parse(request.body);
+      return await database.saveWorkspaceSession(body, playout.getStatus());
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.delete("/api/workspace-session", async (_request, reply) => {
+    if (!database) {
+      return databaseUnavailable(reply);
+    }
+    await database.deleteWorkspaceSession();
+    return reply.code(204).send();
+  });
+
   app.get("/api/configurations", async (_request, reply) => {
     if (!database) {
       return databaseUnavailable(reply);
@@ -312,6 +356,13 @@ export function buildApp(options: FastifyServerOptions = {}) {
   );
 
   app.addHook("onClose", async () => {
+    if (workspaceCheckpointTimer) {
+      clearInterval(workspaceCheckpointTimer);
+      workspaceCheckpointTimer = null;
+    }
+    if (database) {
+      await database.syncWorkspaceCheckpoint(playout.getStatus());
+    }
     await mediaPreview.close();
     await playout.close();
     if (database) {

@@ -136,3 +136,15 @@ model BroadcastSession {
   @@index([state, startedAt])
   @@index([playlistId])
 }
+
+model WorkspaceSession {
+  id               String   @id @default(uuid()) @db.Uuid
+  slot             String   @unique @default("last")
+  snapshot         Json
+  checkpoint       Json?
+  encryptedSecrets String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([updatedAt])
+}

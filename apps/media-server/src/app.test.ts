@@ -11,6 +11,7 @@ import {
   serviceHealthSchema,
   startPlayoutRequestSchema,
   systemMetricsSchema,
+  workspaceSessionSnapshotSchema,
   type StartPlayoutRequest,
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
@@ -26,7 +27,11 @@ import {
   usesTsdDuckTransport,
 } from "./ffmpeg/playout-supervisor.js";
 import { runCommand } from "./ffmpeg/process.js";
-import { DatabaseService } from "./database/database.js";
+import {
+  checkpointFromStatus,
+  DatabaseService,
+  sanitizeWorkspaceSnapshot,
+} from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 import {
@@ -55,11 +60,97 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.1");
+    assert.equal(health.version, "5.0.2");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
   }
+});
+
+test(
+  "workspace session endpoint requires PostgreSQL",
+  { skip: Boolean(process.env.DATABASE_URL) },
+  async () => {
+    const app = buildApp({ logger: false });
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/workspace-session" });
+      assert.equal(response.statusCode, 503);
+      assert.match(response.json().error, /PostgreSQL is not configured/);
+    } finally {
+      await app.close();
+    }
+  },
+);
+
+test("workspace recovery separates secrets and records a playout checkpoint", () => {
+  const asset = {
+    id: "asset-1",
+    name: "movie.mp4",
+    duration: "00:10:00:00",
+    durationSeconds: 600,
+    codec: "H.264",
+    codecFamily: "H.264",
+    codecProfile: "High",
+    resolution: "1920×1080",
+    fps: "25 fps",
+    bitrate: "10 Mbps",
+    size: "700 MB",
+    status: "analyzed" as const,
+    preview: "/api/media/thumbnail?path=movie.mp4",
+    filePath: "/media/movie.mp4",
+    colorSpace: "bt709",
+    audio: "MP2 48kHz",
+    sha256: "test",
+  };
+  const snapshot = workspaceSessionSnapshotSchema.parse({
+    version: 1,
+    assets: [asset],
+    currentPlaylist: [asset],
+    futurePlaylist: [],
+    activeSchedule: "current",
+    selectedAssetId: asset.id,
+    currentScheduleMetadata: null,
+    futureScheduleMetadata: null,
+    scheduleLogoPath: "",
+    scheduleLogoSource: "",
+    ageLibrary: null,
+    settings: {
+      protocol: "SRT",
+      streamKey: "legacy-secret",
+      srtPassphrase: "session-secret",
+      rtmpStreamKey: "rtmp-secret",
+      udpPort: 5000,
+    },
+  });
+  const protectedSnapshot = sanitizeWorkspaceSnapshot(snapshot);
+  assert.equal(protectedSnapshot.sanitized.currentPlaylist[0]?.filePath, asset.filePath);
+  assert.equal(protectedSnapshot.sanitized.settings.srtPassphrase, "");
+  assert.equal(protectedSnapshot.secrets.srtPassphrase, "session-secret");
+  assert.doesNotMatch(JSON.stringify(protectedSnapshot.sanitized), /session-secret|rtmp-secret/);
+
+  const checkpoint = checkpointFromStatus(playoutStatusSchema.parse({
+    state: "running",
+    sessionId: "session-1",
+    startedAt: new Date().toISOString(),
+    stoppedAt: null,
+    currentItemIndex: 3,
+    currentItemName: "movie.mp4",
+    totalItems: 10,
+    outTimeSeconds: 315.5,
+    totalDurationSeconds: 1_000,
+    progressPercent: 31.55,
+    frame: 7_888,
+    fps: 25,
+    bitrateKbps: 10_500,
+    speed: 1,
+    endpointLabel: "udp://239.1.1.1:5000",
+    previewPath: "/api/playout/preview/index.m3u8",
+    error: null,
+    logs: [],
+  }));
+  assert.equal(checkpoint.currentItemIndex, 3);
+  assert.equal(checkpoint.outTimeSeconds, 315.5);
+  assert.equal(checkpoint.interrupted, false);
 });
 
 test("GET /api/playout/status starts idle", async () => {

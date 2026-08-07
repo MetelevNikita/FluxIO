@@ -250,16 +250,26 @@
 - Ctrl/Cmd+A, множественное выделение и массовые AGE/LOGO операции;
 - Figma-макет и документация v5.0.1.
 
+### 3.3. Восстановление Playlist-сессии v5.0.2
+
+Статус: завершён 2026-08-07. Отчёт: [`progress/03-03-session-recovery-v5.0.2.md`](progress/03-03-session-recovery-v5.0.2.md).
+
+- PostgreSQL snapshot Current/Future и encoder settings;
+- server-side checkpoint текущего ролика и позиции каждые 5 секунд;
+- автоматическое восстановление Electron после закрытия или reboot;
+- ручной Resume с checkpoint либо запуск с начала;
+- `Save session list` и безопасный `New playlist`;
+- AES-256-GCM защита SRT/RTMP secrets.
+
 ## Следующая очередь
 
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;
-- server-side сохранённый rundown до старта;
 - skip/next и planned transitions;
 - black/slate fallback при ошибке файла;
 - watchdog FFmpeg и политика restart;
-- deterministic recovery после перезапуска media-service.
+- watchdog и автоматическая политика restart поверх ручного recovery v5.0.2;
 - бесшовное переключение repeat без restart gap;
 
 ### 4. Media preparation

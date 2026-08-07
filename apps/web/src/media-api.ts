@@ -6,7 +6,9 @@ import {
   networkInterfaceListSchema,
   playoutStatusSchema,
   savedBroadcastConfigurationSchema,
+  savedWorkspaceSessionSchema,
   systemMetricsSchema,
+  workspaceSessionEnvelopeSchema,
   parsedScheduleSchema,
   serializedScheduleSchema,
   type BroadcastConfigurationSummary,
@@ -20,8 +22,10 @@ import {
   type SerializedSchedule,
   type SaveBroadcastConfigurationRequest,
   type SavedBroadcastConfiguration,
+  type SavedWorkspaceSession,
   type StartPlayoutRequest,
   type SystemMetrics,
+  type WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
 import { mediaApiUrl } from "./runtime";
 
@@ -126,6 +130,28 @@ export async function stopPlayout(): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
     await request("/api/playout/stop", { method: "POST" }),
   );
+}
+
+export async function getWorkspaceSession(): Promise<SavedWorkspaceSession | null> {
+  return workspaceSessionEnvelopeSchema.parse(
+    await request("/api/workspace-session"),
+  ).session;
+}
+
+export async function saveWorkspaceSession(
+  session: WorkspaceSessionSaveRequest,
+): Promise<SavedWorkspaceSession> {
+  return savedWorkspaceSessionSchema.parse(
+    await request("/api/workspace-session", {
+      body: JSON.stringify(session),
+      headers: { "content-type": "application/json" },
+      method: "PUT",
+    }),
+  );
+}
+
+export async function deleteWorkspaceSession(): Promise<void> {
+  await request("/api/workspace-session", { method: "DELETE" });
 }
 
 export async function listBroadcastConfigurations(): Promise<
