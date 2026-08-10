@@ -69,7 +69,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.8");
+    assert.equal(health.version, "6.0.9");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -840,6 +840,25 @@ test("DVB subtitle mode keeps video clean and builds a separate GStreamer bitmap
   assert.match(gstreamer, /video\/x-raw,format=AYUV,width=1280,height=720/);
   assert.match(gstreamer, /dvbsubenc max-colours=16 ts-offset=1400000000/);
   assert.match(gstreamer, /mux\.sink_288/);
+});
+
+test("GStreamer filesrc preserves Windows DVB subtitle paths", () => {
+  const request = baseRequest();
+  request.subtitleOutput = {
+    ...defaultSubtitleOutput,
+    mode: "dvb",
+    pid: 288,
+    language: "rus",
+  };
+  const args = buildGstreamerDvbSubtitleCommand({
+    inputPath: "C:\\Users\\iptv\\AppData\\Local\\Temp\\gruber-playout-preview\\dvb-subtitles-loop-0.srt",
+    outputPort: 31_000,
+    request,
+  });
+  assert.ok(args.includes(
+    "location=C:/Users/iptv/AppData/Local/Temp/gruber-playout-preview/dvb-subtitles-loop-0.srt",
+  ));
+  assert.equal(args.some((argument) => argument.includes("C:\\Users")), false);
 });
 
 test("DVB subtitle project trims clip cues and shifts them to the program timeline", async () => {

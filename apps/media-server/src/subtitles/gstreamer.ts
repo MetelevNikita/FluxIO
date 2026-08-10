@@ -54,7 +54,7 @@ export function buildGstreamerDvbSubtitleCommand({
     "sync=true",
     "async=false",
     "filesrc",
-    `location=${inputPath}`,
+    `location=${gstreamerFileLocation(inputPath)}`,
     "!",
     "subparse",
     "!",
@@ -75,6 +75,21 @@ export function buildGstreamerDvbSubtitleCommand({
     "!",
     `mux.sink_${subtitles.pid}`,
   ];
+}
+
+/**
+ * gst-launch parses backslashes in property values as escape characters even
+ * when Node passes the value as a single spawn argument. GLib accepts forward
+ * slashes for both drive-letter and UNC paths on Windows, so normalizing only
+ * Windows-shaped paths keeps POSIX filenames untouched and prevents
+ * C:\\Users\\... from becoming C:Users... inside filesrc.
+ */
+export function gstreamerFileLocation(inputPath: string): string {
+  const isWindowsDrivePath = /^[a-z]:[\\/]/i.test(inputPath);
+  const isWindowsUncPath = /^\\\\/.test(inputPath);
+  return isWindowsDrivePath || isWindowsUncPath
+    ? inputPath.replace(/\\/g, "/")
+    : inputPath;
 }
 
 function siblingCommand(commandPath: string, sibling: string): string {

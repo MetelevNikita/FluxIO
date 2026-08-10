@@ -432,6 +432,15 @@
 - Windows ICO пересобран как прозрачный multi-size icon, macOS ICNS — со
   скруглённой системной формой.
 
+### 4.10. Windows DVB subtitle filesrc path v6.0.9
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-10-windows-dvb-filesrc-path-v6.0.9.md`](progress/04-10-windows-dvb-filesrc-path-v6.0.9.md).
+
+- Windows drive-letter и UNC paths нормализуются в формат GLib с `/`;
+- GStreamer больше не удаляет `\\` как escape-символы из временного SRT path;
+- regression test воспроизводит путь `C:\\Users\\iptv\\AppData\\Local\\Temp`;
+- POSIX paths остаются без изменений.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

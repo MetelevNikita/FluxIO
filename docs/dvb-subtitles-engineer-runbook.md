@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.8**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.9**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -118,6 +118,12 @@ ffprobe -hide_banner -show_programs -show_streams "udp://239.10.10.10:5000?local
 `no property "draw-outline" in element "textrender"` — используется версия
 FluxIO до v6.0.7. Обновить repository, пересобрать media-service и повторить
 запуск; `draw-outline` и `draw-shadow` не являются свойствами `textrender`.
+
+`No such file "C:Users...dvb-subtitles-loop-0.srt"` без разделителей каталогов —
+используется FluxIO до v6.0.9. В старой сборке GStreamer воспринимал обратные
+слэши Windows-пути как escape-символы. v6.0.9 передаёт `filesrc` нормализованный
+путь `C:/Users/...`; обновите repository и обязательно пересоберите
+media-service.
 
 `Subtitle PID must differ...` — назначить свободный PID от `32` до `8190`.
 
