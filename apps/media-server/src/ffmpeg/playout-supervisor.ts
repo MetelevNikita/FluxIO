@@ -138,6 +138,7 @@ export class PlayoutSupervisor {
       sessionId: randomUUID(),
       startedAt: new Date().toISOString(),
       totalItems: request.playlist.length,
+      currentItemId: request.playlist[0]?.id ?? null,
       currentItemName: request.playlist[0]?.name ?? null,
       transportBitrateBps: request.endpoint.protocol === "udp"
         ? calculateTransportMuxRate(request)
@@ -383,14 +384,26 @@ export class PlayoutSupervisor {
     let currentIndex = Math.max(0, this.#items.length - 1);
     for (let index = 0; index < this.#items.length; index += 1) {
       const duration = this.#items[index]?.durationSeconds ?? 0;
-      if (this.#status.outTimeSeconds < elapsed + duration) {
+      if (
+        this.#status.outTimeSeconds < elapsed + duration ||
+        index === this.#items.length - 1
+      ) {
         currentIndex = index;
         break;
       }
       elapsed += duration;
     }
     this.#status.currentItemIndex = currentIndex;
+    this.#status.currentItemId = this.#items[currentIndex]?.id ?? null;
     this.#status.currentItemName = this.#items[currentIndex]?.name ?? null;
+    const currentDuration = this.#items[currentIndex]?.durationSeconds ?? 0;
+    this.#status.currentItemElapsedSeconds = Math.min(
+      currentDuration,
+      Math.max(0, this.#status.outTimeSeconds - elapsed),
+    );
+    this.#status.currentItemProgressPercent = currentDuration > 0
+      ? Math.min(100, (this.#status.currentItemElapsedSeconds / currentDuration) * 100)
+      : 0;
     this.#updateNextCue();
   }
 
@@ -661,7 +674,10 @@ export class PlayoutSupervisor {
 
   #resetLoopProgress(): void {
     this.#status.currentItemIndex = 0;
+    this.#status.currentItemId = this.#items[0]?.id ?? null;
     this.#status.currentItemName = this.#items[0]?.name ?? null;
+    this.#status.currentItemElapsedSeconds = 0;
+    this.#status.currentItemProgressPercent = 0;
     this.#status.outTimeSeconds = 0;
     this.#status.progressPercent = 0;
     this.#status.frame = 0;
@@ -840,7 +856,10 @@ function idleStatus(): PlayoutStatus {
     startedAt: null,
     stoppedAt: null,
     currentItemIndex: 0,
+    currentItemId: null,
     currentItemName: null,
+    currentItemElapsedSeconds: 0,
+    currentItemProgressPercent: 0,
     totalItems: 0,
     outTimeSeconds: 0,
     totalDurationSeconds: 0,

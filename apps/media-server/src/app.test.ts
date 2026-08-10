@@ -61,7 +61,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.6");
+    assert.equal(health.version, "5.0.8");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -140,7 +140,10 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
     startedAt: new Date().toISOString(),
     stoppedAt: null,
     currentItemIndex: 3,
+    currentItemId: "clip-4",
     currentItemName: "movie.mp4",
+    currentItemElapsedSeconds: 15.5,
+    currentItemProgressPercent: 25,
     totalItems: 10,
     outTimeSeconds: 315.5,
     totalDurationSeconds: 1_000,
@@ -155,6 +158,8 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
     logs: [],
   }));
   assert.equal(checkpoint.currentItemIndex, 3);
+  assert.equal(checkpoint.currentItemId, "clip-4");
+  assert.equal(checkpoint.currentItemElapsedSeconds, 15.5);
   assert.equal(checkpoint.outTimeSeconds, 315.5);
   assert.equal(checkpoint.interrupted, false);
 });

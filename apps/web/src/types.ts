@@ -65,6 +65,7 @@ export interface ScheduleMetadata {
   sourceName: string;
   encoding: "utf-8" | "windows-1251";
   startTime: string;
+  anchorDate?: string;
   delaySeconds: number;
   targetDurationSeconds: number;
   warnings: string[];

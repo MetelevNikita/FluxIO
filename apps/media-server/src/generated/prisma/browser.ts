@@ -54,6 +54,6 @@ export type BroadcastConfiguration = Prisma.BroadcastConfigurationModel
 export type BroadcastSession = Prisma.BroadcastSessionModel
 /**
  * Model WorkspaceSession
- *
+ * 
  */
 export type WorkspaceSession = Prisma.WorkspaceSessionModel

@@ -11,6 +11,8 @@
     "src/default-broadcast-settings.ts",
     "src/encoding-settings-profile.ts",
     "src/encoding-settings-profile.test.ts",
+    "src/schedule-timeline.ts",
+    "src/schedule-timeline.test.ts",
     "src/types.ts"
   ]
 }

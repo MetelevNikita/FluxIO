@@ -1,4 +1,9 @@
 import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   FlagTriangleRight,
   FilePlus2,
   FileText,
@@ -19,11 +24,12 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
+import { buildScheduleTimeline } from "../schedule-timeline";
 import type {
   BroadcastSettings,
   MediaAsset,
@@ -34,6 +40,7 @@ import type {
   Scte35MarkerKind,
 } from "../types";
 import type {
+  PlayoutStatus,
   ScheduleExportExtension,
   ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
@@ -62,6 +69,8 @@ interface PlaylistPreviewScreenProps {
   recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
   scheduleStartMarker: ScheduleStartMarker | null;
   playoutActive: boolean;
+  playoutStatus: PlayoutStatus | null;
+  recoveryAssetId: string | null;
   initialPreviewTimeSeconds: number | null;
   onAddFiles: (files: File[]) => void;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
@@ -111,6 +120,8 @@ export function PlaylistPreviewScreen({
   recoveryCheckpoint,
   scheduleStartMarker,
   playoutActive,
+  playoutStatus,
+  recoveryAssetId,
   initialPreviewTimeSeconds,
   onAddFiles,
   onAddScte35Marker,
@@ -138,6 +149,7 @@ export function PlaylistPreviewScreen({
   const previewContainer = useRef<HTMLDivElement>(null);
   const previewRequest = useRef(0);
   const previewSession = useRef<string | null>(null);
+  const playlistRows = useRef<HTMLDivElement>(null);
   const seeking = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -160,6 +172,7 @@ export function PlaylistPreviewScreen({
   const [markerUpid, setMarkerUpid] = useState(scte35Defaults.scte35DefaultUpid);
   const [scheduleExportExtension, setScheduleExportExtension] = useState<ScheduleExportExtension>("air");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set([selectedAsset.id]));
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const [bulkAgeRating, setBulkAgeRating] = useState<string>("16+");
   const ageAssetPaths = ageAssetMap(ageLibrary?.imagePaths ?? []);
 
@@ -265,6 +278,30 @@ export function PlaylistPreviewScreen({
     : scheduleVariance > 0
       ? "over"
       : "under";
+  const timelineEntries = useMemo(
+    () => buildScheduleTimeline(playlist, scheduleMetadata, activeSchedule),
+    [activeSchedule, playlist, scheduleMetadata],
+  );
+  const playoutRunning = Boolean(
+    playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
+  );
+  const onAirAssetId = activeSchedule === "current" && playoutRunning
+    ? playoutStatus?.currentItemId ?? null
+    : null;
+  const stoppedHereAssetId = activeSchedule === "current" ? recoveryAssetId : null;
+  const collapsedCount = playlist.reduce(
+    (count, asset) => count + (collapsedIds.has(asset.id) ? 1 : 0),
+    0,
+  );
+  const allCollapsed = playlist.length > 0 && collapsedCount === playlist.length;
+
+  useEffect(() => {
+    const targetId = onAirAssetId ?? stoppedHereAssetId;
+    if (!targetId || !playlistRows.current) return;
+    const target = [...playlistRows.current.querySelectorAll<HTMLElement>("[data-asset-id]")]
+      .find((element) => element.dataset.assetId === targetId);
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [onAirAssetId, stoppedHereAssetId]);
 
   async function startPreview(position: number): Promise<void> {
     if (!realMediaPreview) {
@@ -355,6 +392,26 @@ export function PlaylistPreviewScreen({
     if (target) {
       onSelectAsset(target.id);
     }
+  }
+
+  function togglePlaylistItemCollapsed(assetId: string): void {
+    setCollapsedIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  }
+
+  function setAllPlaylistItemsCollapsed(collapsed: boolean): void {
+    setCollapsedIds((current) => {
+      const next = new Set(current);
+      for (const asset of playlist) {
+        if (collapsed) next.add(asset.id);
+        else next.delete(asset.id);
+      }
+      return next;
+    });
   }
 
   function toggleMute() {
@@ -609,18 +666,52 @@ export function PlaylistPreviewScreen({
             </small>
           ) : <small>No .AIR/.TXT schedule loaded</small>}
         </div>
+        <div className="playlist-view-actions">
+          <span>
+            Item view
+            <b>{collapsedCount} collapsed</b>
+          </span>
+          <div>
+            <button
+              disabled={playlist.length === 0 || collapsedCount === 0}
+              onClick={() => setAllPlaylistItemsCollapsed(false)}
+              type="button"
+            >
+              <ChevronsDown size={13} /> Expand all
+            </button>
+            <button
+              disabled={playlist.length === 0 || allCollapsed}
+              onClick={() => setAllPlaylistItemsCollapsed(true)}
+              type="button"
+            >
+              <ChevronsUp size={13} /> Collapse all
+            </button>
+          </div>
+        </div>
         <div className="playlist-table-header">
+          <span>Time</span>
           <span>Prev</span>
           <span>Clip name</span>
-          <span>Dur</span>
           <span>Codec</span>
         </div>
-        <div className="playlist-rows">
-          {playlist.map((asset) => (
+        <div className="playlist-rows" ref={playlistRows}>
+          {timelineEntries.map((entry) => {
+            const { asset } = entry;
+            const onAir = onAirAssetId === asset.id;
+            const stoppedHere = stoppedHereAssetId === asset.id;
+            const collapsed = collapsedIds.has(asset.id);
+            return (
+            <div className="playlist-timeline-entry" key={asset.id}>
+              {entry.startsNewDay ? (
+                <div className="schedule-day-divider">
+                  <strong>{entry.dayLabel}</strong>
+                  <span>{entry.dateLabel}</span>
+                </div>
+              ) : null}
             <div
-              className={`playlist-row ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              data-asset-id={asset.id}
               draggable
-              key={asset.id}
               onDragEnd={() => setDraggingId(null)}
               onDragOver={(event) => event.preventDefault()}
               onDragStart={() => setDraggingId(asset.id)}
@@ -631,6 +722,17 @@ export function PlaylistPreviewScreen({
                 setDraggingId(null);
               }}
             >
+              <span className="playlist-status-stripe" />
+              <button
+                aria-expanded={!collapsed}
+                aria-label={`${collapsed ? "Expand" : "Collapse"} ${asset.name}`}
+                className="playlist-row-toggle"
+                onClick={() => togglePlaylistItemCollapsed(asset.id)}
+                title={collapsed ? "Expand item controls" : "Collapse item controls"}
+                type="button"
+              >
+                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+              </button>
               <button
                 className="playlist-row-select"
                 onClick={(event) => {
@@ -648,24 +750,50 @@ export function PlaylistPreviewScreen({
                 }}
                 type="button"
               >
-                <span className="playlist-status-stripe" />
-                <img alt="" src={asset.preview} />
+                <span className="playlist-air-time">{entry.startTime}</span>
+                {!collapsed ? <img alt="" src={asset.preview} /> : null}
                 <span className="playlist-clip-info">
-                  <strong>{asset.name}</strong>
-                  <span>
-                    {asset.duration} <i /> {formatPlaylistStatus(asset)}
-                    {scheduleStartMarker?.assetId === asset.id ? " · START" : ""}
-                    {(asset.scte35Markers?.length ?? 0) > 0
-                      ? ` · SCTE ${asset.scte35Markers?.length}`
-                      : ""}
+                  <strong title={asset.name}>{asset.name}</strong>
+                  {!collapsed ? (
+                    <span>
+                      {asset.duration} <i /> {formatPlaylistStatus(asset)}
+                      {scheduleStartMarker?.assetId === asset.id ? " · START" : ""}
+                      {(asset.scte35Markers?.length ?? 0) > 0
+                        ? ` · SCTE ${asset.scte35Markers?.length}`
+                        : ""}
+                    </span>
+                  ) : null}
+                </span>
+                {!collapsed ? (
+                  <span className="playlist-codec">
+                    <span>{asset.codecFamily}</span>
+                    <span>{asset.codecProfile}</span>
                   </span>
-                </span>
-                <span className="playlist-codec">
-                  <span>{asset.codecFamily}</span>
-                  <span>{asset.codecProfile}</span>
-                </span>
+                ) : null}
               </button>
+              {collapsed ? (
+                <div className="playlist-collapsed-summary">
+                  {onAir ? <span className="collapsed-state on-air"><RadioTower size={11} /> ON AIR</span> : null}
+                  {stoppedHere ? <span className="collapsed-state stopped"><AlertTriangle size={11} /> STOPPED</span> : null}
+                  <span className={`collapsed-overlay age ${asset.ageTitle?.enabled ? "enabled" : ""}`}>
+                    AGE {asset.ageTitle?.enabled ? asset.ageTitle.text : "OFF"}
+                  </span>
+                  <span className={`collapsed-overlay logo ${asset.itemLogo?.enabled ? "enabled" : ""}`}>
+                    LOGO {asset.itemLogo?.enabled ? "ON" : "OFF"}
+                  </span>
+                </div>
+              ) : (
               <div className="playlist-item-metadata">
+                {onAir ? (
+                  <span className="playlist-on-air-chip" title="This clip is currently being sent to air">
+                    <RadioTower size={12} /> ON AIR · {Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}%
+                  </span>
+                ) : null}
+                {stoppedHere ? (
+                  <span className="recovery-stop-chip" title="Broadcasting stopped on this clip before session recovery">
+                    <AlertTriangle size={12} /> STOPPED HERE
+                  </span>
+                ) : null}
                 {scheduleStartMarker?.assetId === asset.id ? (
                   <span className="schedule-start-chip" title="This clip is the selected schedule start point">
                     <MapPin size={12} /> START
@@ -743,9 +871,11 @@ export function PlaylistPreviewScreen({
                   {takeBusy ? <LoaderCircle className="spin" size={13} /> : playoutActive
                     ? <RadioTower size={13} />
                     : <MapPin size={13} />}
-                  {playoutActive ? "Take on air" : "Start here"}
+                  <span>{playoutActive ? "Take on air" : "Start here"}</span>
                 </button>
               </div>
+              )}
+              {!collapsed ? (
               <button
                 aria-label={`Remove ${asset.name} from playlist`}
                 className="playlist-remove-button"
@@ -755,8 +885,16 @@ export function PlaylistPreviewScreen({
               >
                 <Trash2 size={14} />
               </button>
+              ) : null}
+              {onAir ? (
+                <span className="playlist-on-air-progress" aria-hidden="true">
+                  <i style={{ width: `${playoutStatus?.currentItemProgressPercent ?? 0}%` }} />
+                </span>
+              ) : null}
             </div>
-          ))}
+            </div>
+            );
+          })}
         </div>
         <div className="playlist-footer">
           <span>{playlist.length} clips · {formatTimecode(playlistDuration, "25")} total</span>

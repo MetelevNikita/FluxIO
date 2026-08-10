@@ -16,7 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "5.0.6";
+const applicationVersion = "5.0.8";
 
 export function buildDatabaseUrl({
   database,

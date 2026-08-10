@@ -418,7 +418,7 @@ export function App() {
             : undefined,
         } satisfies MediaAsset;
       });
-      const metadata = scheduleMetadata(parsed);
+      const metadata = scheduleMetadata(parsed, slot);
       setAssets((current) => mergeAssets(current, scheduledAssets));
       if (slot === "current") {
         setPlaylist(scheduledAssets);
@@ -888,7 +888,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "5.0.6",
+        connection.kind === "ready" ? connection.health.version : "5.0.8",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1113,8 +1113,10 @@ export function App() {
             takeBusy={takeBusy}
             savedSessionUpdatedAt={savedWorkspaceSession?.updatedAt ?? null}
             recoveryCheckpoint={recoveryCheckpoint}
+            recoveryAssetId={recoverySelection?.asset.id ?? null}
             scheduleStartMarker={scheduleStartMarker}
             playoutActive={Boolean(playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state))}
+            playoutStatus={playoutStatus}
             initialPreviewTimeSeconds={
               recoverySelection?.asset.id === selectedAsset.id
                 ? recoverySelection.itemOffsetSeconds
@@ -1298,8 +1300,9 @@ async function probeSchedulePaths(
   return probes;
 }
 
-function scheduleMetadata(schedule: ParsedSchedule): ScheduleMetadata {
+function scheduleMetadata(schedule: ParsedSchedule, slot: ScheduleSlot): ScheduleMetadata {
   return {
+    anchorDate: scheduleAnchorDate(slot),
     delaySeconds: schedule.delaySeconds,
     encoding: schedule.encoding,
     sourceFilePath: schedule.sourceFilePath,
@@ -1308,6 +1311,18 @@ function scheduleMetadata(schedule: ParsedSchedule): ScheduleMetadata {
     targetDurationSeconds: schedule.targetDurationSeconds,
     warnings: schedule.warnings,
   };
+}
+
+function scheduleAnchorDate(slot: ScheduleSlot): string {
+  const anchor = new Date();
+  anchor.setHours(0, 0, 0, 0);
+  const daysSinceMonday = (anchor.getDay() + 6) % 7;
+  anchor.setDate(anchor.getDate() - daysSinceMonday + (slot === "future" ? 7 : 0));
+  return [
+    anchor.getFullYear(),
+    String(anchor.getMonth() + 1).padStart(2, "0"),
+    String(anchor.getDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function mergeAssets(current: MediaAsset[], incoming: MediaAsset[]): MediaAsset[] {
@@ -1495,11 +1510,18 @@ function recoveryPointForPlaylist(
   checkpoint: WorkspaceSessionCheckpoint,
 ): RecoveryPoint | null {
   if (playlist.length === 0) return null;
-  let itemIndex = Math.min(checkpoint.currentItemIndex, playlist.length - 1);
+  const checkpointItemIndex = checkpoint.currentItemId
+    ? playlist.findIndex((asset) => asset.id === checkpoint.currentItemId)
+    : -1;
+  let itemIndex = checkpointItemIndex >= 0
+    ? checkpointItemIndex
+    : Math.min(checkpoint.currentItemIndex, playlist.length - 1);
   let elapsedBeforeItem = playlist
     .slice(0, itemIndex)
     .reduce((total, asset) => total + effectiveAssetDuration(asset), 0);
-  let itemOffsetSeconds = Math.max(0, checkpoint.outTimeSeconds - elapsedBeforeItem);
+  let itemOffsetSeconds = checkpointItemIndex >= 0
+    ? checkpoint.currentItemElapsedSeconds
+    : Math.max(0, checkpoint.outTimeSeconds - elapsedBeforeItem);
   let asset = playlist[itemIndex];
   if (!asset) return null;
   const duration = effectiveAssetDuration(asset);
