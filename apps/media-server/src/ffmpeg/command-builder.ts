@@ -207,14 +207,16 @@ function buildFilterGraph(
   items.forEach((item, index) => {
     const start = decimal(item.trimInSeconds);
     const duration = decimal(item.durationSeconds);
+    const burnSubtitles = request.subtitleOutput.mode === "burn-in" &&
+      item.subtitles?.enabled && Boolean(item.subtitles.filePath);
     const requiresItemOverlay = Boolean(
       item.ageTitle?.enabled ||
       item.itemLogo?.enabled ||
       (item.effects?.length ?? 0) > 0 ||
-      item.subtitles?.enabled,
+      burnSubtitles,
     );
     const normalizedLabel = requiresItemOverlay ? `vbase${index}` : `v${index}`;
-    const subtitleFilter = item.subtitles?.enabled && item.subtitles.filePath
+    const subtitleFilter = burnSubtitles && item.subtitles?.filePath
       ? `subtitles=filename='${escapeFilterPath(item.subtitles.filePath)}',`
       : "";
     filters.push(

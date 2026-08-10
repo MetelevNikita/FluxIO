@@ -5,6 +5,7 @@
 - [`development-runbook.md`](development-runbook.md) — интерактивная test/development установка одной командой без Docker.
 - [`production-runbook.md`](production-runbook.md) — clone → setup wizard → background service на Linux/macOS/Windows.
 - [`scte35-engineer-runbook.md`](scte35-engineer-runbook.md) — операторская настройка, запуск и независимая проверка SCTE-35 по UDP/SRT.
+- [`dvb-subtitles-engineer-runbook.md`](dvb-subtitles-engineer-runbook.md) — отдельный выбираемый DVB subtitle PID, PMT signaling и проверка на головной станции.
 
 ## Проектирование
 

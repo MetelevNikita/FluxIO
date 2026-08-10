@@ -6,6 +6,11 @@ export interface TsdDuckCommandOptions {
   inputPort: number;
   monitorPrefix?: string;
   request: StartPlayoutRequest;
+  subtitles?: {
+    inputPort: number;
+    pmtPatchFilePath: string;
+    tspPath: string;
+  } | null;
 }
 
 export interface TsdDuckCommand {
@@ -21,6 +26,7 @@ export function buildTsdDuckCommand({
   inputPort,
   monitorPrefix = "GRUBER_SCTE35:",
   request,
+  subtitles = null,
 }: TsdDuckCommandOptions): TsdDuckCommand {
   const pid = request.scte35.pid;
   const transportMuxRate = calculateTransportMuxRate(request);
@@ -51,6 +57,34 @@ export function buildTsdDuckCommand({
       `${pid}/0x86`,
       "--set-cue-type",
       `${pid}/0x01`,
+    );
+  }
+
+  if (request.subtitleOutput.mode === "dvb" && subtitles) {
+    args.push(
+      "-P",
+      "pmt",
+      "--service",
+      String(serviceId),
+      "--add-pid",
+      `${request.subtitleOutput.pid}/0x06`,
+      "--increment-version",
+      "-P",
+      "pmt",
+      "--service",
+      String(serviceId),
+      "--patch-xml",
+      subtitles.pmtPatchFilePath,
+      "--increment-version",
+      "-P",
+      "merge",
+      "--bitrate",
+      String(request.subtitleOutput.bitrateKbps * 1_000),
+      "--no-psi-merge",
+      "--no-pcr-restamp",
+      "--max-queue",
+      "4096",
+      buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
     );
   }
 
@@ -103,6 +137,9 @@ export function buildTsdDuckCommand({
   const monitoredPids = request.endpoint.protocol === "udp"
     ? [request.endpoint.mpegTs.videoPid, request.endpoint.mpegTs.audioPid]
     : [];
+  if (request.subtitleOutput.mode === "dvb" && subtitles) {
+    monitoredPids.push(request.subtitleOutput.pid);
+  }
   if (monitoredPids.length > 0) {
     args.push("-P", "continuity");
     for (const monitoredPid of monitoredPids) {
@@ -200,13 +237,74 @@ export function calculateTransportMuxRate(request: StartPlayoutRequest): number 
     return request.endpoint.mpegTs.transportBitrateKbps * 1_000;
   }
   const videoRate = videoPeakBitrateKbps(request);
-  const payloadKbps = videoRate + request.audio.bitrateKbps;
+  const payloadKbps = videoRate + request.audio.bitrateKbps + subtitlePayloadKbps(request);
   return Math.ceil(Math.max(1_000, payloadKbps * 1.18 + 256) / 100) * 100_000;
 }
 
 export function calculateMinimumTransportMuxRate(request: StartPlayoutRequest): number {
-  const payloadKbps = videoPeakBitrateKbps(request) + request.audio.bitrateKbps;
+  const payloadKbps = videoPeakBitrateKbps(request) + request.audio.bitrateKbps +
+    subtitlePayloadKbps(request);
   return Math.ceil(Math.max(1_000, payloadKbps * 1.08 + 128) / 100) * 100_000;
+}
+
+export function buildDvbSubtitlePmtPatch(request: StartPlayoutRequest): string {
+  if (request.subtitleOutput.mode !== "dvb") {
+    throw new Error("DVB subtitle PMT patch requested while burn-in mode is selected");
+  }
+  const subtitlingType = request.subtitleOutput.type === "hearing-impaired"
+    ? "0x24"
+    : "0x14";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<tsduck>\n` +
+    `  <PMT>\n` +
+    `    <component elementary_PID="${request.subtitleOutput.pid}">\n` +
+    `      <subtitling_descriptor x-node="add">\n` +
+    `        <subtitling language_code="${request.subtitleOutput.language}" ` +
+    `subtitling_type="${subtitlingType}" composition_page_id="1" ancillary_page_id="1"/>\n` +
+    `      </subtitling_descriptor>\n` +
+    `    </component>\n` +
+    `  </PMT>\n` +
+    `</tsduck>\n`;
+}
+
+function subtitlePayloadKbps(request: StartPlayoutRequest): number {
+  return request.subtitleOutput.mode === "dvb" ? request.subtitleOutput.bitrateKbps : 0;
+}
+
+function buildSubtitleMergeCommand(
+  request: StartPlayoutRequest,
+  inputPort: number,
+  tspPath: string,
+): string {
+  const command = [
+    tspPath,
+    "--bitrate",
+    String(request.subtitleOutput.bitrateKbps * 1_000),
+    "-I",
+    "ip",
+    "--buffer-size",
+    String(udpSocketBufferSizeBytes),
+    "--local-address",
+    "127.0.0.1",
+    String(inputPort),
+    "-P",
+    "filter",
+    "--pid",
+    String(request.subtitleOutput.pid),
+    "--stuffing",
+    "-O",
+    "file",
+    "-",
+  ];
+  return command.map(shellQuote).join(" ");
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:\\-]+$/.test(value)) return value;
+  if (process.platform === "win32") {
+    return `"${value.replace(/(\\*)"/g, "$1$1\\\"").replace(/(\\+)$/, "$1$1")}"`;
+  }
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function videoPeakBitrateKbps(request: StartPlayoutRequest): number {

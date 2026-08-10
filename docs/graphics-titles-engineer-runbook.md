@@ -1,6 +1,6 @@
 # Графика, FX-слои и SRT-субтитры
 
-Применимо к FluxIO **v6.0.2**.
+Применимо к FluxIO **v6.0.4**.
 
 В раскрытой строке ролика вторичные функции расположены отдельным нижним рядом:
 сначала `SRT`, затем селектор `FX`, затем уже назначенные эффекты слева направо.
@@ -10,7 +10,7 @@
 
 1. Откройте вкладку `Effects`.
 2. Нажмите `Add effects` для выбора файлов или `Add folder` для рекурсивного импорта папки.
-3. Поддерживаются `PNG`, `WebP` (статика с alpha) и `MOV`, `MP4`, `M4V`, `WebM` (анимация).
+3. Поддерживаются `Lottie JSON`, `PNG`, `WebP` (статика с alpha) и `MOV`, `MP4`, `M4V`, `WebM` (анимация).
 4. Media-service через `ffprobe` получает разрешение и длительность. Статика при назначении растягивается на весь ролик.
 5. В карточке эффекта нажмите `Select folder` в блоке **Per-clip alpha titles**, если эффект состоит из общей подложки и индивидуального титра.
 
@@ -29,6 +29,29 @@ alpha codec, например ProRes 4444.
 
 Библиотека входит в `Save session list` и сохраняется в PostgreSQL вместе с назначениями. Сами media files не копируются в базу: сохраняются абсолютные пути на сервере.
 
+### 1.1. Универсальный Lottie-проект из After Effects
+
+1. В After Effects экспортируйте композицию через Bodymovin/Lottie в `.json`.
+2. В `Effects` нажмите `Import Lottie / media` и выберите JSON.
+3. Media-service проверит композицию, встроит локальные image assets и один раз отрендерит прозрачный cache-файл `MOV/QTRLE` через FFmpeg.
+4. В правом инспекторе запустится live preview. В `Properties` доступны:
+   - видимость каждого слоя;
+   - text и text keyframes;
+   - solid, fill и stroke colors;
+   - position, scale, rotation и opacity;
+   - прозрачный либо выбранный background color.
+5. Измените значения и нажмите `Render changes`. Анимированное свойство сохраняет исходные keyframes, пока оператор не изменит его; после изменения оно становится явным статическим override.
+6. `Add to entire project` назначает эффект всем роликам Current и Future без дублирования. Для одного материала выберите его в selector и нажмите `Add to clip`.
+7. Точный момент выхода и ухода эффекта задайте в `Playlist → Timeline Trimming`: перетащите середину слоя для переноса анимации целиком либо используйте handles для изменения In/Out.
+
+Внутренний Lottie JSON не отправляется в эфир напрямую. Схема исполнения:
+
+```text
+After Effects → Bodymovin JSON → DotLottie RGBA renderer → FFmpeg QTRLE/ARGB cache → Playlist FX overlay → encoder
+```
+
+Исходный JSON и связанные локальные assets должны оставаться доступными по тем же абсолютным путям. После восстановления сохранённой сессии FluxIO автоматически проверяет и при необходимости пересоздаёт render cache.
+
 ## 2. Назначение FX ролику
 
 В раскрытой строке Playlist выберите эффект в selector `FX`. Каждый выбор создаёт новый слой. Порядок chips слева направо соответствует порядку наложения снизу вверх: последний добавленный эффект расположен выше предыдущих.
@@ -43,7 +66,8 @@ alpha codec, например ProRes 4444.
 - `VIDEO` — базовый нижний слой;
 - `SRT` — слой прожигаемых субтитров;
 - `FX 1`, `FX 2` и далее — графические слои;
-- жёлтые handles задают In/Out слоя.
+- перетаскивание цветного тела слоя меняет момент срабатывания без изменения его длительности;
+- жёлтые handles задают In/Out и изменяют длительность слоя.
 
 Для MOV начальная длина берётся из `ffprobe` и ограничивается длиной ролика. PNG/WebP занимают весь ролик. Handles сокращают слой с обеих сторон с точностью `0.04 s`.
 
@@ -70,7 +94,12 @@ alpha codec, например ProRes 4444.
 4. Нажмите `SRT` в строке. Без совпадения кнопка остаётся OFF.
 5. Перед стартом media-service проверяет абсолютный путь. Недоступный файл игнорируется без остановки playout.
 
-Субтитры прожигаются фильтром FFmpeg `subtitles`, поэтому одинаково видны в UDP, SRT и RTMP/RTMPS. FFmpeg на сервере должен иметь libass:
+В `Broadcast → Subtitle Output` доступны два режима:
+
+- `Burn-in` — фильтр FFmpeg `subtitles`; текст всегда виден в UDP, SRT и RTMP/RTMPS;
+- `DVB Subtitles` — отдельный bitmap elementary stream в MPEG-TS; абонент включает и выключает его на приёмнике. Работает только для UDP/SRT.
+
+Для Burn-in FFmpeg на сервере должен иметь libass:
 
 ```bash
 ffmpeg -hide_banner -filters | grep subtitles
@@ -82,20 +111,29 @@ Windows:
 ffmpeg -hide_banner -filters | findstr subtitles
 ```
 
+Подробная настройка PID, языка и проверка головной станцией: [dvb-subtitles-engineer-runbook.md](dvb-subtitles-engineer-runbook.md).
+
 ## 5. Порядок композиции
 
 ```text
-VIDEO → SRT captions → AGE → Channel LOGO → FX 1 BG → FX 1 TITLE → FX 2 BG → FX 2 TITLE → ... → encoder
+Burn-in: VIDEO → SRT captions → AGE → Channel LOGO → FX 1 BG → FX 1 TITLE → ... → encoder
+
+DVB: VIDEO → AGE → Channel LOGO → FX → video PID
+     SRT file → DVB bitmap encoder → separate subtitle PID
 ```
 
 Последний FX находится сверху. Результат идёт одновременно в program output и HLS monitoring preview.
 
-## 6. Ограничения v6.0.2
+## 6. Ограничения v6.0.4
 
 - изменения FX активного filter graph применяются при следующем Start/Take;
 - BG и title-файлы должны оставаться доступными по сохранённым абсолютным путям;
 - для прозрачной анимации рекомендуется MOV с alpha codec, поддерживаемым установленным FFmpeg;
-- отдельная subtitle PID не создаётся: используется совместимый burn-in.
+- DVB subtitles доступны только в UDP/SRT MPEG-TS; RTMP/RTMPS использует Burn-in;
+- первая реализация Lottie принимает композиции длительностью до 60 секунд и размером до 4096×4096;
+- JavaScript expressions и сторонние After Effects plug-ins не выполняются: в JSON должны быть экспортированы поддерживаемые Lottie layers/keyframes;
+- operator Properties намеренно ограничены безопасными эфирными параметрами; служебные shape paths, masks и expression internals не показываются как обычные поля;
+- после `Render changes` уже назначенные FX-слои получают новый cache-файл автоматически, а их Timeline IN/OUT сохраняются.
 
 ## 7. Импорт и экспорт вместе с расписанием
 

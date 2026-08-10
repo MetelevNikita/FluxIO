@@ -16,7 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "6.0.2";
+const applicationVersion = "6.0.4";
 
 export function buildDatabaseUrl({
   database,
@@ -236,7 +236,7 @@ async function main() {
       admin = { username: adminUsername, password: adminPassword };
     }
 
-    console.log("\n3. Media-service, FFmpeg и TSDuck");
+    console.log("\n3. Media-service, FFmpeg, TSDuck и GStreamer");
     const apiHost = await prompt.text("GRUBER_HOST", existingEnv.GRUBER_HOST ?? "127.0.0.1");
     const apiPort = await prompt.text(
       "GRUBER_PORT",
@@ -255,9 +255,14 @@ async function main() {
       existingEnv.TSDUCK_PATH ?? "tsp",
       "tsp",
     );
+    const detectedGstreamerPath = discoverToolPath(
+      existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
+      "gst-launch-1.0",
+    );
     printToolDetection("FFmpeg", detectedFfmpegPath);
     printToolDetection("ffprobe", detectedFfprobePath);
     printToolDetection("TSDuck tsp", detectedTsdDuckPath);
+    printToolDetection("GStreamer gst-launch", detectedGstreamerPath);
     const ffmpegPath = await prompt.text(
       "FFmpeg (Enter — найти автоматически)",
       detectedFfmpegPath ?? existingEnv.FFMPEG_PATH ?? "ffmpeg",
@@ -269,6 +274,10 @@ async function main() {
     const tsduckPath = await prompt.text(
       "TSDuck tsp (UDP/SRT transport и SCTE-35; Enter — найти автоматически)",
       detectedTsdDuckPath ?? existingEnv.TSDUCK_PATH ?? "tsp",
+    );
+    const gstreamerPath = await prompt.text(
+      "GStreamer gst-launch (DVB subtitles; Enter — найти автоматически)",
+      detectedGstreamerPath ?? existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
     );
 
     console.log("\n4. Действия мастера");
@@ -347,6 +356,14 @@ async function main() {
       "tsp",
       offline,
     );
+    const resolvedGstreamerPath = await ensureTool(
+      prompt,
+      gstreamerPath,
+      "GStreamer",
+      "gstreamer",
+      "gst-launch-1.0",
+      offline,
+    );
     if (!databaseReady) {
       const psqlPath = await ensureTool(
         prompt,
@@ -390,6 +407,8 @@ async function main() {
       FFMPEG_PATH: resolvedFfmpegPath,
       FFPROBE_PATH: resolvedFfprobePath,
       TSDUCK_PATH: resolvedTsdDuckPath,
+      GSTREAMER_LAUNCH_PATH: resolvedGstreamerPath,
+      GSTREAMER_INSPECT_PATH: siblingExecutable(resolvedGstreamerPath, "gst-inspect-1.0"),
     };
     await saveEnv(values);
     const commandEnv = { ...process.env, ...values };
@@ -662,7 +681,10 @@ async function ensureTool(
 }
 
 function commandAvailable(command) {
-  const result = spawnSync(command, commandVersionArguments(command), { stdio: "ignore" });
+  const result = spawnSync(command, commandVersionArguments(command), {
+    stdio: "ignore",
+    timeout: 8_000,
+  });
   return !result.error && result.status === 0;
 }
 
@@ -673,6 +695,13 @@ function discoverToolPath(
   environment = process.env,
 ) {
   const requested = unquoteCommand(requestedCommand || executableName);
+  if (["gst-launch-1.0", "gst-inspect-1.0"].includes(normalizeExecutableName(executableName))) {
+    const resolved = resolveCommandPath(requested, platform);
+    const pathApi = platform === "win32" ? path.win32 : path;
+    if (resolved !== requested || (pathApi.isAbsolute(resolved) && existsSync(resolved))) {
+      return resolved;
+    }
+  }
   if (commandAvailable(requested)) {
     return resolveCommandPath(requested, platform);
   }
@@ -824,6 +853,13 @@ export function windowsToolCandidates(command, environment = process.env) {
       userProfile && win.join(userProfile, "scoop", "apps", "tsduck", "current", "bin"),
     );
   }
+  if (["gst-launch-1.0", "gst-inspect-1.0"].includes(normalizeExecutableName(command))) {
+    roots.push(
+      win.join(programFiles, "gstreamer", "1.0", "msvc_x86_64", "bin"),
+      win.join(programFiles, "gstreamer", "1.0", "mingw_x86_64", "bin"),
+      programFilesX86 && win.join(programFilesX86, "gstreamer", "1.0", "msvc_x86", "bin"),
+    );
+  }
   if (["psql", "pg_isready"].includes(normalizeExecutableName(command))) {
     for (let major = 20; major >= 10; major -= 1) {
       roots.push(win.join(programFiles, "PostgreSQL", String(major), "bin"));
@@ -860,6 +896,12 @@ function windowsToolSearchRoots(command, environment = process.env) {
     roots.push(
       win.join(programFiles, "TSDuck"),
       programFilesX86 && win.join(programFilesX86, "TSDuck"),
+    );
+  }
+  if (["gst-launch-1.0", "gst-inspect-1.0"].includes(normalized)) {
+    roots.push(
+      win.join(programFiles, "gstreamer"),
+      programFilesX86 && win.join(programFilesX86, "gstreamer"),
     );
   }
   if (["psql", "pg_isready"].includes(normalized)) {
@@ -958,7 +1000,9 @@ async function installPackage(packageName) {
     await runCommand("sudo", ["apt-get", "update"]);
     const packages = packageName === "postgresql"
       ? ["postgresql", "postgresql-client"]
-      : [packageName];
+      : packageName === "gstreamer"
+        ? ["gstreamer1.0-tools", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-bad"]
+        : [packageName];
     await runCommand("sudo", ["apt-get", "install", "-y", ...packages]);
     if (packageName === "postgresql") {
       await runCommand("sudo", ["systemctl", "enable", "--now", "postgresql"]);
@@ -970,6 +1014,17 @@ async function installPackage(packageName) {
       await runCommand("winget", [
         "install",
         "tsduck",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+      ]);
+      return;
+    }
+    if (packageName === "gstreamer") {
+      await runCommand("winget", [
+        "install",
+        "--id",
+        "gstreamerproject.gstreamer",
+        "--exact",
         "--accept-package-agreements",
         "--accept-source-agreements",
       ]);
@@ -1601,6 +1656,7 @@ function printSummary({
   console.log(`Media API: ${values.GRUBER_MEDIA_API_URL}`);
   console.log(`FFmpeg: ${values.FFMPEG_PATH}`);
   console.log(`TSDuck: ${values.TSDUCK_PATH}`);
+  console.log(`GStreamer: ${values.GSTREAMER_LAUNCH_PATH}`);
   console.log(`Конфигурация: ${envPath}`);
   if (installedService) {
     console.log(`Background service: ${installedService.label}`);

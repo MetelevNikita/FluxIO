@@ -89,6 +89,17 @@ export const portableEncodingSettingsSchema = z.object({
   srtLatencyMs: z.number().int().min(20).max(60_000),
   srtStreamId: profileTextSchema,
   rtmpServerUrl: profileTextSchema,
+  subtitleOutputMode: z.enum(["Burn-in", "DVB Subtitles"]).default("Burn-in"),
+  subtitlePid: z.number().int().min(32).max(8_190).default(288),
+  subtitleLanguage: z.string().regex(/^[A-Za-z]{3}$/).default("rus"),
+  subtitleType: z.enum(["Normal", "Hearing impaired"]).default("Normal"),
+  subtitleFontFamily: z.string().trim().min(1).max(128).default("Sans"),
+  subtitleFontSize: z.number().int().min(12).max(160).default(48),
+  subtitleBottomMargin: z.number().int().min(0).max(1_000).default(72),
+  subtitleOutline: z.boolean().default(true),
+  subtitleMaxColours: z.union([z.literal(4), z.literal(16), z.literal(256)]).default(16),
+  subtitleBitrateKbps: z.number().int().min(32).max(2_000).default(128),
+  subtitlePtsOffsetMs: z.number().int().min(0).max(10_000).default(1_400),
   ageTitleDurationSeconds: z.number().int().min(10).max(60).default(10),
   logoEnabled: z.boolean(),
   logoPath: profileTextSchema,
@@ -229,6 +240,45 @@ export const itemLogoOverlaySchema = logoOverlaySchema.extend({
 
 export const graphicEffectKindSchema = z.enum(["static", "video"]);
 
+export const lottiePropertyTypeSchema = z.enum([
+  "boolean",
+  "number",
+  "vector",
+  "color",
+  "text",
+]);
+
+export const lottiePropertyValueSchema = z.union([
+  z.boolean(),
+  z.number().finite(),
+  z.string().max(4_096),
+  z.array(z.number().finite()).min(2).max(4),
+]);
+
+export const lottieEditablePropertySchema = z.object({
+  id: z.string().min(1).max(128),
+  path: z.string().startsWith("/").max(1_024),
+  group: z.string().min(1).max(256),
+  label: z.string().min(1).max(256),
+  type: lottiePropertyTypeSchema,
+  value: lottiePropertyValueSchema,
+  animated: z.boolean().default(false),
+  overridden: z.boolean().default(false),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+});
+
+export const lottieEffectMetadataSchema = z.object({
+  sourcePath: z.string().min(1),
+  version: z.string().max(64),
+  frameRate: z.number().positive().max(240),
+  inPoint: z.number().finite(),
+  outPoint: z.number().finite(),
+  backgroundColor: z.string().regex(/^(?:transparent|#[0-9a-fA-F]{6})$/),
+  properties: z.array(lottieEditablePropertySchema).max(2_000),
+  warnings: z.array(z.string().max(512)).max(100).default([]),
+});
+
 export const graphicEffectAssetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -239,6 +289,7 @@ export const graphicEffectAssetSchema = z.object({
   height: z.number().int().nonnegative(),
   titleDirectoryPath: z.string().min(1).nullable().default(null),
   titlePaths: z.array(z.string().min(1)).max(2_000).default([]),
+  lottie: lottieEffectMetadataSchema.nullable().default(null),
 });
 
 export const graphicEffectLayerSchema = z.object({
@@ -287,6 +338,17 @@ export const scanGraphicEffectsRequestSchema = z.object({
 
 export const graphicEffectAssetListSchema = z.object({
   items: z.array(graphicEffectAssetSchema).max(200),
+});
+
+export const renderLottieEffectRequestSchema = z.object({
+  effect: graphicEffectAssetSchema.refine((effect) => Boolean(effect.lottie), {
+    message: "A Lottie effect is required",
+    path: ["lottie"],
+  }),
+});
+
+export const lottieSourceRequestSchema = z.object({
+  sourcePath: z.string().min(1),
 });
 
 export const parseScheduleRequestSchema = z.object({
@@ -514,12 +576,41 @@ export const scte35PlanningSchema = z.object({
   loopEventStrategy: z.enum(["increment", "reuse"]).default("increment"),
 });
 
+export const subtitleOutputSchema = z.object({
+  mode: z.enum(["burn-in", "dvb"]).default("burn-in"),
+  pid: z.number().int().min(32).max(8_190).default(288),
+  language: z.string().regex(/^[A-Za-z]{3}$/).transform((value) => value.toLowerCase()).default("rus"),
+  type: z.enum(["normal", "hearing-impaired"]).default("normal"),
+  fontFamily: z.string().trim().min(1).max(128).default("Sans"),
+  fontSize: z.number().int().min(12).max(160).default(48),
+  bottomMargin: z.number().int().min(0).max(1_000).default(72),
+  outline: z.boolean().default(true),
+  maxColours: z.union([z.literal(4), z.literal(16), z.literal(256)]).default(16),
+  bitrateKbps: z.number().int().min(32).max(2_000).default(128),
+  ptsOffsetMs: z.number().int().min(0).max(10_000).default(1_400),
+});
+
+export const defaultSubtitleOutput = {
+  mode: "burn-in" as const,
+  pid: 288,
+  language: "rus",
+  type: "normal" as const,
+  fontFamily: "Sans",
+  fontSize: 48,
+  bottomMargin: 72,
+  outline: true,
+  maxColours: 16 as const,
+  bitrateKbps: 128,
+  ptsOffsetMs: 1_400,
+};
+
 export const startPlayoutRequestSchema = z.object({
   playlist: z.array(playoutItemSchema).min(1).max(500),
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
   logo: logoOverlaySchema.nullable().default(null),
   endpoint: playoutEndpointSchema,
+  subtitleOutput: subtitleOutputSchema.default(defaultSubtitleOutput),
   repeatPlaylist: z.boolean().default(false),
   scte35: scte35PlanningSchema.default({
     enabled: false,
@@ -533,6 +624,28 @@ export const startPlayoutRequestSchema = z.object({
     defaultUpid: "",
     loopEventStrategy: "increment",
   }),
+}).superRefine((request, context) => {
+  if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol === "rtmp") {
+    context.addIssue({
+      code: "custom",
+      message: "DVB subtitles require an MPEG-TS UDP or SRT output",
+      path: ["subtitleOutput", "mode"],
+    });
+  }
+
+  if (request.subtitleOutput.mode !== "dvb") return;
+  const mpegTs = request.endpoint.protocol === "udp"
+    ? request.endpoint.mpegTs
+    : defaultMpegTsOutputSettings;
+  const reservedPids = [mpegTs.videoPid, mpegTs.audioPid];
+  if (request.scte35.enabled) reservedPids.push(request.scte35.pid);
+  if (reservedPids.includes(request.subtitleOutput.pid)) {
+    context.addIssue({
+      code: "custom",
+      message: "Subtitle PID must differ from video, audio and SCTE-35 PIDs",
+      path: ["subtitleOutput", "pid"],
+    });
+  }
 });
 
 export const playoutStateSchema = z.enum([
@@ -559,6 +672,16 @@ export const scte35InjectorStatusSchema = z.object({
   lastEventId: z.number().int().min(0).max(4_294_967_295).nullable().default(null),
   nextEventId: z.number().int().min(0).max(4_294_967_295).nullable().default(null),
   nextEventInSeconds: z.number().nonnegative().nullable().default(null),
+  error: z.string().nullable().default(null),
+});
+
+export const dvbSubtitleStatusSchema = z.object({
+  enabled: z.boolean().default(false),
+  state: z.enum(["disabled", "starting", "running", "completed", "failed"]).default("disabled"),
+  pid: z.number().int().min(32).max(8_190).nullable().default(null),
+  language: z.string().length(3).nullable().default(null),
+  plannedCues: z.number().int().nonnegative().default(0),
+  sourceItems: z.number().int().nonnegative().default(0),
   error: z.string().nullable().default(null),
 });
 
@@ -596,6 +719,15 @@ export const playoutStatusSchema = z.object({
     lastEventId: null,
     nextEventId: null,
     nextEventInSeconds: null,
+    error: null,
+  }),
+  subtitles: dvbSubtitleStatusSchema.default({
+    enabled: false,
+    state: "disabled",
+    pid: null,
+    language: null,
+    plannedCues: 0,
+    sourceItems: 0,
     error: null,
   }),
   error: z.string().nullable(),
@@ -712,13 +844,13 @@ export const workspaceSessionEnvelopeSchema = z.object({
   session: savedWorkspaceSessionSchema.nullable(),
 });
 
-export const saveBroadcastConfigurationRequestSchema = startPlayoutRequestSchema.extend({
+export const saveBroadcastConfigurationRequestSchema = startPlayoutRequestSchema.safeExtend({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1).max(120),
 });
 
 export const savedBroadcastConfigurationSchema =
-  saveBroadcastConfigurationRequestSchema.extend({
+  saveBroadcastConfigurationRequestSchema.safeExtend({
     id: z.string().uuid(),
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
@@ -740,6 +872,8 @@ export type AgeTitleOverlay = z.infer<typeof ageTitleOverlaySchema>;
 export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
 export type GraphicEffectAsset = z.infer<typeof graphicEffectAssetSchema>;
 export type GraphicEffectLayer = z.infer<typeof graphicEffectLayerSchema>;
+export type LottieEditableProperty = z.infer<typeof lottieEditablePropertySchema>;
+export type LottieEffectMetadata = z.infer<typeof lottieEffectMetadataSchema>;
 export type SubtitleOverlay = z.infer<typeof subtitleOverlaySchema>;
 export type ScheduleGraphicElement = z.infer<typeof scheduleGraphicElementSchema>;
 export type ParsedScheduleItem = z.infer<typeof parsedScheduleItemSchema>;
@@ -755,6 +889,8 @@ export type MpegTsOutputSettings = z.infer<typeof mpegTsOutputSettingsSchema>;
 export type PlayoutEndpoint = z.infer<typeof playoutEndpointSchema>;
 export type Scte35Planning = z.infer<typeof scte35PlanningSchema>;
 export type Scte35InjectorStatus = z.infer<typeof scte35InjectorStatusSchema>;
+export type SubtitleOutput = z.infer<typeof subtitleOutputSchema>;
+export type DvbSubtitleStatus = z.infer<typeof dvbSubtitleStatusSchema>;
 export type StartPlayoutRequest = z.infer<typeof startPlayoutRequestSchema>;
 export type PlayoutStatus = z.infer<typeof playoutStatusSchema>;
 export type WorkspaceSessionAsset = z.infer<typeof workspaceSessionAssetSchema>;

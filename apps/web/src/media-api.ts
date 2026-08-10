@@ -1,5 +1,6 @@
 import {
   ffmpegCapabilitiesSchema,
+  graphicEffectAssetSchema,
   graphicEffectAssetListSchema,
   broadcastConfigurationSummarySchema,
   clipPreviewSessionSchema,
@@ -79,6 +80,36 @@ export async function scanGraphicEffectDirectory(
       method: "POST",
     }),
   ).items;
+}
+
+export function lottieWasmUrl(): string {
+  return mediaApiUrl("/api/effects/lottie/wasm");
+}
+
+export async function getLottieSource(sourcePath: string): Promise<Record<string, unknown>> {
+  const payload = await request("/api/effects/lottie/source", {
+    body: JSON.stringify({ sourcePath }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  if (!payload || typeof payload !== "object" || !("document" in payload)) {
+    throw new Error("Media service returned an invalid Lottie document");
+  }
+  const document = payload.document;
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    throw new Error("Media service returned an invalid Lottie document");
+  }
+  return document as Record<string, unknown>;
+}
+
+export async function renderLottieEffect(effect: GraphicEffectAsset): Promise<GraphicEffectAsset> {
+  return graphicEffectAssetListItem(
+    await request("/api/effects/lottie/render", {
+      body: JSON.stringify({ effect }),
+      headers: { "content-type": "application/json" },
+      method: "PUT",
+    }),
+  );
 }
 
 export async function parseScheduleFile(filePath: string): Promise<ParsedSchedule> {
@@ -239,4 +270,8 @@ function parseProbeResponse(payload: unknown): MediaProbe[] {
     throw new Error("Media service returned an invalid probe response");
   }
   return mediaProbeSchema.array().parse(payload.items);
+}
+
+function graphicEffectAssetListItem(payload: unknown): GraphicEffectAsset {
+  return graphicEffectAssetSchema.parse(payload);
 }

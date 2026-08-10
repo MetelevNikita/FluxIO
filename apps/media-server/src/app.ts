@@ -6,12 +6,15 @@ import {
   saveBroadcastConfigurationRequestSchema,
   analyzeGraphicEffectsRequestSchema,
   graphicEffectAssetListSchema,
+  graphicEffectAssetSchema,
+  lottieSourceRequestSchema,
   networkInterfaceListSchema,
   parseScheduleRequestSchema,
   serializeScheduleRequestSchema,
   probeMediaRequestSchema,
   scanMediaRequestSchema,
   scanGraphicEffectsRequestSchema,
+  renderLottieEffectRequestSchema,
   serviceHealthSchema,
   startPlayoutRequestSchema,
   startClipPreviewRequestSchema,
@@ -36,8 +39,13 @@ import {
   analyzeGraphicEffectPaths,
   scanGraphicEffectDirectory,
 } from "./effects/library.js";
+import {
+  lottieWasmBytes,
+  readRenderableLottieDocument,
+  rerenderLottieEffect,
+} from "./effects/lottie.js";
 
-const serviceVersion = "6.0.2";
+const serviceVersion = "6.0.4";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {
@@ -50,6 +58,8 @@ export function buildApp(options: FastifyServerOptions = {}) {
   let checkpointErrorReported = false;
   const previewDirectory = process.env.GRUBER_PREVIEW_DIR ??
     path.join(tmpdir(), "gruber-playout-preview");
+  const effectCacheDirectory = process.env.GRUBER_EFFECT_CACHE_DIR ??
+    path.join(tmpdir(), "gruber-playout-effects");
   const mediaPreview = new MediaPreviewService(
     capabilities.ffmpegPath,
     path.join(tmpdir(), "gruber-media-preview"),
@@ -158,7 +168,11 @@ export function buildApp(options: FastifyServerOptions = {}) {
     try {
       const body = analyzeGraphicEffectsRequestSchema.parse(request.body);
       return graphicEffectAssetListSchema.parse({
-        items: await analyzeGraphicEffectPaths(body.paths, capabilities.ffprobePath),
+        items: await analyzeGraphicEffectPaths(
+          body.paths,
+          capabilities.ffprobePath,
+          capabilities.ffmpegPath,
+        ),
       });
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
@@ -169,8 +183,38 @@ export function buildApp(options: FastifyServerOptions = {}) {
     try {
       const body = scanGraphicEffectsRequestSchema.parse(request.body);
       return graphicEffectAssetListSchema.parse({
-        items: await scanGraphicEffectDirectory(body.directoryPath, capabilities.ffprobePath),
+        items: await scanGraphicEffectDirectory(
+          body.directoryPath,
+          capabilities.ffprobePath,
+          capabilities.ffmpegPath,
+        ),
       });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/effects/lottie/wasm", async (_request, reply) => {
+    return reply.type("application/wasm").send(await lottieWasmBytes());
+  });
+
+  app.post("/api/effects/lottie/source", async (request, reply) => {
+    try {
+      const body = lottieSourceRequestSchema.parse(request.body);
+      return { document: await readRenderableLottieDocument(body.sourcePath) };
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.put("/api/effects/lottie/render", async (request, reply) => {
+    try {
+      const body = renderLottieEffectRequestSchema.parse(request.body);
+      return graphicEffectAssetSchema.parse(await rerenderLottieEffect(
+        body.effect,
+        capabilities.ffmpegPath,
+        effectCacheDirectory,
+      ));
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }

@@ -13,7 +13,9 @@ flowchart LR
   API --> DB[("PostgreSQL via Prisma")]
   API --> Supervisor["FFmpeg supervisor"]
   Supervisor --> FFmpeg["One realtime FFmpeg pipeline"]
+  Supervisor --> DVB["GStreamer DVB subtitle encoder"]
   FFmpeg --> Program["Program output"]
+  DVB --> Program
   Program --> UDP["UDP / MPEG-TS"]
   Program --> SRT["SRT / MPEG-TS"]
   Program --> RTMP["RTMP(S) / FLV"]
@@ -87,6 +89,8 @@ flowchart LR
   Encode --> RTMP["Direct RTMP(S)"]
   Encode --> Loopback["Loopback UDP for every UDP/SRT"]
   Loopback --> Transport["TSDuck regulate; UDP PCR adjust"]
+  SRTFiles["Per-clip SRT files"] --> DVBSub["GStreamer textrender + dvbsubenc"]
+  DVBSub --> Transport
   Transport --> UDP["UDP MPEG-TS"]
   Transport --> SRT["SRT MPEG-TS"]
   Split --> HLS["Low-latency-oriented H.264/AAC HLS preview"]
@@ -94,7 +98,18 @@ flowchart LR
 
 Все playlist inputs входят в один filter graph. Это даёт последовательность ролик-за-роликом и единый timeline. Разные источники приводятся к заданным resolution, FPS, SAR, pixel format, sample rate и channel layout. Для файла без аудио создаётся тишина нужной длительности.
 
-Логотип накладывается до `split`, поэтому одинаково виден в program output и preview.
+Логотип накладывается до `split`, поэтому одинаково виден в program output и preview. SRT в режиме Burn-in также входит в video filter graph. В режиме DVB video остаётся clean, а subtitle stream объединяется с ним только в TSDuck transport stage.
+
+### DVB subtitles
+
+Node.js объединяет cue активных `.srt` в общий program timeline с учётом trim и
+длительности предыдущих роликов. GStreamer `subparse → textrender → dvbsubenc →
+mpegtsmux` создаёт bitmap PES на выбранном PID. TSDuck добавляет в PMT component
+`stream_type 0x06`, descriptor языка/type/page IDs и процессором `merge`
+заменяет часть null stuffing subtitle-пакетами. Поэтому заданная CBR transport
+rate сохраняется. Этот тракт доступен для UDP/SRT MPEG-TS; RTMP использует
+Burn-in. HLS preview ответвляется до merge и намеренно не содержит отдельно
+выбираемый DVB subtitle PID.
 
 ### Program output
 
@@ -242,7 +257,7 @@ Media-service отправляет `SIGTERM` и применяет принуд�
 - production API по умолчанию слушает `127.0.0.1`;
 - CORS разрешает packaged Electron origin и loopback development UI;
 - FFmpeg запускается аргументами через `spawn`, без shell;
-- пути media/logo проверяются на абсолютность и существование;
+- пути media/logo/SRT проверяются на абсолютность и существование;
 - systemd unit ограничивает filesystem write доступ runtime preview-каталогом;
 - закрытие UI не влияет на media-service;
 - service shutdown штатно останавливает активный FFmpeg и закрывает Prisma connection.

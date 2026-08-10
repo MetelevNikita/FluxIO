@@ -132,6 +132,17 @@ export interface BroadcastSettings {
   srtStreamId: string;
   rtmpServerUrl: string;
   rtmpStreamKey: string;
+  subtitleOutputMode: "Burn-in" | "DVB Subtitles";
+  subtitlePid: number;
+  subtitleLanguage: string;
+  subtitleType: "Normal" | "Hearing impaired";
+  subtitleFontFamily: string;
+  subtitleFontSize: number;
+  subtitleBottomMargin: number;
+  subtitleOutline: boolean;
+  subtitleMaxColours: 4 | 16 | 256;
+  subtitleBitrateKbps: number;
+  subtitlePtsOffsetMs: number;
   ageTitleDurationSeconds: number;
   logoEnabled: boolean;
   logoPath: string;

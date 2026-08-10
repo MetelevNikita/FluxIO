@@ -18,7 +18,7 @@ node setup.mjs
 - права `sudo` на Linux для systemd/package installation;
 - пользовательская графическая сессия для Electron.
 
-Мастер умеет предложить установку FFmpeg, TSDuck и PostgreSQL:
+Мастер умеет предложить установку FFmpeg, TSDuck, GStreamer и PostgreSQL:
 
 - macOS — Homebrew;
 - Debian/Ubuntu — apt;
@@ -45,7 +45,7 @@ PostgreSQL всегда подключается по `127.0.0.1`. Мастер 
 
 ```text
 prerequisite check
-  → optional native PostgreSQL/FFmpeg/TSDuck installation
+  → optional native PostgreSQL/FFmpeg/TSDuck/GStreamer installation
   → PostgreSQL role/database creation
   → encrypted .env creation
   → npm ci --include=dev
@@ -159,7 +159,7 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 9. Для рекламных врезок выбрать UDP/SRT, включить SCTE-35, задать defaults и расставить Event IDs во вкладке Playlist. Первая метка — не раньше `pre-roll + 2 s`.
 10. Подготовить головную станцию.
 11. Нажать `Start Stream`.
-12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service и карточку SCTE-35 Injector: state, PID, observed/total, last/next Event ID.
+12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service, SCTE-35 Injector и DVB Subtitles: state, PID, language, source clips/cues.
 
 Media-service не пишет HTTP access logs. Во время активного кодирования он
 выдаёт одну console-строку каждые 5 секунд и немедленно при смене ролика:
@@ -205,6 +205,8 @@ FFmpeg передаёт кадры в output socket; это не являетс�
 доказывает приём потока головной станцией.
 
 SCTE-35 cue-секции реально внедряются TSDuck в UDP/SRT MPEG-TS. До пилота головная станция должна подтвердить PMT registration `CUEI`, выбранный `stream_type 0x86` PID, Event ID, segmentation type, UPID, pre-roll и соответствие IDR. RTMP/FLV для SCTE-35 не используется.
+
+В режиме DVB Subtitles GStreamer преобразует SubRip в bitmap PES, а TSDuck добавляет private component `stream_type 0x06` и `subtitling_descriptor`. До пилота головная станция должна подтвердить выбранный language/type/page IDs, ручное включение/выключение на STB и отсутствие continuity errors. Порядок проверки описан в `docs/dvb-subtitles-engineer-runbook.md`.
 
 Проверка UDP на отдельном приёмнике с TSDuck:
 
@@ -259,7 +261,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v6.0.2`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v6.0.4`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

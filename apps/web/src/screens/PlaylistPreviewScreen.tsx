@@ -27,13 +27,21 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
+import { moveEffectLayerWindow } from "../effect-timeline-math";
 import type {
   BroadcastSettings,
   MediaAsset,
@@ -1416,6 +1424,54 @@ function EffectTimeline({
   const duration = Math.max(0.04, effectiveClipDuration(asset));
   const layers = asset.effects ?? [];
   const ticks = [0, 0.25, 0.5, 0.75, 1];
+  const dragState = useRef<{
+    end: number;
+    layerId: string;
+    pointerX: number;
+    railWidth: number;
+    start: number;
+  } | null>(null);
+
+  function startLayerDrag(
+    event: ReactPointerEvent<HTMLElement>,
+    layerId: string,
+    start: number,
+    end: number,
+  ) {
+    if (event.button !== 0) return;
+    const rail = event.currentTarget.parentElement;
+    if (!rail) return;
+    dragState.current = {
+      end,
+      layerId,
+      pointerX: event.clientX,
+      railWidth: Math.max(1, rail.getBoundingClientRect().width),
+      start,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function moveLayer(event: ReactPointerEvent<HTMLElement>) {
+    const drag = dragState.current;
+    if (!drag || drag.layerId !== event.currentTarget.dataset.layerId) return;
+    const rawDelta = (event.clientX - drag.pointerX) / drag.railWidth * duration;
+    const delta = Math.round(rawDelta / 0.04) * 0.04;
+    onUpdateLayer(drag.layerId, moveEffectLayerWindow({
+      deltaSeconds: delta,
+      durationSeconds: duration,
+      endSeconds: drag.end,
+      startSeconds: drag.start,
+    }));
+  }
+
+  function finishLayerDrag(event: ReactPointerEvent<HTMLElement>) {
+    if (dragState.current?.layerId !== event.currentTarget.dataset.layerId) return;
+    dragState.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
   return (
     <section className="effect-timeline">
       <div className="effect-ruler">
@@ -1432,7 +1488,16 @@ function EffectTimeline({
                 <b>FX {index + 1}</b>{shortEffectName(layer.name)} · {layer.titlePath ? "BG+TITLE" : "BG"}
               </span>
               <div className="effect-track-rail">
-                <i style={{ left: `${start / duration * 100}%`, width: `${(end - start) / duration * 100}%` }}>
+                <i
+                  aria-label={`Move FX ${index + 1} on timeline`}
+                  data-layer-id={layer.id}
+                  onPointerCancel={finishLayerDrag}
+                  onPointerDown={(event) => startLayerDrag(event, layer.id, start, end)}
+                  onPointerMove={moveLayer}
+                  onPointerUp={finishLayerDrag}
+                  style={{ left: `${start / duration * 100}%`, width: `${(end - start) / duration * 100}%` }}
+                  title="Drag to move the effect; use the edge handles to trim"
+                >
                   <em>{formatTimecode(start, asset.fps)}–{formatTimecode(end, asset.fps)}</em>
                 </i>
                 <input

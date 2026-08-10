@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v6.0.2**.
+Текущая версия: **v6.0.4**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -8,7 +8,7 @@ Electron-интерфейс и installers используют бренд FluxIO
 
 ## Быстрый запуск после клонирования
 
-Нужны Git, Node.js 24+ и npm 11+. FFmpeg, TSDuck и PostgreSQL мастер проверит и при необходимости предложит установить. Docker не используется.
+Нужны Git, Node.js 24+ и npm 11+. FFmpeg, TSDuck, GStreamer и PostgreSQL мастер проверит и при необходимости предложит установить. GStreamer используется для отдельного DVB subtitle PID. Docker не используется.
 
 ```bash
 git clone <repository-url> GruberProject
@@ -28,7 +28,7 @@ npm run setup
 2. существует ли уже PostgreSQL database/role;
 3. port, database, username и скрытый password локального PostgreSQL;
 4. PostgreSQL administrator, если базу нужно создать;
-5. автоматически найденные пути FFmpeg/ffprobe, TSDuck `tsp` и media-service port;
+5. автоматически найденные пути FFmpeg/ffprobe, TSDuck `tsp`, GStreamer `gst-launch-1.0` и media-service port;
 6. запускать ли typecheck/tests;
 7. собирать ли Electron installer;
 8. создавать ли системный ярлык FluxIO на рабочем столе;
@@ -36,7 +36,7 @@ npm run setup
 
 После ответов мастер сам создаёт `.env`, генерирует ключ шифрования, устанавливает npm dependencies, применяет Prisma migrations, собирает проект и запускает сервис.
 
-На Windows достаточно нажать Enter в вопросах FFmpeg/ffprobe/TSDuck. Мастер обновляет `PATH` из системных и пользовательских Windows settings, проверяет `where.exe`, WinGet Links/Packages, Chocolatey, Scoop, `Program Files`, стандартные FFmpeg-каталоги и versioned PostgreSQL directories. В `.env` сохраняются найденные абсолютные пути `.exe`.
+На Windows достаточно нажать Enter в вопросах FFmpeg/ffprobe/TSDuck/GStreamer. Мастер обновляет `PATH` из системных и пользовательских Windows settings, проверяет `where.exe`, WinGet Links/Packages, Chocolatey, Scoop, `Program Files`, стандартные FFmpeg, TSDuck, GStreamer и versioned PostgreSQL directories. В `.env` сохраняются найденные абсолютные пути `.exe`.
 
 Для npm мастер на Windows запускает `npm-cli.js` через `node.exe`, поэтому установка корректно работает и из стандартного каталога `C:\Program Files\nodejs` без ошибки `spawn EINVAL`. Поведение macOS и Linux не меняется: там используется обычная команда `npm`.
 
@@ -102,9 +102,10 @@ node setup.mjs
 - расширенная колонка Playlist и уменьшенный 16:9 preview для более удобной работы с недельным расписанием;
 - однострочные компактные элементы Playlist без переноса controls вниз;
 - индивидуальное и массовое раскрытие/сворачивание роликов расписания;
-- отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4, анализом разрешения и длительности анимированной графики;
-- per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video и имеют редактируемые In/Out handles на шкале времени ролика;
-- per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла и прожиг титров в UDP/SRT/RTMP video;
+- отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4 и Lottie JSON из After Effects: live preview, извлечённые operator Properties, transparent render cache и назначение всему проекту/выбранному ролику;
+- per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video, имеют редактируемые In/Out handles и перетаскиваются целиком по шкале времени ролика без изменения длительности;
+- per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла, выбор между FFmpeg burn-in и отдельным receiver-selectable DVB bitmap PID в UDP/SRT MPEG-TS;
+- отдельный DVB subtitle encoder через GStreamer `subparse → textrender → dvbsubenc → mpegtsmux`; TSDuck добавляет `stream_type 0x06`, `subtitling_descriptor`, выбранный PID и сохраняет CBR transport stuffing;
 - Shift-range selection и перенос группы выбранных клипов мышью с сохранением их порядка; одинаковые controls применяются ко всей выбранной группе;
 - `Add Clip` в Electron использует нативный диалог и анализирует новые файлы в активном Current/Future расписании;
 - выбор стартового ролика в Current Playlist и безопасный `Take on air` на выбранный ролик во время активного эфира;
@@ -132,6 +133,7 @@ endpoint выполняется CBR regulation, а для UDP также PCR-к�
 - [Восстановление Playlist-сессии](docs/session-recovery-engineer-runbook.md)
 - [Перенос encoding settings через .TXT](docs/encoding-settings-engineer-runbook.md)
 - [Графика, FX-слои и SRT-субтитры](docs/graphics-titles-engineer-runbook.md)
+- [DVB-субтитры для эфирного инженера](docs/dvb-subtitles-engineer-runbook.md)
 - [Архитектура](docs/architecture.md)
 - [Версионирование](docs/versioning.md)
 

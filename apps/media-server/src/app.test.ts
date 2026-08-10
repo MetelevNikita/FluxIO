@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   defaultMpegTsOutputSettings,
+  defaultSubtitleOutput,
   playoutStatusSchema,
   serviceHealthSchema,
   startPlayoutRequestSchema,
@@ -36,6 +37,10 @@ import {
 import { calculateCpuPercent } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 import {
+  applyLottieProperties,
+  inspectLottieDocument,
+} from "./effects/lottie.js";
+import {
   decodeScheduleBuffer,
   parseScheduleText,
   ScheduleParseError,
@@ -43,10 +48,13 @@ import {
 import { formatScheduleTimecode, serializeSchedule } from "./schedule/serializer.js";
 import { buildScte35CueXml, planScte35Cues } from "./tsduck/cue-builder.js";
 import {
+  buildDvbSubtitlePmtPatch,
   buildTsdDuckCommand,
   calculateTransportMuxRate,
   pcrInsertionThresholdMs,
 } from "./tsduck/command-builder.js";
+import { buildGstreamerDvbSubtitleCommand } from "./subtitles/gstreamer.js";
+import { buildDvbSubtitleProject, parseSrt } from "./subtitles/srt-project.js";
 
 test("GET /api/health returns the shared service contract", async () => {
   const app = buildApp({ logger: false });
@@ -61,11 +69,93 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.2");
+    assert.equal(health.version, "6.0.4");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
   }
+});
+
+test("Lottie inspector exposes operator properties and preserves animation until override", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 50,
+    w: 1920,
+    h: 1080,
+    layers: [
+      {
+        ty: 1,
+        nm: "Lower third background",
+        hd: false,
+        sc: "#112233",
+        ks: {
+          o: { a: 1, k: [{ t: 0, s: [0] }, { t: 10, s: [100] }] },
+          p: { a: 0, k: [960, 900, 0] },
+          s: { a: 0, k: [100, 100, 100] },
+          r: { a: 0, k: 0 },
+        },
+        shapes: [{ ty: "fl", nm: "Accent", c: { a: 0, k: [1, 0.5, 0, 1] } }],
+      },
+      {
+        ty: 5,
+        nm: "Title",
+        ks: {
+          o: { a: 0, k: 100 },
+          p: { a: 0, k: [100, 100, 0] },
+          s: { a: 0, k: [100, 100, 100] },
+          r: { a: 0, k: 0 },
+        },
+        t: { d: { k: [{ s: { t: "Original title" } }] } },
+      },
+    ],
+  };
+
+  const metadata = inspectLottieDocument(document, "/graphics/lower-third.json");
+  assert.equal(metadata.frameRate, 25);
+  assert.equal(metadata.outPoint - metadata.inPoint, 50);
+  assert.ok(metadata.properties.some((property) =>
+    property.label === "Opacity" && property.animated && !property.overridden));
+  assert.ok(metadata.properties.some((property) =>
+    property.label === "Fill · Accent" && property.value === "#FF8000"));
+  assert.ok(metadata.properties.some((property) =>
+    property.label === "Text" && property.value === "Original title"));
+  assert.match(metadata.warnings.join(" "), /Animated properties are preserved/);
+});
+
+test("Lottie operator overrides update visibility, text and animated values", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 25,
+    w: 640,
+    h: 360,
+    layers: [{
+      nm: "Title",
+      hd: false,
+      ks: { o: { a: 1, k: [{ t: 0, s: [0] }, { t: 10, s: [100] }] } },
+      t: { d: { k: [{ s: { t: "Before" } }] } },
+    }],
+  };
+  const metadata = inspectLottieDocument(document, "/graphics/title.json");
+  const properties = metadata.properties.map((property) => {
+    if (property.label === "Visible") return { ...property, value: false, overridden: true };
+    if (property.label === "Opacity") return { ...property, value: 72, overridden: true };
+    if (property.label === "Text") return { ...property, value: "After", overridden: true };
+    return property;
+  });
+  const result = applyLottieProperties(document, properties);
+  const layer = (result.layers as Array<Record<string, unknown>>)[0]!;
+  const opacity = (layer.ks as Record<string, Record<string, unknown>>).o;
+  const text = (((layer.t as Record<string, unknown>).d as Record<string, unknown>).k as Array<{
+    s: { t: string };
+  }>)[0]!.s.t;
+
+  assert.equal(layer.hd, true);
+  assert.deepEqual(opacity, { a: 0, k: 72 });
+  assert.equal(text, "After");
 });
 
 test(
@@ -517,6 +607,7 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
 test("UDP and field-order defaults are applied to older saved requests", () => {
   const request = baseRequest() as unknown as {
     endpoint: Record<string, unknown>;
+    subtitleOutput?: unknown;
     video: Record<string, unknown>;
   };
   delete request.endpoint.mpegTs;
@@ -524,6 +615,7 @@ test("UDP and field-order defaults are applied to older saved requests", () => {
   delete request.video.gopSize;
   delete request.video.bFrames;
   delete request.video.closedGop;
+  delete request.subtitleOutput;
   const parsed = startPlayoutRequestSchema.parse(request);
   assert.equal(parsed.video.fieldOrder, "progressive");
   assert.equal(parsed.video.gopSize, 50);
@@ -532,6 +624,7 @@ test("UDP and field-order defaults are applied to older saved requests", () => {
   assert.equal(parsed.endpoint.protocol, "udp");
   if (parsed.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
   assert.deepEqual(parsed.endpoint.mpegTs, defaultMpegTsOutputSettings);
+  assert.deepEqual(parsed.subtitleOutput, defaultSubtitleOutput);
 });
 
 test("FFmpeg command burns logo before program and preview split", () => {
@@ -651,6 +744,120 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
   assert.ok(command.args.includes("/media/lower-third-bg.mov"));
   assert.ok(command.args.includes("/media/one-title.png"));
   assert.ok(command.args.includes("/media/frame.png"));
+});
+
+test("DVB subtitle mode keeps video clean and builds a separate GStreamer bitmap PID", () => {
+  const request = baseRequest();
+  request.subtitleOutput = {
+    ...defaultSubtitleOutput,
+    mode: "dvb",
+    pid: 288,
+    language: "rus",
+  };
+  const item = {
+    id: "one",
+    name: "one.mp4",
+    filePath: "/media/one.mp4",
+    trimInSeconds: 0,
+    durationSeconds: 20,
+    hasAudio: true,
+    subtitles: { enabled: true, filePath: "/media/one.srt" },
+  };
+  const ffmpeg = buildFfmpegCommand(request, [item], "/tmp/gruber-test-preview");
+  const filter = ffmpeg.args[ffmpeg.args.indexOf("-filter_complex") + 1] ?? "";
+  assert.doesNotMatch(filter, /subtitles=filename/);
+
+  const gstreamer = buildGstreamerDvbSubtitleCommand({
+    inputPath: "/tmp/program.srt",
+    outputPort: 31_000,
+    request,
+  }).join(" ");
+  assert.match(gstreamer, /subparse ! textrender/);
+  assert.match(gstreamer, /video\/x-raw,format=AYUV,width=1280,height=720/);
+  assert.match(gstreamer, /dvbsubenc max-colours=16 ts-offset=1400000000/);
+  assert.match(gstreamer, /mux\.sink_288/);
+});
+
+test("DVB subtitle project trims clip cues and shifts them to the program timeline", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-dvb-srt-"));
+  const firstPath = path.join(directory, "first.srt");
+  const secondPath = path.join(directory, "second.srt");
+  await writeFile(firstPath, [
+    "1",
+    "00:00:03,000 --> 00:00:07,000",
+    "Trimmed at clip start",
+    "",
+    "2",
+    "00:00:09.000 --> 00:00:12.000",
+    "Inside first clip",
+  ].join("\n"), "utf8");
+  await writeFile(secondPath, "1\n00:00:01,000 --> 00:00:03,000\nSecond clip\n", "utf8");
+  try {
+    const project = await buildDvbSubtitleProject([
+      {
+        id: "first",
+        name: "first.mp4",
+        filePath: "/media/first.mp4",
+        trimInSeconds: 5,
+        durationSeconds: 10,
+        hasAudio: true,
+        subtitles: { enabled: true, filePath: firstPath },
+      },
+      {
+        id: "second",
+        name: "second.mp4",
+        filePath: "/media/second.mp4",
+        trimInSeconds: 0,
+        durationSeconds: 5,
+        hasAudio: true,
+        subtitles: { enabled: true, filePath: secondPath },
+      },
+    ]);
+    assert.equal(project.cueCount, 3);
+    assert.equal(project.sourceItems, 2);
+    const cues = parseSrt(project.content);
+    assert.deepEqual(
+      cues.map((cue) => [cue.startSeconds, cue.endSeconds, cue.text]),
+      [
+        [0, 2, "Trimmed at clip start"],
+        [4, 7, "Inside first clip"],
+        [11, 13, "Second clip"],
+      ],
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("TSDuck announces and merges a DVB subtitle component into UDP MPEG-TS", () => {
+  const request = baseRequest();
+  request.subtitleOutput = {
+    ...defaultSubtitleOutput,
+    mode: "dvb",
+    pid: 288,
+    language: "rus",
+  };
+  const command = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 30_000,
+    request,
+    subtitles: {
+      inputPort: 30_001,
+      pmtPatchFilePath: "/tmp/dvb-subtitles-pmt.xml",
+      tspPath: "/opt/tsduck/bin/tsp",
+    },
+  });
+  const rendered = command.args.join(" ");
+  assert.match(rendered, /--add-pid 288\/0x06/);
+  assert.match(rendered, /--patch-xml \/tmp\/dvb-subtitles-pmt\.xml/);
+  assert.match(rendered, /-P merge --bitrate 128000 --no-psi-merge/);
+  assert.match(rendered, /-P filter --pid 288 --stuffing/);
+  assert.match(rendered, /-P continuity --pid 256 --pid 257 --pid 288/);
+  const patchXml = buildDvbSubtitlePmtPatch(request);
+  assert.match(patchXml, /elementary_PID="288"/);
+  assert.match(patchXml, /language_code="rus" subtitling_type="0x14"/);
+  assert.match(patchXml, /composition_page_id="1" ancillary_page_id="1"/);
 });
 
 test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () => {
@@ -1040,6 +1247,18 @@ test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT s
     streamId: "",
   };
   assert.equal(startPlayoutRequestSchema.safeParse(invalid).success, false);
+  const invalidDvbRtmp = {
+    ...request,
+    subtitleOutput: { ...defaultSubtitleOutput, mode: "dvb" as const },
+  };
+  assert.equal(startPlayoutRequestSchema.safeParse(invalidDvbRtmp).success, false);
+  const invalidDvbPid = baseRequest();
+  invalidDvbPid.subtitleOutput = {
+    ...defaultSubtitleOutput,
+    mode: "dvb",
+    pid: defaultMpegTsOutputSettings.videoPid,
+  };
+  assert.equal(startPlayoutRequestSchema.safeParse(invalidDvbPid).success, false);
 });
 
 test("FFmpeg command keeps 5.1 channel layout for AAC and AC-3 profiles", () => {
@@ -1651,6 +1870,7 @@ function baseRequest(): StartPlayoutRequest {
       localAddress: "",
       mpegTs: { ...defaultMpegTsOutputSettings },
     },
+    subtitleOutput: { ...defaultSubtitleOutput },
     repeatPlaylist: false,
     scte35: {
       enabled: false,

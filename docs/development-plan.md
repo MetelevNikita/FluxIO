@@ -359,6 +359,31 @@
 - строки стали двухуровневыми без изменения компактного свёрнутого состояния;
 - обновлён соответствующий макет Playlist в Figma.
 
+### 4.4. Универсальный Lottie Effects project v6.0.3
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-04-lottie-universal-effects-v6.0.3.md`](progress/04-04-lottie-universal-effects-v6.0.3.md).
+
+- импорт Bodymovin/Lottie JSON из After Effects в project Effects library;
+- извлечение operator-safe Properties: visibility, text, colors и transforms;
+- live DotLottie preview с локальным WASM через media-service;
+- server-side RGBA render в прозрачный MOV/QTRLE cache через FFmpeg;
+- `Add to entire project` и `Add to clip` с защитой от повторных назначений;
+- автоматическая замена cache path в существующих FX layers без сброса Timeline IN/OUT;
+- восстановление Lottie cache из сохранённой PostgreSQL workspace session;
+- отдельный Effects inspector синхронизирован с Figma.
+
+### 4.5. DVB subtitles и draggable FX layers v6.0.4
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-05-dvb-subtitles-v6.0.4.md`](progress/04-05-dvb-subtitles-v6.0.4.md).
+
+- два режима SRT: совместимый burn-in и отдельный DVB bitmap subtitle PID;
+- общая временная шкала cue с учётом trim и позиции каждого ролика;
+- GStreamer DVB encoder и TSDuck merge в CBR UDP/SRT MPEG-TS;
+- PMT `stream_type 0x06`, ISO 639 language и `subtitling_descriptor`;
+- параметры PID, языка, типа, шрифта, palette, bitrate и PTS offset в Broadcast;
+- runtime-карточка DVB Subtitles в Encoding Monitor;
+- перетаскивание FX-слоя целиком по Timeline Trimming с сохранением длительности.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

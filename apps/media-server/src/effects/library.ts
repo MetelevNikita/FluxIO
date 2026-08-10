@@ -1,22 +1,26 @@
 import { createHash } from "node:crypto";
 import { readdir, realpath, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   graphicEffectAssetSchema,
   type GraphicEffectAsset,
 } from "@gruber/contracts";
 import { probeMedia } from "../ffmpeg/probe.js";
+import { analyzeLottieEffect } from "./lottie.js";
 
 const staticExtensions = new Set([".png", ".webp"]);
 const videoExtensions = new Set([".mov", ".mp4", ".m4v", ".webm"]);
+const lottieExtensions = new Set([".json"]);
 
 export async function analyzeGraphicEffectPaths(
   paths: string[],
   ffprobePath: string,
+  ffmpegPath: string,
 ): Promise<GraphicEffectAsset[]> {
   const assets: GraphicEffectAsset[] = [];
   for (const filePath of paths) {
-    assets.push(await analyzeGraphicEffect(filePath, ffprobePath));
+    assets.push(await analyzeGraphicEffect(filePath, ffprobePath, ffmpegPath));
   }
   return assets;
 }
@@ -24,6 +28,7 @@ export async function analyzeGraphicEffectPaths(
 export async function scanGraphicEffectDirectory(
   directoryPath: string,
   ffprobePath: string,
+  ffmpegPath: string,
   maxFiles = 200,
 ): Promise<GraphicEffectAsset[]> {
   if (!path.isAbsolute(directoryPath)) {
@@ -54,18 +59,27 @@ export async function scanGraphicEffectDirectory(
   return analyzeGraphicEffectPaths(
     paths.sort((left, right) => left.localeCompare(right)),
     ffprobePath,
+    ffmpegPath,
   );
 }
 
 async function analyzeGraphicEffect(
   filePath: string,
   ffprobePath: string,
+  ffmpegPath: string,
 ): Promise<GraphicEffectAsset> {
   if (!path.isAbsolute(filePath)) {
     throw new Error(`Effect path must be absolute: ${filePath}`);
   }
   const resolvedPath = await realpath(filePath);
   const extension = path.extname(resolvedPath).toLowerCase();
+  if (lottieExtensions.has(extension)) {
+    return analyzeLottieEffect(
+      resolvedPath,
+      ffmpegPath,
+      process.env.GRUBER_EFFECT_CACHE_DIR ?? path.join(tmpdir(), "gruber-playout-effects"),
+    );
+  }
   if (!staticExtensions.has(extension) && !videoExtensions.has(extension)) {
     throw new Error(`Unsupported effect format: ${path.basename(resolvedPath)}`);
   }
@@ -84,5 +98,5 @@ async function analyzeGraphicEffect(
 
 function isSupportedEffect(fileName: string): boolean {
   const extension = path.extname(fileName).toLowerCase();
-  return staticExtensions.has(extension) || videoExtensions.has(extension);
+  return staticExtensions.has(extension) || videoExtensions.has(extension) || lottieExtensions.has(extension);
 }

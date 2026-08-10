@@ -46,6 +46,7 @@ import {
   mediaThumbnailUrl,
   parseScheduleFile,
   probeMediaPaths,
+  renderLottieEffect,
   scanMediaDirectory,
   scanGraphicEffectDirectory,
   serializeScheduleFile,
@@ -309,6 +310,7 @@ export function App() {
     );
     setSavedWorkspaceSession(session);
     setRecoveryCheckpoint(session.checkpoint?.interrupted ? session.checkpoint : null);
+    void restoreLottieEffectCache(snapshot.effectLibrary);
     setScheduleActionMessage(
       session.checkpoint?.interrupted
         ? `Interrupted session restored at ${formatClock(session.checkpoint.outTimeSeconds)}.`
@@ -472,6 +474,7 @@ export function App() {
           titleDirectoryPath: layer.titlePath ? parentDirectory(layer.titlePath) : null,
           titlePaths: layer.titlePath ? [layer.titlePath] : [],
           width: 0,
+          lottie: null,
         } satisfies GraphicEffectAsset))
       );
       setAssets((current) => mergeAssets(current, scheduledAssets));
@@ -747,6 +750,104 @@ export function App() {
     } finally {
       setEffectsBusy(false);
     }
+  }
+
+  async function renderProjectLottie(effect: GraphicEffectAsset) {
+    if (!effect.lottie) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const rendered = await renderLottieEffect(effect);
+      setEffectLibrary((current) => mergeEffectAssets(current, [rendered]));
+      const updateAssignments = (items: MediaAsset[]) => items.map((asset) => ({
+        ...asset,
+        effects: asset.effects?.map((layer) => layer.effectId === rendered.id
+          ? {
+              ...layer,
+              backgroundPath: rendered.filePath,
+              filePath: rendered.filePath,
+              kind: rendered.kind,
+              sourceDurationSeconds: rendered.durationSeconds,
+            }
+          : layer),
+      }));
+      setPlaylist(updateAssignments);
+      setFuturePlaylist(updateAssignments);
+      setEffectsMessage(
+        `${rendered.name} rendered with ${rendered.lottie?.properties.filter((property) => property.overridden).length ?? 0} operator override(s).`,
+      );
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function restoreLottieEffectCache(effects: GraphicEffectAsset[]) {
+    const lottieEffects = effects.filter((effect) => Boolean(effect.lottie));
+    if (lottieEffects.length === 0) return;
+    setEffectsBusy(true);
+    try {
+      const renderedEffects: GraphicEffectAsset[] = [];
+      for (const effect of lottieEffects) {
+        renderedEffects.push(await renderLottieEffect(effect));
+      }
+      const renderedById = new Map(renderedEffects.map((effect) => [effect.id, effect]));
+      setEffectLibrary((current) => mergeEffectAssets(current, renderedEffects));
+      const refreshLayers = (items: MediaAsset[]) => items.map((asset) => ({
+        ...asset,
+        effects: asset.effects?.map((layer) => {
+          const rendered = renderedById.get(layer.effectId);
+          return rendered
+            ? {
+                ...layer,
+                backgroundPath: rendered.filePath,
+                filePath: rendered.filePath,
+                kind: rendered.kind,
+                sourceDurationSeconds: rendered.durationSeconds,
+              }
+            : layer;
+        }),
+      }));
+      setPlaylist(refreshLayers);
+      setFuturePlaylist(refreshLayers);
+      setEffectsMessage(`${renderedEffects.length} Lottie render cache item(s) restored.`);
+    } catch (error) {
+      setOperationError(`Lottie cache recovery failed: ${errorMessage(error)}`);
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  function addEffectToProject(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect) return;
+    const currentResult = assignEffectToAssets(playlist, effect);
+    const futureResult = assignEffectToAssets(futurePlaylist, effect);
+    setPlaylist(currentResult.items);
+    setFuturePlaylist(futureResult.items);
+    const count = currentResult.added + futureResult.added;
+    setEffectsMessage(
+      count > 0
+        ? `${effect.name} added to ${count} clip(s). Set its IN/OUT in Playlist → Timeline Trimming.`
+        : `${effect.name} is already assigned to every project clip.`,
+    );
+  }
+
+  function addEffectToClip(effectId: string, clipId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect) return;
+    const targetIds = new Set([clipId]);
+    const currentResult = assignEffectToAssets(playlist, effect, targetIds);
+    const futureResult = assignEffectToAssets(futurePlaylist, effect, targetIds);
+    setPlaylist(currentResult.items);
+    setFuturePlaylist(futureResult.items);
+    const count = currentResult.added + futureResult.added;
+    setEffectsMessage(
+      count > 0
+        ? `${effect.name} added to the selected clip. Set its IN/OUT in Playlist → Timeline Trimming.`
+        : `${effect.name} is already assigned to the selected clip.`,
+    );
   }
 
   function removeEffect(effectId: string) {
@@ -1049,7 +1150,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.2",
+        connection.kind === "ready" ? connection.health.version : "6.0.4",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1240,10 +1341,17 @@ export function App() {
       {view === "effects" ? (
         <EffectsScreen
           busy={effectsBusy}
+          clips={[
+            ...playlist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Current" as const })),
+            ...futurePlaylist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Future" as const })),
+          ]}
           effects={effectLibrary}
           message={effectsMessage}
+          onAddToClip={addEffectToClip}
+          onAddToEntireProject={addEffectToProject}
           onClearTitleDirectory={clearEffectTitleDirectory}
           onRemove={removeEffect}
+          onRenderLottie={renderProjectLottie}
           onSelectDirectory={window.gruberDesktop ? selectEffectDirectory : undefined}
           onSelectFiles={window.gruberDesktop ? selectEffectFiles : undefined}
           onSelectTitleDirectory={window.gruberDesktop ? selectEffectTitleDirectory : undefined}
@@ -1656,6 +1764,21 @@ function buildStartRequest(
     },
     logo: null,
     endpoint,
+    subtitleOutput: {
+      mode: settings.subtitleOutputMode === "DVB Subtitles" ? "dvb" : "burn-in",
+      pid: Math.min(8_190, Math.max(32, Math.trunc(settings.subtitlePid))),
+      language: /^[A-Za-z]{3}$/.test(settings.subtitleLanguage)
+        ? settings.subtitleLanguage.toLowerCase()
+        : "rus",
+      type: settings.subtitleType === "Hearing impaired" ? "hearing-impaired" : "normal",
+      fontFamily: settings.subtitleFontFamily.trim() || "Sans",
+      fontSize: Math.min(160, Math.max(12, Math.trunc(settings.subtitleFontSize))),
+      bottomMargin: Math.min(1_000, Math.max(0, Math.trunc(settings.subtitleBottomMargin))),
+      outline: settings.subtitleOutline,
+      maxColours: settings.subtitleMaxColours,
+      bitrateKbps: Math.min(2_000, Math.max(32, Math.trunc(settings.subtitleBitrateKbps))),
+      ptsOffsetMs: Math.min(10_000, Math.max(0, Math.trunc(settings.subtitlePtsOffsetMs))),
+    },
     repeatPlaylist: settings.repeatSchedule,
     scte35: {
       enabled: settings.scte35PlanningEnabled,
@@ -1802,10 +1925,10 @@ function mergeEffectAssets(
   current: GraphicEffectAsset[],
   incoming: GraphicEffectAsset[],
 ): GraphicEffectAsset[] {
-  const byPath = new Map(current.map((effect) => [effect.filePath, effect]));
+  const byId = new Map(current.map((effect) => [effect.id, effect]));
   for (const effect of incoming) {
-    const existing = byPath.get(effect.filePath);
-    byPath.set(effect.filePath, existing
+    const existing = byId.get(effect.id);
+    byId.set(effect.id, existing
       ? {
           ...existing,
           ...effect,
@@ -1814,7 +1937,50 @@ function mergeEffectAssets(
         }
       : effect);
   }
-  return [...byPath.values()];
+  return [...byId.values()];
+}
+
+function assignEffectToAssets(
+  items: MediaAsset[],
+  effect: GraphicEffectAsset,
+  targetIds?: Set<string>,
+): { items: MediaAsset[]; added: number } {
+  let added = 0;
+  return {
+    items: items.map((asset) => {
+      if (targetIds && !targetIds.has(asset.id)) return asset;
+      if (asset.effects?.some((layer) => layer.effectId === effect.id)) return asset;
+      const clipDuration = Math.max(0.04, effectiveAssetDuration(asset));
+      const endSeconds = Math.max(
+        0.04,
+        Math.min(
+          clipDuration,
+          effect.kind === "static" || effect.durationSeconds <= 0
+            ? clipDuration
+            : effect.durationSeconds,
+        ),
+      );
+      added += 1;
+      return {
+        ...asset,
+        effects: [...(asset.effects ?? []), {
+          backgroundPath: effect.filePath,
+          effectId: effect.id,
+          endSeconds,
+          filePath: effect.filePath,
+          id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
+          kind: effect.kind,
+          name: effect.name,
+          sourceDurationSeconds: effect.durationSeconds,
+          startSeconds: 0,
+          titlePath: effect.titleDirectoryPath
+            ? matchingNamedAssetPath(asset.name, effect.titlePaths)
+            : null,
+        }],
+      };
+    }),
+    added,
+  };
 }
 
 function assignEffectTitles(

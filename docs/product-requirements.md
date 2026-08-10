@@ -31,6 +31,7 @@ FluxIO подготавливает локальные видеофайлы в �
 - старт и штатная остановка плейлиста;
 - бесконечный repeat плейлиста до ручной остановки;
 - планирование и фактическая выдача SCTE-35 Event ID/break markers в UDP/SRT MPEG-TS;
+- per-clip SubRip с выбором между совместимым video burn-in и отдельным DVB bitmap subtitle PID в UDP/SRT MPEG-TS;
 - отображение текущего элемента, позиции и метрик FFmpeg;
 - сохранение playlist, encoder profile и endpoint в PostgreSQL;
 - Electron package и systemd unit для media-service.

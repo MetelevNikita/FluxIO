@@ -176,7 +176,7 @@ void app.whenReady().then(() => {
 
   ipcMain.handle(SELECT_EFFECT_FILES_CHANNEL, async () => {
     const result = await dialog.showOpenDialog({
-      filters: [{ name: "FluxIO graphic effects", extensions: ["png", "webp", "mov", "mp4", "m4v", "webm"] }],
+      filters: [{ name: "FluxIO graphic effects", extensions: ["json", "png", "webp", "mov", "mp4", "m4v", "webm"] }],
       properties: ["openFile", "multiSelections"],
       title: "Select graphic effects",
     });

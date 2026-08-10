@@ -6,7 +6,7 @@
 - Node.js 24+;
 - npm 11+.
 
-PostgreSQL, FFmpeg и TSDuck могут быть уже установлены. Если их нет, мастер предложит установку через Homebrew на macOS, `apt` на Debian/Ubuntu или `winget` на Windows. Docker не используется.
+PostgreSQL, FFmpeg, TSDuck и GStreamer могут быть уже установлены. Если их нет, мастер предложит установку через Homebrew на macOS, `apt` на Debian/Ubuntu или `winget` на Windows. GStreamer `dvbsubenc` нужен для отдельного DVB subtitle PID; Burn-in использует FFmpeg/libass. Docker не используется.
 
 ## 1. Клонирование и запуск мастера
 
@@ -41,7 +41,7 @@ git status --short
 5. Database/user → обычно `gruber`.
 6. Password вводится скрыто. Для новой базы пустой password заменяется автоматически сгенерированным.
 7. Media-service → `127.0.0.1:4310`.
-8. FFmpeg/ffprobe/TSDuck → нажать Enter и принять автоматически найденные абсолютные пути.
+8. FFmpeg/ffprobe/TSDuck/GStreamer → нажать Enter и принять автоматически найденные абсолютные пути.
 9. `npm ci`, typecheck/tests и запуск → `да`.
 
 PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не показывается в вопросах мастера, поскольку база и приложение работают на одном сервере.
@@ -55,8 +55,9 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 3. проверяет WinGet `Links` и `Packages`, Chocolatey и Scoop;
 4. ищет FFmpeg в `C:\ffmpeg\bin`, `C:\Tools\ffmpeg\bin` и `Program Files\FFmpeg\bin`;
 5. ищет TSDuck в `Program Files\TSDuck\bin`;
-6. ищет `psql.exe` и `pg_isready.exe` в `Program Files\PostgreSQL\<version>\bin`;
-7. сохраняет найденные абсолютные пути в `.env`.
+6. ищет GStreamer в `Program Files\gstreamer\1.0\msvc_x86_64\bin` и WinGet packages;
+7. ищет `psql.exe` и `pg_isready.exe` в `Program Files\PostgreSQL\<version>\bin`;
+8. сохраняет найденные абсолютные пути в `.env`.
 
 Если FFmpeg был установлен в нестандартный каталог и не добавлен в PATH, в вопросе можно один раз вставить полный путь, например `D:\MediaTools\ffmpeg\bin\ffmpeg.exe`. Для `ffprobe` используется отдельный путь; обычно он находится рядом с `ffmpeg.exe`. После автоматической установки через winget мастер повторно перечитывает PATH, поэтому новый PowerShell открывать не требуется.
 
@@ -66,7 +67,7 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 
 ```text
 Проверка Node.js
-  → проверка/установка FFmpeg, TSDuck и PostgreSQL
+  → проверка/установка FFmpeg, TSDuck, GStreamer и PostgreSQL
   → создание PostgreSQL role/database при необходимости
   → резервная копия старого .env
   → новый .env с mode 0600
@@ -243,6 +244,7 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;
+- DVB subtitles не запускаются — проверить `gst-inspect-1.0 --exists dvbsubenc`, `GSTREAMER_LAUNCH_PATH` и `GSTREAMER_INSPECT_PATH` в `.env`;
 - SRT недоступен — проверить `tsversion --support srt`; весь финальный SRT transport открывает TSDuck, поддержка libsrt в FFmpeg не требуется;
 - cue `too close to playlist start` — перенести marker позже либо уменьшить pre-roll, сохранив достаточный запас для головной станции;
 - SRT passphrase — пустая либо 10–79 символов;

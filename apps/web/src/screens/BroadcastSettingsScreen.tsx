@@ -1,5 +1,6 @@
 import {
   AudioLines,
+  Captions,
   ChartNoAxesColumnIncreasing,
   Download,
   Eye,
@@ -86,6 +87,8 @@ export function BroadcastSettingsScreen({
     : false;
   const incompatibleScte35Output =
     settings.scte35PlanningEnabled && settings.protocol.startsWith("RTMP");
+  const incompatibleSubtitleOutput =
+    settings.subtitleOutputMode === "DVB Subtitles" && settings.protocol.startsWith("RTMP");
 
   return (
     <main className="broadcast-screen screen-body">
@@ -127,7 +130,8 @@ export function BroadcastSettingsScreen({
                 disabled={
                   playlistLength === 0 ||
                   !settings.streamingEnabled ||
-                  incompatibleScte35Output
+                  incompatibleScte35Output ||
+                  incompatibleSubtitleOutput
                 }
                 onClick={onStart}
                 type="button"
@@ -341,6 +345,112 @@ export function BroadcastSettingsScreen({
           <p className="gop-setting-note">
             {gopStructureSummary(settings)}
           </p>
+        </SettingsCard>
+
+        <SettingsCard
+          icon={<Captions size={16} />}
+          title="Subtitle Output"
+        >
+          <SelectField
+            disabled={!settings.streamingEnabled}
+            label="Delivery mode"
+            onChange={(value) => update(
+              "subtitleOutputMode",
+              value as BroadcastSettings["subtitleOutputMode"],
+            )}
+            options={["Burn-in", "DVB Subtitles"]}
+            value={settings.subtitleOutputMode}
+          />
+          <p className="transport-setting-note">
+            Burn-in draws enabled SRT files into the video. DVB Subtitles creates a separate,
+            receiver-selectable bitmap PID for UDP/SRT MPEG-TS; the original video stays clean.
+          </p>
+          {settings.subtitleOutputMode === "DVB Subtitles" ? (
+            <>
+              <div className="three-column-fields">
+                <NumberField
+                  label="Subtitle PID"
+                  max={8_190}
+                  min={32}
+                  onChange={(value) => update("subtitlePid", Math.min(8_190, Math.max(32, value)))}
+                  value={settings.subtitlePid}
+                />
+                <TextField
+                  label="ISO 639 language"
+                  onChange={(value) => update("subtitleLanguage", value.slice(0, 3))}
+                  value={settings.subtitleLanguage}
+                />
+                <SelectField
+                  label="Subtitle type"
+                  onChange={(value) => update(
+                    "subtitleType",
+                    value as BroadcastSettings["subtitleType"],
+                  )}
+                  options={["Normal", "Hearing impaired"]}
+                  value={settings.subtitleType}
+                />
+              </div>
+              <div className="three-column-fields">
+                <TextField
+                  label="Font family"
+                  onChange={(value) => update("subtitleFontFamily", value)}
+                  value={settings.subtitleFontFamily}
+                />
+                <NumberField
+                  label="Font size"
+                  max={160}
+                  min={12}
+                  onChange={(value) => update("subtitleFontSize", value)}
+                  value={settings.subtitleFontSize}
+                />
+                <NumberField
+                  label="Bottom margin (px)"
+                  max={1_000}
+                  min={0}
+                  onChange={(value) => update("subtitleBottomMargin", value)}
+                  value={settings.subtitleBottomMargin}
+                />
+              </div>
+              <div className="three-column-fields">
+                <SelectField
+                  label="Palette colours"
+                  onChange={(value) => update(
+                    "subtitleMaxColours",
+                    Number(value) as BroadcastSettings["subtitleMaxColours"],
+                  )}
+                  options={["4", "16", "256"]}
+                  value={String(settings.subtitleMaxColours)}
+                />
+                <NumberField
+                  label="Reserved bitrate (kbps)"
+                  max={2_000}
+                  min={32}
+                  onChange={(value) => update("subtitleBitrateKbps", value)}
+                  value={settings.subtitleBitrateKbps}
+                />
+                <NumberField
+                  label="PTS offset (ms)"
+                  max={10_000}
+                  min={0}
+                  onChange={(value) => update("subtitlePtsOffsetMs", value)}
+                  value={settings.subtitlePtsOffsetMs}
+                />
+              </div>
+              <ToggleField
+                checked={settings.subtitleOutline}
+                label="Draw text outline"
+                onChange={(checked) => update("subtitleOutline", checked)}
+              />
+              <div className={`scte35-runtime-note ${incompatibleSubtitleOutput ? "warning" : ""}`}>
+                <Captions size={15} />
+                <span>
+                  {incompatibleSubtitleOutput
+                    ? "RTMP/FLV cannot carry a DVB subtitle PID. Select UDP or SRT."
+                    : "Only clips with SRT enabled in Playlist are included. PMT signalling and the subtitling descriptor are generated automatically; page IDs are 1/1."}
+                </span>
+              </div>
+            </>
+          ) : null}
         </SettingsCard>
 
         <SettingsCard
@@ -896,6 +1006,27 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
             />
             {status.scte35.error ? (
               <span className="scte35-monitor-error">{status.scte35.error}</span>
+            ) : null}
+          </div>
+        </MonitorCard>
+      ) : null}
+
+      {status?.subtitles.enabled ? (
+        <MonitorCard
+          action={(
+            <span className={status.subtitles.state === "running" ? "live-text" : "muted"}>
+              {status.subtitles.state}
+            </span>
+          )}
+          title="DVB Subtitles"
+        >
+          <div className="stats-list scte35-monitor-stats">
+            <Stat label="TS PID" value={status.subtitles.pid == null ? "—" : String(status.subtitles.pid)} />
+            <Stat label="Language" value={status.subtitles.language ?? "—"} />
+            <Stat label="SRT source clips" value={String(status.subtitles.sourceItems)} />
+            <Stat label="Planned cues" value={String(status.subtitles.plannedCues)} />
+            {status.subtitles.error ? (
+              <span className="scte35-monitor-error">{status.subtitles.error}</span>
             ) : null}
           </div>
         </MonitorCard>

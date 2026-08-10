@@ -28,6 +28,7 @@ test("setup uses the version flags expected by FFmpeg tools", () => {
   assert.deepEqual(commandVersionArguments("C:\\Tools\\ffmpeg.exe"), ["-version"]);
   assert.deepEqual(commandVersionArguments('"C:\\Program Files\\FFmpeg\\bin\\ffprobe.exe"'), ["-version"]);
   assert.deepEqual(commandVersionArguments("/opt/homebrew/bin/tsp"), ["--version"]);
+  assert.deepEqual(commandVersionArguments("/opt/homebrew/bin/gst-launch-1.0"), ["--version"]);
   assert.deepEqual(commandVersionArguments("brew"), ["--version"]);
 });
 
@@ -171,11 +172,15 @@ test("setup discovers Windows tools in PATH refresh and standard install locatio
   };
   const ffmpeg = windowsToolCandidates("ffmpeg", environment);
   const tsduck = windowsToolCandidates("tsp.exe", environment);
+  const gstreamer = windowsToolCandidates("gst-launch-1.0", environment);
   const postgres = windowsToolCandidates("psql", environment);
 
   assert.ok(ffmpeg.includes("C:\\Users\\operator\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.exe"));
   assert.ok(ffmpeg.includes("C:\\ffmpeg\\bin\\ffmpeg.exe"));
   assert.ok(tsduck.includes("C:\\Program Files\\TSDuck\\bin\\tsp.exe"));
+  assert.ok(gstreamer.includes(
+    "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin\\gst-launch-1.0.exe",
+  ));
   assert.ok(postgres.includes("C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe"));
 });
 

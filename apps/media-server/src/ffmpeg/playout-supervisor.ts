@@ -21,9 +21,16 @@ import {
 } from "../tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
+  buildDvbSubtitlePmtPatch,
   calculateMinimumTransportMuxRate,
   calculateTransportMuxRate,
 } from "../tsduck/command-builder.js";
+import {
+  buildGstreamerDvbSubtitleCommand,
+  createGstreamerCapabilities,
+  type GstreamerCapabilities,
+} from "../subtitles/gstreamer.js";
+import { buildDvbSubtitleProject } from "../subtitles/srt-project.js";
 
 const previewPath = "/api/playout/preview/index.m3u8";
 const injectorStartupSafetyMs = 2_000;
@@ -47,21 +54,27 @@ export class PlayoutSupervisor {
   readonly previewDirectory: string;
   readonly capabilities: FfmpegCapabilitiesService;
   readonly tsduckCapabilities: TsdDuckCapabilitiesService;
+  readonly gstreamerCapabilities: GstreamerCapabilities;
   #child: ChildProcessWithoutNullStreams | null = null;
   #tsduckChild: ChildProcessWithoutNullStreams | null = null;
+  #subtitleChild: ChildProcessWithoutNullStreams | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
+  #expectedSubtitleStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #killTimer: NodeJS.Timeout | null = null;
   #tsduckKillTimer: NodeJS.Timeout | null = null;
+  #subtitleKillTimer: NodeJS.Timeout | null = null;
   #request: StartPlayoutRequest | null = null;
   #items: PreparedPlayoutItem[] = [];
   #commandArgs: string[] = [];
   #tsduckArgs: string[] = [];
+  #subtitleArgs: string[] = [];
   #cues: PlannedScte35Cue[] = [];
   #observedCueKeys = new Set<string>();
   #status: PlayoutStatus = idleStatus();
   #progressBuffer = "";
   #logBuffer = "";
   #tsduckLogBuffer = "";
+  #subtitleLogBuffer = "";
   #lastLoggedFrame = -1;
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
@@ -73,11 +86,13 @@ export class PlayoutSupervisor {
     previewDirectory: string,
     eventSink: PlayoutEventSink | null = null,
     tsduckCapabilities = new TsdDuckCapabilitiesService(),
+    gstreamerCapabilities = createGstreamerCapabilities(),
   ) {
     this.capabilities = capabilities;
     this.previewDirectory = previewDirectory;
     this.#eventSink = eventSink;
     this.tsduckCapabilities = tsduckCapabilities;
+    this.gstreamerCapabilities = gstreamerCapabilities;
   }
 
   getStatus(): PlayoutStatus {
@@ -85,6 +100,7 @@ export class PlayoutSupervisor {
     return playoutStatusSchema.parse({
       ...this.#status,
       scte35: { ...this.#status.scte35 },
+      subtitles: { ...this.#status.subtitles },
       logs: [...this.#status.logs],
     });
   }
@@ -100,7 +116,7 @@ export class PlayoutSupervisor {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
     }
-    const active = Boolean(this.#child || this.#tsduckChild) ||
+    const active = Boolean(this.#child || this.#tsduckChild || this.#subtitleChild) ||
       ["starting", "running", "stopping"].includes(this.#status.state);
     if (!active) return this.start(request);
 
@@ -110,7 +126,7 @@ export class PlayoutSupervisor {
       const prepared = await this.#prepareRequest(request);
       this.#appendEvent(`Hot take requested from clip "${request.playlist[0]?.name ?? "unknown"}"`);
       await this.stop();
-      await waitForPlayoutStop(() => Boolean(this.#child || this.#tsduckChild) ||
+      await waitForPlayoutStop(() => Boolean(this.#child || this.#tsduckChild || this.#subtitleChild) ||
         ["starting", "running", "stopping"].includes(this.#status.state));
       const status = await this.#startPrepared(request, prepared);
       this.#appendEvent(`Hot take is on air from clip "${request.playlist[0]?.name ?? "unknown"}"`);
@@ -127,6 +143,7 @@ export class PlayoutSupervisor {
     if (
       this.#child ||
       this.#tsduckChild ||
+      this.#subtitleChild ||
       ["starting", "running", "stopping"].includes(this.#status.state)
     ) {
       throw new PlayoutConflictError("A playout session is already active");
@@ -154,6 +171,13 @@ export class PlayoutSupervisor {
         state: request.scte35.enabled ? "starting" : "disabled",
         pid: request.scte35.enabled ? request.scte35.pid : null,
       },
+      subtitles: {
+        ...idleStatus().subtitles,
+        enabled: request.subtitleOutput.mode === "dvb",
+        state: request.subtitleOutput.mode === "dvb" ? "starting" : "disabled",
+        pid: request.subtitleOutput.mode === "dvb" ? request.subtitleOutput.pid : null,
+        language: request.subtitleOutput.mode === "dvb" ? request.subtitleOutput.language : null,
+      },
     };
 
     try {
@@ -176,11 +200,15 @@ export class PlayoutSupervisor {
       if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
       }
+      if (this.#subtitleArgs.length > 0) {
+        await this.#spawnDvbSubtitles();
+      }
       const child = this.#spawnPreparedFfmpeg();
       await waitForSpawn(child);
       return this.getStatus();
     } catch (error) {
       this.#terminateTsdDuck();
+      this.#terminateDvbSubtitles();
       this.#terminateFfmpeg();
       this.#status.state = "failed";
       this.#status.stoppedAt = new Date().toISOString();
@@ -188,6 +216,10 @@ export class PlayoutSupervisor {
       if (this.#status.scte35.enabled && this.#status.scte35.state !== "running") {
         this.#status.scte35.state = "failed";
         this.#status.scte35.error = this.#status.error;
+      }
+      if (this.#status.subtitles.enabled && this.#status.subtitles.state !== "running") {
+        this.#status.subtitles.state = "failed";
+        this.#status.subtitles.error = this.#status.error;
       }
       this.#appendEvent(`Start failed: ${this.#status.error}`);
       throw error;
@@ -202,6 +234,9 @@ export class PlayoutSupervisor {
       if (request.endpoint.protocol === "srt") {
         await this.tsduckCapabilities.assertSrtSupport();
       }
+    }
+    if (request.subtitleOutput.mode === "dvb") {
+      await this.gstreamerCapabilities.assertDvbSubtitlesAvailable();
     }
     const resolvedRequest = await resolveGraphics(request);
     const ignoredSubtitles = request.playlist.filter((item, index) =>
@@ -220,13 +255,14 @@ export class PlayoutSupervisor {
 
   async stop(): Promise<PlayoutStatus> {
     const child = this.#child;
-    if (!child && !this.#tsduckChild) {
+    if (!child && !this.#tsduckChild && !this.#subtitleChild) {
       return this.getStatus();
     }
     if (this.#status.state !== "stopping") {
       this.#status.state = "stopping";
       this.#appendEvent("Graceful stop requested");
       this.#terminateTsdDuck();
+      this.#terminateDvbSubtitles();
       child?.kill("SIGTERM");
       if (child) {
         this.#killTimer = setTimeout(() => {
@@ -260,6 +296,10 @@ export class PlayoutSupervisor {
     this.#status.scte35.observedEvents = 0;
     this.#status.scte35.lastEventId = null;
     this.#status.scte35.error = null;
+    this.#status.subtitles.error = null;
+    this.#status.subtitles.plannedCues = 0;
+    this.#status.subtitles.sourceItems = 0;
+    this.#subtitleArgs = [];
 
     if (!usesTsdDuckTransport(request)) {
       const command = buildFfmpegCommand(
@@ -286,6 +326,39 @@ export class PlayoutSupervisor {
     if (cueFilePath) {
       await writeFile(cueFilePath, buildScte35CueXml(request, this.#cues), "utf8");
     }
+    let subtitleTransport: {
+      inputPort: number;
+      pmtPatchFilePath: string;
+      tspPath: string;
+    } | null = null;
+    if (request.subtitleOutput.mode === "dvb") {
+      const project = await buildDvbSubtitleProject(this.#items);
+      this.#status.subtitles.plannedCues = project.cueCount;
+      this.#status.subtitles.sourceItems = project.sourceItems;
+      if (project.cueCount > 0) {
+        const subtitleInputPath = path.join(
+          this.previewDirectory,
+          `dvb-subtitles-loop-${this.#status.loopCount}.srt`,
+        );
+        const pmtPatchFilePath = path.join(this.previewDirectory, "dvb-subtitles-pmt.xml");
+        const subtitleInputPort = await reserveUdpPort();
+        await writeFile(subtitleInputPath, project.content, "utf8");
+        await writeFile(pmtPatchFilePath, buildDvbSubtitlePmtPatch(request), "utf8");
+        subtitleTransport = {
+          inputPort: subtitleInputPort,
+          pmtPatchFilePath,
+          tspPath: this.tsduckCapabilities.tspPath,
+        };
+        this.#subtitleArgs = buildGstreamerDvbSubtitleCommand({
+          inputPath: subtitleInputPath,
+          outputPort: subtitleInputPort,
+          request,
+        });
+      } else {
+        this.#status.subtitles.state = "completed";
+        this.#appendEvent("DVB subtitles enabled, but the selected playlist contains no valid SRT cues");
+      }
+    }
     const internalEndpoint = {
       protocol: "udp" as const,
       host: "127.0.0.1",
@@ -310,6 +383,7 @@ export class PlayoutSupervisor {
       inputPort,
       monitorPrefix: tsduckMonitorPrefix,
       request,
+      subtitles: subtitleTransport,
     });
     this.#commandArgs = command.args;
     this.#tsduckArgs = tsduck.args;
@@ -502,6 +576,7 @@ export class PlayoutSupervisor {
     const wasStopping = this.#status.state === "stopping";
     const failedByInjector = this.#status.state === "failed";
     this.#child = null;
+    this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
 
     if (!wasStopping && !failedByInjector && code === 0 && this.#request?.repeatPlaylist) {
@@ -517,6 +592,7 @@ export class PlayoutSupervisor {
     if (wasStopping) {
       this.#status.state = "idle";
       if (this.#status.scte35.enabled) this.#status.scte35.state = "completed";
+      if (this.#status.subtitles.enabled) this.#status.subtitles.state = "completed";
       this.#appendEvent(`Playout stopped (${signal ?? code ?? "unknown"})`);
     } else if (failedByInjector) {
       this.#appendEvent(`FFmpeg stopped after injector failure (${signal ?? code ?? "unknown"})`);
@@ -526,6 +602,9 @@ export class PlayoutSupervisor {
       this.#status.outTimeSeconds = this.#status.totalDurationSeconds;
       if (this.#status.scte35.enabled && this.#status.scte35.state !== "failed") {
         this.#status.scte35.state = "completed";
+      }
+      if (this.#status.subtitles.enabled && this.#status.subtitles.state !== "failed") {
+        this.#status.subtitles.state = "completed";
       }
       this.#appendEvent("Playlist completed");
     } else {
@@ -541,6 +620,9 @@ export class PlayoutSupervisor {
       if (this.#request && usesTsdDuckTransport(this.#request)) {
         await this.#spawnTsdDuck();
       }
+      if (this.#subtitleArgs.length > 0) {
+        await this.#spawnDvbSubtitles();
+      }
       this.#spawnPreparedFfmpeg();
     } catch (error) {
       this.#handleProcessError(
@@ -554,6 +636,7 @@ export class PlayoutSupervisor {
     this.#status.stoppedAt = new Date().toISOString();
     this.#status.error = error.message;
     this.#appendEvent(`FFmpeg process error: ${error.message}`);
+    this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
   }
 
@@ -625,6 +708,75 @@ export class PlayoutSupervisor {
     }
   }
 
+  async #spawnDvbSubtitles(): Promise<void> {
+    if (this.#subtitleArgs.length === 0) return;
+    const child = spawn(this.gstreamerCapabilities.launchPath, this.#subtitleArgs, {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.#subtitleChild = child;
+    this.#subtitleLogBuffer = "";
+    const readLogs = (chunk: Buffer) => {
+      this.#subtitleLogBuffer += chunk.toString("utf8");
+      const lines = this.#subtitleLogBuffer.split(/\r?\n/);
+      this.#subtitleLogBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const message = line.trim();
+        if (message) this.#appendLog(`GStreamer DVB: ${message}`);
+      }
+    };
+    child.stdout.on("data", readLogs);
+    child.stderr.on("data", readLogs);
+    child.once("close", (code, signal) => this.#handleDvbSubtitleClose(child, code, signal));
+    child.once("error", (error) => this.#handleDvbSubtitleError(child, error));
+    await waitForSpawn(child);
+    if (this.#subtitleChild !== child) throw new Error("DVB subtitle encoder exited during startup");
+    this.#status.subtitles.state = "running";
+    this.#appendEvent(
+      `DVB subtitle encoder started with PID ${child.pid ?? "unknown"}; ` +
+        `${this.#status.subtitles.plannedCues} cue(s) on TS PID ${this.#request?.subtitleOutput.pid}, ` +
+        `language ${this.#request?.subtitleOutput.language}`,
+    );
+  }
+
+  #handleDvbSubtitleClose(
+    child: ChildProcessWithoutNullStreams,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.#subtitleChild === child) this.#subtitleChild = null;
+    if (this.#subtitleKillTimer) {
+      clearTimeout(this.#subtitleKillTimer);
+      this.#subtitleKillTimer = null;
+    }
+    if (this.#expectedSubtitleStops.has(child)) return;
+    if (code === 0) {
+      this.#status.subtitles.state = "completed";
+      this.#appendEvent("DVB subtitle cue stream completed");
+      return;
+    }
+    const error = `DVB subtitle encoder exited with ${code ?? signal ?? "unknown"}`;
+    this.#status.subtitles.state = "failed";
+    this.#status.subtitles.error = error;
+    this.#status.state = "failed";
+    this.#status.error = error;
+    this.#status.stoppedAt = new Date().toISOString();
+    this.#appendEvent(error);
+    this.#child?.kill("SIGTERM");
+    this.#terminateTsdDuck();
+  }
+
+  #handleDvbSubtitleError(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.#expectedSubtitleStops.has(child)) return;
+    this.#status.subtitles.state = "failed";
+    this.#status.subtitles.error = error.message;
+    this.#status.state = "failed";
+    this.#status.error = error.message;
+    this.#appendEvent(`DVB subtitle process error: ${error.message}`);
+    this.#child?.kill("SIGTERM");
+    this.#terminateTsdDuck();
+  }
+
   #handleTsdDuckClose(
     child: ChildProcessWithoutNullStreams,
     code: number | null,
@@ -651,6 +803,7 @@ export class PlayoutSupervisor {
     this.#status.stoppedAt = new Date().toISOString();
     this.#appendEvent(error);
     this.#child?.kill("SIGTERM");
+    this.#terminateDvbSubtitles();
   }
 
   #handleTsdDuckError(child: ChildProcessWithoutNullStreams, error: Error): void {
@@ -663,6 +816,7 @@ export class PlayoutSupervisor {
     this.#status.error = error.message;
     this.#appendEvent(`TSDuck process error: ${error.message}`);
     this.#child?.kill("SIGTERM");
+    this.#terminateDvbSubtitles();
   }
 
   #terminateTsdDuck(): void {
@@ -673,6 +827,16 @@ export class PlayoutSupervisor {
     child.kill("SIGTERM");
     this.#tsduckKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
     this.#tsduckKillTimer.unref();
+  }
+
+  #terminateDvbSubtitles(): void {
+    const child = this.#subtitleChild;
+    if (!child) return;
+    this.#subtitleChild = null;
+    this.#expectedSubtitleStops.add(child);
+    child.kill("SIGTERM");
+    this.#subtitleKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+    this.#subtitleKillTimer.unref();
   }
 
   #terminateFfmpeg(): void {
@@ -696,6 +860,7 @@ export class PlayoutSupervisor {
     this.#status.error = null;
     this.#status.stoppedAt = null;
     if (this.#status.scte35.enabled) this.#status.scte35.state = "starting";
+    if (this.#status.subtitles.enabled) this.#status.subtitles.state = "starting";
   }
 }
 
@@ -831,6 +996,11 @@ function validateCapabilities(
       "SCTE-35 injection requires UDP or SRT MPEG-TS output; RTMP/FLV is not supported",
     );
   }
+  if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol === "rtmp") {
+    throw new PlayoutPreflightError(
+      "DVB subtitles require UDP or SRT MPEG-TS output; RTMP/FLV is not supported",
+    );
+  }
   const ffmpegProtocol = usesTsdDuckTransport(request)
     ? "udp"
     : request.endpoint.protocol;
@@ -880,6 +1050,23 @@ function validateCapabilities(
       throw new PlayoutPreflightError(
         `SCTE-35 PID ${request.scte35.pid} conflicts with ` +
           `${request.scte35.pid === videoPid ? "video" : "audio"} PID`,
+      );
+    }
+  }
+  if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol !== "rtmp") {
+    const { audioPid, videoPid } = request.endpoint.protocol === "udp"
+      ? request.endpoint.mpegTs
+      : defaultMpegTsOutputSettings;
+    const conflictsWith = request.subtitleOutput.pid === videoPid
+      ? "video"
+      : request.subtitleOutput.pid === audioPid
+        ? "audio"
+        : request.scte35.enabled && request.subtitleOutput.pid === request.scte35.pid
+          ? "SCTE-35"
+          : null;
+    if (conflictsWith) {
+      throw new PlayoutPreflightError(
+        `DVB subtitle PID ${request.subtitleOutput.pid} conflicts with ${conflictsWith} PID`,
       );
     }
   }
@@ -946,6 +1133,15 @@ function idleStatus(): PlayoutStatus {
       lastEventId: null,
       nextEventId: null,
       nextEventInSeconds: null,
+      error: null,
+    },
+    subtitles: {
+      enabled: false,
+      state: "disabled",
+      pid: null,
+      language: null,
+      plannedCues: 0,
+      sourceItems: 0,
       error: null,
     },
     error: null,

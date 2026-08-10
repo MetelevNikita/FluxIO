@@ -779,6 +779,372 @@ p {
 }
 .effect-remove-button:hover { color: var(--danger); background: var(--danger-soft); }
 
+.effects-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 0.9fr) minmax(420px, 1.1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.effects-workspace .effects-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.effect-card {
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.effect-card:hover,
+.effect-card.selected {
+  border-color: rgba(255, 211, 77, 0.48);
+  background: #15181c;
+}
+
+.effect-card.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.effect-kind-icon.lottie {
+  color: #111;
+  background: var(--accent);
+}
+
+.effect-lottie-summary {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+.effect-lottie-summary strong {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+}
+
+.effect-inspector {
+  min-width: 0;
+  max-height: calc(100vh - 190px);
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.effect-inspector-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.effect-inspector-heading > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.effect-inspector-heading strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lottie-preview,
+.effect-raster-preview {
+  width: 100%;
+  min-height: 220px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: #080a0c;
+  background-image:
+    linear-gradient(45deg, #14181c 25%, transparent 25%),
+    linear-gradient(-45deg, #14181c 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #14181c 75%),
+    linear-gradient(-45deg, transparent 75%, #14181c 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+  overflow: hidden;
+}
+
+.lottie-preview canvas {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+}
+
+.lottie-preview > span {
+  position: absolute;
+  left: 8px;
+  bottom: 7px;
+  border-radius: 3px;
+  padding: 3px 5px;
+  color: #111;
+  background: var(--accent);
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.lottie-preview > em {
+  max-width: calc(100% - 24px);
+  position: relative;
+  border-radius: 4px;
+  padding: 8px;
+  color: var(--danger);
+  background: rgba(20, 8, 8, 0.9);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.effect-raster-preview {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.effect-raster-preview img {
+  width: 100%;
+  height: 150px;
+  object-fit: contain;
+}
+
+.effect-assignment-panel,
+.lottie-properties {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #0d1013;
+}
+
+.effect-assignment-panel > strong,
+.lottie-properties-heading strong {
+  font-size: 11px;
+}
+
+.effect-assignment-panel > button,
+.effect-assignment-panel > div button,
+.lottie-properties-heading button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 211, 77, 0.45);
+  border-radius: 4px;
+  padding: 0 10px;
+  color: #111;
+  background: var(--accent);
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.effect-assignment-panel > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.effect-assignment-panel select {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 9px;
+}
+
+.effect-assignment-panel small {
+  color: var(--muted-dark);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.lottie-properties-heading,
+.lottie-composition-properties,
+.lottie-property-row,
+.lottie-property-row label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.lottie-properties-heading {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lottie-properties-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lottie-properties-heading span,
+.lottie-composition-properties > span {
+  color: var(--muted-dark);
+  font-size: 8px;
+}
+
+.lottie-composition-properties {
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0;
+}
+
+.lottie-composition-properties label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.lottie-composition-properties input[type="color"] {
+  width: 24px;
+  height: 20px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.lottie-warning {
+  margin: 0;
+  border-left: 2px solid var(--accent);
+  padding-left: 7px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.lottie-property-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lottie-property-groups details {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+
+.lottie-property-groups summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.lottie-property-groups summary span {
+  color: var(--accent);
+}
+
+.lottie-property-row {
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding: 7px 8px;
+}
+
+.lottie-property-row.overridden {
+  background: rgba(255, 211, 77, 0.035);
+}
+
+.lottie-property-row label {
+  flex: 1;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.lottie-property-row label > span:first-child {
+  min-width: 100px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lottie-property-row i {
+  width: max-content;
+  color: #7dd3fc;
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+}
+
+.lottie-property-row input[type="text"],
+.lottie-property-row input[type="number"] {
+  width: min(180px, 42%);
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 6px;
+  color: var(--text);
+  background: #090b0d;
+  font-size: 8px;
+}
+
+.lottie-vector-input {
+  width: min(220px, 55%);
+  display: flex;
+  gap: 4px;
+}
+
+.lottie-vector-input input[type="number"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.lottie-property-row > button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  color: var(--muted-dark);
+  background: transparent;
+}
+
+.lottie-property-row > button:not(:disabled):hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .schedule-resource-toolbar {
   min-height: 136px;
   display: grid;
@@ -1812,7 +2178,12 @@ p {
   border: 1px solid rgba(56, 189, 248, 0.65);
   border-radius: 2px;
   background: rgba(14, 165, 233, 0.28);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+
+.effect-track-rail > i:active { cursor: grabbing; }
 
 .effect-track-rail > i em {
   position: absolute;
@@ -3256,6 +3627,15 @@ input[type="range"] {
 }
 
 @media (max-width: 1180px) {
+  .effects-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .effect-inspector {
+    max-height: none;
+    position: static;
+  }
+
   .console-header {
     grid-template-columns: auto 1fr;
   }
