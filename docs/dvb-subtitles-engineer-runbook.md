@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.6**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.8**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -70,7 +70,9 @@ $LASTEXITCODE
 4. Задайте уникальный `Subtitle PID`; по умолчанию `288` (`0x0120`). Он не должен совпадать с video, audio или SCTE-35 PID.
 5. Укажите трёхбуквенный ISO 639 language, например `rus` или `eng`.
 6. Выберите `Normal` либо `Hearing impaired`.
-7. Проверьте font, размер, нижний отступ, palette и reserved bitrate.
+7. Проверьте font, размер, нижний отступ, palette и reserved bitrate. DVB renderer
+   использует только документированные свойства `textrender`; отдельной настройки
+   outline в этом режиме нет.
 8. Оставьте `PTS offset = 1400 ms`, пока измерение на приёмнике не покажет систематическое опережение или запаздывание.
 9. Нажмите Start. В Encoding Monitor карточка `DVB Subtitles` должна перейти в `running` и показать число cue.
 
@@ -112,6 +114,10 @@ ffprobe -hide_banner -show_programs -show_streams "udp://239.10.10.10:5000?local
 ## Диагностика
 
 `DVB subtitles require GStreamer` — проверить `gst-inspect-1.0 --exists dvbsubenc` и пути в `.env`.
+
+`no property "draw-outline" in element "textrender"` — используется версия
+FluxIO до v6.0.7. Обновить repository, пересобрать media-service и повторить
+запуск; `draw-outline` и `draw-shadow` не являются свойствами `textrender`.
 
 `Subtitle PID must differ...` — назначить свободный PID от `32` до `8190`.
 

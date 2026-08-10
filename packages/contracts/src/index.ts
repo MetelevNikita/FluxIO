@@ -262,6 +262,7 @@ export const lottieEditablePropertySchema = z.object({
   label: z.string().min(1).max(256),
   type: lottiePropertyTypeSchema,
   value: lottiePropertyValueSchema,
+  originalValue: lottiePropertyValueSchema.optional(),
   animated: z.boolean().default(false),
   overridden: z.boolean().default(false),
   min: z.number().finite().optional(),

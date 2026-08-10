@@ -436,11 +436,6 @@ export function BroadcastSettingsScreen({
                   value={settings.subtitlePtsOffsetMs}
                 />
               </div>
-              <ToggleField
-                checked={settings.subtitleOutline}
-                label="Draw text outline"
-                onChange={(checked) => update("subtitleOutline", checked)}
-              />
               <div className={`scte35-runtime-note ${incompatibleSubtitleOutput ? "warning" : ""}`}>
                 <Captions size={15} />
                 <span>

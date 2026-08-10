@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v6.0.6**.
+Текущая версия: **v6.0.8**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -113,6 +113,12 @@ node setup.mjs
 - независимый от Electron media-service;
 - постоянный индикатор `ACTIVE / NOT ACTIVE` и адрес media-server в левом нижнем углу;
 - единый production launcher и ярлык рабочего стола для Windows, macOS и Linux;
+- production launcher после перезагрузки проверяет media-server, при
+  необходимости запускает его и восстанавливает последнюю Playlist-сессию;
+- автосохранение последней Playlist-сессии в PostgreSQL после изменений;
+- Effects preview SD/FHD/UHD, Start/Stop animation, linked Scale X/Y с точным
+  вводом и reset исходных Lottie values;
+- прозрачная multi-size Windows ICO без белого квадрата и скруглённая macOS ICNS;
 - совместное завершение Electron и media-server по `Ctrl+C` в окне `setup.mjs`;
 - FluxIO splash 1440 × 920 с пятисекундным progress и безопасным ожиданием готовности основного Electron-окна.
 

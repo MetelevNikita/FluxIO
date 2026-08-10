@@ -2,6 +2,22 @@ import type { LottieEditableProperty } from "@gruber/contracts";
 
 type JsonObject = Record<string, unknown>;
 
+export function updateLinkedScaleVector(
+  current: number[],
+  axis: number,
+  value: number,
+  linked: boolean,
+): number[] {
+  const next = [...current];
+  if (linked && axis < 2) {
+    next[0] = value;
+    next[1] = value;
+  } else {
+    next[axis] = value;
+  }
+  return next;
+}
+
 export function applyLottiePropertyOverrides(
   source: Record<string, unknown>,
   properties: LottieEditableProperty[],

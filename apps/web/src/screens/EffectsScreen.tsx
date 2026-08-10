@@ -1,19 +1,28 @@
 import type { GraphicEffectAsset, LottieEditableProperty } from "@gruber/contracts";
 import type { DotLottie as DotLottiePlayer } from "@lottiefiles/dotlottie-web";
 import {
+  CheckCircle2,
   FileJson2,
   FileVideo2,
   FolderOpen,
   Image,
   Layers3,
+  Link2,
+  Link2Off,
   LoaderCircle,
+  Pause,
+  Play,
   Plus,
   RotateCcw,
   Send,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { applyLottiePropertyOverrides } from "../lottie-properties";
+import {
+  applyLottiePropertyOverrides,
+  updateLinkedScaleVector,
+} from "../lottie-properties";
 import { getLottieSource, lottieWasmUrl } from "../media-api";
 
 export interface EffectTargetClip {
@@ -32,7 +41,7 @@ interface EffectsScreenProps {
   onSelectTitleDirectory?: (effectId: string) => Promise<void>;
   onClearTitleDirectory: (effectId: string) => void;
   onRemove: (effectId: string) => void;
-  onRenderLottie: (effect: GraphicEffectAsset) => Promise<void>;
+  onRenderLottie: (effect: GraphicEffectAsset) => Promise<GraphicEffectAsset>;
   onAddToEntireProject: (effectId: string) => void;
   onAddToClip: (effectId: string, clipId: string) => void;
 }
@@ -53,7 +62,10 @@ export function EffectsScreen({
 }: EffectsScreenProps) {
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
+  const [previewEffect, setPreviewEffect] = useState<GraphicEffectAsset | null>(null);
+  const [renderNotice, setRenderNotice] = useState<string | null>(null);
   const [targetClipId, setTargetClipId] = useState("");
+  const renderNoticeTimer = useRef<number | null>(null);
 
   const selectedEffect = useMemo(
     () => effects.find((effect) => effect.id === selectedEffectId) ?? effects[0] ?? null,
@@ -64,11 +76,17 @@ export function EffectsScreen({
     if (!selectedEffect) {
       setSelectedEffectId("");
       setDraftEffect(null);
+      setPreviewEffect(null);
       return;
     }
     if (selectedEffect.id !== selectedEffectId) setSelectedEffectId(selectedEffect.id);
     setDraftEffect(selectedEffect);
+    setPreviewEffect(selectedEffect);
   }, [selectedEffect?.id, selectedEffect?.filePath]);
+
+  useEffect(() => () => {
+    if (renderNoticeTimer.current != null) window.clearTimeout(renderNoticeTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!targetClipId || !clips.some((clip) => clip.id === targetClipId)) {
@@ -79,6 +97,22 @@ export function EffectsScreen({
   const selectEffect = (effect: GraphicEffectAsset) => {
     setSelectedEffectId(effect.id);
     setDraftEffect(effect);
+    setPreviewEffect(effect);
+    setRenderNotice(null);
+  };
+
+  const renderDraft = async () => {
+    if (!draftEffect?.lottie) return;
+    try {
+      const rendered = await onRenderLottie(draftEffect);
+      setDraftEffect(rendered);
+      setPreviewEffect(rendered);
+      setRenderNotice(`${rendered.name} successfully rendered and added to the current project.`);
+      if (renderNoticeTimer.current != null) window.clearTimeout(renderNoticeTimer.current);
+      renderNoticeTimer.current = window.setTimeout(() => setRenderNotice(null), 5_000);
+    } catch {
+      // The parent publishes the actionable render error in the global error panel.
+    }
   };
 
   return (
@@ -166,6 +200,15 @@ export function EffectsScreen({
 
           {draftEffect ? (
             <aside className="effect-inspector">
+              {renderNotice ? (
+                <div className="effect-render-notice" role="status">
+                  <CheckCircle2 size={17} />
+                  <span>{renderNotice}</span>
+                  <button aria-label="Close render notification" onClick={() => setRenderNotice(null)} type="button">
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : null}
               <div className="effect-inspector-heading">
                 <div>
                   <span className="eyebrow">Selected effect</span>
@@ -174,7 +217,7 @@ export function EffectsScreen({
                 {busy ? <LoaderCircle className="spin" size={18} /> : null}
               </div>
 
-              {draftEffect.lottie ? <LottiePreview effect={draftEffect} /> : (
+              {draftEffect.lottie ? <LottiePreview effect={previewEffect ?? draftEffect} /> : (
                 <div className="effect-raster-preview">
                   {draftEffect.kind === "static" ? <Image size={36} /> : <FileVideo2 size={36} />}
                   <span>Existing alpha media uses the standard FX pipeline.</span>
@@ -202,7 +245,7 @@ export function EffectsScreen({
                   disabled={busy}
                   effect={draftEffect}
                   onChange={setDraftEffect}
-                  onRender={() => void onRenderLottie(draftEffect)}
+                  onRender={() => void renderDraft()}
                 />
               ) : null}
             </aside>
@@ -215,8 +258,13 @@ export function EffectsScreen({
 
 function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationRef = useRef<DotLottiePlayer | null>(null);
+  const playingRef = useRef(true);
   const [source, setSource] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(true);
+  const [resolutionKey, setResolutionKey] = useState<PreviewResolutionKey>("1920x1080");
+  const resolution = previewResolutions[resolutionKey];
 
   useEffect(() => {
     if (!effect.lottie) return;
@@ -246,6 +294,8 @@ function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
           loop: true,
           renderConfig: { autoResize: true, devicePixelRatio: Math.min(window.devicePixelRatio, 2) },
         });
+        animationRef.current = animation;
+        if (!playingRef.current) animation.pause();
         animation.addEventListener("loadError", (event) => setError(event.error.message));
       })
       .catch((reason) => {
@@ -253,18 +303,57 @@ function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
       });
     return () => {
       cancelled = true;
+      if (animationRef.current === animation) animationRef.current = null;
       animation?.destroy();
     };
   }, [source, effect.lottie]);
 
+  const togglePlayback = () => {
+    const next = !playing;
+    playingRef.current = next;
+    setPlaying(next);
+    if (next) animationRef.current?.play();
+    else animationRef.current?.pause();
+  };
+
   return (
-    <div className="lottie-preview" style={{ background: effect.lottie?.backgroundColor === "transparent" ? undefined : effect.lottie?.backgroundColor }}>
-      <canvas ref={canvasRef} />
-      <span>LIVE LOTTIE PREVIEW</span>
-      {error ? <em>{error}</em> : null}
+    <div className="lottie-preview-shell">
+      <div className="lottie-preview-toolbar">
+        <label>
+          <span>Preview format</span>
+          <select onChange={(event) => setResolutionKey(event.target.value as PreviewResolutionKey)} value={resolutionKey}>
+            {Object.entries(previewResolutions).map(([key, value]) => (
+              <option key={key} value={key}>{value.label}</option>
+            ))}
+          </select>
+        </label>
+        <button className={playing ? "active" : ""} onClick={togglePlayback} type="button">
+          {playing ? <Pause size={12} /> : <Play size={12} />}
+          {playing ? "Stop animation" : "Start animation"}
+        </button>
+      </div>
+      <div
+        className="lottie-preview"
+        style={{
+          aspectRatio: `${resolution.width} / ${resolution.height}`,
+          background: effect.lottie?.backgroundColor === "transparent" ? undefined : effect.lottie?.backgroundColor,
+        }}
+      >
+        <canvas ref={canvasRef} />
+        <span>{resolution.label} · RENDERED PREVIEW</span>
+        {error ? <em>{error}</em> : null}
+      </div>
     </div>
   );
 }
+
+const previewResolutions = {
+  "720x576": { height: 576, label: "SD · 720×576", width: 720 },
+  "1920x1080": { height: 1_080, label: "FHD · 1920×1080", width: 1_920 },
+  "3840x2160": { height: 2_160, label: "UHD · 3840×2160", width: 3_840 },
+} as const;
+
+type PreviewResolutionKey = keyof typeof previewResolutions;
 
 function LottieProperties({
   disabled,
@@ -299,7 +388,11 @@ function LottieProperties({
       lottie: {
         ...effect.lottie,
         properties: effect.lottie.properties.map((property) => property.id === propertyId
-          ? { ...property, overridden: false }
+          ? {
+              ...property,
+              value: structuredClone(property.originalValue ?? property.value),
+              overridden: false,
+            }
           : property),
       },
     });
@@ -430,6 +523,9 @@ function PropertyInput({ property, onChange }: {
     );
   }
   if (property.type === "vector" && Array.isArray(property.value)) {
+    if (property.label.toLowerCase() === "scale") {
+      return <ScalePropertyInput property={property} onChange={onChange} />;
+    }
     return (
       <span className="lottie-vector-input">
         {property.value.map((value, index) => (
@@ -452,6 +548,54 @@ function PropertyInput({ property, onChange }: {
     );
   }
   return <input onChange={(event) => onChange(event.target.value)} type="text" value={String(property.value)} />;
+}
+
+function ScalePropertyInput({ property, onChange }: {
+  property: LottieEditableProperty;
+  onChange: (value: LottieEditableProperty["value"]) => void;
+}) {
+  const values = Array.isArray(property.value) ? property.value : [100, 100];
+  const [linked, setLinked] = useState(() => Math.abs((values[0] ?? 100) - (values[1] ?? 100)) < 0.001);
+  const maximum = Math.max(400, Math.ceil(Math.max(...values) / 100) * 100);
+  const update = (axis: number, rawValue: number) => {
+    const value = Number.isFinite(rawValue) ? Math.max(0, Math.min(2_000, rawValue)) : 0;
+    onChange(updateLinkedScaleVector(values, axis, value, linked));
+  };
+  return (
+    <span className="lottie-scale-input">
+      <button
+        className={linked ? "linked" : ""}
+        onClick={() => setLinked((current) => !current)}
+        title={linked ? "Unlock X/Y scale" : "Link X/Y scale"}
+        type="button"
+      >
+        {linked ? <Link2 size={12} /> : <Link2Off size={12} />}
+      </button>
+      {[0, 1].map((axis) => (
+        <label key={axis}>
+          <span>{axis === 0 ? "X" : "Y"}</span>
+          <input
+            aria-label={`Scale ${axis === 0 ? "X" : "Y"} slider`}
+            max={maximum}
+            min={0}
+            onChange={(event) => update(axis, Number(event.target.value))}
+            step="0.1"
+            type="range"
+            value={values[axis] ?? 100}
+          />
+          <input
+            aria-label={`Scale ${axis === 0 ? "X" : "Y"} percent`}
+            max={2_000}
+            min={0}
+            onChange={(event) => update(axis, Number(event.target.value))}
+            step="0.1"
+            type="number"
+            value={values[axis] ?? 100}
+          />
+        </label>
+      ))}
+    </span>
+  );
 }
 
 function groupProperties(properties: LottieEditableProperty[]): Map<string, LottieEditableProperty[]> {

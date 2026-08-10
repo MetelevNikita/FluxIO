@@ -254,7 +254,18 @@ export async function saveBroadcastConfiguration(
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(mediaApiUrl(path), init);
+  const longRunning = [
+    "/api/effects/analyze",
+    "/api/effects/scan",
+    "/api/effects/lottie/render",
+    "/api/media/probe",
+    "/api/media/scan",
+    "/api/schedule/parse",
+  ].some((prefix) => path.startsWith(prefix));
+  const response = await fetch(mediaApiUrl(path), {
+    ...init,
+    signal: init?.signal ?? AbortSignal.timeout(longRunning ? 10 * 60_000 : 10_000),
+  });
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {
     const message = payload && typeof payload === "object" && "error" in payload

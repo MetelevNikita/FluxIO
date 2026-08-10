@@ -69,7 +69,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.6");
+    assert.equal(health.version, "6.0.8");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -121,6 +121,8 @@ test("Lottie inspector exposes operator properties and preserves animation until
     property.label === "Fill · Accent" && property.value === "#FF8000"));
   assert.ok(metadata.properties.some((property) =>
     property.label === "Text" && property.value === "Original title"));
+  const scale = metadata.properties.find((property) => property.label === "Scale");
+  assert.deepEqual(scale?.originalValue, [100, 100, 100]);
   assert.match(metadata.warnings.join(" "), /Animated properties are preserved/);
 });
 
@@ -834,6 +836,7 @@ test("DVB subtitle mode keeps video clean and builds a separate GStreamer bitmap
     request,
   }).join(" ");
   assert.match(gstreamer, /subparse ! textrender/);
+  assert.doesNotMatch(gstreamer, /draw-outline|draw-shadow/);
   assert.match(gstreamer, /video\/x-raw,format=AYUV,width=1280,height=720/);
   assert.match(gstreamer, /dvbsubenc max-colours=16 ts-offset=1400000000/);
   assert.match(gstreamer, /mux\.sink_288/);

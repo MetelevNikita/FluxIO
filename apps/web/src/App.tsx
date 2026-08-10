@@ -122,15 +122,20 @@ export function App() {
   const [recoveryCheckpoint, setRecoveryCheckpoint] = useState<WorkspaceSessionCheckpoint | null>(null);
   const [scheduleStartMarker, setScheduleStartMarker] = useState<ScheduleStartMarker | null>(null);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceAutosaveReady, setWorkspaceAutosaveReady] = useState(false);
   const [takeBusy, setTakeBusy] = useState(false);
   const [settingsProfileBusy, setSettingsProfileBusy] = useState(false);
   const [settingsProfileMessage, setSettingsProfileMessage] = useState<string | null>(null);
   const workspaceRestoreStarted = useRef(false);
+  const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     let cancelled = false;
+    let requestInFlight = false;
 
     async function loadHealth() {
+      if (requestInFlight) return;
+      requestInFlight = true;
       try {
         const healthPayload = window.gruberDesktop
           ? await window.gruberDesktop.getServiceHealth()
@@ -146,6 +151,8 @@ export function App() {
             message: error instanceof Error ? error.message : "Unknown error",
           });
         }
+      } finally {
+        requestInFlight = false;
       }
     }
 
@@ -162,6 +169,7 @@ export function App() {
       return;
     }
     let cancelled = false;
+    let pollInFlight = false;
 
     async function refresh() {
       try {
@@ -192,8 +200,13 @@ export function App() {
       }
     }
 
-    void refresh();
+    pollInFlight = true;
+    void refresh().finally(() => {
+      pollInFlight = false;
+    });
     const timer = window.setInterval(() => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       void Promise.all([getPlayoutStatus(), getSystemMetrics()])
         .then(([status, metrics]) => {
           if (!cancelled) {
@@ -201,7 +214,10 @@ export function App() {
             setSystemMetrics(metrics);
           }
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          pollInFlight = false;
+        });
     }, 1_000);
     return () => {
       cancelled = true;
@@ -226,11 +242,54 @@ export function App() {
       })
       .catch((error) => {
         if (!cancelled) setOperationError(errorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) setWorkspaceAutosaveReady(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [connection]);
+  }, [connection.kind, connection.kind === "ready" ? connection.health.status : null]);
+
+  useEffect(() => {
+    if (
+      !workspaceAutosaveReady ||
+      demoDataEnabled ||
+      (playlist.length === 0 && futurePlaylist.length === 0)
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const request = buildWorkspaceSaveRequest();
+      workspaceAutosaveChain.current = workspaceAutosaveChain.current
+        .catch(() => undefined)
+        .then(async () => {
+          const saved = await persistWorkspaceSession(request);
+          setSavedWorkspaceSession(saved);
+          setRecoveryCheckpoint(saved.checkpoint?.interrupted ? saved.checkpoint : null);
+        })
+        .catch((error) => {
+          setOperationError(`Workspace autosave failed: ${errorMessage(error)}`);
+        });
+    }, 2_500);
+    return () => window.clearTimeout(timer);
+  }, [
+    workspaceAutosaveReady,
+    assets,
+    playlist,
+    futurePlaylist,
+    activeSchedule,
+    selectedAssetId,
+    currentScheduleMetadata,
+    futureScheduleMetadata,
+    scheduleLogoPath,
+    scheduleLogoSource,
+    ageLibrary,
+    effectLibrary,
+    subtitleLibrary,
+    scheduleStartMarker,
+    settings,
+  ]);
 
   const visiblePlaylist = activeSchedule === "current" ? playlist : futurePlaylist;
   const selectedAsset = useMemo(
@@ -618,26 +677,7 @@ export function App() {
     setWorkspaceBusy(true);
     setOperationError(null);
     try {
-      const request: WorkspaceSessionSaveRequest = {
-        snapshot: {
-          version: 2,
-          assets,
-          currentPlaylist: playlist,
-          futurePlaylist,
-          activeSchedule,
-          selectedAssetId: selectedAssetId || null,
-          currentScheduleMetadata,
-          futureScheduleMetadata,
-          scheduleLogoPath,
-          scheduleLogoSource,
-          ageLibrary,
-          effectLibrary,
-          subtitleLibrary,
-          startMarker: scheduleStartMarker,
-          settings: primitiveSettings(settings),
-        },
-      };
-      const saved = await persistWorkspaceSession(request);
+      const saved = await persistWorkspaceSession(buildWorkspaceSaveRequest());
       setSavedWorkspaceSession(saved);
       setRecoveryCheckpoint(saved.checkpoint?.interrupted ? saved.checkpoint : null);
       setScheduleActionMessage(
@@ -648,6 +688,28 @@ export function App() {
     } finally {
       setWorkspaceBusy(false);
     }
+  }
+
+  function buildWorkspaceSaveRequest(): WorkspaceSessionSaveRequest {
+    return {
+      snapshot: {
+        version: 2,
+        assets,
+        currentPlaylist: playlist,
+        futurePlaylist,
+        activeSchedule,
+        selectedAssetId: selectedAssetId || null,
+        currentScheduleMetadata,
+        futureScheduleMetadata,
+        scheduleLogoPath,
+        scheduleLogoSource,
+        ageLibrary,
+        effectLibrary,
+        subtitleLibrary,
+        startMarker: scheduleStartMarker,
+        settings: primitiveSettings(settings),
+      },
+    };
   }
 
   async function createNewPlaylist() {
@@ -752,8 +814,8 @@ export function App() {
     }
   }
 
-  async function renderProjectLottie(effect: GraphicEffectAsset) {
-    if (!effect.lottie) return;
+  async function renderProjectLottie(effect: GraphicEffectAsset): Promise<GraphicEffectAsset> {
+    if (!effect.lottie) throw new Error("The selected effect is not a Lottie project.");
     setEffectsBusy(true);
     setOperationError(null);
     try {
@@ -776,8 +838,10 @@ export function App() {
       setEffectsMessage(
         `${rendered.name} rendered with ${rendered.lottie?.properties.filter((property) => property.overridden).length ?? 0} operator override(s).`,
       );
+      return rendered;
     } catch (error) {
       setOperationError(errorMessage(error));
+      throw error;
     } finally {
       setEffectsBusy(false);
     }
@@ -1150,7 +1214,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.6",
+        connection.kind === "ready" ? connection.health.version : "6.0.8",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1506,7 +1570,7 @@ function EmptyPlaylist({
 }
 
 async function fetchHealth(): Promise<unknown> {
-  const response = await fetch("/api/health");
+  const response = await fetch("/api/health", { signal: AbortSignal.timeout(1_500) });
 
   if (!response.ok) {
     throw new Error(`Media service returned ${response.status}`);

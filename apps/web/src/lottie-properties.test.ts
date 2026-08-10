@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyLottiePropertyOverrides } from "./lottie-properties.js";
+import {
+  applyLottiePropertyOverrides,
+  updateLinkedScaleVector,
+} from "./lottie-properties.js";
+
+test("linked Lottie scale keeps X and Y together without changing Z", () => {
+  assert.deepEqual(updateLinkedScaleVector([100, 90, 75], 0, 125, true), [125, 125, 75]);
+  assert.deepEqual(updateLinkedScaleVector([100, 90, 75], 1, 80, false), [100, 80, 75]);
+});
 
 test("live Lottie preview applies an escaped Essential Graphics text slot path", () => {
   const source = {

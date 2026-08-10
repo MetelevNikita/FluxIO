@@ -64,8 +64,6 @@ export function buildGstreamerDvbSubtitleCommand({
     "line-alignment=center",
     "valignment=bottom",
     `ypad=${subtitles.bottomMargin}`,
-    `draw-outline=${subtitles.outline}`,
-    "draw-shadow=false",
     "!",
     `video/x-raw,format=AYUV,width=${request.video.width},height=${request.video.height}`,
     "!",

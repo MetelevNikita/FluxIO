@@ -405,6 +405,33 @@
 - понятная диагностика неполного Runtime без смешивания ошибки executable и plugin;
 - Windows regression tests для абсолютных путей, содержащих пробелы.
 
+### 4.8. GStreamer textrender compatibility v6.0.7
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-08-gstreamer-textrender-v6.0.7.md`](progress/04-08-gstreamer-textrender-v6.0.7.md).
+
+- удалены неподдерживаемые параметры `draw-outline` и `draw-shadow` из DVB pipeline;
+- сохранены документированные font, alignment, padding и AYUV параметры;
+- DVB outline control удалён из Broadcast, чтобы UI не обещал несуществующую возможность;
+- добавлен regression test на совместимость команды с Windows `textrender`.
+
+### 4.9. Production recovery, Effects preview и platform polish v6.0.8
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-09-production-recovery-effects-v6.0.8.md`](progress/04-09-production-recovery-effects-v6.0.8.md).
+
+- production launcher после перезагрузки проверяет media-service и запускает
+  Electron только после готовности API;
+- последняя Playlist-сессия автоматически сохраняется в PostgreSQL с debounce,
+  а аварийный checkpoint восстанавливается без самовольного выхода в эфир;
+- Effects preview поддерживает SD/FHD/UHD aspect, Start/Stop animation и
+  обновляется после успешного `Render changes`;
+- Scale X/Y поддерживает linked-режим, slider, числовой ввод и сброс к исходному
+  Lottie value;
+- устранены перекрывающиеся health/status requests, отмена session restore и
+  длительная блокировка Node event loop при UHD Lottie render;
+- Windows FX selector получил принудительную dark palette;
+- Windows ICO пересобран как прозрачный multi-size icon, macOS ICNS — со
+  скруглённой системной формой.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

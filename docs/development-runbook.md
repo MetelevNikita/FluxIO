@@ -30,7 +30,7 @@ git status --short
 
 В `git status` не должны появляться `.env`, `.env.backup-*`, `node_modules`, `dist`, `dist-test`, `apps/desktop/release`, generated Prisma Client, logs и локальные database dumps. Должны появляться `package-lock.json`, Prisma migrations, исходники, документация, `apps/web/public` и `apps/desktop/build` с платформенными иконками.
 
-Иконки PNG/ICNS/ICO намеренно хранятся в Git: Windows/Linux packaging использует уже подготовленные assets, поскольку их генератор запускается на macOS. Для текущих web media assets Git LFS не требуется.
+Иконки PNG/ICNS/ICO намеренно хранятся в Git: Windows/Linux packaging использует уже подготовленные assets, поскольку их генератор запускается на macOS. Windows ICO содержит прозрачные варианты 16–256 px без белой подложки, а macOS ICNS собирается из отдельной скруглённой иконки. Для текущих web media assets Git LFS не требуется.
 
 ## 2. Рекомендуемые ответы для test/development
 
@@ -82,6 +82,11 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 Все три development-процесса запускаются из одного terminal. `Ctrl+C` завершает media-service, Vite и Electron. Нативный PostgreSQL service продолжает работать отдельно.
 
 Production-ярлык рабочего стола создаётся только при выборе режима `Production`, поскольку он запускает собранные `dist`-версии интерфейса и media-server. В development используется общий terminal и Vite HMR.
+
+После production-сборки используйте именно созданный мастером ярлык `FluxIO`.
+Он запускает корневой `launch.mjs`, проверяет media-service и при необходимости
+поднимает его до открытия Electron. Прямой запуск
+`apps/desktop/release/win-unpacked/FluxIO.exe` открывает только интерфейс.
 
 При первом создании Electron-окна FluxIO показывает startup splash 1440 × 920 в течение 5 секунд. Media-service и основной renderer в это время продолжают загружаться; повторное открытие окна через macOS Dock не повторяет splash.
 

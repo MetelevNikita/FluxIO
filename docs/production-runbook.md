@@ -116,7 +116,12 @@ Stop-ScheduledTask -TaskName 'Gruber Playout Media Service'
 
 Сборка macOS installer выполняется на macOS, Windows installer — на Windows. Это исключает зависимость от нестабильной cross-compilation toolchain и позволяет позже добавить корректную code signing/notarization.
 
-Текущие installers не подписаны. Product name — `FluxIO`. Все installers используют утолщённый antenna mark; macOS использует отдельный full-bleed source без прозрачных/белых боковых полей. При первом запуске приложение показывает пятисекундный startup splash размером с основное окно и параллельно подготавливает основной renderer.
+Текущие installers не подписаны. Product name — `FluxIO`. Windows ICO содержит
+прозрачные варианты 16–256 px без белого квадрата. macOS ICNS использует
+скруглённую фирменную плитку с прозрачными углами и выглядит как стандартная
+иконка приложения. При первом запуске приложение показывает пятисекундный
+startup splash размером с основное окно и параллельно подготавливает основной
+renderer.
 
 ### Ярлык рабочего стола
 
@@ -127,6 +132,12 @@ Production-мастер создаёт нативный ярлык:
 - Linux — `FluxIO.desktop` с фирменной PNG.
 
 Ярлык запускает корневой `launch.mjs`. Launcher читает `.env`, проверяет media-server через `/api/health`, при необходимости запускает собранный `apps/media-server/dist/index.js`, затем открывает production Electron. Если launcher сам поднял media-server, при закрытии Electron он завершает и этот дочерний server. Уже работающий systemd/LaunchAgent/Windows Task launcher не останавливает.
+
+После перезагрузки компьютера запускайте именно этот ярлык. Системный background
+manager обычно уже поднимет media-service, но при его отсутствии launcher
+сделает это сам. Прямой `win-unpacked\\FluxIO.exe` или исполняемый файл из
+установленной Electron-папки запускает только UI и не является production
+launcher.
 
 Тот же запуск без ярлыка:
 
@@ -261,7 +272,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v6.0.6`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v6.0.8`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

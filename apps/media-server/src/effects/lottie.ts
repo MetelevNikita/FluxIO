@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createRequire } from "node:module";
 import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { DotLottie } from "@lottiefiles/dotlottie-web";
 import {
   graphicEffectAssetSchema,
@@ -53,8 +54,8 @@ export async function rerenderLottieEffect(
   const requestedById = new Map(effect.lottie.properties.map((property) => [property.id, property]));
   const properties = original.properties.map((property) => {
     const requested = requestedById.get(property.id);
-    return requested
-      ? { ...property, value: requested.value, overridden: requested.overridden }
+    return requested?.overridden
+      ? { ...property, value: requested.value, overridden: true }
       : property;
   });
   const metadata = lottieEffectMetadataSchema.parse({
@@ -249,6 +250,9 @@ async function renderLottieMovie(
         throw new Error(`Lottie renderer returned an invalid RGBA frame ${frame}`);
       }
       if (!ffmpeg.stdin.write(Buffer.from(buffer))) await once(ffmpeg.stdin, "drain");
+      // DotLottie frame rendering is CPU-heavy, especially for UHD projects.
+      // Yield regularly so health, status and workspace API calls stay responsive.
+      if (frame % 2 === 1) await yieldToEventLoop();
     }
     ffmpeg.stdin.end();
     await completed;
@@ -468,6 +472,7 @@ function pushProperty(
   target.push({
     ...input,
     id: createHash("sha1").update(input.path).digest("hex").slice(0, 16),
+    originalValue: structuredClone(input.value),
     overridden: false,
   });
 }

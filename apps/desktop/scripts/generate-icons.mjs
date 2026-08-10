@@ -14,13 +14,14 @@ const png = path.join(buildDirectory, "icon.png");
 const macPng = path.join(buildDirectory, "icon-mac.png");
 const svg = path.join(buildDirectory, "icon.svg");
 const macSvg = path.join(buildDirectory, "icon-mac.svg");
-const icoPng = path.join(buildDirectory, "icon-256.png");
 const iconset = path.join(buildDirectory, "FluxIO.iconset");
 
 await rm(iconset, { force: true, recursive: true });
 await mkdir(iconset, { recursive: true });
 await rasterizeSvg(svg, png);
 await rasterizeSvg(macSvg, macPng);
+await removeWhiteQuickLookMatte(png);
+await removeWhiteQuickLookMatte(macPng);
 
 const sizes = [
   [16, "icon_16x16.png"],
@@ -65,23 +66,7 @@ await writeFile(
   Buffer.concat([icnsHeader, ...icnsChunks], icnsSize),
 );
 
-run("sips", ["-z", "256", "256", png, "--out", icoPng]);
-const pngBytes = await readFile(icoPng);
-const icoHeader = Buffer.alloc(22);
-icoHeader.writeUInt16LE(0, 0);
-icoHeader.writeUInt16LE(1, 2);
-icoHeader.writeUInt16LE(1, 4);
-icoHeader.writeUInt8(0, 6);
-icoHeader.writeUInt8(0, 7);
-icoHeader.writeUInt8(0, 8);
-icoHeader.writeUInt8(0, 9);
-icoHeader.writeUInt16LE(1, 10);
-icoHeader.writeUInt16LE(32, 12);
-icoHeader.writeUInt32LE(pngBytes.length, 14);
-icoHeader.writeUInt32LE(22, 18);
-await writeFile(path.join(buildDirectory, "icon.ico"), Buffer.concat([icoHeader, pngBytes]));
-
-await rm(icoPng, { force: true });
+await buildWindowsIco(png, path.join(buildDirectory, "icon.ico"));
 await rm(iconset, { force: true, recursive: true });
 console.log("Generated FluxIO PNG, ICNS and ICO assets from the committed SVG sources");
 
@@ -95,6 +80,56 @@ async function rasterizeSvg(source, destination) {
     );
   } finally {
     await rm(rasterDirectory, { force: true, recursive: true });
+  }
+}
+
+async function removeWhiteQuickLookMatte(filePath) {
+  const transparentPath = `${filePath}.transparent.png`;
+  try {
+    run(process.env.FFMPEG_PATH || "ffmpeg", [
+      "-v", "error",
+      "-y",
+      "-i", filePath,
+      "-vf", "colorkey=0xFFFFFF:0.18:0.02,format=rgba",
+      transparentPath,
+    ]);
+    await copyFile(transparentPath, filePath);
+  } finally {
+    await rm(transparentPath, { force: true });
+  }
+}
+
+async function buildWindowsIco(sourcePng, destination) {
+  const icoDirectory = await mkdtemp(path.join(tmpdir(), "fluxio-ico-"));
+  const sizes = [16, 24, 32, 48, 64, 128, 256];
+  try {
+    const images = [];
+    for (const size of sizes) {
+      const destinationPng = path.join(icoDirectory, `icon-${size}.png`);
+      run("sips", ["-z", String(size), String(size), sourcePng, "--out", destinationPng]);
+      images.push({ size, bytes: await readFile(destinationPng) });
+    }
+    const headerSize = 6 + images.length * 16;
+    const header = Buffer.alloc(headerSize);
+    header.writeUInt16LE(0, 0);
+    header.writeUInt16LE(1, 2);
+    header.writeUInt16LE(images.length, 4);
+    let offset = headerSize;
+    images.forEach(({ size, bytes }, index) => {
+      const entry = 6 + index * 16;
+      header.writeUInt8(size === 256 ? 0 : size, entry);
+      header.writeUInt8(size === 256 ? 0 : size, entry + 1);
+      header.writeUInt8(0, entry + 2);
+      header.writeUInt8(0, entry + 3);
+      header.writeUInt16LE(1, entry + 4);
+      header.writeUInt16LE(32, entry + 6);
+      header.writeUInt32LE(bytes.length, entry + 8);
+      header.writeUInt32LE(offset, entry + 12);
+      offset += bytes.length;
+    });
+    await writeFile(destination, Buffer.concat([header, ...images.map(({ bytes }) => bytes)]));
+  } finally {
+    await rm(icoDirectory, { force: true, recursive: true });
   }
 }
 
