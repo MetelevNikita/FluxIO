@@ -8,6 +8,10 @@ const SELECT_MEDIA_FILES_CHANNEL = "dialog:select-media-files";
 const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
 const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
+const SELECT_EFFECT_DIRECTORY_CHANNEL = "dialog:select-effect-directory";
+const SELECT_EFFECT_FILES_CHANNEL = "dialog:select-effect-files";
+const SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL = "dialog:select-effect-title-directory";
+const SELECT_SUBTITLE_DIRECTORY_CHANNEL = "dialog:select-subtitle-directory";
 const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
 const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-file";
 const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
@@ -170,6 +174,32 @@ void app.whenReady().then(() => {
   ipcMain.handle(SELECT_AGE_DIRECTORY_CHANNEL, async () =>
     selectImageDirectory("Select folder with AGE graphics"));
 
+  ipcMain.handle(SELECT_EFFECT_FILES_CHANNEL, async () => {
+    const result = await dialog.showOpenDialog({
+      filters: [{ name: "FluxIO graphic effects", extensions: ["png", "webp", "mov", "mp4", "m4v", "webm"] }],
+      properties: ["openFile", "multiSelections"],
+      title: "Select graphic effects",
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  ipcMain.handle(SELECT_EFFECT_DIRECTORY_CHANNEL, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory"],
+      title: "Select folder with graphic effects",
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL, async () =>
+    selectFileDirectory(
+      "Select folder with per-clip alpha titles",
+      new Set([".png", ".webp", ".mov", ".mp4", ".m4v", ".webm"]),
+    ));
+
+  ipcMain.handle(SELECT_SUBTITLE_DIRECTORY_CHANNEL, async () =>
+    selectFileDirectory("Select folder with SRT subtitles", new Set([".srt"])));
+
   ipcMain.handle(SAVE_SCHEDULE_FILE_CHANNEL, async (_event, value: unknown) => {
     const input = scheduleSaveInput(value);
     const result = await dialog.showSaveDialog({
@@ -267,6 +297,31 @@ async function selectImageDirectory(title: string): Promise<{
     .map((entry) => path.join(directoryPath, entry.name))
     .sort((left, right) => left.localeCompare(right));
   return { directoryPath, imagePaths };
+}
+
+async function selectFileDirectory(
+  title: string,
+  extensions: Set<string>,
+): Promise<{ directoryPath: string; filePaths: string[] } | null> {
+  const result = await dialog.showOpenDialog({ properties: ["openDirectory"], title });
+  const directoryPath = result.filePaths[0];
+  if (result.canceled || !directoryPath) return null;
+  const filePaths: string[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(entryPath);
+      else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+        filePaths.push(entryPath);
+      }
+    }
+  }
+  await visit(directoryPath);
+  return {
+    directoryPath,
+    filePaths: filePaths.sort((left, right) => left.localeCompare(right)),
+  };
 }
 
 function isSupportedImage(fileName: string): boolean {

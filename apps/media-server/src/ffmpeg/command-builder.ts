@@ -1,7 +1,9 @@
 import path from "node:path";
 import type {
   AgeTitleOverlay,
+  GraphicEffectLayer,
   ItemLogoOverlay,
+  SubtitleOverlay,
   MpegTsOutputSettings,
   PlayoutEndpoint,
   StartPlayoutRequest,
@@ -18,6 +20,8 @@ export interface PreparedPlayoutItem {
   hasAudio: boolean;
   ageTitle?: AgeTitleOverlay;
   itemLogo?: ItemLogoOverlay;
+  effects?: GraphicEffectLayer[];
+  subtitles?: SubtitleOverlay;
 }
 
 export interface FfmpegCommand {
@@ -75,6 +79,22 @@ export function buildFfmpegCommand(
         "-i",
         item.itemLogo.filePath,
       );
+    }
+    for (const effect of item.effects ?? []) {
+      for (const source of graphicEffectSources(effect)) {
+        if (source.kind === "static") {
+          args.push(
+            "-loop",
+            "1",
+            "-framerate",
+            decimal(request.video.frameRate),
+            "-i",
+            source.filePath,
+          );
+        } else {
+          args.push("-i", source.filePath);
+        }
+      }
     }
   }
   if (request.logo) {
@@ -187,10 +207,18 @@ function buildFilterGraph(
   items.forEach((item, index) => {
     const start = decimal(item.trimInSeconds);
     const duration = decimal(item.durationSeconds);
-    const requiresItemOverlay = Boolean(item.ageTitle?.enabled || item.itemLogo?.enabled);
+    const requiresItemOverlay = Boolean(
+      item.ageTitle?.enabled ||
+      item.itemLogo?.enabled ||
+      (item.effects?.length ?? 0) > 0 ||
+      item.subtitles?.enabled,
+    );
     const normalizedLabel = requiresItemOverlay ? `vbase${index}` : `v${index}`;
+    const subtitleFilter = item.subtitles?.enabled && item.subtitles.filePath
+      ? `subtitles=filename='${escapeFilterPath(item.subtitles.filePath)}',`
+      : "";
     filters.push(
-      `[${index}:v:0]trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS${deinterlace},` +
+      `[${index}:v:0]${subtitleFilter}trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS${deinterlace},` +
         `scale=${request.video.width}:${request.video.height}:force_original_aspect_ratio=decrease,` +
         `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,` +
         `fps=${decimal(request.video.frameRate)},format=yuv420p[${normalizedLabel}]`,
@@ -198,7 +226,9 @@ function buildFilterGraph(
 
     let itemVideoSource = normalizedLabel;
     if (item.ageTitle?.enabled) {
-      const ageLabel = item.itemLogo?.enabled ? `vage${index}` : `v${index}`;
+      const ageLabel = item.itemLogo?.enabled || (item.effects?.length ?? 0) > 0
+        ? `vage${index}`
+        : `v${index}`;
       const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
       if (item.ageTitle.filePath) {
         const ageInputIndex = nextOverlayInput;
@@ -228,12 +258,50 @@ function buildFilterGraph(
         Math.round(request.video.width * (item.itemLogo.widthPercent / 100)),
       );
       const [x, y] = logoPosition(item.itemLogo.position, item.itemLogo.margin);
+      const logoOutputLabel = (item.effects?.length ?? 0) > 0
+        ? `vlogo${index}`
+        : `v${index}`;
       filters.push(
         `[${logoInputIndex}:v:0]format=rgba,` +
           `colorchannelmixer=aa=${decimal(item.itemLogo.opacity)},scale=${logoWidth}:-1[itemlogo${index}]`,
         `[${itemVideoSource}][itemlogo${index}]overlay=x=${x}:y=${y}:` +
-          `shortest=1:eof_action=pass:format=auto,format=yuv420p[v${index}]`,
+          `shortest=1:eof_action=pass:format=auto,format=yuv420p[${logoOutputLabel}]`,
       );
+      itemVideoSource = logoOutputLabel;
+    }
+    const effects = item.effects ?? [];
+    effects.forEach((effect, effectIndex) => {
+      const effectStart = Math.min(item.durationSeconds - 0.04, Math.max(0, effect.startSeconds));
+      const effectEnd = Math.min(item.durationSeconds, Math.max(effectStart + 0.04, effect.endSeconds));
+      const effectDuration = Math.max(0.04, effectEnd - effectStart);
+      const sources = graphicEffectSources(effect);
+      sources.forEach((source, sourceIndex) => {
+        const effectInputIndex = nextOverlayInput;
+        nextOverlayInput += 1;
+        const effectLabel = `fxasset${index}_${effectIndex}_${sourceIndex}`;
+        const isLastSource = sourceIndex === sources.length - 1;
+        const outputLabel = effectIndex === effects.length - 1 && isLastSource
+          ? `v${index}`
+          : `vfx${index}_${effectIndex}_${sourceIndex}`;
+        const sourceDuration = source.role === "background"
+          ? Math.min(effectDuration, effect.sourceDurationSeconds || effectDuration)
+          : effectDuration;
+        const sourceTrim = source.kind === "video"
+          ? `trim=start=0:duration=${decimal(sourceDuration)},`
+          : `trim=duration=${decimal(effectDuration)},`;
+        filters.push(
+          `[${effectInputIndex}:v:0]${sourceTrim}setpts=PTS-STARTPTS+${decimal(effectStart)}/TB,` +
+            `format=rgba,scale=${request.video.width}:${request.video.height}:` +
+            `force_original_aspect_ratio=decrease:flags=lanczos,` +
+            `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2:color=black@0[${effectLabel}]`,
+          `[${itemVideoSource}][${effectLabel}]overlay=x=0:y=0:eof_action=pass:format=auto:` +
+            `enable='between(t,${decimal(effectStart)},${decimal(effectEnd)})',format=yuv420p[${outputLabel}]`,
+        );
+        itemVideoSource = outputLabel;
+      });
+    });
+    if (itemVideoSource !== `v${index}`) {
+      filters.push(`[${itemVideoSource}]null[v${index}]`);
     }
 
     if (item.hasAudio) {
@@ -285,6 +353,16 @@ function escapeDrawtext(value: string): string {
     .replaceAll(":", "\\:")
     .replaceAll("'", "\\'")
     .replaceAll("%", "\\%");
+}
+
+function escapeFilterPath(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll(":", "\\:")
+    .replaceAll("'", "\\'")
+    .replaceAll(",", "\\,")
+    .replaceAll("[", "\\[")
+    .replaceAll("]", "\\]");
 }
 
 function videoEncoderArgs(video: VideoEncoding): string[] {
@@ -527,6 +605,37 @@ function ffmpegFieldOrder(fieldOrder: VideoEncoding["fieldOrder"]): string {
 
 function formatHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function graphicEffectSources(effect: GraphicEffectLayer): Array<{
+  filePath: string;
+  kind: "static" | "video";
+  role: "background" | "title";
+}> {
+  const backgroundPath = effect.backgroundPath ?? effect.filePath;
+  const sources: Array<{
+    filePath: string;
+    kind: "static" | "video";
+    role: "background" | "title";
+  }> = [{
+    filePath: backgroundPath,
+    kind: graphicSourceKind(backgroundPath),
+    role: "background",
+  }];
+  if (effect.titlePath && effect.titlePath !== backgroundPath) {
+    sources.push({
+      filePath: effect.titlePath,
+      kind: graphicSourceKind(effect.titlePath),
+      role: "title",
+    });
+  }
+  return sources;
+}
+
+function graphicSourceKind(filePath: string): "static" | "video" {
+  return new Set([".png", ".webp"]).has(path.extname(filePath).toLowerCase())
+    ? "static"
+    : "video";
 }
 
 function logoPosition(

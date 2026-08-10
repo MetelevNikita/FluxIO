@@ -1,12 +1,12 @@
 {
   "name": "@gruber/web",
-  "version": "5.0.8",
+  "version": "6.0.2",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/encoding-settings-profile.test.js dist-test/schedule-timeline.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/encoding-settings-profile.test.js dist-test/graphic-title-matching.test.js dist-test/schedule-timeline.test.js",
     "dev": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1"
   },

@@ -227,6 +227,41 @@ export const itemLogoOverlaySchema = logoOverlaySchema.extend({
   enabled: z.boolean().default(true),
 });
 
+export const graphicEffectKindSchema = z.enum(["static", "video"]);
+
+export const graphicEffectAssetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  filePath: z.string().min(1),
+  kind: graphicEffectKindSchema,
+  durationSeconds: z.number().nonnegative(),
+  width: z.number().int().nonnegative(),
+  height: z.number().int().nonnegative(),
+  titleDirectoryPath: z.string().min(1).nullable().default(null),
+  titlePaths: z.array(z.string().min(1)).max(2_000).default([]),
+});
+
+export const graphicEffectLayerSchema = z.object({
+  id: z.string().min(1),
+  effectId: z.string().min(1),
+  name: z.string().min(1),
+  filePath: z.string().min(1),
+  kind: graphicEffectKindSchema,
+  sourceDurationSeconds: z.number().nonnegative(),
+  startSeconds: z.number().nonnegative(),
+  endSeconds: z.number().positive(),
+  backgroundPath: z.string().min(1).nullable().optional(),
+  titlePath: z.string().min(1).nullable().optional(),
+}).refine((layer) => layer.endSeconds > layer.startSeconds, {
+  message: "FX layer end must be after its start",
+  path: ["endSeconds"],
+});
+
+export const subtitleOverlaySchema = z.object({
+  enabled: z.boolean().default(false),
+  filePath: z.string().min(1).nullable().default(null),
+});
+
 export const playoutItemSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -238,10 +273,35 @@ export const playoutItemSchema = z.object({
   declaredDurationSeconds: z.number().positive().nullable().optional(),
   ageTitle: ageTitleOverlaySchema.nullable().optional(),
   itemLogo: itemLogoOverlaySchema.nullable().optional(),
+  effects: z.array(graphicEffectLayerSchema).max(64).optional(),
+  subtitles: subtitleOverlaySchema.nullable().optional(),
+});
+
+export const analyzeGraphicEffectsRequestSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1).max(200),
+});
+
+export const scanGraphicEffectsRequestSchema = z.object({
+  directoryPath: z.string().min(1),
+});
+
+export const graphicEffectAssetListSchema = z.object({
+  items: z.array(graphicEffectAssetSchema).max(200),
 });
 
 export const parseScheduleRequestSchema = z.object({
   filePath: z.string().min(1),
+});
+
+export const scheduleGraphicElementSchema = z.object({
+  name: z.string().trim().min(1).max(128),
+  backgroundPath: z.string().min(1).nullable(),
+  titlePath: z.string().min(1).nullable(),
+  durationSeconds: z.number().positive(),
+  startOnSeconds: z.number().nonnegative(),
+}).refine((element) => Boolean(element.backgroundPath || element.titlePath), {
+  message: "Graphic element requires backgroundPath or titlePath",
+  path: ["backgroundPath"],
 });
 
 export const parsedScheduleItemSchema = z.object({
@@ -252,6 +312,8 @@ export const parsedScheduleItemSchema = z.object({
   ageTitle: z.string().nullable(),
   ageTitleDurationSeconds: z.number().int().min(10).max(60).nullable(),
   logoPath: z.string().nullable(),
+  graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
+  srtPath: z.string().nullable().default(null),
   lineNumber: z.number().int().positive(),
   warnings: z.array(z.string()),
 });
@@ -286,6 +348,10 @@ export const scheduleExportItemSchema = z.object({
   }).nullable().optional(),
   logoPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "Logo path must not contain braces or line breaks",
+  }).nullable().optional(),
+  graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
+  srtPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
+    message: "SRT path must not contain braces or line breaks",
   }).nullable().optional(),
 });
 
@@ -561,6 +627,8 @@ export const workspaceSessionAssetSchema = z.object({
   scheduleLineNumber: z.number().int().positive().optional(),
   ageTitle: ageTitleOverlaySchema.optional(),
   itemLogo: itemLogoOverlaySchema.optional(),
+  effects: z.array(graphicEffectLayerSchema).max(64).optional(),
+  subtitles: subtitleOverlaySchema.optional(),
 });
 
 export const workspaceScheduleMetadataSchema = z.object({
@@ -579,6 +647,11 @@ export const workspaceOverlayLibrarySchema = z.object({
   imagePaths: z.array(z.string().min(1)).max(100),
 });
 
+export const workspaceSubtitleLibrarySchema = z.object({
+  directoryPath: z.string().min(1),
+  filePaths: z.array(z.string().min(1)).max(1_000),
+});
+
 export const scheduleStartMarkerSchema = z.object({
   assetId: z.string().min(1),
   updatedAt: z.iso.datetime(),
@@ -591,7 +664,7 @@ const workspaceSettingValueSchema = z.union([
 ]);
 
 export const workspaceSessionSnapshotSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   assets: z.array(workspaceSessionAssetSchema).max(1_000),
   currentPlaylist: z.array(workspaceSessionAssetSchema).max(500),
   futurePlaylist: z.array(workspaceSessionAssetSchema).max(500),
@@ -602,6 +675,8 @@ export const workspaceSessionSnapshotSchema = z.object({
   scheduleLogoPath: z.string(),
   scheduleLogoSource: z.string(),
   ageLibrary: workspaceOverlayLibrarySchema.nullable(),
+  effectLibrary: z.array(graphicEffectAssetSchema).max(200).default([]),
+  subtitleLibrary: workspaceSubtitleLibrarySchema.nullable().default(null),
   startMarker: scheduleStartMarkerSchema.nullable().default(null),
   settings: z.record(z.string(), workspaceSettingValueSchema),
 });
@@ -663,6 +738,10 @@ export type Scte35Marker = z.infer<typeof scte35MarkerSchema>;
 export type ScheduleItemType = z.infer<typeof scheduleItemTypeSchema>;
 export type AgeTitleOverlay = z.infer<typeof ageTitleOverlaySchema>;
 export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
+export type GraphicEffectAsset = z.infer<typeof graphicEffectAssetSchema>;
+export type GraphicEffectLayer = z.infer<typeof graphicEffectLayerSchema>;
+export type SubtitleOverlay = z.infer<typeof subtitleOverlaySchema>;
+export type ScheduleGraphicElement = z.infer<typeof scheduleGraphicElementSchema>;
 export type ParsedScheduleItem = z.infer<typeof parsedScheduleItemSchema>;
 export type ParsedSchedule = z.infer<typeof parsedScheduleSchema>;
 export type ScheduleExportExtension = z.infer<typeof scheduleExportExtensionSchema>;

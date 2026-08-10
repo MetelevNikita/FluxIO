@@ -1,4 +1,6 @@
-export type AppView = "import" | "playlist" | "broadcast";
+import type { GraphicEffectLayer } from "@gruber/contracts";
+
+export type AppView = "import" | "effects" | "playlist" | "broadcast";
 
 export type AssetStatus = "analyzed" | "pending" | "error" | "queued";
 export type ScheduleSlot = "current" | "future";
@@ -53,11 +55,21 @@ export interface MediaAsset {
     position: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
     widthPercent: number;
   };
+  effects?: GraphicEffectLayer[];
+  subtitles?: {
+    enabled: boolean;
+    filePath: string | null;
+  };
 }
 
 export interface ScheduleOverlayLibrary {
   directoryPath: string;
   imagePaths: string[];
+}
+
+export interface SubtitleLibrary {
+  directoryPath: string;
+  filePaths: string[];
 }
 
 export interface ScheduleMetadata {

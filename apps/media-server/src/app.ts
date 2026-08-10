@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   saveBroadcastConfigurationRequestSchema,
+  analyzeGraphicEffectsRequestSchema,
+  graphicEffectAssetListSchema,
   networkInterfaceListSchema,
   parseScheduleRequestSchema,
   serializeScheduleRequestSchema,
   probeMediaRequestSchema,
   scanMediaRequestSchema,
+  scanGraphicEffectsRequestSchema,
   serviceHealthSchema,
   startPlayoutRequestSchema,
   startClipPreviewRequestSchema,
@@ -29,8 +32,12 @@ import { SystemMetricsSampler } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 import { parseScheduleFile } from "./schedule/parser.js";
 import { serializeSchedule } from "./schedule/serializer.js";
+import {
+  analyzeGraphicEffectPaths,
+  scanGraphicEffectDirectory,
+} from "./effects/library.js";
 
-const serviceVersion = "5.0.8";
+const serviceVersion = "6.0.2";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {
@@ -142,6 +149,28 @@ export function buildApp(options: FastifyServerOptions = {}) {
         probes.push(probe);
       }
       return { items: probes };
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/effects/analyze", async (request, reply) => {
+    try {
+      const body = analyzeGraphicEffectsRequestSchema.parse(request.body);
+      return graphicEffectAssetListSchema.parse({
+        items: await analyzeGraphicEffectPaths(body.paths, capabilities.ffprobePath),
+      });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/effects/scan", async (request, reply) => {
+    try {
+      const body = scanGraphicEffectsRequestSchema.parse(request.body);
+      return graphicEffectAssetListSchema.parse({
+        items: await scanGraphicEffectDirectory(body.directoryPath, capabilities.ffprobePath),
+      });
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }

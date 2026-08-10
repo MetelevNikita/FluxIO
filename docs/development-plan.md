@@ -328,6 +328,37 @@
 
 ## Следующая очередь
 
+### 4.1. Графика и титры v6.0.0
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-01-graphics-titles-v6.0.0.md`](progress/04-01-graphics-titles-v6.0.0.md).
+
+- Effects library PNG/WebP/MOV с анализом длительности;
+- per-clip FX stack и time-range handles;
+- SRT SubRip burn-in по совпадающему имени ролика;
+- Shift selection, group drag и group controls;
+- нативный Add Clip для активного расписания.
+
+### 4.2. Составные FX BG + per-clip title v6.0.1
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-02-paired-effects-v6.0.1.md`](progress/04-02-paired-effects-v6.0.1.md).
+
+- общий PNG/video BG на все ролики;
+- отдельная папка alpha-титров на каждый эффект;
+- точное сопоставление имени title-файла и ролика без расширения;
+- одновременная FFmpeg-композиция BG и TITLE;
+- сохранение разрешённых путей в `.air/.txt` и workspace session;
+- визуальные состояния `BG+TITLE` и `TITLE MISSING`.
+
+### 4.3. Иерархия controls и Timeline Trimming v6.0.2
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-03-playlist-secondary-controls-v6.0.2.md`](progress/04-03-playlist-secondary-controls-v6.0.2.md).
+
+- основные эфирные controls и полностью видимая кнопка `Start here` находятся в верхнем ряду ролика;
+- вторичные функции вынесены вниз в порядке `SRT → FX → назначенные эффекты`;
+- временная шкала FX/SRT/VIDEO перенесена из верхней части preview внутрь `Timeline Trimming`;
+- строки стали двухуровневыми без изменения компактного свёрнутого состояния;
+- обновлён соответствующий макет Playlist в Figma.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

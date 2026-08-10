@@ -23,6 +23,16 @@ declare global {
         directoryPath: string;
         imagePaths: string[];
       } | null>;
+      selectEffectFiles: () => Promise<string[]>;
+      selectEffectDirectory: () => Promise<string | null>;
+      selectEffectTitleDirectory: () => Promise<{
+        directoryPath: string;
+        filePaths: string[];
+      } | null>;
+      selectSubtitleDirectory: () => Promise<{
+        directoryPath: string;
+        filePaths: string[];
+      } | null>;
       saveScheduleFile: (input: {
         content: string;
         defaultName: string;

@@ -20,6 +20,18 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
     if (item.logoPath) {
       lines.push(`insertLogoTitle {${item.logoPath}}`);
     }
+    for (const element of item.graphicElements) {
+      lines.push(
+        `insertGraphicElement_{${element.name}} ` +
+          `backgroundPath {${element.backgroundPath ?? ""}} ` +
+          `titlePath {${element.titlePath ?? ""}} ` +
+          `duration {${formatScheduleTimecode(element.durationSeconds)}} ` +
+          `startOn {${formatScheduleTimecode(element.startOnSeconds)}}`,
+      );
+    }
+    if (item.srtPath) {
+      lines.push(`insertSRT {${item.srtPath}}`);
+    }
     lines.push(
       `${item.type} ${formatScheduleTimecode(item.declaredDurationSeconds)} ${item.filePath}`,
     );

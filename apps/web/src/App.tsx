@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   serviceHealthSchema,
   type FfmpegCapabilities,
+  type GraphicEffectAsset,
   type MediaProbe,
   type ParsedSchedule,
   type ScheduleExportExtension,
@@ -32,9 +33,12 @@ import {
 import { BroadcastSettingsScreen } from "./screens/BroadcastSettingsScreen";
 import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
+import { EffectsScreen } from "./screens/EffectsScreen";
+import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { mediaPath } from "./runtime";
 import {
   getFfmpegCapabilities,
+  analyzeGraphicEffectPaths,
   getNetworkInterfaces,
   getPlayoutStatus,
   getSystemMetrics,
@@ -43,6 +47,7 @@ import {
   parseScheduleFile,
   probeMediaPaths,
   scanMediaDirectory,
+  scanGraphicEffectDirectory,
   serializeScheduleFile,
   saveWorkspaceSession as persistWorkspaceSession,
   deleteWorkspaceSession as deletePersistedWorkspaceSession,
@@ -58,6 +63,7 @@ import type {
   ScheduleOverlayLibrary,
   ScheduleSlot,
   Scte35Marker,
+  SubtitleLibrary,
 } from "./types";
 
 export type ConnectionState =
@@ -106,6 +112,10 @@ export function App() {
   const [scheduleLogoPath, setScheduleLogoPath] = useState("");
   const [scheduleLogoSource, setScheduleLogoSource] = useState("");
   const [ageLibrary, setAgeLibrary] = useState<ScheduleOverlayLibrary | null>(null);
+  const [effectLibrary, setEffectLibrary] = useState<GraphicEffectAsset[]>([]);
+  const [subtitleLibrary, setSubtitleLibrary] = useState<SubtitleLibrary | null>(null);
+  const [effectsBusy, setEffectsBusy] = useState(false);
+  const [effectsMessage, setEffectsMessage] = useState<string | null>(null);
   const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
   const [savedWorkspaceSession, setSavedWorkspaceSession] = useState<SavedWorkspaceSession | null>(null);
   const [recoveryCheckpoint, setRecoveryCheckpoint] = useState<WorkspaceSessionCheckpoint | null>(null);
@@ -279,6 +289,8 @@ export function App() {
       snapshot.scheduleLogoSource || (restoredSettings.logoEnabled ? restoredSettings.logoPath : ""),
     );
     setAgeLibrary(snapshot.ageLibrary);
+    setEffectLibrary(snapshot.effectLibrary);
+    setSubtitleLibrary(snapshot.subtitleLibrary);
     setScheduleStartMarker(
       snapshot.startMarker && restoredCurrentPlaylist.some(
         (asset) => asset.id === snapshot.startMarker?.assetId,
@@ -416,10 +428,54 @@ export function App() {
                 widthPercent: settings.logoWidthPercent,
               }
             : undefined,
+          effects: item.graphicElements.map((element, effectIndex) => {
+            const filePath = element.backgroundPath ?? element.titlePath ?? "";
+            const libraryEffect = effectLibrary.find((effect) =>
+              normalizeComparablePath(effect.filePath) === normalizeComparablePath(filePath) ||
+              effect.name.toLocaleLowerCase() === element.name.toLocaleLowerCase()
+            );
+            const startSeconds = Math.min(
+              element.startOnSeconds,
+              Math.max(0, item.declaredDurationSeconds - 0.01),
+            );
+            const endSeconds = Math.min(
+              item.declaredDurationSeconds,
+              startSeconds + element.durationSeconds,
+            );
+            return {
+              backgroundPath: element.backgroundPath,
+              effectId: libraryEffect?.id ?? `schedule-fx-${hashString(filePath || element.name)}`,
+              endSeconds: Math.max(startSeconds + 0.01, endSeconds),
+              filePath,
+              id: `schedule-fx-${index}-${effectIndex}-${hashString(filePath || element.name)}`,
+              kind: libraryEffect?.kind ?? inferGraphicKind(filePath),
+              name: element.name,
+              sourceDurationSeconds: libraryEffect?.durationSeconds ?? element.durationSeconds,
+              startSeconds,
+              titlePath: element.titlePath,
+            };
+          }),
+          subtitles: item.srtPath
+            ? { enabled: true, filePath: item.srtPath }
+            : undefined,
         } satisfies MediaAsset;
       });
       const metadata = scheduleMetadata(parsed, slot);
+      const importedEffects = scheduledAssets.flatMap((asset) =>
+        (asset.effects ?? []).map((layer) => ({
+          durationSeconds: layer.kind === "video" ? layer.sourceDurationSeconds : 0,
+          filePath: layer.filePath,
+          height: 0,
+          id: layer.effectId,
+          kind: layer.kind,
+          name: layer.name,
+          titleDirectoryPath: layer.titlePath ? parentDirectory(layer.titlePath) : null,
+          titlePaths: layer.titlePath ? [layer.titlePath] : [],
+          width: 0,
+        } satisfies GraphicEffectAsset))
+      );
       setAssets((current) => mergeAssets(current, scheduledAssets));
+      setEffectLibrary((current) => mergeEffectAssets(current, importedEffects));
       if (slot === "current") {
         setPlaylist(scheduledAssets);
         setCurrentScheduleMetadata(metadata);
@@ -486,22 +542,17 @@ export function App() {
     setSelectedAssetId((current) => current || imported[0]?.id || "");
   }
 
-  function movePlaylistItem(sourceId: string, targetId: string) {
+  function movePlaylistItems(sourceIds: string[], targetId: string) {
     updateActivePlaylist((current) => {
-      const sourceIndex = current.findIndex((item) => item.id === sourceId);
-      const targetIndex = current.findIndex((item) => item.id === targetId);
-
-      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-        return current;
-      }
-
-      const next = [...current];
-      const [source] = next.splice(sourceIndex, 1);
-      if (!source) {
-        return current;
-      }
-      next.splice(targetIndex, 0, source);
-      return next;
+      const sourceSet = new Set(sourceIds);
+      if (sourceSet.has(targetId)) return current;
+      const moving = current.filter((item) => sourceSet.has(item.id));
+      if (moving.length === 0) return current;
+      const remaining = current.filter((item) => !sourceSet.has(item.id));
+      const targetIndex = remaining.findIndex((item) => item.id === targetId);
+      if (targetIndex < 0) return current;
+      remaining.splice(targetIndex, 0, ...moving);
+      return remaining;
     });
   }
 
@@ -548,6 +599,9 @@ export function App() {
     setScheduleLogoSource("");
     setSettings((current) => ({ ...current, logoEnabled: false, logoPath: "" }));
     setAgeLibrary(null);
+    setEffectLibrary([]);
+    setSubtitleLibrary(null);
+    setEffectsMessage(null);
     setScheduleStartMarker(null);
     setScheduleActionMessage(null);
     setSelectedAssetId("");
@@ -563,7 +617,7 @@ export function App() {
     try {
       const request: WorkspaceSessionSaveRequest = {
         snapshot: {
-          version: 1,
+          version: 2,
           assets,
           currentPlaylist: playlist,
           futurePlaylist,
@@ -574,6 +628,8 @@ export function App() {
           scheduleLogoPath,
           scheduleLogoSource,
           ageLibrary,
+          effectLibrary,
+          subtitleLibrary,
           startMarker: scheduleStartMarker,
           settings: primitiveSettings(settings),
         },
@@ -632,9 +688,106 @@ export function App() {
     if (paths.length > 0) void analyzePaths(paths, "future");
   }
 
+  async function addNativeFilesToActiveSchedule() {
+    const paths = await window.gruberDesktop?.selectMediaFiles();
+    if (paths?.length) await analyzePaths(paths, activeSchedule);
+  }
+
+  async function selectEffectFiles() {
+    const paths = await window.gruberDesktop?.selectEffectFiles();
+    if (!paths?.length) return;
+    await importEffects(() => analyzeGraphicEffectPaths(paths));
+  }
+
+  async function selectEffectDirectory() {
+    const directoryPath = await window.gruberDesktop?.selectEffectDirectory();
+    if (!directoryPath) return;
+    await importEffects(() => scanGraphicEffectDirectory(directoryPath));
+  }
+
+  async function selectEffectTitleDirectory(effectId: string) {
+    const selection = await window.gruberDesktop?.selectEffectTitleDirectory();
+    if (!selection) return;
+    setEffectLibrary((current) => current.map((effect) =>
+      effect.id === effectId
+        ? {
+            ...effect,
+            titleDirectoryPath: selection.directoryPath,
+            titlePaths: selection.filePaths,
+          }
+        : effect
+    ));
+    setPlaylist((current) => assignEffectTitles(current, effectId, selection.filePaths));
+    setFuturePlaylist((current) => assignEffectTitles(current, effectId, selection.filePaths));
+    setEffectsMessage(
+      `Title folder assigned: ${selection.filePaths.length} alpha file(s), matched by exact clip basename.`,
+    );
+  }
+
+  function clearEffectTitleDirectory(effectId: string) {
+    setEffectLibrary((current) => current.map((effect) =>
+      effect.id === effectId
+        ? { ...effect, titleDirectoryPath: null, titlePaths: [] }
+        : effect
+    ));
+    setPlaylist((current) => assignEffectTitles(current, effectId, []));
+    setFuturePlaylist((current) => assignEffectTitles(current, effectId, []));
+    setEffectsMessage("Per-clip title folder cleared; the shared BG remains assigned.");
+  }
+
+  async function importEffects(load: () => Promise<GraphicEffectAsset[]>) {
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const imported = await load();
+      setEffectLibrary((current) => mergeEffectAssets(current, imported));
+      setEffectsMessage(`${imported.length} effect(s) analyzed and added to this project.`);
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  function removeEffect(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect) return;
+    const assigned = [...playlist, ...futurePlaylist].some((asset) =>
+      asset.effects?.some((layer) => layer.effectId === effectId));
+    if (assigned && !window.confirm(`Remove ${effect.name} and every assignment from the playlists?`)) {
+      return;
+    }
+    setEffectLibrary((current) => current.filter((entry) => entry.id !== effectId));
+    const removeAssignments = (items: MediaAsset[]) => items.map((asset) => ({
+      ...asset,
+      effects: asset.effects?.filter((layer) => layer.effectId !== effectId),
+    }));
+    setPlaylist(removeAssignments);
+    setFuturePlaylist(removeAssignments);
+  }
+
+  async function selectSubtitleDirectory() {
+    const selected = await window.gruberDesktop?.selectSubtitleDirectory();
+    if (!selected) return;
+    setSubtitleLibrary(selected);
+    setPlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths));
+    setFuturePlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths));
+    setScheduleActionMessage(`SRT folder loaded: ${selected.filePaths.length} subtitle file(s).`);
+  }
+
   function updatePlaylistItem(assetId: string, patch: Partial<MediaAsset>) {
     updateActivePlaylist((current) => current.map((asset) =>
       asset.id === assetId ? { ...asset, ...patch } : asset
+    ));
+  }
+
+  function updatePlaylistItems(
+    assetIds: string[],
+    updater: (asset: MediaAsset) => Partial<MediaAsset>,
+  ) {
+    const selected = new Set(assetIds);
+    updateActivePlaylist((current) => current.map((asset) =>
+      selected.has(asset.id) ? { ...asset, ...updater(asset) } : asset
     ));
   }
 
@@ -853,6 +1006,14 @@ export function App() {
               }
             : null,
           logoPath: asset.itemLogo?.enabled ? asset.itemLogo.filePath : null,
+          graphicElements: (asset.effects ?? []).map((effect) => ({
+            backgroundPath: effect.backgroundPath ?? effect.filePath,
+            durationSeconds: effect.endSeconds - effect.startSeconds,
+            name: effect.name,
+            startOnSeconds: effect.startSeconds,
+            titlePath: effect.titlePath ?? null,
+          })),
+          srtPath: asset.subtitles?.enabled ? asset.subtitles.filePath : null,
         })),
         startTime: metadata?.startTime ?? "12:00:00.00",
       };
@@ -888,7 +1049,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "5.0.8",
+        connection.kind === "ready" ? connection.health.version : "6.0.2",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1076,6 +1237,19 @@ export function App() {
         />
       ) : null}
 
+      {view === "effects" ? (
+        <EffectsScreen
+          busy={effectsBusy}
+          effects={effectLibrary}
+          message={effectsMessage}
+          onClearTitleDirectory={clearEffectTitleDirectory}
+          onRemove={removeEffect}
+          onSelectDirectory={window.gruberDesktop ? selectEffectDirectory : undefined}
+          onSelectFiles={window.gruberDesktop ? selectEffectFiles : undefined}
+          onSelectTitleDirectory={window.gruberDesktop ? selectEffectTitleDirectory : undefined}
+        />
+      ) : null}
+
       {view === "playlist" ? (
         selectedAsset ? (
           <PlaylistPreviewScreen
@@ -1086,8 +1260,9 @@ export function App() {
             futureCount={futurePlaylist.length}
             scheduleMetadata={activeSchedule === "current" ? currentScheduleMetadata : futureScheduleMetadata}
             onAddFiles={addFilesToActiveSchedule}
+            onAddNativeFiles={window.gruberDesktop ? addNativeFilesToActiveSchedule : undefined}
             onAddScte35Marker={addScte35Marker}
-            onMoveItem={movePlaylistItem}
+            onMoveItems={movePlaylistItems}
             onBulkAgeChange={updateBulkAge}
             onBulkLogoChange={updateBulkLogo}
             onRemoveItem={removePlaylistItem}
@@ -1105,6 +1280,10 @@ export function App() {
               ? selectScheduleLogoFile
               : undefined}
             onUpdateItem={updatePlaylistItem}
+            onUpdateItems={updatePlaylistItems}
+            effectLibrary={effectLibrary}
+            subtitleLibrary={subtitleLibrary}
+            onSelectSubtitleDirectory={window.gruberDesktop ? selectSubtitleDirectory : undefined}
             ageDurationSeconds={settings.ageTitleDurationSeconds}
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
@@ -1429,6 +1608,10 @@ function buildStartRequest(
       itemLogo: asset.itemLogo?.enabled
         ? { ...asset.itemLogo, enabled: true }
         : null,
+      effects: asset.effects ?? [],
+      subtitles: asset.subtitles?.enabled && asset.subtitles.filePath
+        ? { enabled: true, filePath: asset.subtitles.filePath }
+        : null,
     })),
     video: {
       codec: settings.videoCodec === "H.264"
@@ -1557,6 +1740,13 @@ function buildRecoveryStartRequest(
     ...first,
     trimInSeconds,
     ageTitle: point.itemOffsetSeconds > 0 ? null : first.ageTitle,
+    effects: (first.effects ?? [])
+      .filter((layer) => layer.endSeconds > point.itemOffsetSeconds)
+      .map((layer) => ({
+        ...layer,
+        startSeconds: Math.max(0, layer.startSeconds - point.itemOffsetSeconds),
+        endSeconds: layer.endSeconds - point.itemOffsetSeconds,
+      })),
     scte35Markers: first.scte35Markers.filter(
       (marker) => marker.positionSeconds >= trimInSeconds,
     ),
@@ -1606,6 +1796,72 @@ function formatClock(seconds: number): string {
   return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+function mergeEffectAssets(
+  current: GraphicEffectAsset[],
+  incoming: GraphicEffectAsset[],
+): GraphicEffectAsset[] {
+  const byPath = new Map(current.map((effect) => [effect.filePath, effect]));
+  for (const effect of incoming) {
+    const existing = byPath.get(effect.filePath);
+    byPath.set(effect.filePath, existing
+      ? {
+          ...existing,
+          ...effect,
+          titleDirectoryPath: effect.titleDirectoryPath ?? existing.titleDirectoryPath,
+          titlePaths: [...new Set([...existing.titlePaths, ...effect.titlePaths])],
+        }
+      : effect);
+  }
+  return [...byPath.values()];
+}
+
+function assignEffectTitles(
+  items: MediaAsset[],
+  effectId: string,
+  titlePaths: string[],
+): MediaAsset[] {
+  return items.map((asset) => ({
+    ...asset,
+    effects: asset.effects?.map((layer) => layer.effectId === effectId
+      ? {
+          ...layer,
+          backgroundPath: layer.backgroundPath ?? layer.filePath,
+          filePath: layer.backgroundPath ?? layer.filePath,
+          titlePath: matchingNamedAssetPath(asset.name, titlePaths),
+        }
+      : layer),
+  }));
+}
+
+function normalizeComparablePath(value: string): string {
+  return value.replaceAll("\\", "/").toLocaleLowerCase();
+}
+
+function inferGraphicKind(filePath: string): "static" | "video" {
+  return /\.(?:png|webp)$/i.test(filePath) ? "static" : "video";
+}
+
+function reconcileSubtitleAssignments(
+  items: MediaAsset[],
+  subtitlePaths: string[],
+): MediaAsset[] {
+  return items.map((asset) => {
+    if (!asset.subtitles?.enabled) return asset;
+    const filePath = matchingSubtitlePath(asset.name, subtitlePaths);
+    return { ...asset, subtitles: { enabled: Boolean(filePath), filePath } };
+  });
+}
+
+function matchingSubtitlePath(mediaName: string, subtitlePaths: string[]): string | null {
+  return matchingNamedAssetPath(mediaName, subtitlePaths);
+}
+
+function parentDirectory(value: string): string {
+  const separator = value.includes("\\") ? "\\" : "/";
+  const index = value.lastIndexOf(separator);
+  return index > 0 ? value.slice(0, index) : value;
 }
 
 function integerOrDefault(

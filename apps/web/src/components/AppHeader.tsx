@@ -1,6 +1,7 @@
 import {
   CirclePlay,
   FolderOpen,
+  Layers3,
   SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -18,6 +19,7 @@ interface AppHeaderProps {
 
 const navigation = [
   { id: "import", label: "Import & Analyze", icon: FolderOpen },
+  { id: "effects", label: "Effects", icon: Layers3 },
   { id: "playlist", label: "Playlist & Preview", icon: CirclePlay },
   { id: "broadcast", label: "Broadcast Settings", icon: SlidersHorizontal },
 ] as const;

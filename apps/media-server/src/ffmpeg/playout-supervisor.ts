@@ -5,6 +5,7 @@ import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   FfmpegCapabilities,
+  GraphicEffectLayer,
   PlayoutStatus,
   StartPlayoutRequest,
 } from "@gruber/contracts";
@@ -202,7 +203,15 @@ export class PlayoutSupervisor {
         await this.tsduckCapabilities.assertSrtSupport();
       }
     }
-    const resolvedRequest = await resolveLogos(request);
+    const resolvedRequest = await resolveGraphics(request);
+    const ignoredSubtitles = request.playlist.filter((item, index) =>
+      item.subtitles?.enabled && !resolvedRequest.playlist[index]?.subtitles?.enabled
+    );
+    if (ignoredSubtitles.length > 0) {
+      this.#appendEvent(
+        `SRT subtitles ignored for ${ignoredSubtitles.length} clip(s): matching files are unavailable`,
+      );
+    }
     return {
       items: await prepareItems(resolvedRequest, this.capabilities.ffprobePath),
       request: resolvedRequest,
@@ -690,7 +699,7 @@ export class PlayoutSupervisor {
   }
 }
 
-async function resolveLogos(request: StartPlayoutRequest): Promise<StartPlayoutRequest> {
+async function resolveGraphics(request: StartPlayoutRequest): Promise<StartPlayoutRequest> {
   const logo = request.logo ? await resolveLogoOverlay(request.logo) : null;
   const playlist: StartPlayoutRequest["playlist"] = [];
   for (const item of request.playlist) {
@@ -705,9 +714,60 @@ async function resolveLogos(request: StartPlayoutRequest): Promise<StartPlayoutR
       itemLogo: item.itemLogo?.enabled
         ? await resolveLogoOverlay(item.itemLogo)
         : item.itemLogo,
+      effects: await Promise.all((item.effects ?? []).map(resolveEffectLayer)),
+      subtitles: item.subtitles?.enabled && item.subtitles.filePath
+        ? await resolveSubtitleOverlay(item.subtitles)
+        : item.subtitles,
     });
   }
   return { ...request, logo, playlist };
+}
+
+async function resolveEffectLayer(effect: GraphicEffectLayer): Promise<GraphicEffectLayer> {
+  const backgroundPath = await resolveEffectSource(
+    effect.backgroundPath ?? effect.filePath,
+    "FX background",
+  );
+  const titlePath = effect.titlePath
+    ? await resolveEffectSource(effect.titlePath, "FX per-clip title")
+    : null;
+  return {
+    ...effect,
+    backgroundPath,
+    filePath: backgroundPath,
+    titlePath,
+  };
+}
+
+async function resolveEffectSource(filePath: string, label: string): Promise<string> {
+  if (!path.isAbsolute(filePath)) {
+    throw new PlayoutPreflightError(`${label} path must be absolute`);
+  }
+  const resolvedPath = await realpath(filePath);
+  if (!(await stat(resolvedPath)).isFile()) {
+    throw new PlayoutPreflightError(`${label} path is not a file`);
+  }
+  const valid = new Set([".png", ".webp", ".mov", ".mp4", ".m4v", ".webm"])
+    .has(path.extname(resolvedPath).toLowerCase());
+  if (!valid) throw new PlayoutPreflightError(`${label} has an unsupported format`);
+  return resolvedPath;
+}
+
+async function resolveSubtitleOverlay<T extends { enabled: boolean; filePath: string | null }>(
+  subtitle: T,
+): Promise<T> {
+  try {
+    if (!subtitle.filePath || !path.isAbsolute(subtitle.filePath)) {
+      return { ...subtitle, enabled: false, filePath: null };
+    }
+    const resolvedPath = await realpath(subtitle.filePath);
+    if (!(await stat(resolvedPath)).isFile() || path.extname(resolvedPath).toLowerCase() !== ".srt") {
+      return { ...subtitle, enabled: false, filePath: null };
+    }
+    return { ...subtitle, filePath: resolvedPath };
+  } catch {
+    return { ...subtitle, enabled: false, filePath: null };
+  }
 }
 
 async function resolveLogoOverlay<T extends { filePath: string }>(logo: T): Promise<T> {
@@ -755,6 +815,8 @@ async function prepareItems(
       hasAudio: probe.hasAudio,
       ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
       itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
+      effects: item.effects,
+      subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
     });
   }
   return prepared;

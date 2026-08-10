@@ -1,5 +1,6 @@
 import {
   ffmpegCapabilitiesSchema,
+  graphicEffectAssetListSchema,
   broadcastConfigurationSummarySchema,
   clipPreviewSessionSchema,
   mediaProbeSchema,
@@ -14,6 +15,7 @@ import {
   type BroadcastConfigurationSummary,
   type ClipPreviewSession,
   type FfmpegCapabilities,
+  type GraphicEffectAsset,
   type MediaProbe,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
@@ -53,6 +55,30 @@ export async function scanMediaDirectory(
       method: "POST",
     }),
   );
+}
+
+export async function analyzeGraphicEffectPaths(
+  paths: string[],
+): Promise<GraphicEffectAsset[]> {
+  return graphicEffectAssetListSchema.parse(
+    await request("/api/effects/analyze", {
+      body: JSON.stringify({ paths }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).items;
+}
+
+export async function scanGraphicEffectDirectory(
+  directoryPath: string,
+): Promise<GraphicEffectAsset[]> {
+  return graphicEffectAssetListSchema.parse(
+    await request("/api/effects/scan", {
+      body: JSON.stringify({ directoryPath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).items;
 }
 
 export async function parseScheduleFile(filePath: string): Promise<ParsedSchedule> {

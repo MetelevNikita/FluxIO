@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v5.0.8**.
+Текущая версия: **v6.0.2**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -102,6 +102,11 @@ node setup.mjs
 - расширенная колонка Playlist и уменьшенный 16:9 preview для более удобной работы с недельным расписанием;
 - однострочные компактные элементы Playlist без переноса controls вниз;
 - индивидуальное и массовое раскрытие/сворачивание роликов расписания;
+- отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4, анализом разрешения и длительности анимированной графики;
+- per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video и имеют редактируемые In/Out handles на шкале времени ролика;
+- per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла и прожиг титров в UDP/SRT/RTMP video;
+- Shift-range selection и перенос группы выбранных клипов мышью с сохранением их порядка; одинаковые controls применяются ко всей выбранной группе;
+- `Add Clip` в Electron использует нативный диалог и анализирует новые файлы в активном Current/Future расписании;
 - выбор стартового ролика в Current Playlist и безопасный `Take on air` на выбранный ролик во время активного эфира;
 - экспорт и импорт полного переносимого encoding profile в `.txt` с проверкой формата и без записи SRT/RTMP secrets;
 - независимый от Electron media-service;
@@ -126,6 +131,7 @@ endpoint выполняется CBR regulation, а для UDP также PCR-к�
 - [Импорт недельного расписания .AIR/.TXT](docs/schedule-import-engineer-runbook.md)
 - [Восстановление Playlist-сессии](docs/session-recovery-engineer-runbook.md)
 - [Перенос encoding settings через .TXT](docs/encoding-settings-engineer-runbook.md)
+- [Графика, FX-слои и SRT-субтитры](docs/graphics-titles-engineer-runbook.md)
 - [Архитектура](docs/architecture.md)
 - [Версионирование](docs/versioning.md)
 

@@ -61,7 +61,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "5.0.8");
+    assert.equal(health.version, "6.0.2");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -376,7 +376,7 @@ test("POST /api/schedule/parse reads .air schedule files", async () => {
   }
 });
 
-test("schedule serializer preserves reordered items and enabled AGE/LOGO markup", () => {
+test("schedule serializer preserves reordered items, graphics and subtitle markup", () => {
   const serialized = serializeSchedule({
     extension: "air",
     startTime: "12:00:00.00",
@@ -388,13 +388,23 @@ test("schedule serializer preserves reordered items and enabled AGE/LOGO markup"
         filePath: "\\\\utv2\\clips\\Trip [16+].mp4",
         ageTitle: { durationSeconds: 25, enabled: true, text: "16+" },
         logoPath: "C:\\FluxIO\\logo.png",
+        graphicElements: [{
+          backgroundPath: "C:\\FluxIO\\fx\\lower-third.mov",
+          durationSeconds: 5,
+          name: "Lower Third",
+          startOnSeconds: 12.5,
+          titlePath: "C:\\FluxIO\\fx\\titles\\Trip [16+].png",
+        }],
+        srtPath: "C:\\FluxIO\\subs\\Trip [16+].srt",
       },
       {
         type: "chop",
         declaredDurationSeconds: 10,
         filePath: "C:\\media\\ident.mp4",
         ageTitle: { durationSeconds: 10, enabled: false, text: "6+" },
+        graphicElements: [],
         logoPath: null,
+        srtPath: null,
       },
     ],
   });
@@ -402,10 +412,29 @@ test("schedule serializer preserves reordered items and enabled AGE/LOGO markup"
   assert.equal(serialized.extension, "air");
   assert.match(serialized.content, /^start on 12:00:00\.00 - delay 5\r\n/);
   assert.match(serialized.content, /insertAgeTitle \{16\+\} duration \{25\}\r\ninsertLogoTitle \{C:\\FluxIO\\logo\.png\}/);
+  assert.match(serialized.content, /insertGraphicElement_\{Lower Third\} backgroundPath \{C:\\FluxIO\\fx\\lower-third\.mov\} titlePath \{C:\\FluxIO\\fx\\titles\\Trip \[16\+\]\.png\} duration \{00:00:05\.00\} startOn \{00:00:12\.50\}/);
+  assert.match(serialized.content, /insertSRT \{C:\\FluxIO\\subs\\Trip \[16\+\]\.srt\}/);
   assert.match(serialized.content, /clip 00:01:00\.25 \\\\utv2\\clips\\Trip \[16\+\]\.mp4/);
   assert.doesNotMatch(serialized.content, /insertAgeTitle \{6\+\}/);
   assert.match(serialized.content, /chop 00:00:10\.00 C:\\media\\ident\.mp4\r\n$/);
   assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
+});
+
+test("schedule parser restores multiple FX layers and an explicit SRT path", () => {
+  const schedule = parseScheduleText([
+    "start on 12:00:00.00 - delay 5",
+    "insertGraphicElement_{Lower Third} backgroundPath {/Volumes/T7/fx/lower.mov} titlePath {} duration {00:00:05.00} startOn {00:00:12.50}",
+    "insertGraphicElement_{Channel Bug} backgroundPath {/Volumes/T7/fx/bug.png} titlePath {} duration {180} startOn {0}",
+    "insertSRT {/Volumes/T7/subs/Trip [16+].srt}",
+    "clip 00:03:00.00 /Volumes/T7/media/Trip [16+].mp4",
+  ].join("\n"));
+
+  assert.equal(schedule.items[0]?.graphicElements.length, 2);
+  assert.equal(schedule.items[0]?.graphicElements[0]?.name, "Lower Third");
+  assert.equal(schedule.items[0]?.graphicElements[0]?.durationSeconds, 5);
+  assert.equal(schedule.items[0]?.graphicElements[0]?.startOnSeconds, 12.5);
+  assert.equal(schedule.items[0]?.graphicElements[1]?.backgroundPath, "/Volumes/T7/fx/bug.png");
+  assert.equal(schedule.items[0]?.srtPath, "/Volumes/T7/subs/Trip [16+].srt");
 });
 
 test("POST /api/schedule/serialize returns editable .txt content", async () => {
@@ -572,6 +601,56 @@ test("FFmpeg scales a full-frame AGE canvas to output and applies logo before co
   assert.match(filter, /\[vage0\]\[itemlogo0\]overlay=.*\[v0\]/);
   assert.ok(command.args.includes("/media/age-16.png"));
   assert.ok(command.args.includes("/media/item-logo.png"));
+});
+
+test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles", () => {
+  const request = baseRequest();
+  request.playlist[0] = {
+    ...request.playlist[0]!,
+    effects: [{
+      id: "layer-one",
+      effectId: "lower-third",
+      name: "lower-third.mov",
+      backgroundPath: "/media/lower-third-bg.mov",
+      filePath: "/media/lower-third-bg.mov",
+      kind: "video",
+      sourceDurationSeconds: 5,
+      startSeconds: 2,
+      endSeconds: 7,
+      titlePath: "/media/one-title.png",
+    }, {
+      id: "layer-two",
+      effectId: "frame",
+      name: "frame.png",
+      filePath: "/media/frame.png",
+      kind: "static",
+      sourceDurationSeconds: 0,
+      startSeconds: 1,
+      endSeconds: 9,
+    }],
+    subtitles: { enabled: true, filePath: "/media/one.srt" },
+  };
+  const command = buildFfmpegCommand(
+    request,
+    [{
+      ...preparedItems()[0]!,
+      durationSeconds: 10,
+      effects: request.playlist[0].effects,
+      subtitles: request.playlist[0].subtitles ?? undefined,
+    }],
+    "/tmp/gruber-test-preview",
+  );
+  const filter = command.args[command.args.indexOf("-filter_complex") + 1] ?? "";
+  assert.match(filter, /subtitles=filename='\/media\/one\.srt'/);
+  assert.match(filter, /setpts=PTS-STARTPTS\+2\/TB/);
+  assert.match(filter, /enable='between\(t,2,7\)'/);
+  assert.match(filter, /trim=duration=8,setpts=PTS-STARTPTS\+1\/TB/);
+  assert.match(filter, /\[vbase0\]\[fxasset0_0_0\]overlay=.*\[vfx0_0_0\]/);
+  assert.match(filter, /\[vfx0_0_0\]\[fxasset0_0_1\]overlay=.*\[vfx0_0_1\]/);
+  assert.match(filter, /\[vfx0_0_1\]\[fxasset0_1_0\]overlay=/);
+  assert.ok(command.args.includes("/media/lower-third-bg.mov"));
+  assert.ok(command.args.includes("/media/one-title.png"));
+  assert.ok(command.args.includes("/media/frame.png"));
 });
 
 test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () => {

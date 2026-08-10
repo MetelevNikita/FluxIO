@@ -78,10 +78,14 @@ Production-сборка стартует с пустой медиатекой. �
   перекрывает AGE/LOGO/type/start/delete controls;
 - свёрнутая строка высотой 38 px оставляет время, название, AGE и LOGO;
 - над расписанием расположены общие действия `Expand all` и `Collapse all`;
+- FX selector создаёт голубые chips слева направо; последний chip соответствует верхнему слою композиции;
+- активный `SRT` отображается зелёным, отсутствующий matching subtitle блокирует control;
+- над 16:9 preview размещён компактный multi-track timeline: FX — голубой, SRT — зелёный, base VIDEO — фирменный жёлтый;
+- In/Out handles должны оставаться заметными при любой длине FX и не перекрывать timecode;
 - зелёное состояние `ON AIR` с полосой прогресса и оранжевое состояние
   `STOPPED HERE` для recovery checkpoint;
 - выбор клипа и синхронное обновление preview/properties;
-- drag-and-drop изменение порядка;
+- Shift-range selection и drag-and-drop одной или нескольких строк с сохранением внутреннего порядка;
 - добавление клипов;
 - play/pause, stop, previous/next и repeat;
 - seek и volume;

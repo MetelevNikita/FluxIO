@@ -6,6 +6,10 @@ const SELECT_MEDIA_FILES_CHANNEL = "dialog:select-media-files";
 const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
 const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
+const SELECT_EFFECT_DIRECTORY_CHANNEL = "dialog:select-effect-directory";
+const SELECT_EFFECT_FILES_CHANNEL = "dialog:select-effect-files";
+const SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL = "dialog:select-effect-title-directory";
+const SELECT_SUBTITLE_DIRECTORY_CHANNEL = "dialog:select-subtitle-directory";
 const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
 const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-file";
 const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
@@ -40,6 +44,20 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
     ipcRenderer.invoke(SELECT_AGE_DIRECTORY_CHANNEL) as Promise<{
       directoryPath: string;
       imagePaths: string[];
+    } | null>,
+  selectEffectFiles: (): Promise<string[]> =>
+    ipcRenderer.invoke(SELECT_EFFECT_FILES_CHANNEL) as Promise<string[]>,
+  selectEffectDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke(SELECT_EFFECT_DIRECTORY_CHANNEL) as Promise<string | null>,
+  selectEffectTitleDirectory: (): Promise<{ directoryPath: string; filePaths: string[] } | null> =>
+    ipcRenderer.invoke(SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL) as Promise<{
+      directoryPath: string;
+      filePaths: string[];
+    } | null>,
+  selectSubtitleDirectory: (): Promise<{ directoryPath: string; filePaths: string[] } | null> =>
+    ipcRenderer.invoke(SELECT_SUBTITLE_DIRECTORY_CHANNEL) as Promise<{
+      directoryPath: string;
+      filePaths: string[];
     } | null>,
   saveScheduleFile: (input: {
     content: string;

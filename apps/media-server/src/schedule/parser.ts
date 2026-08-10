@@ -4,6 +4,7 @@ import {
   parsedScheduleSchema,
   type ParsedSchedule,
   type ParsedScheduleItem,
+  type ScheduleGraphicElement,
   type ScheduleItemType,
 } from "@gruber/contracts";
 
@@ -13,6 +14,8 @@ const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*del
 const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
 const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
+const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+titlePath\s*\{([^}]*)\}\s+duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}\s*$/i;
+const srtPattern = /^insertSRT\s*\{([^}]*)\}\s*$/i;
 
 export class ScheduleParseError extends Error {}
 
@@ -61,6 +64,8 @@ export function parseScheduleText(
   let pendingAgeTitle: string | null = null;
   let pendingAgeTitleDurationSeconds: number | null = null;
   let pendingLogoPath: string | null = null;
+  let pendingGraphicElements: ScheduleGraphicElement[] = [];
+  let pendingSrtPath: string | null = null;
   const items: ParsedScheduleItem[] = [];
   const warnings: string[] = [];
 
@@ -91,6 +96,42 @@ export function parseScheduleText(
       pendingLogoPath = requiredDirectiveValue(logo[1], "insertLogoTitle", entry.lineNumber);
       continue;
     }
+    const graphic = line.match(graphicPattern);
+    if (graphic) {
+      const name = requiredDirectiveValue(
+        graphic[1] ?? graphic[2],
+        "insertGraphicElement",
+        entry.lineNumber,
+      );
+      const backgroundPath = optionalDirectiveValue(graphic[3]);
+      const titlePath = optionalDirectiveValue(graphic[4]);
+      if (!backgroundPath && !titlePath) {
+        throw new ScheduleParseError(
+          `Line ${entry.lineNumber}: insertGraphicElement requires backgroundPath or titlePath`,
+        );
+      }
+      pendingGraphicElements.push({
+        backgroundPath,
+        durationSeconds: parseDirectiveTime(
+          graphic[5] ?? "",
+          `Line ${entry.lineNumber}: invalid graphic duration`,
+          true,
+        ),
+        name,
+        startOnSeconds: parseDirectiveTime(
+          graphic[6] ?? "",
+          `Line ${entry.lineNumber}: invalid graphic startOn`,
+          false,
+        ),
+        titlePath,
+      });
+      continue;
+    }
+    const srt = line.match(srtPattern);
+    if (srt) {
+      pendingSrtPath = requiredDirectiveValue(srt[1], "insertSRT", entry.lineNumber);
+      continue;
+    }
 
     const itemMatch = line.match(itemPattern);
     if (itemMatch) {
@@ -107,6 +148,13 @@ export function parseScheduleText(
       const filePath = itemMatch[3]?.trim() ?? "";
       if (!filePath) throw new ScheduleParseError(`Line ${entry.lineNumber}: media path is empty`);
       const itemWarnings = validateTypeDuration(type, declaredDurationSeconds, entry.lineNumber);
+      for (const graphicElement of pendingGraphicElements) {
+        if (graphicElement.startOnSeconds + graphicElement.durationSeconds > declaredDurationSeconds) {
+          itemWarnings.push(
+            `Line ${entry.lineNumber}: graphic ${graphicElement.name} exceeds clip duration`,
+          );
+        }
+      }
       items.push({
         ageTitle: pendingAgeTitle,
         ageTitleDurationSeconds: pendingAgeTitle
@@ -115,8 +163,10 @@ export function parseScheduleText(
         declaredDuration,
         declaredDurationSeconds,
         filePath,
+        graphicElements: pendingGraphicElements,
         lineNumber: entry.lineNumber,
         logoPath: pendingLogoPath,
+        srtPath: pendingSrtPath,
         type,
         warnings: itemWarnings,
       });
@@ -124,6 +174,8 @@ export function parseScheduleText(
       pendingAgeTitle = null;
       pendingAgeTitleDurationSeconds = null;
       pendingLogoPath = null;
+      pendingGraphicElements = [];
+      pendingSrtPath = null;
       continue;
     }
 
@@ -136,6 +188,10 @@ export function parseScheduleText(
   if (items.length === 0) throw new ScheduleParseError("Schedule contains no media items");
   if (pendingAgeTitle) warnings.push("insertAgeTitle at end of file has no following media item");
   if (pendingLogoPath) warnings.push("insertLogoTitle at end of file has no following media item");
+  if (pendingGraphicElements.length > 0) {
+    warnings.push("insertGraphicElement at end of file has no following media item");
+  }
+  if (pendingSrtPath) warnings.push("insertSRT at end of file has no following media item");
 
   const totalDurationSeconds = delaySeconds + items.reduce(
     (total, item) => total + item.declaredDurationSeconds,
@@ -191,6 +247,22 @@ function requiredDirectiveValue(
   const result = value?.trim() ?? "";
   if (!result) throw new ScheduleParseError(`Line ${lineNumber}: ${directive} value is empty`);
   return result;
+}
+
+function optionalDirectiveValue(value: string | undefined): string | null {
+  const result = value?.trim() ?? "";
+  return result || null;
+}
+
+function parseDirectiveTime(value: string, message: string, positive: boolean): number {
+  const normalized = value.trim();
+  const parsed = normalized.includes(":")
+    ? parseClock(normalized, true, message)
+    : Number(normalized);
+  if (!Number.isFinite(parsed) || (positive ? parsed <= 0 : parsed < 0)) {
+    throw new ScheduleParseError(message);
+  }
+  return parsed;
 }
 
 function parseAgeDuration(value: string | undefined, lineNumber: number): number | null {

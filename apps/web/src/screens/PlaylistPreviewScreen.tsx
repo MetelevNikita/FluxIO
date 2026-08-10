@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Captions,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -11,6 +12,7 @@ import {
   Image,
   Maximize2,
   LoaderCircle,
+  Layers3,
   MapPin,
   Pause,
   Play,
@@ -21,20 +23,23 @@ import {
   SkipForward,
   Square,
   Trash2,
+  X,
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
+import { matchingNamedAssetPath } from "../graphic-title-matching";
 import type {
   BroadcastSettings,
   MediaAsset,
   ScheduleMetadata,
   ScheduleOverlayLibrary,
+  SubtitleLibrary,
   ScheduleSlot,
   Scte35Marker,
   Scte35MarkerKind,
@@ -44,6 +49,8 @@ import type {
   ScheduleExportExtension,
   ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
+  GraphicEffectAsset,
+  GraphicEffectLayer,
 } from "@gruber/contracts";
 
 interface PlaylistPreviewScreenProps {
@@ -73,8 +80,9 @@ interface PlaylistPreviewScreenProps {
   recoveryAssetId: string | null;
   initialPreviewTimeSeconds: number | null;
   onAddFiles: (files: File[]) => void;
+  onAddNativeFiles?: () => Promise<void>;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
-  onMoveItem: (sourceId: string, targetId: string) => void;
+  onMoveItems: (sourceIds: string[], targetId: string) => void;
   onBulkAgeChange: (assetIds: string[], rating: string | null) => void;
   onBulkLogoChange: (assetIds: string[], enabled: boolean) => void;
   onAgeDurationChange: (durationSeconds: number) => void;
@@ -95,6 +103,13 @@ interface PlaylistPreviewScreenProps {
   onSelectScheduleLogoDirectory?: () => Promise<void>;
   onSelectScheduleLogoFile?: () => Promise<void>;
   onUpdateItem: (assetId: string, patch: Partial<MediaAsset>) => void;
+  onUpdateItems: (
+    assetIds: string[],
+    updater: (asset: MediaAsset) => Partial<MediaAsset>,
+  ) => void;
+  effectLibrary: GraphicEffectAsset[];
+  subtitleLibrary: SubtitleLibrary | null;
+  onSelectSubtitleDirectory?: () => Promise<void>;
   scte35Defaults: BroadcastSettings;
 }
 
@@ -124,8 +139,9 @@ export function PlaylistPreviewScreen({
   recoveryAssetId,
   initialPreviewTimeSeconds,
   onAddFiles,
+  onAddNativeFiles,
   onAddScte35Marker,
-  onMoveItem,
+  onMoveItems,
   onBulkAgeChange,
   onBulkLogoChange,
   onAgeDurationChange,
@@ -143,6 +159,10 @@ export function PlaylistPreviewScreen({
   onSelectScheduleLogoDirectory,
   onSelectScheduleLogoFile,
   onUpdateItem,
+  onUpdateItems,
+  effectLibrary,
+  subtitleLibrary,
+  onSelectSubtitleDirectory,
   scte35Defaults,
 }: PlaylistPreviewScreenProps) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -163,7 +183,7 @@ export function PlaylistPreviewScreen({
   const [currentTime, setCurrentTime] = useState(932);
   const [trimIn, setTrimIn] = useState(130);
   const [trimOut, setTrimOut] = useState(1_055);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [draggingIds, setDraggingIds] = useState<string[]>([]);
   const [markerEventId, setMarkerEventId] = useState(scte35Defaults.scte35DefaultEventId);
   const [markerKind, setMarkerKind] = useState<Scte35MarkerKind>("break-start");
   const [markerDuration, setMarkerDuration] = useState(
@@ -172,6 +192,7 @@ export function PlaylistPreviewScreen({
   const [markerUpid, setMarkerUpid] = useState(scte35Defaults.scte35DefaultUpid);
   const [scheduleExportExtension, setScheduleExportExtension] = useState<ScheduleExportExtension>("air");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set([selectedAsset.id]));
+  const selectionAnchorId = useRef<string | null>(selectedAsset.id);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const [bulkAgeRating, setBulkAgeRating] = useState<string>("16+");
   const ageAssetPaths = ageAssetMap(ageLibrary?.imagePaths ?? []);
@@ -414,6 +435,89 @@ export function PlaylistPreviewScreen({
     });
   }
 
+  function selectPlaylistAsset(asset: MediaAsset, event: ReactMouseEvent): void {
+    if (event.shiftKey) {
+      const anchorIndex = playlist.findIndex((item) => item.id === selectionAnchorId.current);
+      const targetIndex = playlist.findIndex((item) => item.id === asset.id);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex <= targetIndex
+          ? [anchorIndex, targetIndex]
+          : [targetIndex, anchorIndex];
+        setSelectedIds(new Set(playlist.slice(start, end + 1).map((item) => item.id)));
+      }
+    } else if (event.ctrlKey || event.metaKey) {
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        if (next.has(asset.id)) next.delete(asset.id);
+        else next.add(asset.id);
+        return next;
+      });
+      selectionAnchorId.current = asset.id;
+    } else {
+      setSelectedIds(new Set([asset.id]));
+      selectionAnchorId.current = asset.id;
+    }
+    onSelectAsset(asset.id);
+  }
+
+  function controlTargetIds(assetId: string): string[] {
+    return selectedIds.has(assetId) && selectedIds.size > 1
+      ? [...selectedIds]
+      : [assetId];
+  }
+
+  function addEffectToItems(assetId: string, effectId: string): void {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect) return;
+    const targetIds = controlTargetIds(assetId);
+    onUpdateItems(targetIds, (asset) => {
+      const clipDuration = effectiveClipDuration(asset);
+      const endSeconds = Math.max(
+        0.04,
+        Math.min(clipDuration, effect.kind === "static" || effect.durationSeconds <= 0
+          ? clipDuration
+          : effect.durationSeconds),
+      );
+      const layer: GraphicEffectLayer = {
+        backgroundPath: effect.filePath,
+        id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
+        effectId: effect.id,
+        name: effect.name,
+        filePath: effect.filePath,
+        kind: effect.kind,
+        sourceDurationSeconds: effect.durationSeconds,
+        startSeconds: 0,
+        endSeconds,
+        titlePath: findMatchingEffectTitle(asset.name, effect),
+      };
+      return { effects: [...(asset.effects ?? []), layer] };
+    });
+  }
+
+  function toggleSubtitlesForItems(assetId: string): void {
+    const targetIds = controlTargetIds(assetId);
+    onUpdateItems(targetIds, (asset) => {
+      const currentEnabled = asset.subtitles?.enabled ?? false;
+      if (currentEnabled) return { subtitles: { enabled: false, filePath: null } };
+      const filePath = findMatchingSubtitle(asset.name, subtitleLibrary?.filePaths ?? []);
+      return { subtitles: { enabled: Boolean(filePath), filePath } };
+    });
+  }
+
+  function updateEffectLayer(layerId: string, patch: Partial<GraphicEffectLayer>): void {
+    onUpdateItem(selectedAsset.id, {
+      effects: (selectedAsset.effects ?? []).map((layer) =>
+        layer.id === layerId ? { ...layer, ...patch } : layer
+      ),
+    });
+  }
+
+  function removeEffectLayer(layerId: string): void {
+    onUpdateItem(selectedAsset.id, {
+      effects: (selectedAsset.effects ?? []).filter((layer) => layer.id !== layerId),
+    });
+  }
+
   function toggleMute() {
     if (volume > 0) {
       setPreviousVolume(volume);
@@ -542,6 +646,18 @@ export function PlaylistPreviewScreen({
               type="number"
             />
           </label>
+        </div>
+        <div className="schedule-resource-control subtitle-source-control">
+          <span>SRT subtitles folder</span>
+          <strong title={subtitleLibrary?.directoryPath}>
+            {subtitleLibrary
+              ? `${shortPath(subtitleLibrary.directoryPath)} · ${subtitleLibrary.filePaths.length} files`
+              : "Not selected"}
+          </strong>
+          <button disabled={!onSelectSubtitleDirectory || scheduleBusy} onClick={() => void onSelectSubtitleDirectory?.()} type="button">
+            <Captions size={13} /> Select folder
+          </button>
+          <small>Exact video/SRT basename match; missing files stay OFF</small>
         </div>
         <div className="schedule-save-control">
           <span>Export edited schedule</span>
@@ -712,14 +828,23 @@ export function PlaylistPreviewScreen({
               className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               data-asset-id={asset.id}
               draggable
-              onDragEnd={() => setDraggingId(null)}
+              onDragEnd={() => setDraggingIds([])}
               onDragOver={(event) => event.preventDefault()}
-              onDragStart={() => setDraggingId(asset.id)}
-              onDrop={() => {
-                if (draggingId) {
-                  onMoveItem(draggingId, asset.id);
+              onDragStart={() => {
+                const ids = selectedIds.has(asset.id) && selectedIds.size > 1
+                  ? playlist.filter((item) => selectedIds.has(item.id)).map((item) => item.id)
+                  : [asset.id];
+                if (!selectedIds.has(asset.id)) {
+                  setSelectedIds(new Set([asset.id]));
+                  selectionAnchorId.current = asset.id;
                 }
-                setDraggingId(null);
+                setDraggingIds(ids);
+              }}
+              onDrop={() => {
+                if (draggingIds.length > 0) {
+                  onMoveItems(draggingIds, asset.id);
+                }
+                setDraggingIds([]);
               }}
             >
               <span className="playlist-status-stripe" />
@@ -735,19 +860,7 @@ export function PlaylistPreviewScreen({
               </button>
               <button
                 className="playlist-row-select"
-                onClick={(event) => {
-                  if (event.ctrlKey || event.metaKey) {
-                    setSelectedIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(asset.id)) next.delete(asset.id);
-                      else next.add(asset.id);
-                      return next;
-                    });
-                  } else {
-                    setSelectedIds(new Set([asset.id]));
-                  }
-                  onSelectAsset(asset.id);
-                }}
+                onClick={(event) => selectPlaylistAsset(asset, event)}
                 type="button"
               >
                 <span className="playlist-air-time">{entry.startTime}</span>
@@ -783,7 +896,8 @@ export function PlaylistPreviewScreen({
                   </span>
                 </div>
               ) : (
-              <div className="playlist-item-metadata">
+              <div className="playlist-item-controls">
+                <div className="playlist-item-metadata">
                 {onAir ? (
                   <span className="playlist-on-air-chip" title="This clip is currently being sent to air">
                     <RadioTower size={12} /> ON AIR · {Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}%
@@ -801,9 +915,10 @@ export function PlaylistPreviewScreen({
                 ) : null}
                 <select
                   aria-label={`Schedule type for ${asset.name}`}
-                  onChange={(event) => onUpdateItem(asset.id, {
-                    scheduleType: event.target.value as MediaAsset["scheduleType"],
-                  })}
+                  onChange={(event) => {
+                    const scheduleType = event.target.value as MediaAsset["scheduleType"];
+                    onUpdateItems(controlTargetIds(asset.id), () => ({ scheduleType }));
+                  }}
                   value={asset.scheduleType ?? "clip"}
                 >
                   <option value="movie">MOVIE</option>
@@ -819,22 +934,18 @@ export function PlaylistPreviewScreen({
                     aria-label={`Age rating for ${asset.name}`}
                     onChange={(event) => {
                       const rating = event.target.value;
-                      if (!rating) {
-                        onUpdateItem(asset.id, {
-                          ageTitle: asset.ageTitle
-                            ? { ...asset.ageTitle, enabled: false }
-                            : undefined,
-                        });
-                        return;
-                      }
-                      onUpdateItem(asset.id, {
-                        ageTitle: {
-                          durationSeconds: asset.ageTitle?.durationSeconds ?? ageDurationSeconds,
-                          enabled: true,
-                          filePath: ageAssetPaths.get(rating) ?? null,
-                          text: rating,
-                        },
-                      });
+                      onUpdateItems(controlTargetIds(asset.id), (target) => ({
+                        ageTitle: !rating
+                          ? target.ageTitle
+                            ? { ...target.ageTitle, enabled: false }
+                            : undefined
+                          : {
+                              durationSeconds: target.ageTitle?.durationSeconds ?? ageDurationSeconds,
+                              enabled: true,
+                              filePath: ageAssetPaths.get(rating) ?? null,
+                              text: rating,
+                            },
+                      }));
                     }}
                     value={asset.ageTitle?.enabled ? asset.ageTitle.text : ""}
                   >
@@ -850,9 +961,12 @@ export function PlaylistPreviewScreen({
                   <input
                     checked={asset.itemLogo?.enabled ?? false}
                     disabled={!asset.itemLogo}
-                    onChange={(event) => asset.itemLogo && onUpdateItem(asset.id, {
-                      itemLogo: { ...asset.itemLogo, enabled: event.target.checked },
-                    })}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      onUpdateItems(controlTargetIds(asset.id), (target) => ({
+                        itemLogo: target.itemLogo ? { ...target.itemLogo, enabled } : undefined,
+                      }));
+                    }}
                     type="checkbox"
                   />
                   LOGO
@@ -873,6 +987,58 @@ export function PlaylistPreviewScreen({
                     : <MapPin size={13} />}
                   <span>{playoutActive ? "Take on air" : "Start here"}</span>
                 </button>
+                </div>
+                <div className="playlist-secondary-actions">
+                <button
+                  className={`subtitle-toggle ${asset.subtitles?.enabled ? "enabled" : ""}`}
+                  disabled={!findMatchingSubtitle(asset.name, subtitleLibrary?.filePaths ?? []) && !asset.subtitles?.enabled}
+                  onClick={() => toggleSubtitlesForItems(asset.id)}
+                  title={findMatchingSubtitle(asset.name, subtitleLibrary?.filePaths ?? [])
+                    ?? "Matching .srt file was not found"}
+                  type="button"
+                >
+                  <Captions size={11} /> SRT
+                </button>
+                <label className="fx-selector" title="Add a project effect as the next graphics layer">
+                  <Layers3 size={11} />
+                  <select
+                    aria-label={`Add FX to ${asset.name}`}
+                    disabled={effectLibrary.length === 0}
+                    onChange={(event) => {
+                      if (event.target.value) addEffectToItems(asset.id, event.target.value);
+                      event.target.value = "";
+                    }}
+                    value=""
+                  >
+                    <option value="">FX</option>
+                    {effectLibrary.map((effect) => (
+                      <option key={effect.id} value={effect.id}>{effect.name}</option>
+                    ))}
+                  </select>
+                </label>
+                {(asset.effects ?? []).length > 0 ? (
+                  <span className="fx-layer-chips" title="FX order from lower to upper layer">
+                    {asset.effects?.map((layer, index) => (
+                      (() => {
+                        const definition = effectLibrary.find((effect) => effect.id === layer.effectId);
+                        const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
+                        return (
+                          <i
+                            className={titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}
+                            key={layer.id}
+                            title={titleMissing
+                              ? `No alpha title matched ${asset.name}`
+                              : layer.titlePath ?? layer.backgroundPath ?? layer.filePath}
+                          >
+                            {index + 1} · {shortEffectName(layer.name)}
+                            {titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
+                          </i>
+                        );
+                      })()
+                    ))}
+                  </span>
+                ) : null}
+                </div>
               </div>
               )}
               {!collapsed ? (
@@ -898,7 +1064,10 @@ export function PlaylistPreviewScreen({
         </div>
         <div className="playlist-footer">
           <span>{playlist.length} clips · {formatTimecode(playlistDuration, "25")} total</span>
-          <button onClick={() => fileInput.current?.click()} type="button">
+          <button
+            onClick={() => onAddNativeFiles ? void onAddNativeFiles() : fileInput.current?.click()}
+            type="button"
+          >
             + Add Clip
           </button>
           <input
@@ -1054,9 +1223,14 @@ export function PlaylistPreviewScreen({
             <strong>Timeline Trimming</strong>
             <span>
               IN: {formatTimecode(trimIn, selectedAsset.fps)} &nbsp;&nbsp; OUT:{" "}
-              {formatTimecode(trimOut, selectedAsset.fps)}
+              {formatTimecode(trimOut, selectedAsset.fps)} &nbsp;&nbsp; FX: {selectedAsset.effects?.length ?? 0}
             </span>
           </div>
+          <EffectTimeline
+            asset={selectedAsset}
+            onRemoveLayer={removeEffectLayer}
+            onUpdateLayer={updateEffectLayer}
+          />
           <div className="filmstrip-track">
             {Array.from({ length: 8 }, (_, index) => {
               const atSeconds = selectedAsset.durationSeconds * ((index + 0.5) / 8);
@@ -1230,6 +1404,85 @@ export function PlaylistPreviewScreen({
   );
 }
 
+function EffectTimeline({
+  asset,
+  onRemoveLayer,
+  onUpdateLayer,
+}: {
+  asset: MediaAsset;
+  onRemoveLayer: (layerId: string) => void;
+  onUpdateLayer: (layerId: string, patch: Partial<GraphicEffectLayer>) => void;
+}) {
+  const duration = Math.max(0.04, effectiveClipDuration(asset));
+  const layers = asset.effects ?? [];
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  return (
+    <section className="effect-timeline">
+      <div className="effect-ruler">
+        <span />
+        <div>{ticks.map((ratio) => <i key={ratio}>{formatTimecode(duration * ratio, asset.fps)}</i>)}</div>
+      </div>
+      <div className="effect-tracks">
+        {layers.map((layer, index) => {
+          const start = Math.min(duration - 0.04, Math.max(0, layer.startSeconds));
+          const end = Math.min(duration, Math.max(start + 0.04, layer.endSeconds));
+          return (
+            <div className="effect-track" key={layer.id}>
+              <span title={layer.titlePath ?? layer.backgroundPath ?? layer.filePath}>
+                <b>FX {index + 1}</b>{shortEffectName(layer.name)} · {layer.titlePath ? "BG+TITLE" : "BG"}
+              </span>
+              <div className="effect-track-rail">
+                <i style={{ left: `${start / duration * 100}%`, width: `${(end - start) / duration * 100}%` }}>
+                  <em>{formatTimecode(start, asset.fps)}–{formatTimecode(end, asset.fps)}</em>
+                </i>
+                <input
+                  aria-label={`FX ${index + 1} start`}
+                  className="effect-range effect-range-start"
+                  max={duration}
+                  min={0}
+                  onChange={(event) => onUpdateLayer(layer.id, {
+                    startSeconds: Math.min(Number(event.target.value), end - 0.04),
+                  })}
+                  step={0.04}
+                  type="range"
+                  value={start}
+                />
+                <input
+                  aria-label={`FX ${index + 1} end`}
+                  className="effect-range effect-range-end"
+                  max={duration}
+                  min={0.04}
+                  onChange={(event) => onUpdateLayer(layer.id, {
+                    endSeconds: Math.max(Number(event.target.value), start + 0.04),
+                  })}
+                  step={0.04}
+                  type="range"
+                  value={end}
+                />
+              </div>
+              <button aria-label={`Remove ${layer.name}`} onClick={() => onRemoveLayer(layer.id)} type="button">
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+        {asset.subtitles?.enabled ? (
+          <div className="effect-track system-track">
+            <span><b>SRT</b>Subtitles</span>
+            <div className="effect-track-rail"><i style={{ left: 0, width: "100%" }} /></div>
+            <span />
+          </div>
+        ) : null}
+        <div className="effect-track video-track">
+          <span><b>VIDEO</b>{shortEffectName(asset.name)}</span>
+          <div className="effect-track-rail"><i style={{ left: 0, width: "100%" }} /></div>
+          <span />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function IconButton({
   active = false,
   children,
@@ -1321,4 +1574,28 @@ function shortPath(value: string): string {
   const parts = value.split(/[\\/]/).filter(Boolean);
   if (parts.length <= 2) return value;
   return `…/${parts.slice(-2).join("/")}`;
+}
+
+function effectiveClipDuration(asset: MediaAsset): number {
+  return Math.max(
+    0.04,
+    Math.min(asset.declaredDurationSeconds ?? asset.durationSeconds, asset.durationSeconds),
+  );
+}
+
+function shortEffectName(value: string): string {
+  const name = value.replace(/\.[^.]+$/, "");
+  return name.length > 18 ? `${name.slice(0, 16)}…` : name;
+}
+
+function findMatchingSubtitle(mediaName: string, subtitlePaths: string[]): string | null {
+  return matchingNamedAssetPath(mediaName, subtitlePaths);
+}
+
+function findMatchingEffectTitle(
+  mediaName: string,
+  effect: GraphicEffectAsset,
+): string | null {
+  if (!effect.titleDirectoryPath) return null;
+  return matchingNamedAssetPath(mediaName, effect.titlePaths);
 }
