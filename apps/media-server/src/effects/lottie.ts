@@ -119,12 +119,18 @@ export function inspectLottieDocument(
     throw new Error(`Lottie duration must be greater than 0 and no more than ${maximumDurationSeconds} seconds`);
   }
   const properties: LottieEditableProperty[] = [];
-  collectLayerProperties(document.layers, "/layers", "Main composition", properties);
+  collectLayerProperties(document.layers, "/layers", "Main composition", properties, document.slots);
   if (Array.isArray(document.assets)) {
     document.assets.forEach((asset, index) => {
       if (!isObject(asset) || !Array.isArray(asset.layers)) return;
       const name = stringValue(asset.nm) || stringValue(asset.id) || `Asset ${index + 1}`;
-      collectLayerProperties(asset.layers, `/assets/${index}/layers`, `Precomp · ${name}`, properties);
+      collectLayerProperties(
+        asset.layers,
+        `/assets/${index}/layers`,
+        `Precomp · ${name}`,
+        properties,
+        document.slots,
+      );
     });
   }
   const warnings: string[] = [];
@@ -134,6 +140,9 @@ export function inspectLottieDocument(
   if (Array.isArray(document.assets) && document.assets.some((asset) =>
     isObject(asset) && typeof asset.p === "string" && !asset.p.startsWith("data:"))) {
     warnings.push("External image assets will be embedded into the rendered cache file.");
+  }
+  if (properties.some((property) => property.type === "text") && Array.isArray(document.chars)) {
+    warnings.push("This Lottie embeds font glyphs. New characters render only when those glyphs were exported from After Effects.");
   }
   return lottieEffectMetadataSchema.parse({
     sourcePath,
@@ -305,6 +314,7 @@ function collectLayerProperties(
   basePath: string,
   compositionName: string,
   target: LottieEditableProperty[],
+  slots: unknown,
 ): void {
   if (!Array.isArray(layers)) return;
   layers.forEach((layer, layerIndex) => {
@@ -332,22 +342,55 @@ function collectLayerProperties(
       collectTransformProperty(layer.ks.p, `${layerPath}/ks/p`, group, "Position", "vector", target);
       collectTransformProperty(layer.ks.s, `${layerPath}/ks/s`, group, "Scale", "vector", target);
     }
-    if (isObject(layer.t) && isObject(layer.t.d) && Array.isArray(layer.t.d.k)) {
-      const textKeyframes = layer.t.d.k;
-      textKeyframes.forEach((keyframe, keyframeIndex) => {
-        if (!isObject(keyframe) || !isObject(keyframe.s) || typeof keyframe.s.t !== "string") return;
-        pushProperty(target, {
-          path: `${layerPath}/t/d/k/${keyframeIndex}/s/t`,
-          group,
-          label: keyframeIndex === 0 ? "Text" : `Text keyframe ${keyframeIndex + 1}`,
-          type: "text",
-          value: keyframe.s.t,
-          animated: textKeyframes.length > 1,
-        });
-      });
+    if (isObject(layer.t) && isObject(layer.t.d)) {
+      collectTextProperties(layer.t.d, layerPath, group, slots, target);
     }
     collectShapeProperties(layer.shapes, `${layerPath}/shapes`, group, target);
   });
+}
+
+function collectTextProperties(
+  textDocument: JsonObject,
+  layerPath: string,
+  group: string,
+  slots: unknown,
+  target: LottieEditableProperty[],
+): void {
+  const slotId = stringValue(textDocument.sid);
+  if (slotId && isObject(slots)) {
+    const slot = slots[slotId];
+    if (isObject(slot) && isObject(slot.p) && collectTextKeyframes(
+      slot.p,
+      `/slots/${encodePointerSegment(slotId)}/p`,
+      `${group} · Slot ${slotId}`,
+      target,
+    )) return;
+  }
+  collectTextKeyframes(textDocument, `${layerPath}/t/d`, group, target);
+}
+
+function collectTextKeyframes(
+  textDocument: JsonObject,
+  documentPath: string,
+  group: string,
+  target: LottieEditableProperty[],
+): boolean {
+  if (!Array.isArray(textDocument.k)) return false;
+  const textKeyframes = textDocument.k;
+  let found = false;
+  textKeyframes.forEach((keyframe, keyframeIndex) => {
+    if (!isObject(keyframe) || !isObject(keyframe.s) || typeof keyframe.s.t !== "string") return;
+    found = true;
+    pushProperty(target, {
+      path: `${documentPath}/k/${keyframeIndex}/s/t`,
+      group,
+      label: keyframeIndex === 0 ? "Text" : `Text keyframe ${keyframeIndex + 1}`,
+      type: "text",
+      value: keyframe.s.t,
+      animated: textKeyframes.length > 1,
+    });
+  });
+  return found;
 }
 
 function collectShapeProperties(
@@ -421,11 +464,16 @@ function pushProperty(
   target: LottieEditableProperty[],
   input: Omit<LottieEditableProperty, "id" | "overridden">,
 ): void {
+  if (target.some((property) => property.path === input.path)) return;
   target.push({
     ...input,
     id: createHash("sha1").update(input.path).digest("hex").slice(0, 16),
     overridden: false,
   });
+}
+
+function encodePointerSegment(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
 function setAnimatableValue(property: unknown, value: number | number[]): void {

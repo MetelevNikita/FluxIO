@@ -278,7 +278,8 @@ function LottieProperties({
   onRender: () => void;
 }) {
   if (!effect.lottie) return null;
-  const groups = groupProperties(effect.lottie.properties);
+  const textProperties = effect.lottie.properties.filter((property) => property.type === "text");
+  const groups = groupProperties(effect.lottie.properties.filter((property) => property.type !== "text"));
   const changeProperty = (propertyId: string, value: LottieEditableProperty["value"]) => {
     if (!effect.lottie) return;
     onChange({
@@ -343,25 +344,66 @@ function LottieProperties({
         <span>{effect.width}×{effect.height} · {effect.lottie.frameRate} fps · {formatDuration(effect.durationSeconds)}</span>
       </div>
       {effect.lottie.warnings.map((warning) => <p className="lottie-warning" key={warning}>{warning}</p>)}
+      <section className="lottie-text-editor">
+        <div>
+          <strong>Editable text</strong>
+          <span>{textProperties.length} text field{textProperties.length === 1 ? "" : "s"}</span>
+        </div>
+        {textProperties.length > 0 ? textProperties.map((property) => (
+          <LottiePropertyRow
+            key={property.id}
+            onChange={(value) => changeProperty(property.id, value)}
+            onReset={() => resetProperty(property.id)}
+            property={property}
+          />
+        )) : (
+          <p>
+            No editable Text Layers or Essential Graphics text slots were found. In After Effects,
+            keep the title as a Text Layer and do not convert it to shapes/outlines before Bodymovin export.
+          </p>
+        )}
+      </section>
       <div className="lottie-property-groups">
         {[...groups.entries()].map(([group, properties]) => (
           <details key={group} open={groups.size <= 4}>
             <summary>{group}<span>{properties.length}</span></summary>
             {properties.map((property) => (
-              <div className={`lottie-property-row ${property.overridden ? "overridden" : ""}`} key={property.id}>
-                <label>
-                  <span>{property.label}{property.animated ? <i>ANIMATED</i> : null}</span>
-                  <PropertyInput property={property} onChange={(value) => changeProperty(property.id, value)} />
-                </label>
-                <button disabled={!property.overridden} onClick={() => resetProperty(property.id)} title="Use original JSON value" type="button">
-                  <RotateCcw size={12} />
-                </button>
-              </div>
+              <LottiePropertyRow
+                key={property.id}
+                onChange={(value) => changeProperty(property.id, value)}
+                onReset={() => resetProperty(property.id)}
+                property={property}
+              />
             ))}
           </details>
         ))}
       </div>
     </section>
+  );
+}
+
+function LottiePropertyRow({
+  onChange,
+  onReset,
+  property,
+}: {
+  onChange: (value: LottieEditableProperty["value"]) => void;
+  onReset: () => void;
+  property: LottieEditableProperty;
+}) {
+  return (
+    <div className={`lottie-property-row ${property.overridden ? "overridden" : ""}`}>
+      <label>
+        <span title={property.group}>
+          {property.type === "text" ? property.group : property.label}
+          {property.animated ? <i>ANIMATED</i> : null}
+        </span>
+        <PropertyInput property={property} onChange={onChange} />
+      </label>
+      <button disabled={!property.overridden} onClick={onReset} title="Use original JSON value" type="button">
+        <RotateCcw size={12} />
+      </button>
+    </div>
   );
 }
 
@@ -398,6 +440,15 @@ function PropertyInput({ property, onChange }: {
           }} step="0.1" type="number" value={value} />
         ))}
       </span>
+    );
+  }
+  if (property.type === "text") {
+    return (
+      <textarea
+        onChange={(event) => onChange(event.target.value.replaceAll("\n", "\r"))}
+        rows={2}
+        value={String(property.value).replaceAll("\r", "\n")}
+      />
     );
   }
   return <input onChange={(event) => onChange(event.target.value)} type="text" value={String(property.value)} />;

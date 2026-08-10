@@ -69,7 +69,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.4");
+    assert.equal(health.version, "6.0.6");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -156,6 +156,67 @@ test("Lottie operator overrides update visibility, text and animated values", ()
   assert.equal(layer.hd, true);
   assert.deepEqual(opacity, { a: 0, k: 72 });
   assert.equal(text, "After");
+});
+
+test("Lottie Essential Graphics text slots are editable and override the rendered title", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 25,
+    w: 640,
+    h: 360,
+    slots: {
+      "Programme/Title": {
+        p: { k: [{ s: { f: "ArialMT", t: "Slot title" }, t: 0 }] },
+        t: 99,
+      },
+    },
+    layers: [{
+      ty: 5,
+      nm: "Title",
+      t: {
+        d: {
+          k: [{ s: { f: "ArialMT", t: "Inline fallback" }, t: 0 }],
+          sid: "Programme/Title",
+        },
+      },
+    }],
+  };
+
+  const metadata = inspectLottieDocument(document, "/graphics/slot-title.json");
+  const textProperty = metadata.properties.find((property) => property.type === "text");
+  assert.ok(textProperty);
+  assert.equal(textProperty.value, "Slot title");
+  assert.equal(textProperty.path, "/slots/Programme~1Title/p/k/0/s/t");
+  assert.match(textProperty.group, /Slot Programme\/Title/);
+  assert.equal(metadata.properties.filter((property) => property.type === "text").length, 1);
+
+  const result = applyLottieProperties(document, metadata.properties.map((property) =>
+    property.id === textProperty.id
+      ? { ...property, value: "Edited title", overridden: true }
+      : property));
+  const slotText = (((((result.slots as Record<string, unknown>)["Programme/Title"] as Record<string, unknown>)
+    .p as Record<string, unknown>).k as Array<{ s: { t: string } }>)[0]!.s.t);
+  const layerText = (((((result.layers as Array<Record<string, unknown>>)[0]!.t as Record<string, unknown>)
+    .d as Record<string, unknown>).k as Array<{ s: { t: string } }>)[0]!.s.t);
+  assert.equal(slotText, "Edited title");
+  assert.equal(layerText, "Inline fallback");
+});
+
+test("Lottie text metadata warns when the export embeds a limited glyph set", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 25,
+    w: 640,
+    h: 360,
+    chars: [{ ch: "A" }],
+    layers: [{ ty: 5, nm: "Title", t: { d: { k: [{ s: { t: "A" } }] } } }],
+  };
+  const metadata = inspectLottieDocument(document, "/graphics/glyph-title.json");
+  assert.match(metadata.warnings.join(" "), /embeds font glyphs/i);
 });
 
 test(

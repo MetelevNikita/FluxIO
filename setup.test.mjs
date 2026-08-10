@@ -17,6 +17,7 @@ import {
   npmCiArguments,
   parseEnv,
   platformServiceStopCommand,
+  probeGstreamerDvbPlugin,
   serializeEnv,
   validatePort,
   windowsToolCandidates,
@@ -181,7 +182,36 @@ test("setup discovers Windows tools in PATH refresh and standard install locatio
   assert.ok(gstreamer.includes(
     "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin\\gst-launch-1.0.exe",
   ));
+  assert.ok(gstreamer.includes(
+    "C:\\Users\\operator\\AppData\\Local\\Programs\\gstreamer\\1.0\\msvc_x86_64\\bin\\gst-launch-1.0.exe",
+  ));
+  assert.ok(gstreamer.includes(
+    "C:\\gstreamer\\1.0\\msvc_x86_64\\bin\\gst-launch-1.0.exe",
+  ));
   assert.ok(postgres.includes("C:\\Program Files\\PostgreSQL\\18\\bin\\psql.exe"));
+});
+
+test("setup validates the Windows GStreamer dvbsubenc runtime", () => {
+  const calls = [];
+  const probe = probeGstreamerDvbPlugin(
+    "D:\\Media Tools\\gstreamer\\bin\\gst-launch-1.0.exe",
+    {
+      platform: "win32",
+      spawnSyncImpl(command, args) {
+        calls.push([command, args]);
+        return { error: undefined, status: 0, stderr: "", stdout: "" };
+      },
+    },
+  );
+  assert.deepEqual(calls, [[
+    "D:\\Media Tools\\gstreamer\\bin\\gst-inspect-1.0.exe",
+    ["--exists", "dvbsubenc"],
+  ]]);
+  assert.equal(probe.available, true);
+  assert.equal(
+    probe.inspectPath,
+    "D:\\Media Tools\\gstreamer\\bin\\gst-inspect-1.0.exe",
+  );
 });
 
 test("setup merges refreshed Windows PATH values without duplicates", () => {

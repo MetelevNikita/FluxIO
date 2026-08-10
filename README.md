@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v6.0.4**.
+Текущая версия: **v6.0.6**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -102,7 +102,7 @@ node setup.mjs
 - расширенная колонка Playlist и уменьшенный 16:9 preview для более удобной работы с недельным расписанием;
 - однострочные компактные элементы Playlist без переноса controls вниз;
 - индивидуальное и массовое раскрытие/сворачивание роликов расписания;
-- отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4 и Lottie JSON из After Effects: live preview, извлечённые operator Properties, transparent render cache и назначение всему проекту/выбранному ролику;
+- отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4 и Lottie JSON из After Effects: live preview, всегда открытый редактор Text Layers/Essential Graphics text slots, остальные operator Properties, transparent render cache и назначение всему проекту/выбранному ролику;
 - per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video, имеют редактируемые In/Out handles и перетаскиваются целиком по шкале времени ролика без изменения длительности;
 - per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла, выбор между FFmpeg burn-in и отдельным receiver-selectable DVB bitmap PID в UDP/SRT MPEG-TS;
 - отдельный DVB subtitle encoder через GStreamer `subparse → textrender → dvbsubenc → mpegtsmux`; TSDuck добавляет `stream_type 0x06`, `subtitling_descriptor`, выбранный PID и сохраняет CBR transport stuffing;

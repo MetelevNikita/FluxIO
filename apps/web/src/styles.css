@@ -1046,6 +1046,43 @@ p {
   line-height: 1.45;
 }
 
+.lottie-text-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(255, 211, 77, 0.32);
+  border-radius: 5px;
+  padding: 8px;
+  background: rgba(255, 211, 77, 0.035);
+}
+
+.lottie-text-editor > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lottie-text-editor > div:first-child strong { font-size: 10px; }
+.lottie-text-editor > div:first-child span {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.lottie-text-editor > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.lottie-text-editor .lottie-property-row {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
 .lottie-property-groups {
   display: flex;
   flex-direction: column;
@@ -1106,15 +1143,24 @@ p {
 }
 
 .lottie-property-row input[type="text"],
-.lottie-property-row input[type="number"] {
+.lottie-property-row input[type="number"],
+.lottie-property-row textarea {
   width: min(180px, 42%);
-  height: 26px;
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 0 6px;
   color: var(--text);
   background: #090b0d;
   font-size: 8px;
+}
+
+.lottie-property-row input[type="text"],
+.lottie-property-row input[type="number"] { height: 26px; }
+
+.lottie-property-row textarea {
+  min-height: 42px;
+  padding: 6px;
+  resize: vertical;
 }
 
 .lottie-vector-input {

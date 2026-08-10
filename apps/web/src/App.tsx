@@ -1150,7 +1150,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.4",
+        connection.kind === "ready" ? connection.health.version : "6.0.6",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");

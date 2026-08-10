@@ -16,7 +16,7 @@ const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "6.0.4";
+const applicationVersion = "6.0.6";
 
 export function buildDatabaseUrl({
   database,
@@ -364,6 +364,16 @@ async function main() {
       "gst-launch-1.0",
       offline,
     );
+    const gstreamerProbe = probeGstreamerDvbPlugin(resolvedGstreamerPath);
+    if (!gstreamerProbe.available) {
+      throw new Error(
+        "GStreamer установлен, но обязательный DVB plugin dvbsubenc не найден. " +
+          "На Windows установите официальный MSVC x86_64 Runtime с полным набором " +
+          `plug-ins и повторите мастер. Проверка: "${gstreamerProbe.inspectPath}" ` +
+          `--exists dvbsubenc (${gstreamerProbe.reason}).`,
+      );
+    }
+    console.log(`  ✓ GStreamer dvbsubenc: ${gstreamerProbe.inspectPath}`);
     if (!databaseReady) {
       const psqlPath = await ensureTool(
         prompt,
@@ -766,14 +776,37 @@ export function buildNpmInvocation({
   };
 }
 
-function siblingExecutable(command, executableName) {
+function siblingExecutable(command, executableName, platform = process.platform) {
   if (!command) return executableName;
-  const pathApi = process.platform === "win32" ? path.win32 : path;
+  const pathApi = platform === "win32" ? path.win32 : path;
   if (!pathApi.isAbsolute(command)) return executableName;
-  const filename = process.platform === "win32"
+  const filename = platform === "win32"
     ? windowsExecutableName(executableName)
     : executableName;
   return pathApi.join(pathApi.dirname(command), filename);
+}
+
+export function probeGstreamerDvbPlugin(
+  launchPath,
+  {
+    platform = process.platform,
+    spawnSyncImpl = spawnSync,
+  } = {},
+) {
+  const inspectPath = siblingExecutable(launchPath, "gst-inspect-1.0", platform);
+  const result = spawnSyncImpl(inspectPath, ["--exists", "dvbsubenc"], {
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  const reason = result.error?.message ||
+    [result.stderr, result.stdout].find((value) => String(value ?? "").trim())?.trim() ||
+    `exit code ${result.status ?? "unknown"}`;
+  return {
+    available: !result.error && result.status === 0,
+    inspectPath,
+    reason,
+  };
 }
 
 function printToolDetection(label, detectedPath) {
@@ -854,7 +887,19 @@ export function windowsToolCandidates(command, environment = process.env) {
     );
   }
   if (["gst-launch-1.0", "gst-inspect-1.0"].includes(normalizeExecutableName(command))) {
+    const environmentRoots = [
+      environment.GSTREAMER_1_0_ROOT_MSVC_X86_64,
+      environment.GSTREAMER_1_0_ROOT_MSVC_X86,
+      environment.GSTREAMER_1_0_ROOT_MINGW_X86_64,
+      environment.GSTREAMER_ROOT_X86_64,
+      environment.GSTREAMER_ROOT_X86,
+    ].filter(Boolean);
     roots.push(
+      ...environmentRoots.map((root) => win.join(root, "bin")),
+      localAppData && win.join(localAppData, "Programs", "gstreamer", "1.0", "msvc_x86_64", "bin"),
+      localAppData && win.join(localAppData, "Programs", "gstreamer", "1.0", "mingw_x86_64", "bin"),
+      win.join(systemDrive, "gstreamer", "1.0", "msvc_x86_64", "bin"),
+      win.join(systemDrive, "gstreamer", "1.0", "mingw_x86_64", "bin"),
       win.join(programFiles, "gstreamer", "1.0", "msvc_x86_64", "bin"),
       win.join(programFiles, "gstreamer", "1.0", "mingw_x86_64", "bin"),
       programFilesX86 && win.join(programFilesX86, "gstreamer", "1.0", "msvc_x86", "bin"),
@@ -900,6 +945,8 @@ function windowsToolSearchRoots(command, environment = process.env) {
   }
   if (["gst-launch-1.0", "gst-inspect-1.0"].includes(normalized)) {
     roots.push(
+      localAppData && win.join(localAppData, "Programs", "gstreamer"),
+      win.join(systemDrive, "gstreamer"),
       win.join(programFiles, "gstreamer"),
       programFilesX86 && win.join(programFilesX86, "gstreamer"),
     );

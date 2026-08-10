@@ -1,6 +1,6 @@
 # Графика, FX-слои и SRT-субтитры
 
-Применимо к FluxIO **v6.0.4**.
+Применимо к FluxIO **v6.0.6**.
 
 В раскрытой строке ролика вторичные функции расположены отдельным нижним рядом:
 сначала `SRT`, затем селектор `FX`, затем уже назначенные эффекты слева направо.
@@ -40,6 +40,7 @@ alpha codec, например ProRes 4444.
    - solid, fill и stroke colors;
    - position, scale, rotation и opacity;
    - прозрачный либо выбранный background color.
+   Текстовые поля вынесены в всегда открытый блок `Editable text`. Он поддерживает обычные AE Text Layers, text keyframes и Essential Graphics text slots.
 5. Измените значения и нажмите `Render changes`. Анимированное свойство сохраняет исходные keyframes, пока оператор не изменит его; после изменения оно становится явным статическим override.
 6. `Add to entire project` назначает эффект всем роликам Current и Future без дублирования. Для одного материала выберите его в selector и нажмите `Add to clip`.
 7. Точный момент выхода и ухода эффекта задайте в `Playlist → Timeline Trimming`: перетащите середину слоя для переноса анимации целиком либо используйте handles для изменения In/Out.
@@ -124,7 +125,7 @@ DVB: VIDEO → AGE → Channel LOGO → FX → video PID
 
 Последний FX находится сверху. Результат идёт одновременно в program output и HLS monitoring preview.
 
-## 6. Ограничения v6.0.4
+## 6. Ограничения v6.0.6
 
 - изменения FX активного filter graph применяются при следующем Start/Take;
 - BG и title-файлы должны оставаться доступными по сохранённым абсолютным путям;
@@ -133,6 +134,8 @@ DVB: VIDEO → AGE → Channel LOGO → FX → video PID
 - первая реализация Lottie принимает композиции длительностью до 60 секунд и размером до 4096×4096;
 - JavaScript expressions и сторонние After Effects plug-ins не выполняются: в JSON должны быть экспортированы поддерживаемые Lottie layers/keyframes;
 - operator Properties намеренно ограничены безопасными эфирными параметрами; служебные shape paths, masks и expression internals не показываются как обычные поля;
+- текст, преобразованный в After Effects командой `Create Shapes from Text`/outlines, уже не является Text Layer и не может редактироваться как строка; экспортируйте исходный Text Layer или Essential Graphics text slot;
+- если JSON содержит встроенный массив `chars`, новый текст ограничен экспортированным набором glyphs; для произвольного текста экспортируйте нужный алфавит либо используйте доступный на сервере font;
 - после `Render changes` уже назначенные FX-слои получают новый cache-файл автоматически, а их Timeline IN/OUT сохраняются.
 
 ## 7. Импорт и экспорт вместе с расписанием

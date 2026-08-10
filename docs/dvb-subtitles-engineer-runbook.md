@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.4**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.6**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -33,12 +33,31 @@ winget install tsduck
 winget install --id gstreamerproject.gstreamer --exact
 ```
 
+Официальный 64-bit MSVC installer может установить GStreamer для текущего
+пользователя в
+`%LOCALAPPDATA%\Programs\gstreamer\1.0\msvc_x86_64\bin`, системно в
+`%ProgramFiles%\gstreamer\1.0\msvc_x86_64\bin` или, для старых выпусков, в
+`C:\gstreamer\1.0\msvc_x86_64\bin`. `setup.mjs` проверяет все три варианта,
+WinGet packages, PATH и корневые переменные GStreamer.
+
 Проверка DVB encoder:
 
 ```bash
 gst-inspect-1.0 --exists dvbsubenc
 tsp --version
 ```
+
+В PowerShell без настроенного PATH можно проверить полный путь:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\gstreamer\1.0\msvc_x86_64\bin\gst-launch-1.0.exe" --version
+& "$env:LOCALAPPDATA\Programs\gstreamer\1.0\msvc_x86_64\bin\gst-inspect-1.0.exe" --exists dvbsubenc
+$LASTEXITCODE
+```
+
+Последняя команда должна вернуть `0`. Если executable найден, но код не `0`,
+в установленном Runtime отсутствует `dvbsubenc` из **GStreamer Bad Plug-ins**:
+переустановите официальный MSVC x86_64 Runtime с полным набором plug-ins.
 
 На Windows используются `gst-inspect-1.0.exe` и `tsp.exe`. Пути сохраняются в
 `.env` как `GSTREAMER_LAUNCH_PATH`, `GSTREAMER_INSPECT_PATH` и `TSDUCK_PATH`.

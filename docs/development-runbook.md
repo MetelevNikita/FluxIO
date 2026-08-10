@@ -55,7 +55,8 @@ PostgreSQL фиксирован на `127.0.0.1`. SSL отключён и не �
 3. проверяет WinGet `Links` и `Packages`, Chocolatey и Scoop;
 4. ищет FFmpeg в `C:\ffmpeg\bin`, `C:\Tools\ffmpeg\bin` и `Program Files\FFmpeg\bin`;
 5. ищет TSDuck в `Program Files\TSDuck\bin`;
-6. ищет GStreamer в `Program Files\gstreamer\1.0\msvc_x86_64\bin` и WinGet packages;
+6. ищет GStreamer в `%LOCALAPPDATA%\Programs\gstreamer`, `Program Files\gstreamer`,
+   legacy-каталоге `C:\gstreamer`, WinGet packages и путях из переменных GStreamer;
 7. ищет `psql.exe` и `pg_isready.exe` в `Program Files\PostgreSQL\<version>\bin`;
 8. сохраняет найденные абсолютные пути в `.env`.
 
@@ -244,7 +245,14 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;
 - health `degraded` — media-service не прочитал `DATABASE_URL`;
 - отсутствует TSDuck — проверить `tsp --version` и `TSDUCK_PATH` в `.env`;
-- DVB subtitles не запускаются — проверить `gst-inspect-1.0 --exists dvbsubenc`, `GSTREAMER_LAUNCH_PATH` и `GSTREAMER_INSPECT_PATH` в `.env`;
+- GStreamer успешно установился, но мастер его не нашёл — обновить FluxIO до
+  v6.0.6: мастер теперь учитывает user-only каталог GStreamer 1.28 и legacy
+  `C:\gstreamer`; для нестандартного каталога указать полный путь до
+  `gst-launch-1.0.exe`;
+- GStreamer найден, но `dvbsubenc` отсутствует — переустановить официальный
+  MSVC x86_64 Runtime с полным набором plug-ins и проверить
+  `gst-inspect-1.0 --exists dvbsubenc`; `dvbsubenc` входит в Bad Plug-ins;
+- DVB subtitles не запускаются — проверить `GSTREAMER_LAUNCH_PATH` и `GSTREAMER_INSPECT_PATH` в `.env`;
 - SRT недоступен — проверить `tsversion --support srt`; весь финальный SRT transport открывает TSDuck, поддержка libsrt в FFmpeg не требуется;
 - cue `too close to playlist start` — перенести marker позже либо уменьшить pre-roll, сохранив достаточный запас для головной станции;
 - SRT passphrase — пустая либо 10–79 символов;

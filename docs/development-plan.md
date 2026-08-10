@@ -384,6 +384,27 @@
 - runtime-карточка DVB Subtitles в Encoding Monitor;
 - перетаскивание FX-слоя целиком по Timeline Trimming с сохранением длительности.
 
+### 4.6. Editable Lottie titles v6.0.5
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-06-editable-lottie-titles-v6.0.5.md`](progress/04-06-editable-lottie-titles-v6.0.5.md).
+
+- отдельный всегда открытый блок `Editable text` в Effects inspector;
+- редактирование обычных Lottie Text Layers и каждого text keyframe;
+- поддержка Essential Graphics/Skottie text slots через `t.d.sid → slots[slotId].p`;
+- multiline input с корректной Lottie-разметкой переноса строк через `\r`;
+- явная диагностика title, преобразованных в shapes/outlines, и ограниченного embedded glyph set;
+- серверный test подтверждает, что override меняет slot, реально используемый рендерером, а не inline fallback.
+
+### 4.7. Windows GStreamer discovery v6.0.6
+
+Статус: завершён 2026-08-10. Отчёт: [`progress/04-07-windows-gstreamer-discovery-v6.0.6.md`](progress/04-07-windows-gstreamer-discovery-v6.0.6.md).
+
+- автоматический поиск GStreamer в user-only, system-wide и legacy Windows-каталогах;
+- поддержка стандартных root environment variables GStreamer;
+- отдельная setup-проверка `gst-inspect-1.0 --exists dvbsubenc`;
+- понятная диагностика неполного Runtime без смешивания ошибки executable и plugin;
+- Windows regression tests для абсолютных путей, содержащих пробелы.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;
