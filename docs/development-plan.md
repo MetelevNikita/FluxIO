@@ -493,6 +493,20 @@
 - regression test моделирует 216 роликов и payload больше стандартного лимита
   Fastify.
 
+### 4.15. Длинные FFmpeg input paths v6.0.14
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-15-embedded-ffmpeg-inputs-v6.0.14.md`](progress/04-15-embedded-ffmpeg-inputs-v6.0.14.md).
+
+- media-service оценивает длину scripted FFmpeg command до `spawn`;
+- если media/AGE/logo/FX paths превышают безопасный порог, source inputs
+  автоматически описываются `movie` source filters внутри filter script;
+- прямые `-i` сохраняются для небольших Playlist, чтобы не менять обычный путь
+  запуска без необходимости;
+- regression test подтверждает, что 216 длинных Windows paths сокращаются с
+  более чем 38 000 до менее чем 30 000 command characters;
+- Log Output явно показывает `media paths embedded`.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

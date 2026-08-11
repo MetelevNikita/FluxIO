@@ -268,7 +268,8 @@ Media-service отправляет `SIGTERM` и применяет принуд�
 
 - один канал и один активный endpoint;
 - playlist пока собирается в один FFmpeg filter graph; с v6.0.13 graph хранится
-  во временном script-файле и не упирается в Windows command-line limit, однако
+  во временном script-файле, а с v6.0.14 туда же при необходимости переносятся
+  media/AGE/logo/FX input paths и не расходуют Windows command line, однако
   для 24/7 rolling preparation и бесшовного обновления очень больших расписаний
   по-прежнему нужен отдельный scheduler/rolling pipeline;
 - нет резервного media-service и автоматического failover;

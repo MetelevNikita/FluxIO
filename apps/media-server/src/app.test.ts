@@ -78,7 +78,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.13");
+    assert.equal(health.version, "6.0.14");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -738,7 +738,8 @@ test("large playlists move the FFmpeg filter graph out of the process command li
   const items = Array.from({ length: 216 }, (_, index) => ({
     id: `clip-${index}`,
     name: `Weekly programme ${index}.mp4`,
-    filePath: `R:\\FluxIO\\Media\\Weekly programme ${String(index).padStart(3, "0")}.mp4`,
+    filePath: `R:\\FluxIO\\${"Very long weekly schedule directory\\".repeat(5)}` +
+      `Weekly programme ${String(index).padStart(3, "0")}.mp4`,
     trimInSeconds: 0,
     durationSeconds: 60,
     hasAudio: true,
@@ -748,9 +749,14 @@ test("large playlists move the FFmpeg filter graph out of the process command li
   const scripted = buildFfmpegCommand(request, items, "/tmp/preview", {
     filterComplexScriptPath: scriptPath,
   });
+  const embedded = buildFfmpegCommand(request, items, "/tmp/preview", {
+    embedInputSourcesInFilterGraph: true,
+    filterComplexScriptPath: scriptPath,
+  });
 
   assert.ok(estimateCommandLineCharacters("ffmpeg.exe", inline.args) > 32_767);
-  assert.ok(estimateCommandLineCharacters("ffmpeg.exe", scripted.args) < 30_000);
+  assert.ok(estimateCommandLineCharacters("ffmpeg.exe", scripted.args) > 38_000);
+  assert.ok(estimateCommandLineCharacters("ffmpeg.exe", embedded.args) < 30_000);
   assert.ok(scripted.filterGraph.length > 32_767);
   assert.deepEqual(
     scripted.args.slice(
@@ -760,6 +766,10 @@ test("large playlists move the FFmpeg filter graph out of the process command li
     ["-filter_complex_script", scriptPath],
   );
   assert.equal(scripted.args.includes("-filter_complex"), false);
+  assert.equal(embedded.args.includes("-i"), false);
+  assert.equal(embedded.inputSourcesEmbedded, true);
+  assert.ok(embedded.filterGraph.startsWith("movie=filename='R\\:\\\\FluxIO"));
+  assert.match(embedded.filterGraph, /:streams=v\+a\[inputv0\]\[inputa0\]/);
 });
 
 test("FFmpeg optionally normalizes final programme and preview audio to -23 LUFS", () => {
@@ -886,6 +896,40 @@ test("FFmpeg scales a full-frame AGE canvas to output and applies logo before co
   assert.match(filter, /\[vage0\]\[itemlogo0\]overlay=.*\[v0\]/);
   assert.ok(command.args.includes("/media/age-16.png"));
   assert.ok(command.args.includes("/media/item-logo.png"));
+
+  const embedded = buildFfmpegCommand(
+    request,
+    [{
+      id: "one",
+      name: "one.mp4",
+      filePath: "/media/one.mp4",
+      trimInSeconds: 0,
+      durationSeconds: 20,
+      hasAudio: true,
+      ageTitle: {
+        enabled: true,
+        text: "16+",
+        durationSeconds: 10,
+        filePath: "/media/age-16.png",
+      },
+      itemLogo: {
+        enabled: true,
+        filePath: "/media/item-logo.png",
+        position: "top-right",
+        widthPercent: 12,
+        margin: 24,
+        opacity: 0.8,
+      },
+    }],
+    "/tmp/gruber-test-preview",
+    { embedInputSourcesInFilterGraph: true },
+  );
+  assert.equal(embedded.args.includes("-i"), false);
+  assert.match(embedded.filterGraph, /movie=filename='\/media\/one\.mp4':streams=v\+a/);
+  assert.match(embedded.filterGraph, /movie=filename='\/media\/age-16\.png':streams=v\[ageinput0raw\]/);
+  assert.match(embedded.filterGraph, /\[ageinput0raw\]tpad=stop_mode=clone:stop_duration=20,trim=duration=20/);
+  assert.match(embedded.filterGraph, /movie=filename='\/media\/item-logo\.png':streams=v\[itemlogoinput0raw\]/);
+  assert.match(embedded.filterGraph, /\[itemlogoinput0raw\]tpad=stop_mode=clone:stop_duration=20,trim=duration=20/);
 });
 
 test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles", () => {
@@ -1794,6 +1838,68 @@ test(
       udpReceiver.close();
       await mediaPreview.close();
       await supervisor.close();
+      await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "real FFmpeg filter script opens embedded video, audio and static overlay sources",
+  { skip: process.env.GRUBER_RUN_FFMPEG_TESTS !== "1", timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "fluxio embedded inputs-"));
+    const clip = path.join(directory, "programme with spaces.mp4");
+    const age = path.join(directory, "16 plus.png");
+    const filterScript = path.join(directory, "filter graph.txt");
+    const capabilities = new FfmpegCapabilitiesService();
+    try {
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "0.8", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", clip,
+      ]);
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=yellow@0.7:size=320x180",
+        "-frames:v", "1", age,
+      ]);
+      const request = baseRequest();
+      request.video.width = 320;
+      request.video.height = 180;
+      request.endpoint = {
+        protocol: "udp",
+        host: "127.0.0.1",
+        port: 49_999,
+        packetSize: 1_316,
+        ttl: 1,
+        localAddress: "",
+        mpegTs: { ...defaultMpegTsOutputSettings },
+      };
+      const command = buildFfmpegCommand(request, [{
+        id: "embedded",
+        name: "programme with spaces.mp4",
+        filePath: clip,
+        trimInSeconds: 0,
+        durationSeconds: 0.8,
+        hasAudio: true,
+        ageTitle: {
+          enabled: true,
+          text: "16+",
+          filePath: age,
+          durationSeconds: 0.4,
+        },
+      }], directory, {
+        embedInputSourcesInFilterGraph: true,
+        filterComplexScriptPath: filterScript,
+      });
+      await writeFile(filterScript, command.filterGraph, "utf8");
+      await runCommand(capabilities.ffmpegPath, command.args);
+
+      assert.equal(command.args.includes("-i"), false);
+      assert.match(await readFile(path.join(directory, "index.m3u8"), "utf8"), /#EXTM3U/);
+    } finally {
       await rm(directory, { force: true, recursive: true });
     }
   },

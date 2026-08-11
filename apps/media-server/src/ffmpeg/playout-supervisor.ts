@@ -442,28 +442,45 @@ export class PlayoutSupervisor {
       this.previewDirectory,
       `ffmpeg-filter-${this.#status.schedulePhase}-${this.#status.loopCount}.txt`,
     );
-    const command = buildFfmpegCommand(
+    let command = buildFfmpegCommand(
       request,
       this.#items,
       this.previewDirectory,
       { ...options, filterComplexScriptPath: filterScriptPath },
     );
-    await writeFile(filterScriptPath, command.filterGraph, "utf8");
-    const commandLineCharacters = estimateCommandLineCharacters(
+    let commandLineCharacters = estimateCommandLineCharacters(
       this.capabilities.ffmpegPath,
       command.args,
     );
+    if (commandLineCharacters > windowsCommandLineSafetyLimit) {
+      command = buildFfmpegCommand(
+        request,
+        this.#items,
+        this.previewDirectory,
+        {
+          ...options,
+          embedInputSourcesInFilterGraph: true,
+          filterComplexScriptPath: filterScriptPath,
+        },
+      );
+      commandLineCharacters = estimateCommandLineCharacters(
+        this.capabilities.ffmpegPath,
+        command.args,
+      );
+    }
+    await writeFile(filterScriptPath, command.filterGraph, "utf8");
     if (process.platform === "win32" && commandLineCharacters > windowsCommandLineSafetyLimit) {
       throw new PlayoutPreflightError(
         `The playlist still requires a ${commandLineCharacters}-character FFmpeg command after ` +
-          `moving the filter graph to a file. Shorten the media paths or split the schedule; ` +
-          `the safe Windows limit is ${windowsCommandLineSafetyLimit} characters.`,
+          `moving filter and input sources to a script. Reduce the number of SCTE-35 keyframes ` +
+          `or split the schedule; the safe Windows limit is ${windowsCommandLineSafetyLimit} characters.`,
       );
     }
     this.#appendEvent(
       `FFmpeg graph prepared for ${this.#items.length} clip(s): ` +
         `${formatKibibytes(Buffer.byteLength(command.filterGraph, "utf8"))} KiB script, ` +
-        `${commandLineCharacters} command characters`,
+        `${commandLineCharacters} command characters, ` +
+        `${command.inputSourcesEmbedded ? "media paths embedded" : "direct media inputs"}`,
     );
     return command;
   }

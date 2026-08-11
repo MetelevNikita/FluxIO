@@ -245,10 +245,11 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
 - FFmpeg test ожидает `/tmp/...`, но получает `\\tmp\\...` — обновить repository: cross-platform проверка HLS paths добавлена на этапе 2.11;
 - systemd test получает `\\srv\\...` вместо `/srv/...` — обновить repository: Linux/macOS service paths зафиксированы как POSIX на этапе 2.12;
 - FFmpeg пишет `Unrecognized option 'stats_period'` — обновить repository: optional argument удалён на этапе 2.13, progress работает через `-progress pipe:1`;
-- `Start failed: spawn ENAMETOOLONG` на большом Windows Playlist — обновить
-  FluxIO до v6.0.13 и пересобрать media-service: filter graph должен передаваться
-  через `-filter_complex_script`, а Log Output — показывать `FFmpeg graph
-  prepared`;
+- `Start failed: The playlist still requires ... FFmpeg command` или
+  `spawn ENAMETOOLONG` на большом Windows Playlist — обновить FluxIO до v6.0.14
+  и пересобрать/переустановить media-service: filter graph и длинные input paths
+  должны передаваться через `-filter_complex_script`, а Log Output — показывать
+  `FFmpeg graph prepared ... media paths embedded`;
 - `Save session list` получает HTTP 413 либо перестаёт сохранять большой проект
   — обновить media-service до v6.0.13, где workspace body limit равен 32 MiB;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;

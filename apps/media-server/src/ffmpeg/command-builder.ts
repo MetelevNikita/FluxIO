@@ -33,10 +33,12 @@ export interface FfmpegCommand {
   args: string[];
   endpointLabel: string;
   filterGraph: string;
+  inputSourcesEmbedded: boolean;
   totalDurationSeconds: number;
 }
 
 export interface FfmpegCommandOptions {
+  embedInputSourcesInFilterGraph?: boolean;
   filterComplexScriptPath?: string;
   forceKeyFramesSeconds?: number[];
   programEndpoint?: PlayoutEndpoint;
@@ -63,59 +65,62 @@ export function buildFfmpegCommand(
     "pipe:1",
   ];
 
-  for (const item of items) {
-    args.push("-i", item.filePath);
-  }
-  for (const item of items) {
-    if (item.ageTitle?.enabled && item.ageTitle.filePath) {
-      args.push(
-        "-loop",
-        "1",
-        "-framerate",
-        decimal(request.video.frameRate),
-        "-i",
-        item.ageTitle.filePath,
-      );
+  const inputSourcesEmbedded = options.embedInputSourcesInFilterGraph === true;
+  if (!inputSourcesEmbedded) {
+    for (const item of items) {
+      args.push("-i", item.filePath);
     }
-    if (item.itemLogo?.enabled) {
-      args.push(
-        "-loop",
-        "1",
-        "-framerate",
-        decimal(request.video.frameRate),
-        "-i",
-        item.itemLogo.filePath,
-      );
-    }
-    for (const effect of item.effects ?? []) {
-      for (const source of graphicEffectSources(effect)) {
-        if (source.kind === "static") {
-          args.push(
-            "-loop",
-            "1",
-            "-framerate",
-            decimal(request.video.frameRate),
-            "-i",
-            source.filePath,
-          );
-        } else {
-          args.push("-i", source.filePath);
+    for (const item of items) {
+      if (item.ageTitle?.enabled && item.ageTitle.filePath) {
+        args.push(
+          "-loop",
+          "1",
+          "-framerate",
+          decimal(request.video.frameRate),
+          "-i",
+          item.ageTitle.filePath,
+        );
+      }
+      if (item.itemLogo?.enabled) {
+        args.push(
+          "-loop",
+          "1",
+          "-framerate",
+          decimal(request.video.frameRate),
+          "-i",
+          item.itemLogo.filePath,
+        );
+      }
+      for (const effect of item.effects ?? []) {
+        for (const source of graphicEffectSources(effect)) {
+          if (source.kind === "static") {
+            args.push(
+              "-loop",
+              "1",
+              "-framerate",
+              decimal(request.video.frameRate),
+              "-i",
+              source.filePath,
+            );
+          } else {
+            args.push("-i", source.filePath);
+          }
         }
       }
     }
-  }
-  if (request.logo) {
-    args.push(
-      "-loop",
-      "1",
-      "-framerate",
-      decimal(request.video.frameRate),
-      "-i",
-      request.logo.filePath,
-    );
+    if (request.logo) {
+      args.push(
+        "-loop",
+        "1",
+        "-framerate",
+        decimal(request.video.frameRate),
+        "-i",
+        request.logo.filePath,
+      );
+    }
   }
 
-  const filterGraph = buildFilterGraph(request, items);
+  const filterGraph = buildFilterGraph(request, items, inputSourcesEmbedded);
   if (options.filterComplexScriptPath) {
     args.push("-filter_complex_script", options.filterComplexScriptPath);
   } else {
@@ -197,6 +202,7 @@ export function buildFfmpegCommand(
     args,
     endpointLabel: buildEndpoint(request.endpoint).label,
     filterGraph,
+    inputSourcesEmbedded,
     totalDurationSeconds: items.reduce(
       (total, item) => total + item.durationSeconds,
       0,
@@ -207,6 +213,7 @@ export function buildFfmpegCommand(
 function buildFilterGraph(
   request: StartPlayoutRequest,
   items: PreparedPlayoutItem[],
+  inputSourcesEmbedded: boolean,
 ): string {
   const filters: string[] = [];
   const sampleRate = request.audio.sampleRate;
@@ -219,6 +226,15 @@ function buildFilterGraph(
   let nextOverlayInput = items.length;
 
   items.forEach((item, index) => {
+    const videoInput = inputSourcesEmbedded ? `inputv${index}` : `${index}:v:0`;
+    const audioInput = inputSourcesEmbedded ? `inputa${index}` : `${index}:a:0`;
+    if (inputSourcesEmbedded) {
+      const streams = item.hasAudio ? "v+a" : "v";
+      filters.push(
+        `movie=filename='${escapeFilterPath(item.filePath)}':streams=${streams}` +
+          `[${videoInput}]${item.hasAudio ? `[${audioInput}]` : ""}`,
+      );
+    }
     const start = decimal(item.trimInSeconds);
     const duration = decimal(item.durationSeconds);
     const burnSubtitles = request.subtitleOutput.mode === "burn-in" &&
@@ -234,7 +250,7 @@ function buildFilterGraph(
       ? `subtitles=filename='${escapeFilterPath(item.subtitles.filePath)}',`
       : "";
     filters.push(
-      `[${index}:v:0]${subtitleFilter}trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS${deinterlace},` +
+      `[${videoInput}]${subtitleFilter}trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS${deinterlace},` +
         `scale=${request.video.width}:${request.video.height}:force_original_aspect_ratio=decrease,` +
         `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,` +
         `fps=${decimal(request.video.frameRate)},format=yuv420p[${normalizedLabel}]`,
@@ -247,10 +263,16 @@ function buildFilterGraph(
         : `v${index}`;
       const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
       if (item.ageTitle.filePath) {
-        const ageInputIndex = nextOverlayInput;
-        nextOverlayInput += 1;
+        const ageInput = inputSourcesEmbedded
+          ? addMovieVideoSource(
+              filters,
+              item.ageTitle.filePath,
+              `ageinput${index}`,
+              item.durationSeconds,
+            )
+          : `${nextOverlayInput++}:v:0`;
         filters.push(
-          `[${ageInputIndex}:v:0]format=rgba,` +
+          `[${ageInput}]format=rgba,` +
             `scale=${request.video.width}:${request.video.height}:flags=lanczos[ageasset${index}]`,
           `[${itemVideoSource}][ageasset${index}]overlay=x=0:y=0:` +
             `shortest=1:eof_action=pass:format=auto:` +
@@ -267,8 +289,14 @@ function buildFilterGraph(
       itemVideoSource = ageLabel;
     }
     if (item.itemLogo?.enabled) {
-      const logoInputIndex = nextOverlayInput;
-      nextOverlayInput += 1;
+      const logoInput = inputSourcesEmbedded
+        ? addMovieVideoSource(
+            filters,
+            item.itemLogo.filePath,
+            `itemlogoinput${index}`,
+            item.durationSeconds,
+          )
+        : `${nextOverlayInput++}:v:0`;
       const logoWidth = Math.max(
         2,
         Math.round(request.video.width * (item.itemLogo.widthPercent / 100)),
@@ -278,7 +306,7 @@ function buildFilterGraph(
         ? `vlogo${index}`
         : `v${index}`;
       filters.push(
-        `[${logoInputIndex}:v:0]format=rgba,` +
+        `[${logoInput}]format=rgba,` +
           `colorchannelmixer=aa=${decimal(item.itemLogo.opacity)},scale=${logoWidth}:-1[itemlogo${index}]`,
         `[${itemVideoSource}][itemlogo${index}]overlay=x=${x}:y=${y}:` +
           `shortest=1:eof_action=pass:format=auto,format=yuv420p[${logoOutputLabel}]`,
@@ -292,8 +320,14 @@ function buildFilterGraph(
       const effectDuration = Math.max(0.04, effectEnd - effectStart);
       const sources = graphicEffectSources(effect);
       sources.forEach((source, sourceIndex) => {
-        const effectInputIndex = nextOverlayInput;
-        nextOverlayInput += 1;
+        const effectInput = inputSourcesEmbedded
+          ? addMovieVideoSource(
+              filters,
+              source.filePath,
+              `fxinput${index}_${effectIndex}_${sourceIndex}`,
+              source.kind === "static" ? effectDuration : null,
+            )
+          : `${nextOverlayInput++}:v:0`;
         const effectLabel = `fxasset${index}_${effectIndex}_${sourceIndex}`;
         const isLastSource = sourceIndex === sources.length - 1;
         const outputLabel = effectIndex === effects.length - 1 && isLastSource
@@ -306,7 +340,7 @@ function buildFilterGraph(
           ? `trim=start=0:duration=${decimal(sourceDuration)},`
           : `trim=duration=${decimal(effectDuration)},`;
         filters.push(
-          `[${effectInputIndex}:v:0]${sourceTrim}setpts=PTS-STARTPTS+${decimal(effectStart)}/TB,` +
+          `[${effectInput}]${sourceTrim}setpts=PTS-STARTPTS+${decimal(effectStart)}/TB,` +
             `format=rgba,scale=${request.video.width}:${request.video.height}:` +
             `force_original_aspect_ratio=decrease:flags=lanczos,` +
             `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2:color=black@0[${effectLabel}]`,
@@ -322,7 +356,7 @@ function buildFilterGraph(
 
     if (item.hasAudio) {
       filters.push(
-        `[${index}:a:0]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,` +
+        `[${audioInput}]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,` +
           `aresample=${sampleRate}:async=1:first_pts=0,` +
           `aformat=sample_fmts=fltp:sample_rates=${sampleRate}:channel_layouts=${channelLayout}[a${index}]`,
       );
@@ -349,14 +383,21 @@ function buildFilterGraph(
   }
   let videoSource = "vconcat";
   if (request.logo) {
-    const logoInputIndex = nextOverlayInput;
+    const logoInput = inputSourcesEmbedded
+      ? addMovieVideoSource(
+          filters,
+          request.logo.filePath,
+          "globallogoinput",
+          items.reduce((total, item) => total + item.durationSeconds, 0),
+        )
+      : `${nextOverlayInput}:v:0`;
     const logoWidth = Math.max(
       2,
       Math.round(request.video.width * (request.logo.widthPercent / 100)),
     );
     const [x, y] = logoPosition(request.logo.position, request.logo.margin);
     filters.push(
-      `[${logoInputIndex}:v:0]format=rgba,colorchannelmixer=aa=${decimal(request.logo.opacity)},` +
+      `[${logoInput}]format=rgba,colorchannelmixer=aa=${decimal(request.logo.opacity)},` +
         `scale=${logoWidth}:-1[logo]`,
       `[vconcat][logo]overlay=x=${x}:y=${y}:shortest=1:format=auto[vbranded]`,
     );
@@ -372,6 +413,25 @@ function buildFilterGraph(
   );
 
   return filters.join(";");
+}
+
+function addMovieVideoSource(
+  filters: string[],
+  filePath: string,
+  label: string,
+  repeatDurationSeconds: number | null,
+): string {
+  const sourceLabel = repeatDurationSeconds === null ? label : `${label}raw`;
+  filters.push(
+    `movie=filename='${escapeFilterPath(filePath)}':streams=v[${sourceLabel}]`,
+  );
+  if (repeatDurationSeconds !== null) {
+    filters.push(
+      `[${sourceLabel}]tpad=stop_mode=clone:stop_duration=${decimal(repeatDurationSeconds)},` +
+        `trim=duration=${decimal(repeatDurationSeconds)},setpts=PTS-STARTPTS[${label}]`,
+    );
+  }
+  return label;
 }
 
 function escapeDrawtext(value: string): string {
