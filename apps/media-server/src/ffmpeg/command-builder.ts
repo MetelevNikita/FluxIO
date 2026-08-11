@@ -128,7 +128,7 @@ export function buildFfmpegCommand(
   args.push(...endpoint.outputArgs);
 
   const previewPlaylistPath = path.join(previewDirectory, "index.m3u8");
-  const previewSegmentPath = path.join(previewDirectory, "segment-%06d.ts");
+  const previewSegmentPath = path.join(previewDirectory, "segment-%010d.ts");
   const previewGop = Math.max(12, Math.round(request.video.frameRate));
   args.push(
     "-map",
@@ -173,8 +173,10 @@ export function buildFfmpegCommand(
     "6",
     "-hls_delete_threshold",
     "3",
+    "-hls_start_number_source",
+    "epoch",
     "-hls_flags",
-    "delete_segments+append_list+omit_endlist+independent_segments+program_date_time",
+    "delete_segments+omit_endlist+independent_segments+program_date_time+temp_file",
     "-hls_segment_filename",
     previewSegmentPath,
     previewPlaylistPath,
@@ -322,6 +324,17 @@ function buildFilterGraph(
 
   const concatInputs = items.map((_, index) => `[v${index}][a${index}]`).join("");
   filters.push(`${concatInputs}concat=n=${items.length}:v=1:a=1[vconcat][aconcat]`);
+  let audioSource = "aconcat";
+  if (request.audio.loudnessNormalization.enabled) {
+    const loudness = request.audio.loudnessNormalization;
+    filters.push(
+      `[aconcat]loudnorm=I=${decimal(loudness.targetLufs)}:` +
+        `TP=${decimal(loudness.truePeakDbtp)}:` +
+        `LRA=${decimal(loudness.loudnessRangeLufs)}:` +
+        `dual_mono=${request.audio.channels === 1 ? "true" : "false"}[anormalized]`,
+    );
+    audioSource = "anormalized";
+  }
   let videoSource = "vconcat";
   if (request.logo) {
     const logoInputIndex = nextOverlayInput;
@@ -339,7 +352,7 @@ function buildFilterGraph(
   }
   filters.push(
     `[${videoSource}]realtime[vrealtime]`,
-    "[aconcat]arealtime[arealtime]",
+    `[${audioSource}]arealtime[arealtime]`,
     "[vrealtime]split=2[vprogrambase][vpreviewbase]",
     `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
     "[arealtime]asplit=2[aprogram][apreview]",

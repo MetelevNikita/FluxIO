@@ -824,6 +824,12 @@ export function PlaylistPreviewScreen({
             const onAir = onAirAssetId === asset.id;
             const stoppedHere = stoppedHereAssetId === asset.id;
             const collapsed = collapsedIds.has(asset.id);
+            const onAirRemainingSeconds = onAir
+              ? Math.max(
+                  0,
+                  effectiveClipDuration(asset) - (playoutStatus?.currentItemElapsedSeconds ?? 0),
+                )
+              : null;
             return (
             <div className="playlist-timeline-entry" key={asset.id}>
               {entry.startsNewDay ? (
@@ -894,7 +900,11 @@ export function PlaylistPreviewScreen({
               </button>
               {collapsed ? (
                 <div className="playlist-collapsed-summary">
-                  {onAir ? <span className="collapsed-state on-air"><RadioTower size={11} /> ON AIR</span> : null}
+                  {onAir ? (
+                    <span className="collapsed-state on-air">
+                      <RadioTower size={11} /> ON AIR · {formatHours(onAirRemainingSeconds ?? 0)} left
+                    </span>
+                  ) : null}
                   {stoppedHere ? <span className="collapsed-state stopped"><AlertTriangle size={11} /> STOPPED</span> : null}
                   <span className={`collapsed-overlay age ${asset.ageTitle?.enabled ? "enabled" : ""}`}>
                     AGE {asset.ageTitle?.enabled ? asset.ageTitle.text : "OFF"}
@@ -909,6 +919,7 @@ export function PlaylistPreviewScreen({
                 {onAir ? (
                   <span className="playlist-on-air-chip" title="This clip is currently being sent to air">
                     <RadioTower size={12} /> ON AIR · {Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}%
+                    {" · "}{formatHours(onAirRemainingSeconds ?? 0)} left
                   </span>
                 ) : null}
                 {stoppedHere ? (

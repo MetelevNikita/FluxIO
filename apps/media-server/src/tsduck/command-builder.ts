@@ -85,6 +85,12 @@ export function buildTsdDuckCommand({
       "--max-queue",
       "4096",
       buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
+      "-P",
+      "pcrextract",
+      "--pid",
+      String(request.subtitleOutput.pid),
+      "--pts",
+      "--log",
     );
   }
 

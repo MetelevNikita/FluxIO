@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.9**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.10**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -73,8 +73,11 @@ $LASTEXITCODE
 7. Проверьте font, размер, нижний отступ, palette и reserved bitrate. DVB renderer
    использует только документированные свойства `textrender`; отдельной настройки
    outline в этом режиме нет.
-8. Оставьте `PTS offset = 1400 ms`, пока измерение на приёмнике не покажет систематическое опережение или запаздывание.
-9. Нажмите Start. В Encoding Monitor карточка `DVB Subtitles` должна перейти в `running` и показать число cue.
+8. Оставьте `PTS offset = 0 ms`. FluxIO формирует основную программу с
+   `muxdelay=0`, поэтому дополнительный сдвиг не нужен. Меняйте его только после
+   измеренного постоянного рассогласования на конкретном декодере.
+9. Нажмите Start. В Encoding Monitor карточка `DVB Subtitles` должна перейти в
+   `running`, показать число cue, `Observed subtitle PES` и последний PTS.
 
 Page IDs первой реализации фиксированы: `composition_page_id=1`,
 `ancillary_page_id=1`. Для HD используется subtitling type `0x14`, для
@@ -87,6 +90,8 @@ hearing-impaired HD — `0x24`.
 - в PMT subtitle component находится `subtitling_descriptor` с language/type/page IDs;
 - SCTE-35 остаётся отдельным PID, если planner включён;
 - TSDuck заменяет stuffing пакетами subtitle stream и восстанавливает заданную постоянную transport rate.
+- TSDuck после merge проверяет subtitle PID через `pcrextract`; каждый найденный
+  PES с PTS увеличивает `Observed subtitle PES` в Encoding Monitor.
 
 Субтитры каждого ролика обрезаются его фактическим trim range и смещаются на
 суммарную длительность предыдущих роликов. Отсутствующий `.srt` пропускается;
@@ -111,6 +116,39 @@ ffprobe -hide_banner -show_programs -show_streams "udp://239.10.10.10:5000?local
 - текст появляется и исчезает в cue time, а decoder позволяет выключить его;
 - итоговая transport bitrate и PCR interval не изменились после включения subtitles.
 
+### Как отделить FluxIO от головной станции
+
+Наличие языка в меню VLC ещё не доказывает наличие картинок субтитров. PMT может
+содержать `subtitling_descriptor`, пока payload выбранного PID отсутствует,
+повреждён или имеет неверный PTS.
+
+1. Сначала откройте **исходный multicast FluxIO до головной станции**.
+2. Во время cue проверьте в Encoding Monitor, что `Observed subtitle PES` больше
+   нуля. Это подтверждает наличие PES/PTS после GStreamer и merge TSDuck.
+3. Затем откройте multicast, который вернула головная станция, и сравните PMT,
+   subtitle PID, packet count, continuity counter и PTS.
+
+Результаты трактуются так:
+
+- subtitle отображается в прямом FluxIO multicast, но не отображается в
+  возвращённом — головная станция удаляет, переназначает или рассинхронизирует
+  компонент при remux;
+- язык выбирается в прямом multicast, но `Observed subtitle PES = 0` — PMT есть,
+  но GStreamer не передал bitmap PES в финальный TS; смотреть Log Output;
+- `Observed subtitle PES > 0`, но прямой multicast не рисует текст — проверить
+  PTS offset, page IDs `1/1`, subtitling type и возможности декодера;
+- прямой multicast работает в VLC, но не на STB — проверить поддержку DVB bitmap
+  subtitles и HD type `0x14` на целевом устройстве.
+
+Для двух независимых захватов можно использовать одинаковые команды, меняя
+адрес и сетевой интерфейс:
+
+```bash
+tsanalyze -I ip --local-address 192.168.10.20 239.10.10.10:5000
+ffprobe -hide_banner -show_programs -show_streams \
+  "udp://239.10.10.10:5000?localaddr=192.168.10.20&fifo_size=1000000&overrun_nonfatal=1"
+```
+
 ## Диагностика
 
 `DVB subtitles require GStreamer` — проверить `gst-inspect-1.0 --exists dvbsubenc` и пути в `.env`.
@@ -130,9 +168,14 @@ media-service.
 Язык не появился в телевизоре — проверить трёхбуквенный код и
 `subtitling_descriptor` в PMT; одного `stream_type 0x06` недостаточно.
 
-Текст идёт раньше/позже — изменять `PTS offset` небольшими шагами после измерения
-на конечном decoder. Значение компенсирует стартовую MPEG-TS временную базу, а не
-индивидуальную ошибку тайминга внутри SRT.
+Текст идёт раньше/позже — начать с `PTS offset = 0 ms` и изменять его небольшими
+шагами после измерения на конечном decoder. Значение компенсирует только
+постоянный трактовый сдвиг, а не индивидуальную ошибку тайминга внутри SRT.
+
+Язык выбирается, но текста нет — сравнить `Planned cues` и
+`Observed subtitle PES`. Нулевое второе значение означает, что PMT сигнализация
+есть, но bitmap PES не дошли до финального TSDuck TS. Ненулевое значение
+переводит диагностику на PTS/decoder либо на remux головной станции.
 
 В preview нет DVB-текста — это ожидаемо: HLS preview показывает clean program
 video. Отдельный subtitle PID проверяется на реальном UDP/SRT receiver.

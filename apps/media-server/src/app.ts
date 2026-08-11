@@ -19,6 +19,7 @@ import {
   startPlayoutRequestSchema,
   startClipPreviewRequestSchema,
   systemMetricsSchema,
+  updateNextPlaylistRequestSchema,
   workspaceSessionSaveRequestSchema,
   type ServiceHealth,
 } from "@gruber/contracts";
@@ -45,7 +46,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.9";
+const serviceVersion = "6.0.10";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {
@@ -352,6 +353,18 @@ export function buildApp(options: FastifyServerOptions = {}) {
 
   app.post("/api/playout/stop", async () => playout.stop());
 
+  app.put("/api/playout/next-playlist", async (request, reply) => {
+    try {
+      const body = updateNextPlaylistRequestSchema.parse(request.body);
+      return playout.updateNextPlaylist(body.nextPlaylist);
+    } catch (error) {
+      if (error instanceof PlayoutConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
   app.get("/api/workspace-session", async (_request, reply) => {
     if (!database) {
       return databaseUnavailable(reply);
@@ -435,7 +448,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
     "/api/playout/preview/:file",
     async (request, reply) => {
       const file = request.params.file;
-      if (!/^(?:index\.m3u8|segment-\d{6}\.ts)$/.test(file)) {
+      if (!/^(?:index\.m3u8|segment-\d+\.ts)$/.test(file)) {
         return reply.code(404).send({ error: "Preview file not found" });
       }
       try {

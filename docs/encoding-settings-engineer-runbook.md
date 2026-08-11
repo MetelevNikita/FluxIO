@@ -1,6 +1,6 @@
 # Перенос Encoding Settings через `.txt`
 
-Применимо к FluxIO **v6.0.9**.
+Применимо к FluxIO **v6.0.10**.
 
 ## 1. Назначение
 
@@ -13,7 +13,8 @@
 - video codec, profile, level, preset, resolution и frame rate;
 - field order, deinterlace, GOP length, B-frames и closed/open GOP;
 - CBR/VBR/CRF, target/max bitrate и VBV buffer;
-- audio codec, sample rate, channels и bitrate;
+- audio codec, sample rate, channels, bitrate, флаг programme normalization и
+  target LUFS;
 - выбранный UDP/SRT/RTMP/RTMPS protocol и его несекретные параметры;
 - UDP interface, service metadata, PID, PCR и transport bitrate;
 - AGE duration, logo appearance, Repeat и SCTE-35 planner defaults.

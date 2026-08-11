@@ -441,6 +441,18 @@
 - regression test воспроизводит путь `C:\\Users\\iptv\\AppData\\Local\\Temp`;
 - POSIX paths остаются без изменений.
 
+### 4.11. Broadcast loudness, resilient monitor и schedule handover v6.0.10
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-11-broadcast-loudness-preview-schedule-v6.0.10.md`](progress/04-11-broadcast-loudness-preview-schedule-v6.0.10.md).
+
+- опциональная realtime-нормализация финального audio до `-23 LUFS`;
+- независимый HLS program monitor с atomic manifest и уникальными segment numbers;
+- таймер оставшегося времени текущего ролика в Playlist;
+- автоматический переход Current → Future с приоритетом Repeat;
+- DVB subtitle PES/PTS monitor после merge TSDuck и исправленный default offset `0 ms`;
+- русифицированный splash с версией, годом и контактами разработчика.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

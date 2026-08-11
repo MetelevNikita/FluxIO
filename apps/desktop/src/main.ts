@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -17,6 +17,7 @@ const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-f
 const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
 const SERVICE_HEALTH_CHANNEL = "service:get-health";
 const SPLASH_DURATION_MS = 5_000;
+const TELEGRAM_PROFILE_URL = "https://t.me/MetelevNikita";
 const loadProductionBuild =
   app.isPackaged || process.argv.includes("--gruber-production");
 
@@ -108,6 +109,16 @@ function createWindow(showStartupSplash = false): void {
   });
 
   if (splashWindow) {
+    splashWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (url === TELEGRAM_PROFILE_URL) void shell.openExternal(url);
+      return { action: "deny" };
+    });
+    splashWindow.webContents.on("will-navigate", (event, url) => {
+      if (url === TELEGRAM_PROFILE_URL) {
+        event.preventDefault();
+        void shell.openExternal(url);
+      }
+    });
     splashWindow.once("ready-to-show", () => {
       splashWindow.show();
       splashTimer = setTimeout(() => {

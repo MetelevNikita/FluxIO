@@ -201,6 +201,18 @@ export async function stopPlayout(): Promise<PlayoutStatus> {
   );
 }
 
+export async function updateNextPlayoutPlaylist(
+  nextPlaylist: StartPlayoutRequest["nextPlaylist"],
+): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(
+    await request("/api/playout/next-playlist", {
+      body: JSON.stringify({ nextPlaylist }),
+      headers: { "content-type": "application/json" },
+      method: "PUT",
+    }),
+  );
+}
+
 export async function getWorkspaceSession(): Promise<SavedWorkspaceSession | null> {
   return workspaceSessionEnvelopeSchema.parse(
     await request("/api/workspace-session"),

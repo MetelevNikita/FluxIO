@@ -16,13 +16,15 @@ test("encoding settings profile round-trips every portable setting and omits sec
     ageTitleDurationSeconds: 30,
     udpHost: "239.20.20.20",
     udpPcrPeriodMs: 26,
+    loudnessNormalizationEnabled: true,
+    loudnessTargetLufs: -23,
     streamKey: "legacy-secret",
     srtPassphrase: "srt-secret-value",
     rtmpStreamKey: "rtmp-secret-value",
   };
   const profile = createEncodingSettingsProfile(
     source,
-    "6.0.9",
+    "6.0.10",
     new Date("2026-08-07T12:00:00.000Z"),
   );
   const serialized = serializeEncodingSettingsProfile(profile);
@@ -37,6 +39,8 @@ test("encoding settings profile round-trips every portable setting and omits sec
   assert.equal(restored.ageTitleDurationSeconds, 30);
   assert.equal(restored.udpHost, "239.20.20.20");
   assert.equal(restored.udpPcrPeriodMs, 26);
+  assert.equal(restored.loudnessNormalizationEnabled, true);
+  assert.equal(restored.loudnessTargetLufs, -23);
   assert.equal(restored.srtPassphrase, "");
   assert.equal(restored.rtmpStreamKey, "");
 });

@@ -106,6 +106,8 @@ export interface BroadcastSettings {
   sampleRate: string;
   channels: string;
   audioBitrate: number;
+  loudnessNormalizationEnabled: boolean;
+  loudnessTargetLufs: number;
   streamingEnabled: boolean;
   protocol: string;
   serverUrl: string;

@@ -25,6 +25,7 @@ import {
   isTsdDuckContinuityWarning,
   PlayoutSupervisor,
   shouldReportEncodingActivity,
+  shouldTransitionToFutureSchedule,
   usesTsdDuckTransport,
   waitForPlayoutStop,
 } from "./ffmpeg/playout-supervisor.js";
@@ -69,7 +70,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.9");
+    assert.equal(health.version, "6.0.10");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -351,6 +352,21 @@ test("POST /api/playout/take validates the replacement playout request", async (
     });
     assert.equal(response.statusCode, 400);
     assert.notEqual(response.statusCode, 404);
+  } finally {
+    await app.close();
+  }
+});
+
+test("PUT /api/playout/next-playlist rejects updates without an active Current schedule", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/playout/next-playlist",
+      payload: { nextPlaylist: [] },
+    });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.json().error, /Current schedule is on air/);
   } finally {
     await app.close();
   }
@@ -662,9 +678,37 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   const segmentOption = command.args.indexOf("-hls_segment_filename");
   assert.equal(
     command.args[segmentOption + 1],
-    path.join(previewDirectory, "segment-%06d.ts"),
+    path.join(previewDirectory, "segment-%010d.ts"),
   );
+  assert.match(rendered, /-hls_start_number_source epoch/);
+  assert.match(rendered, /program_date_time\+temp_file/);
+  assert.doesNotMatch(rendered, /append_list/);
   assert.equal(command.totalDurationSeconds, 5);
+});
+
+test("FFmpeg optionally normalizes final programme and preview audio to -23 LUFS", () => {
+  const request = baseRequest();
+  const disabled = buildFfmpegCommand(
+    request,
+    preparedItems(),
+    "/tmp/gruber-test-preview",
+  ).args.join(" ");
+  assert.doesNotMatch(disabled, /loudnorm=/);
+
+  request.audio.loudnessNormalization = {
+    enabled: true,
+    targetLufs: -23,
+    truePeakDbtp: -1,
+    loudnessRangeLufs: 7,
+  };
+  const enabled = buildFfmpegCommand(
+    request,
+    preparedItems(),
+    "/tmp/gruber-test-preview",
+  ).args.join(" ");
+  assert.match(enabled, /\[aconcat\]loudnorm=I=-23:TP=-1:LRA=7:dual_mono=false\[anormalized\]/);
+  assert.match(enabled, /\[anormalized\]arealtime\[arealtime\]/);
+  assert.match(enabled, /\[arealtime\]asplit=2\[aprogram\]\[apreview\]/);
 });
 
 test("UDP and field-order defaults are applied to older saved requests", () => {
@@ -679,6 +723,8 @@ test("UDP and field-order defaults are applied to older saved requests", () => {
   delete request.video.bFrames;
   delete request.video.closedGop;
   delete request.subtitleOutput;
+  delete (request as Record<string, unknown>).nextPlaylist;
+  delete (request as { audio?: Record<string, unknown> }).audio?.loudnessNormalization;
   const parsed = startPlayoutRequestSchema.parse(request);
   assert.equal(parsed.video.fieldOrder, "progressive");
   assert.equal(parsed.video.gopSize, 50);
@@ -688,6 +734,13 @@ test("UDP and field-order defaults are applied to older saved requests", () => {
   if (parsed.endpoint.protocol !== "udp") throw new Error("Expected UDP request");
   assert.deepEqual(parsed.endpoint.mpegTs, defaultMpegTsOutputSettings);
   assert.deepEqual(parsed.subtitleOutput, defaultSubtitleOutput);
+  assert.deepEqual(parsed.nextPlaylist, []);
+  assert.deepEqual(parsed.audio.loudnessNormalization, {
+    enabled: false,
+    targetLufs: -23,
+    truePeakDbtp: -1,
+    loudnessRangeLufs: 7,
+  });
 });
 
 test("FFmpeg command burns logo before program and preview split", () => {
@@ -838,8 +891,19 @@ test("DVB subtitle mode keeps video clean and builds a separate GStreamer bitmap
   assert.match(gstreamer, /subparse ! textrender/);
   assert.doesNotMatch(gstreamer, /draw-outline|draw-shadow/);
   assert.match(gstreamer, /video\/x-raw,format=AYUV,width=1280,height=720/);
-  assert.match(gstreamer, /dvbsubenc max-colours=16 ts-offset=1400000000/);
+  assert.match(gstreamer, /dvbsubenc max-colours=16 ts-offset=0/);
   assert.match(gstreamer, /mux\.sink_288/);
+});
+
+test("SRT parser accepts UTF-8 BOM, CRLF and comma timestamps used by operator files", () => {
+  const cues = parseSrt(
+    "\uFEFF1\r\n00:00:00,720 --> 00:00:03,600\r\nПервая строка\r\n\r\n" +
+      "2\r\n00:00:04,000 --> 00:00:06,250\r\nВторая строка\r\n",
+  );
+  assert.deepEqual(cues, [
+    { startSeconds: 0.72, endSeconds: 3.6, text: "Первая строка" },
+    { startSeconds: 4, endSeconds: 6.25, text: "Вторая строка" },
+  ]);
 });
 
 test("GStreamer filesrc preserves Windows DVB subtitle paths", () => {
@@ -936,11 +1000,20 @@ test("TSDuck announces and merges a DVB subtitle component into UDP MPEG-TS", ()
   assert.match(rendered, /--patch-xml \/tmp\/dvb-subtitles-pmt\.xml/);
   assert.match(rendered, /-P merge --bitrate 128000 --no-psi-merge/);
   assert.match(rendered, /-P filter --pid 288 --stuffing/);
+  assert.match(rendered, /-P pcrextract --pid 288 --pts --log/);
   assert.match(rendered, /-P continuity --pid 256 --pid 257 --pid 288/);
   const patchXml = buildDvbSubtitlePmtPatch(request);
   assert.match(patchXml, /elementary_PID="288"/);
   assert.match(patchXml, /language_code="rus" subtitling_type="0x14"/);
   assert.match(patchXml, /composition_page_id="1" ancillary_page_id="1"/);
+});
+
+test("Future schedule transition is automatic unless repeat is enabled", () => {
+  const request = baseRequest();
+  request.nextPlaylist = [{ ...request.playlist[0]!, id: "future", name: "future.mp4" }];
+  assert.equal(shouldTransitionToFutureSchedule(request), true);
+  request.repeatPlaylist = true;
+  assert.equal(shouldTransitionToFutureSchedule(request), false);
 });
 
 test("FFmpeg applies field order and custom UDP MPEG-TS service settings", () => {
@@ -1918,6 +1991,7 @@ function baseRequest(): StartPlayoutRequest {
       ageTitle: null,
       itemLogo: null,
     }],
+    nextPlaylist: [],
     video: {
       codec: "h264",
       width: 1280,
@@ -1942,6 +2016,12 @@ function baseRequest(): StartPlayoutRequest {
       sampleRate: 48_000,
       channels: 2,
       bitrateKbps: 128,
+      loudnessNormalization: {
+        enabled: false,
+        targetLufs: -23,
+        truePeakDbtp: -1,
+        loudnessRangeLufs: 7,
+      },
     },
     logo: null,
     endpoint: {

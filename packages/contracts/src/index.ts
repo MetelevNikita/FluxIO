@@ -66,6 +66,8 @@ export const portableEncodingSettingsSchema = z.object({
   sampleRate: z.enum(["44100 Hz", "48000 Hz", "96000 Hz"]),
   channels: z.enum(["Mono", "Stereo (L/R)", "5.1"]),
   audioBitrate: z.number().int().min(32).max(1_536),
+  loudnessNormalizationEnabled: z.boolean().default(false),
+  loudnessTargetLufs: z.number().min(-70).max(-5).default(-23),
   streamingEnabled: z.boolean(),
   protocol: z.enum(["SRT", "UDP", "RTMP", "RTMPS"]),
   serverUrl: profileTextSchema,
@@ -99,7 +101,7 @@ export const portableEncodingSettingsSchema = z.object({
   subtitleOutline: z.boolean().default(true),
   subtitleMaxColours: z.union([z.literal(4), z.literal(16), z.literal(256)]).default(16),
   subtitleBitrateKbps: z.number().int().min(32).max(2_000).default(128),
-  subtitlePtsOffsetMs: z.number().int().min(0).max(10_000).default(1_400),
+  subtitlePtsOffsetMs: z.number().int().min(0).max(10_000).default(0),
   ageTitleDurationSeconds: z.number().int().min(10).max(60).default(10),
   logoEnabled: z.boolean(),
   logoPath: profileTextSchema,
@@ -487,6 +489,17 @@ export const audioEncodingSchema = z.object({
   sampleRate: z.number().int().min(8_000).max(192_000),
   channels: z.union([z.literal(1), z.literal(2), z.literal(6)]),
   bitrateKbps: z.number().int().min(32).max(640),
+  loudnessNormalization: z.object({
+    enabled: z.boolean().default(false),
+    targetLufs: z.number().min(-70).max(-5).default(-23),
+    truePeakDbtp: z.number().min(-9).max(0).default(-1),
+    loudnessRangeLufs: z.number().min(1).max(50).default(7),
+  }).default({
+    enabled: false,
+    targetLufs: -23,
+    truePeakDbtp: -1,
+    loudnessRangeLufs: 7,
+  }),
 });
 
 export const mpegTsServiceTypes = [
@@ -588,7 +601,7 @@ export const subtitleOutputSchema = z.object({
   outline: z.boolean().default(true),
   maxColours: z.union([z.literal(4), z.literal(16), z.literal(256)]).default(16),
   bitrateKbps: z.number().int().min(32).max(2_000).default(128),
-  ptsOffsetMs: z.number().int().min(0).max(10_000).default(1_400),
+  ptsOffsetMs: z.number().int().min(0).max(10_000).default(0),
 });
 
 export const defaultSubtitleOutput = {
@@ -602,11 +615,12 @@ export const defaultSubtitleOutput = {
   outline: true,
   maxColours: 16 as const,
   bitrateKbps: 128,
-  ptsOffsetMs: 1_400,
+  ptsOffsetMs: 0,
 };
 
 export const startPlayoutRequestSchema = z.object({
   playlist: z.array(playoutItemSchema).min(1).max(500),
+  nextPlaylist: z.array(playoutItemSchema).max(500).default([]),
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
   logo: logoOverlaySchema.nullable().default(null),
@@ -649,6 +663,10 @@ export const startPlayoutRequestSchema = z.object({
   }
 });
 
+export const updateNextPlaylistRequestSchema = z.object({
+  nextPlaylist: z.array(playoutItemSchema).max(500),
+});
+
 export const playoutStateSchema = z.enum([
   "idle",
   "starting",
@@ -683,6 +701,8 @@ export const dvbSubtitleStatusSchema = z.object({
   language: z.string().length(3).nullable().default(null),
   plannedCues: z.number().int().nonnegative().default(0),
   sourceItems: z.number().int().nonnegative().default(0),
+  observedPes: z.number().int().nonnegative().default(0),
+  lastPtsMs: z.number().int().nonnegative().nullable().default(null),
   error: z.string().nullable().default(null),
 });
 
@@ -711,6 +731,9 @@ export const playoutStatusSchema = z.object({
   previewPath: z.string().nullable(),
   repeatPlaylist: z.boolean().default(false),
   loopCount: z.number().int().nonnegative().default(0),
+  schedulePhase: z.enum(["current", "future"]).default("current"),
+  scheduleTransitionCount: z.number().int().nonnegative().default(0),
+  queuedFutureItems: z.number().int().nonnegative().default(0),
   scte35: scte35InjectorStatusSchema.default({
     enabled: false,
     state: "disabled",
@@ -729,6 +752,8 @@ export const playoutStatusSchema = z.object({
     language: null,
     plannedCues: 0,
     sourceItems: 0,
+    observedPes: 0,
+    lastPtsMs: null,
     error: null,
   }),
   error: z.string().nullable(),

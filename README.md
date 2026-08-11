@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v6.0.9**.
+Текущая версия: **v6.0.10**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -78,18 +78,25 @@ node setup.mjs
 - прокручиваемая медиатека для большого количества файлов;
 - последовательный realtime FFmpeg playout;
 - H.264, H.265, MPEG-2, AAC, MP2 и AC-3;
+- опциональная realtime-нормализация всей финальной программы по EBU R128 с
+  эфирным target `-23 LUFS`, ограничением `-1 dBTP` и отключаемым bypass;
 - CBR, VBR, CRF, deinterlace, progressive/TFF/BFF field order, управляемая I/P/B GOP structure и mono/stereo/5.1;
 - CBR MPEG-TS по UDP/SRT с фиксированным muxrate, PID `0x1FFF` stuffing и регулируемой TSDuck-выдачей; UDP дополнительно получает финальную PCR-коррекцию; FLV по RTMP/RTMPS;
 - выбор реального сетевого адаптера для UDP и настройка MPEG-TS service name/ID/provider, video/audio PID, service type, PCR interval и итогового Transport bitrate (`0` — Auto);
 - автоматический AGE по суффиксам `[0+]`…`[18+]`: полноэкранный PNG/WebP 1920×1080 или 3840×2160 с готовой позицией и alpha масштабируется в выходной кадр, длительность 10–60 секунд;
 - per-item logo overlay с выбором файла/папки и настройками позиции, размера, отступа и прозрачности прямо в Playlist;
-- HLS-preview реально вещаемой программы;
+- устойчивый независимый HLS-preview финальной скомпонованной программы с
+  atomic playlist update, который продолжает работать при выдаче через TSDuck;
 - Start/Stop, current clip, progress, FPS, bitrate, speed и счётчик transmitted frames в UI и console logs; во время кодирования media-server печатает activity каждые 5 секунд и при смене ролика;
 - подтверждённый сервером `Applied TS bitrate` и режим `manual/auto` в Encoding Monitor;
 - `Internal CC errors`, пассивный TSDuck continuity monitor и увеличенные UDP socket buffers для диагностики packet loss;
 - живой 16:9 program preview и оставшееся время всего плейлиста в Broadcast;
+- `ON AIR` таймер до конца текущего ролика рядом с его прогрессом в Playlist;
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;
+- автоматическое повышение Future в Current после завершения Current и очистка
+  Future под следующую неделю; редактирование Future синхронизируется во время
+  активного Current, а включённый Repeat имеет приоритет и отключает переход;
 - SCTE-35 marker planner: Event ID, break start/end, duration, segmentation type и UPID;
 - удаление любого ролика непосредственно из списка Playlist;
 - фактический SCTE-35 injector для UDP/SRT MPEG-TS через TSDuck: `CUEI` в PMT, `stream_type 0x86`, настраиваемый PID, двойная выдача cue и runtime monitor;
@@ -106,6 +113,8 @@ node setup.mjs
 - per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video, имеют редактируемые In/Out handles и перетаскиваются целиком по шкале времени ролика без изменения длительности;
 - per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла, выбор между FFmpeg burn-in и отдельным receiver-selectable DVB bitmap PID в UDP/SRT MPEG-TS;
 - отдельный DVB subtitle encoder через GStreamer `subparse → textrender → dvbsubenc → mpegtsmux`; TSDuck добавляет `stream_type 0x06`, `subtitling_descriptor`, выбранный PID и сохраняет CBR transport stuffing;
+- runtime-проверка DVB subtitle PES/PTS уже после merge TSDuck, чтобы отличить
+  пустую PMT-сигнализацию от фактических bitmap subtitles и от потери на головной станции;
 - Shift-range selection и перенос группы выбранных клипов мышью с сохранением их порядка; одинаковые controls применяются ко всей выбранной группе;
 - `Add Clip` в Electron использует нативный диалог и анализирует новые файлы в активном Current/Future расписании;
 - выбор стартового ролика в Current Playlist и безопасный `Take on air` на выбранный ролик во время активного эфира;
@@ -118,6 +127,8 @@ node setup.mjs
 - автосохранение последней Playlist-сессии в PostgreSQL после изменений;
 - Effects preview SD/FHD/UHD, Start/Stop animation, linked Scale X/Y с точным
   вводом и reset исходных Lottie values;
+- русифицированный пятисекундный splash с текущим годом/версией и контактами
+  BroflovskiTeam / `@MetelevNikita`;
 - прозрачная multi-size Windows ICO без белого квадрата и скруглённая macOS ICNS;
 - совместное завершение Electron и media-server по `Ctrl+C` в окне `setup.mjs`;
 - FluxIO splash 1440 × 920 с пятисекундным progress и безопасным ожиданием готовности основного Electron-окна.

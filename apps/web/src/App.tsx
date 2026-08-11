@@ -55,6 +55,7 @@ import {
   startPlayout as startPlayoutSession,
   stopPlayout as stopPlayoutSession,
   takePlayout as takePlayoutSession,
+  updateNextPlayoutPlaylist,
 } from "./media-api";
 import type {
   AppView,
@@ -128,6 +129,7 @@ export function App() {
   const [settingsProfileMessage, setSettingsProfileMessage] = useState<string | null>(null);
   const workspaceRestoreStarted = useRef(false);
   const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
+  const schedulePromotionHandled = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -291,6 +293,66 @@ export function App() {
     settings,
   ]);
 
+  useEffect(() => {
+    if (
+      !workspaceAutosaveReady ||
+      !playoutStatus?.sessionId ||
+      playoutStatus.schedulePhase !== "future" ||
+      playoutStatus.scheduleTransitionCount < 1
+    ) {
+      return;
+    }
+    const transitionKey = `${playoutStatus.sessionId}:${playoutStatus.scheduleTransitionCount}`;
+    if (schedulePromotionHandled.current === transitionKey) return;
+    schedulePromotionHandled.current = transitionKey;
+    if (futurePlaylist.length === 0) return;
+
+    const promoted = futurePlaylist;
+    setPlaylist(promoted);
+    setFuturePlaylist([]);
+    setCurrentScheduleMetadata(futureScheduleMetadata);
+    setFutureScheduleMetadata(null);
+    setActiveSchedule("current");
+    setSelectedAssetId(promoted[0]?.id ?? "");
+    setScheduleStartMarker(null);
+    setRecoveryCheckpoint(null);
+    setScheduleActionMessage(
+      `Future schedule promoted to Current automatically; Future is ready for the next 168-hour schedule.`,
+    );
+  }, [
+    workspaceAutosaveReady,
+    playoutStatus?.sessionId,
+    playoutStatus?.schedulePhase,
+    playoutStatus?.scheduleTransitionCount,
+    futurePlaylist,
+    futureScheduleMetadata,
+  ]);
+
+  useEffect(() => {
+    if (
+      !workspaceAutosaveReady ||
+      !playoutStatus?.sessionId ||
+      playoutStatus.schedulePhase !== "current" ||
+      !["starting", "running"].includes(playoutStatus.state)
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void updateNextPlayoutPlaylist(buildPlayoutItems(futurePlaylist))
+        .then(setPlayoutStatus)
+        .catch((error) => setOperationError(
+          `Future schedule sync failed: ${errorMessage(error)}`,
+        ));
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [
+    workspaceAutosaveReady,
+    futurePlaylist,
+    playoutStatus?.sessionId,
+    playoutStatus?.schedulePhase,
+    playoutStatus?.state,
+  ]);
+
   const visiblePlaylist = activeSchedule === "current" ? playlist : futurePlaylist;
   const selectedAsset = useMemo(
     () =>
@@ -310,6 +372,12 @@ export function App() {
       ...initialBroadcastSettings,
       ...snapshot.settings,
     } as BroadcastSettings;
+    // Before 6.0.10 the saved default was 1400 ms, inherited from FFmpeg's
+    // generic MPEG-TS delay. FluxIO explicitly uses muxdelay=0, so carrying
+    // that legacy value shifts every DVB subtitle away from the programme PTS.
+    if (snapshot.settings.subtitlePtsOffsetMs === 1_400) {
+      restoredSettings.subtitlePtsOffsetMs = 0;
+    }
     const hasPlaylistLogoAssignments = [...snapshot.currentPlaylist, ...snapshot.futurePlaylist]
       .some((asset) => Boolean(asset.itemLogo));
     const restoredAgeAssets = mapAgeAssetPaths(snapshot.ageLibrary?.imagePaths ?? []);
@@ -1214,7 +1282,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.9",
+        connection.kind === "ready" ? connection.health.version : "6.0.10",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1329,7 +1397,7 @@ export function App() {
     setOperationError(null);
     try {
       const request = buildStartRequestFromAsset(
-        buildStartRequest(playlist, settings),
+        buildStartRequest(playlist, settings, futurePlaylist),
         playlist,
         assetId,
       );
@@ -1346,7 +1414,7 @@ export function App() {
   async function startPlayout(mode: "default" | "resume" | "beginning" = "default") {
     setOperationError(null);
     try {
-      const baseRequest = buildStartRequest(playlist, settings);
+      const baseRequest = buildStartRequest(playlist, settings, futurePlaylist);
       const request = mode === "resume" && recoveryCheckpoint
         ? buildRecoveryStartRequest(baseRequest, playlist, recoveryCheckpoint)
         : mode === "default" && scheduleStartMarker
@@ -1713,6 +1781,7 @@ function pendingAssetFromPath(filePath: string): MediaAsset {
 function buildStartRequest(
   playlist: MediaAsset[],
   settings: BroadcastSettings,
+  nextPlaylist: MediaAsset[] = [],
   requireStreaming = true,
 ): StartPlayoutRequest {
   if (playlist.length === 0) {
@@ -1760,31 +1829,8 @@ function buildStartRequest(
         };
 
   return {
-    playlist: playlist.map((asset) => ({
-      id: asset.id,
-      name: asset.name,
-      filePath: asset.filePath,
-      trimInSeconds: 0,
-      trimOutSeconds: asset.declaredDurationSeconds ?? null,
-      scte35Markers: asset.scte35Markers ?? [],
-      scheduleType: asset.scheduleType ?? null,
-      declaredDurationSeconds: asset.declaredDurationSeconds ?? null,
-      ageTitle: asset.ageTitle?.enabled
-        ? {
-            durationSeconds: asset.ageTitle.durationSeconds,
-            enabled: true,
-            filePath: asset.ageTitle.filePath ?? null,
-            text: asset.ageTitle.text,
-          }
-        : null,
-      itemLogo: asset.itemLogo?.enabled
-        ? { ...asset.itemLogo, enabled: true }
-        : null,
-      effects: asset.effects ?? [],
-      subtitles: asset.subtitles?.enabled && asset.subtitles.filePath
-        ? { enabled: true, filePath: asset.subtitles.filePath }
-        : null,
-    })),
+    playlist: buildPlayoutItems(playlist),
+    nextPlaylist: buildPlayoutItems(nextPlaylist),
     video: {
       codec: settings.videoCodec === "H.264"
         ? "h264"
@@ -1825,6 +1871,12 @@ function buildStartRequest(
           ? 6
           : 2,
       bitrateKbps: settings.audioBitrate,
+      loudnessNormalization: {
+        enabled: settings.loudnessNormalizationEnabled,
+        targetLufs: settings.loudnessTargetLufs,
+        truePeakDbtp: -1,
+        loudnessRangeLufs: 7,
+      },
     },
     logo: null,
     endpoint,
@@ -1867,6 +1919,34 @@ function buildStartRequest(
         : "increment",
     },
   };
+}
+
+function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlist"] {
+  return playlist.map((asset) => ({
+    id: asset.id,
+    name: asset.name,
+    filePath: asset.filePath,
+    trimInSeconds: 0,
+    trimOutSeconds: asset.declaredDurationSeconds ?? null,
+    scte35Markers: asset.scte35Markers ?? [],
+    scheduleType: asset.scheduleType ?? null,
+    declaredDurationSeconds: asset.declaredDurationSeconds ?? null,
+    ageTitle: asset.ageTitle?.enabled
+      ? {
+          durationSeconds: asset.ageTitle.durationSeconds,
+          enabled: true,
+          filePath: asset.ageTitle.filePath ?? null,
+          text: asset.ageTitle.text,
+        }
+      : null,
+    itemLogo: asset.itemLogo?.enabled
+      ? { ...asset.itemLogo, enabled: true }
+      : null,
+    effects: asset.effects ?? [],
+    subtitles: asset.subtitles?.enabled && asset.subtitles.filePath
+      ? { enabled: true, filePath: asset.subtitles.filePath }
+      : null,
+  }));
 }
 
 interface RecoveryPoint {

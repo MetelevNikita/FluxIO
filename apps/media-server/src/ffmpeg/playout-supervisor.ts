@@ -165,6 +165,7 @@ export class PlayoutSupervisor {
         ? request.endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "auto"
         : null,
       repeatPlaylist: request.repeatPlaylist,
+      queuedFutureItems: request.nextPlaylist.length,
       scte35: {
         ...idleStatus().scte35,
         enabled: request.scte35.enabled,
@@ -189,6 +190,13 @@ export class PlayoutSupervisor {
       await mkdir(this.previewDirectory, { recursive: true });
       await this.#prepareLoopCommands();
       this.#appendEvent(`Starting ${request.playlist.length} clip playout`);
+      if (resolvedRequest.audio.loudnessNormalization.enabled) {
+        const loudness = resolvedRequest.audio.loudnessNormalization;
+        this.#appendEvent(
+          `Audio normalization active: ${loudness.targetLufs.toFixed(1)} LUFS, ` +
+            `${loudness.truePeakDbtp.toFixed(1)} dBTP, LRA ${loudness.loudnessRangeLufs.toFixed(1)} LU`,
+        );
+      }
       if (resolvedRequest.endpoint.protocol === "udp") {
         const transportRate = calculateTransportMuxRate(resolvedRequest);
         this.#appendEvent(
@@ -280,6 +288,22 @@ export class PlayoutSupervisor {
     return this.getStatus();
   }
 
+  updateNextPlaylist(nextPlaylist: StartPlayoutRequest["nextPlaylist"]): PlayoutStatus {
+    if (
+      !this.#request ||
+      this.#status.schedulePhase !== "current" ||
+      !["starting", "running"].includes(this.#status.state)
+    ) {
+      throw new PlayoutConflictError(
+        "Future schedule can only be updated while the Current schedule is on air",
+      );
+    }
+    this.#request = { ...this.#request, nextPlaylist };
+    this.#status.queuedFutureItems = nextPlaylist.length;
+    this.#appendEvent(`Future schedule updated: ${nextPlaylist.length} clip(s) queued`);
+    return this.getStatus();
+  }
+
   async close(): Promise<void> {
     await this.stop();
   }
@@ -299,6 +323,8 @@ export class PlayoutSupervisor {
     this.#status.subtitles.error = null;
     this.#status.subtitles.plannedCues = 0;
     this.#status.subtitles.sourceItems = 0;
+    this.#status.subtitles.observedPes = 0;
+    this.#status.subtitles.lastPtsMs = null;
     this.#subtitleArgs = [];
 
     if (!usesTsdDuckTransport(request)) {
@@ -393,7 +419,12 @@ export class PlayoutSupervisor {
   #applyCommandStatus(totalDurationSeconds: number, endpointLabel: string): void {
     this.#status.totalDurationSeconds = totalDurationSeconds;
     this.#status.endpointLabel = endpointLabel;
-    this.#status.previewPath = previewPath;
+    const previewVersion = new URLSearchParams({
+      loop: String(this.#status.loopCount),
+      phase: this.#status.schedulePhase,
+      session: this.#status.sessionId ?? "starting",
+    });
+    this.#status.previewPath = `${previewPath}?${previewVersion}`;
   }
 
   #readProgress(chunk: Buffer): void {
@@ -519,6 +550,8 @@ export class PlayoutSupervisor {
       const marker = line.indexOf(tsduckMonitorPrefix);
       if (marker >= 0) {
         this.#handleTsdDuckMonitorJson(line.slice(marker + tsduckMonitorPrefix.length));
+      } else if (this.#handleDvbSubtitlePtsLog(line)) {
+        continue;
       } else if (isTsdDuckContinuityWarning(line)) {
         const message = redactSecrets(line.trim(), this.#request);
         this.#status.continuityErrors += 1;
@@ -532,6 +565,24 @@ export class PlayoutSupervisor {
         }
       }
     }
+  }
+
+  #handleDvbSubtitlePtsLog(line: string): boolean {
+    const pid = this.#status.subtitles.pid;
+    if (!this.#status.subtitles.enabled || pid == null || !line.includes("pcrextract:")) {
+      return false;
+    }
+    const match = line.match(/PID:\s+0x[0-9A-F]+\s+\((\d+)\),\s+PTS:\s+0x([0-9A-F]+)/i);
+    if (!match || Number(match[1]) !== pid) return false;
+    const pts = Number.parseInt(match[2] ?? "", 16);
+    if (!Number.isFinite(pts)) return false;
+    this.#status.subtitles.observedPes += 1;
+    this.#status.subtitles.lastPtsMs = Math.max(0, Math.round(pts / 90));
+    this.#appendEvent(
+      `DVB subtitle PES #${this.#status.subtitles.observedPes} observed in final TS ` +
+        `on PID ${pid} at PTS ${formatClock(this.#status.subtitles.lastPtsMs / 1_000)}`,
+    );
+    return true;
   }
 
   #handleTsdDuckMonitorJson(value: string): void {
@@ -588,6 +639,20 @@ export class PlayoutSupervisor {
       return;
     }
 
+    if (
+      !wasStopping &&
+      !failedByInjector &&
+      code === 0 &&
+      this.#request != null && shouldTransitionToFutureSchedule(this.#request)
+    ) {
+      this.#status.state = "starting";
+      this.#appendEvent(
+        `Current schedule completed; promoting ${this.#request?.nextPlaylist.length ?? 0} Future clip(s)`,
+      );
+      void this.#transitionToFutureSchedule();
+      return;
+    }
+
     this.#status.stoppedAt = new Date().toISOString();
     if (wasStopping) {
       this.#status.state = "idle";
@@ -628,6 +693,46 @@ export class PlayoutSupervisor {
       this.#handleProcessError(
         error instanceof Error ? error : new Error("Failed to restart playlist loop"),
       );
+    }
+  }
+
+  async #transitionToFutureSchedule(): Promise<void> {
+    try {
+      const currentRequest = this.#request;
+      if (!currentRequest || currentRequest.nextPlaylist.length === 0) {
+        throw new Error("Future schedule is empty");
+      }
+      const futureRequest: StartPlayoutRequest = {
+        ...currentRequest,
+        playlist: currentRequest.nextPlaylist,
+        nextPlaylist: [],
+        repeatPlaylist: false,
+      };
+      const prepared = await this.#prepareRequest(futureRequest);
+      this.#request = prepared.request;
+      this.#items = prepared.items;
+      this.#status.schedulePhase = "future";
+      this.#status.scheduleTransitionCount += 1;
+      this.#status.loopCount = 0;
+      this.#status.repeatPlaylist = false;
+      this.#status.queuedFutureItems = 0;
+      this.#status.totalItems = prepared.items.length;
+      this.#resetLoopProgress();
+      await rm(this.previewDirectory, { force: true, recursive: true });
+      await mkdir(this.previewDirectory, { recursive: true });
+      await this.#prepareLoopCommands();
+      if (usesTsdDuckTransport(prepared.request)) {
+        await this.#spawnTsdDuck();
+      }
+      if (this.#subtitleArgs.length > 0) {
+        await this.#spawnDvbSubtitles();
+      }
+      const child = this.#spawnPreparedFfmpeg();
+      await waitForSpawn(child);
+      this.#appendEvent("Future schedule promoted to Current and is now on air");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown transition error";
+      this.#handleProcessError(new Error(`Future schedule transition failed: ${message}`));
     }
   }
 
@@ -735,7 +840,8 @@ export class PlayoutSupervisor {
     this.#appendEvent(
       `DVB subtitle encoder started with PID ${child.pid ?? "unknown"}; ` +
         `${this.#status.subtitles.plannedCues} cue(s) on TS PID ${this.#request?.subtitleOutput.pid}, ` +
-        `language ${this.#request?.subtitleOutput.language}`,
+        `language ${this.#request?.subtitleOutput.language}, page IDs 1/1, ` +
+        `PTS offset ${this.#request?.subtitleOutput.ptsOffsetMs ?? 0} ms`,
     );
   }
 
@@ -1124,6 +1230,9 @@ function idleStatus(): PlayoutStatus {
     previewPath: null,
     repeatPlaylist: false,
     loopCount: 0,
+    schedulePhase: "current",
+    scheduleTransitionCount: 0,
+    queuedFutureItems: 0,
     scte35: {
       enabled: false,
       state: "disabled",
@@ -1142,6 +1251,8 @@ function idleStatus(): PlayoutStatus {
       language: null,
       plannedCues: 0,
       sourceItems: 0,
+      observedPes: 0,
+      lastPtsMs: null,
       error: null,
     },
     error: null,
@@ -1156,6 +1267,10 @@ function numberValue(value: string): number {
 
 export function isTsdDuckContinuityWarning(line: string): boolean {
   return /FluxIO-output/i.test(line) && /\b(continuity|discontinuity|missing)\b/i.test(line);
+}
+
+export function shouldTransitionToFutureSchedule(request: StartPlayoutRequest): boolean {
+  return !request.repeatPlaylist && request.nextPlaylist.length > 0;
 }
 
 function formatMbps(bitrateBps: number): string {

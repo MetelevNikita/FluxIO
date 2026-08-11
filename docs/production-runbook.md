@@ -164,13 +164,23 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 3. Выбрать папку/video files и дождаться зелёного `Done` для каждого материала.
 4. При необходимости проверить thumbnails и Play/Seek в `Playlist & Preview`.
 5. Собрать Playlist.
-6. Настроить video/audio encoder, GOP Structure (I/P/B) и optional logo.
+6. Настроить video/audio encoder и GOP Structure (I/P/B). При необходимости
+   включить эфирную нормализацию `-23 LUFS`; без неё уровень источника сохраняется.
 7. Настроить UDP, SRT, RTMP или RTMPS endpoint. Для UDP выбрать конкретный output interface и проверить MPEG-TS service/PID/PCR/Transport bitrate.
-8. При необходимости включить `Repeat` до старта — расписание будет повторяться до Stop.
+8. При необходимости включить `Repeat` до старта — расписание будет повторяться
+   до Stop и автоматический переход Current → Future выполняться не будет.
 9. Для рекламных врезок выбрать UDP/SRT, включить SCTE-35, задать defaults и расставить Event IDs во вкладке Playlist. Первая метка — не раньше `pre-roll + 2 s`.
 10. Подготовить головную станцию.
 11. Нажать `Start Stream`.
-12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, номер loop, FFmpeg metrics, строки `Transmitted frames` в Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service, SCTE-35 Injector и DVB Subtitles: state, PID, language, source clips/cues.
+12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, таймер текущего
+    ролика в Playlist, номер loop, FFmpeg metrics, строки `Transmitted frames` в
+    Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service, SCTE-35
+    Injector и DVB Subtitles: state, PID, language, source clips/cues, observed PES/PTS.
+13. Если в Current загружен Future и Repeat выключен, после последнего ролика
+    media-service автоматически запускает Future; интерфейс переносит его в
+    Current и освобождает Future для следующего 168-часового расписания.
+    Изменения Future во время эфира синхронизируются на сервер автоматически;
+    число подготовленных элементов видно как `Future queued`.
 
 Media-service не пишет HTTP access logs. Во время активного кодирования он
 выдаёт одну console-строку каждые 5 секунд и немедленно при смене ролика:
@@ -272,7 +282,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v6.0.9`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v6.0.10`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

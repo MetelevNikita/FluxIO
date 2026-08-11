@@ -441,7 +441,7 @@ export function BroadcastSettingsScreen({
                 <span>
                   {incompatibleSubtitleOutput
                     ? "RTMP/FLV cannot carry a DVB subtitle PID. Select UDP or SRT."
-                    : "Only clips with SRT enabled in Playlist are included. PMT signalling and the subtitling descriptor are generated automatically; page IDs are 1/1."}
+                    : "Only clips with SRT enabled in Playlist are included. PMT signalling and the subtitling descriptor are generated automatically; page IDs are 1/1. Keep PTS offset at 0 ms unless a measured receiver delay needs compensation."}
                 </span>
               </div>
             </>
@@ -495,7 +495,18 @@ export function BroadcastSettingsScreen({
           />
         </SettingsCard>
 
-        <SettingsCard icon={<AudioLines size={16} />} title="Audio">
+        <SettingsCard
+          headerAction={(
+            <ToggleField
+              checked={settings.loudnessNormalizationEnabled}
+              compact
+              label={`${settings.loudnessTargetLufs.toFixed(1)} LUFS`}
+              onChange={(checked) => update("loudnessNormalizationEnabled", checked)}
+            />
+          )}
+          icon={<AudioLines size={16} />}
+          title="Audio"
+        >
           <div className="two-column-fields">
             <SelectField
               label="Codec"
@@ -528,6 +539,24 @@ export function BroadcastSettingsScreen({
             <span>64 kbps</span>
             <span>320 kbps</span>
           </div>
+          <NumberField
+            disabled={!settings.loudnessNormalizationEnabled}
+            label="Programme loudness target (LUFS)"
+            max={-5}
+            min={-70}
+            onChange={(value) => update(
+              "loudnessTargetLufs",
+              Math.min(-5, Math.max(-70, value)),
+            )}
+            step={0.1}
+            value={settings.loudnessTargetLufs}
+          />
+          <p className="transport-setting-note">
+            EBU R128 broadcast normalization. When enabled, final programme audio is
+            adjusted in real time to {settings.loudnessTargetLufs.toFixed(1)} LUFS,
+            with −1 dBTP true-peak and 7 LU loudness-range targets. Disable it to
+            preserve the source level unchanged.
+          </p>
         </SettingsCard>
 
         <SettingsCard
@@ -897,7 +926,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
             source={previewUrl}
           />
           <span className="decoding-status">
-            <i /> {active ? "Live Program Preview" : "Preview Idle"}
+            <i /> {active ? "Final Program Monitor" : "Preview Idle"}
           </span>
           <span className="monitor-resolution">
             {status?.endpointLabel ?? "No endpoint selected"}
@@ -956,6 +985,11 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
           <Stat label="Elapsed" value={formatMonitorTime(status?.outTimeSeconds ?? 0)} />
           <Stat label="Remaining" value={formatMonitorTime(remainingSeconds)} />
           <Stat label="Total" value={formatMonitorTime(status?.totalDurationSeconds ?? 0)} />
+          <Stat
+            label="Schedule phase"
+            value={status?.schedulePhase === "future" ? "Promoted Future" : "Current"}
+          />
+          <Stat label="Future queued" value={`${status?.queuedFutureItems ?? 0} clips`} />
           {status?.transportBitrateBps != null ? (
             <>
               <Stat
@@ -1020,6 +1054,13 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
             <Stat label="Language" value={status.subtitles.language ?? "—"} />
             <Stat label="SRT source clips" value={String(status.subtitles.sourceItems)} />
             <Stat label="Planned cues" value={String(status.subtitles.plannedCues)} />
+            <Stat label="Observed subtitle PES" value={String(status.subtitles.observedPes)} />
+            <Stat
+              label="Last subtitle PTS"
+              value={status.subtitles.lastPtsMs == null
+                ? "—"
+                : formatMonitorTime(status.subtitles.lastPtsMs / 1_000)}
+            />
             {status.subtitles.error ? (
               <span className="scte35-monitor-error">{status.subtitles.error}</span>
             ) : null}
