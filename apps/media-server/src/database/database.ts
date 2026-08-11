@@ -266,7 +266,7 @@ export class DatabaseService {
     const encryptedSecrets = Object.keys(secrets).length > 0
       ? this.#encrypt(JSON.stringify(secrets))
       : null;
-    const checkpoint = status.sessionId ? checkpointFromStatus(status) : null;
+    const checkpoint = recoverableCheckpointFromStatus(status);
     const session = await this.client.workspaceSession.upsert({
       create: {
         slot: "last",
@@ -299,8 +299,9 @@ export class DatabaseService {
 
   async syncWorkspaceCheckpoint(status: PlayoutStatus): Promise<void> {
     if (!status.sessionId) return;
+    const checkpoint = recoverableCheckpointFromStatus(status);
     await this.client.workspaceSession.updateMany({
-      data: { checkpoint: jsonValue(checkpointFromStatus(status)) },
+      data: { checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull },
       where: { slot: "last" },
     });
   }
@@ -366,8 +367,15 @@ export class DatabaseService {
       currentStatus.sessionId === checkpoint.sessionId &&
       ["starting", "running", "stopping"].includes(currentStatus.state),
     );
+    const failedWithProgress = Boolean(
+      checkpoint?.state === "failed" &&
+      (checkpoint.outTimeSeconds > 0 ||
+        checkpoint.currentItemElapsedSeconds > 0 ||
+        checkpoint.currentItemIndex > 0 ||
+        checkpoint.progressPercent > 0),
+    );
     const interrupted = Boolean(
-      checkpoint && (checkpoint.state === "failed" || (activeStoredState && !sameRuntimeSession)),
+      checkpoint && (failedWithProgress || (activeStoredState && !sameRuntimeSession)),
     );
     return savedWorkspaceSessionSchema.parse({
       id: session.id,
@@ -443,6 +451,23 @@ export function checkpointFromStatus(status: PlayoutStatus) {
     updatedAt: new Date().toISOString(),
     interrupted: false,
   });
+}
+
+export function recoverableCheckpointFromStatus(status: PlayoutStatus) {
+  if (!status.sessionId) return null;
+  if (["starting", "running", "stopping"].includes(status.state)) {
+    return checkpointFromStatus(status);
+  }
+  if (
+    status.state === "failed" &&
+    (status.outTimeSeconds > 0 ||
+      status.currentItemElapsedSeconds > 0 ||
+      status.currentItemIndex > 0 ||
+      status.progressPercent > 0)
+  ) {
+    return checkpointFromStatus(status);
+  }
+  return null;
 }
 
 function mediaAssetData(probe: MediaProbe) {

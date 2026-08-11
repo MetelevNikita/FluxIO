@@ -22,6 +22,7 @@ import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
   formatEncodingActivity,
   formatFrameProgressLog,
+  estimateCommandLineCharacters,
   isTsdDuckContinuityWarning,
   PlayoutSupervisor,
   shouldReportEncodingActivity,
@@ -33,6 +34,7 @@ import { runCommand } from "./ffmpeg/process.js";
 import {
   checkpointFromStatus,
   DatabaseService,
+  recoverableCheckpointFromStatus,
   sanitizeWorkspaceSnapshot,
 } from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
@@ -76,7 +78,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.12");
+    assert.equal(health.version, "6.0.13");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -243,6 +245,21 @@ test(
   },
 );
 
+test("workspace session accepts JSON bodies larger than Fastify's one MiB default", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/workspace-session",
+      headers: { "content-type": "application/json" },
+      payload: { oversizedProbe: "x".repeat(1_100_000) },
+    });
+    assert.notEqual(response.statusCode, 413);
+  } finally {
+    await app.close();
+  }
+});
+
 test("workspace recovery separates secrets and records a playout checkpoint", () => {
   const asset = {
     id: "asset-1",
@@ -294,7 +311,7 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
   assert.equal(protectedSnapshot.secrets.srtPassphrase, "session-secret");
   assert.doesNotMatch(JSON.stringify(protectedSnapshot.sanitized), /session-secret|rtmp-secret/);
 
-  const checkpoint = checkpointFromStatus(playoutStatusSchema.parse({
+  const runningStatus = playoutStatusSchema.parse({
     state: "running",
     sessionId: "session-1",
     startedAt: new Date().toISOString(),
@@ -316,12 +333,35 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
     previewPath: "/api/playout/preview/index.m3u8",
     error: null,
     logs: [],
-  }));
+  });
+  const checkpoint = checkpointFromStatus(runningStatus);
   assert.equal(checkpoint.currentItemIndex, 3);
   assert.equal(checkpoint.currentItemId, "clip-4");
   assert.equal(checkpoint.currentItemElapsedSeconds, 15.5);
   assert.equal(checkpoint.outTimeSeconds, 315.5);
   assert.equal(checkpoint.interrupted, false);
+  assert.equal(recoverableCheckpointFromStatus(runningStatus)?.sessionId, "session-1");
+
+  const failedBeforeSpawn = {
+    ...runningStatus,
+    state: "failed" as const,
+    currentItemIndex: 0,
+    currentItemElapsedSeconds: 0,
+    currentItemProgressPercent: 0,
+    outTimeSeconds: 0,
+    progressPercent: 0,
+    frame: 0,
+  };
+  assert.equal(recoverableCheckpointFromStatus(failedBeforeSpawn), null);
+
+  const interruptedOnAir = {
+    ...failedBeforeSpawn,
+    currentItemElapsedSeconds: 12,
+    outTimeSeconds: 12,
+    progressPercent: 1.2,
+    frame: 300,
+  };
+  assert.equal(recoverableCheckpointFromStatus(interruptedOnAir)?.outTimeSeconds, 12);
 });
 
 test("hot-take wait continues until the active playout has stopped", async () => {
@@ -691,6 +731,35 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   assert.match(rendered, /program_date_time\+temp_file/);
   assert.doesNotMatch(rendered, /append_list/);
   assert.equal(command.totalDurationSeconds, 5);
+});
+
+test("large playlists move the FFmpeg filter graph out of the process command line", () => {
+  const request = baseRequest();
+  const items = Array.from({ length: 216 }, (_, index) => ({
+    id: `clip-${index}`,
+    name: `Weekly programme ${index}.mp4`,
+    filePath: `R:\\FluxIO\\Media\\Weekly programme ${String(index).padStart(3, "0")}.mp4`,
+    trimInSeconds: 0,
+    durationSeconds: 60,
+    hasAudio: true,
+  }));
+  const scriptPath = "C:\\Users\\iptv\\AppData\\Local\\Temp\\gruber-playout-preview\\filter.txt";
+  const inline = buildFfmpegCommand(request, items, "/tmp/preview");
+  const scripted = buildFfmpegCommand(request, items, "/tmp/preview", {
+    filterComplexScriptPath: scriptPath,
+  });
+
+  assert.ok(estimateCommandLineCharacters("ffmpeg.exe", inline.args) > 32_767);
+  assert.ok(estimateCommandLineCharacters("ffmpeg.exe", scripted.args) < 30_000);
+  assert.ok(scripted.filterGraph.length > 32_767);
+  assert.deepEqual(
+    scripted.args.slice(
+      scripted.args.indexOf("-filter_complex_script"),
+      scripted.args.indexOf("-filter_complex_script") + 2,
+    ),
+    ["-filter_complex_script", scriptPath],
+  );
+  assert.equal(scripted.args.includes("-filter_complex"), false);
 });
 
 test("FFmpeg optionally normalizes final programme and preview audio to -23 LUFS", () => {

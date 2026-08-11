@@ -1,12 +1,17 @@
 # FluxIO
 
-Текущая версия: **v6.0.12**.
+Текущая версия: **v6.0.13**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
 В v6.0.12 FFmpeg video, GStreamer DVB subtitles и SCTE-35 используют общую
 MPEG-TS временную базу. Encoding Monitor измеряет PTS уже после TSDuck merge и
 показывает `Aligned` либо фактическое отклонение subtitle clock.
+
+В v6.0.13 большие Playlist больше не помещают весь FFmpeg filter graph в
+командную строку Windows: graph записывается во временный script-файл. Recovery
+snapshot принимает до 32 MiB JSON и не создаёт ложный `Interrupted · 00:00:00`
+после ошибки запуска до первого переданного кадра.
 
 Electron-интерфейс и installers используют бренд FluxIO: единый жёлто-чёрный antenna mark, wordmark с акцентным `IO` и пятисекундный стартовый экран размером с основное окно. Технические имена окружения `GRUBER_*`, PostgreSQL database и service IDs сохранены для обратной совместимости существующих установок.
 

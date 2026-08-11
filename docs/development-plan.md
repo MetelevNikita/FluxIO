@@ -479,6 +479,20 @@
 - Encoding Monitor показывает `Video PTS origin`, `Aligned/Mismatch` и ошибку
   синхронизации в миллисекундах.
 
+### 4.14. Большие Playlist и recovery payload v6.0.13
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-14-large-playlist-recovery-v6.0.13.md`](progress/04-14-large-playlist-recovery-v6.0.13.md).
+
+- FFmpeg filter graph записывается в runtime script вместо Windows command line;
+- playout log показывает размер graph и оставшуюся длину команды;
+- Windows preflight выдаёт понятную ошибку, если одни media paths всё ещё
+  превышают безопасный предел;
+- workspace/start/take/next-playlist принимают JSON до 32 MiB;
+- failed start без переданного кадра больше не становится recovery interruption;
+- regression test моделирует 216 роликов и payload больше стандартного лимита
+  Fastify.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

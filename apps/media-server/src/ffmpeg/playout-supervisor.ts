@@ -10,7 +10,12 @@ import type {
   StartPlayoutRequest,
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings, playoutStatusSchema } from "@gruber/contracts";
-import { buildFfmpegCommand, type PreparedPlayoutItem } from "./command-builder.js";
+import {
+  buildFfmpegCommand,
+  type FfmpegCommand,
+  type FfmpegCommandOptions,
+  type PreparedPlayoutItem,
+} from "./command-builder.js";
 import { FfmpegCapabilitiesService } from "./capabilities.js";
 import { probeMedia } from "./probe.js";
 import { TsdDuckCapabilitiesService } from "../tsduck/capabilities.js";
@@ -40,6 +45,7 @@ const previewPath = "/api/playout/preview/index.m3u8";
 const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
+const windowsCommandLineSafetyLimit = 30_000;
 
 export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
@@ -341,10 +347,8 @@ export class PlayoutSupervisor {
     this.#subtitleClockReport = null;
 
     if (!usesTsdDuckTransport(request)) {
-      const command = buildFfmpegCommand(
+      const command = await this.#buildScriptedFfmpegCommand(
         request,
-        this.#items,
-        this.previewDirectory,
         {
           transportMuxRateBps: request.endpoint.protocol === "udp"
             ? calculateTransportMuxRate(request)
@@ -410,7 +414,7 @@ export class PlayoutSupervisor {
         ? { ...request.endpoint.mpegTs }
         : { ...defaultMpegTsOutputSettings },
     };
-    const command = buildFfmpegCommand(request, this.#items, this.previewDirectory, {
+    const command = await this.#buildScriptedFfmpegCommand(request, {
       forceKeyFramesSeconds: request.scte35.enabled
         ? this.#cues.map((cue) => cue.programTimeSeconds)
         : undefined,
@@ -428,6 +432,40 @@ export class PlayoutSupervisor {
     this.#commandArgs = command.args;
     this.#tsduckArgs = tsduck.args;
     this.#applyCommandStatus(command.totalDurationSeconds, tsduck.endpointLabel);
+  }
+
+  async #buildScriptedFfmpegCommand(
+    request: StartPlayoutRequest,
+    options: FfmpegCommandOptions,
+  ): Promise<FfmpegCommand> {
+    const filterScriptPath = path.join(
+      this.previewDirectory,
+      `ffmpeg-filter-${this.#status.schedulePhase}-${this.#status.loopCount}.txt`,
+    );
+    const command = buildFfmpegCommand(
+      request,
+      this.#items,
+      this.previewDirectory,
+      { ...options, filterComplexScriptPath: filterScriptPath },
+    );
+    await writeFile(filterScriptPath, command.filterGraph, "utf8");
+    const commandLineCharacters = estimateCommandLineCharacters(
+      this.capabilities.ffmpegPath,
+      command.args,
+    );
+    if (process.platform === "win32" && commandLineCharacters > windowsCommandLineSafetyLimit) {
+      throw new PlayoutPreflightError(
+        `The playlist still requires a ${commandLineCharacters}-character FFmpeg command after ` +
+          `moving the filter graph to a file. Shorten the media paths or split the schedule; ` +
+          `the safe Windows limit is ${windowsCommandLineSafetyLimit} characters.`,
+      );
+    }
+    this.#appendEvent(
+      `FFmpeg graph prepared for ${this.#items.length} clip(s): ` +
+        `${formatKibibytes(Buffer.byteLength(command.filterGraph, "utf8"))} KiB script, ` +
+        `${commandLineCharacters} command characters`,
+    );
+    return command;
   }
 
   #applyCommandStatus(totalDurationSeconds: number, endpointLabel: string): void {
@@ -1344,6 +1382,14 @@ export function isTsdDuckContinuityWarning(line: string): boolean {
 
 export function shouldTransitionToFutureSchedule(request: StartPlayoutRequest): boolean {
   return !request.repeatPlaylist && request.nextPlaylist.length > 0;
+}
+
+export function estimateCommandLineCharacters(command: string, args: string[]): number {
+  return command.length + args.reduce((total, argument) => total + argument.length + 3, 1);
+}
+
+function formatKibibytes(bytes: number): string {
+  return (bytes / 1_024).toFixed(1);
 }
 
 function formatMbps(bitrateBps: number): string {

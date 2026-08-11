@@ -32,10 +32,12 @@ export interface PreparedPlayoutItem {
 export interface FfmpegCommand {
   args: string[];
   endpointLabel: string;
+  filterGraph: string;
   totalDurationSeconds: number;
 }
 
 export interface FfmpegCommandOptions {
+  filterComplexScriptPath?: string;
   forceKeyFramesSeconds?: number[];
   programEndpoint?: PlayoutEndpoint;
   transportMuxRateBps?: number;
@@ -114,7 +116,11 @@ export function buildFfmpegCommand(
   }
 
   const filterGraph = buildFilterGraph(request, items);
-  args.push("-filter_complex", filterGraph);
+  if (options.filterComplexScriptPath) {
+    args.push("-filter_complex_script", options.filterComplexScriptPath);
+  } else {
+    args.push("-filter_complex", filterGraph);
+  }
 
   args.push("-map", "[vprogram]", "-map", "[aprogram]");
   args.push(...videoEncoderArgs(request.video));
@@ -190,6 +196,7 @@ export function buildFfmpegCommand(
   return {
     args,
     endpointLabel: buildEndpoint(request.endpoint).label,
+    filterGraph,
     totalDurationSeconds: items.reduce(
       (total, item) => total + item.durationSeconds,
       0,

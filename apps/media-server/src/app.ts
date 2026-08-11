@@ -46,8 +46,9 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.12";
+const serviceVersion = "6.0.13";
 const workspaceCheckpointIntervalMs = 5_000;
+const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
 
 export function buildApp(options: FastifyServerOptions = {}) {
   const startedAt = new Date().toISOString();
@@ -305,7 +306,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
     return status;
   });
 
-  app.post("/api/playout/start", async (request, reply) => {
+  app.post("/api/playout/start", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     try {
       const body = startPlayoutRequestSchema.parse(request.body);
       const status = await playout.start(body);
@@ -328,7 +329,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
     }
   });
 
-  app.post("/api/playout/take", async (request, reply) => {
+  app.post("/api/playout/take", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     try {
       const body = startPlayoutRequestSchema.parse(request.body);
       const status = await playout.take(body);
@@ -353,7 +354,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
 
   app.post("/api/playout/stop", async () => playout.stop());
 
-  app.put("/api/playout/next-playlist", async (request, reply) => {
+  app.put("/api/playout/next-playlist", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     try {
       const body = updateNextPlaylistRequestSchema.parse(request.body);
       return playout.updateNextPlaylist(body.nextPlaylist);
@@ -372,7 +373,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
     return { session: await database.getWorkspaceSession(playout.getStatus()) };
   });
 
-  app.put("/api/workspace-session", async (request, reply) => {
+  app.put("/api/workspace-session", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     if (!database) {
       return databaseUnavailable(reply);
     }

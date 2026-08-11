@@ -267,7 +267,10 @@ Media-service отправляет `SIGTERM` и применяет принуд�
 ## Текущие ограничения
 
 - один канал и один активный endpoint;
-- playlist собирается в один FFmpeg filter graph, поэтому перед очень большими плейлистами нужен отдельный scheduler/rolling pipeline;
+- playlist пока собирается в один FFmpeg filter graph; с v6.0.13 graph хранится
+  во временном script-файле и не упирается в Windows command-line limit, однако
+  для 24/7 rolling preparation и бесшовного обновления очень больших расписаний
+  по-прежнему нужен отдельный scheduler/rolling pipeline;
 - нет резервного media-service и автоматического failover;
 - нет независимого return-feed monitor головной станции;
 - SCTE-35 injector реализован для SPTS по UDP/SRT; MPTS и внешнее резервирование injector остаются за границей текущего этапа;
