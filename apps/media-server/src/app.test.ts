@@ -56,6 +56,12 @@ import {
 } from "./tsduck/command-builder.js";
 import { buildGstreamerDvbSubtitleCommand } from "./subtitles/gstreamer.js";
 import { buildDvbSubtitleProject, parseSrt } from "./subtitles/srt-project.js";
+import {
+  evaluateDvbSubtitleClock,
+  ffmpegMpegTsOutputOffsetSeconds,
+  mpegTsClockOriginSeconds,
+  mpegTsPtsWrapMs,
+} from "./transport-clock.js";
 
 test("GET /api/health returns the shared service contract", async () => {
   const app = buildApp({ logger: false });
@@ -70,7 +76,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.10");
+    assert.equal(health.version, "6.0.12");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -663,6 +669,7 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   assert.match(rendered, /concat=n=2:v=1:a=1/);
   assert.match(rendered, /anullsrc=r=48000:cl=stereo/);
   assert.match(rendered, /udp:\/\/239\.1\.1\.1:5000\?pkt_size=1316&ttl=16/);
+  assert.match(rendered, /-output_ts_offset 3598\.6/);
   assert.equal(command.args.includes("-stats_period"), false);
   assert.deepEqual(
     command.args.slice(
@@ -962,6 +969,7 @@ test("DVB subtitle project trims clip cues and shifts them to the program timeli
     ]);
     assert.equal(project.cueCount, 3);
     assert.equal(project.sourceItems, 2);
+    assert.equal(project.firstCueStartSeconds, 0);
     const cues = parseSrt(project.content);
     assert.deepEqual(
       cues.map((cue) => [cue.startSeconds, cue.endSeconds, cue.text]),
@@ -1000,7 +1008,7 @@ test("TSDuck announces and merges a DVB subtitle component into UDP MPEG-TS", ()
   assert.match(rendered, /--patch-xml \/tmp\/dvb-subtitles-pmt\.xml/);
   assert.match(rendered, /-P merge --bitrate 128000 --no-psi-merge/);
   assert.match(rendered, /-P filter --pid 288 --stuffing/);
-  assert.match(rendered, /-P pcrextract --pid 288 --pts --log/);
+  assert.match(rendered, /-P pcrextract --pid 256 --pid 288 --pts --log/);
   assert.match(rendered, /-P continuity --pid 256 --pid 257 --pid 288/);
   const patchXml = buildDvbSubtitlePmtPatch(request);
   assert.match(patchXml, /elementary_PID="288"/);
@@ -1096,11 +1104,11 @@ test("SCTE-35 cue planner converts clip-relative markers to 90 kHz program PTS",
     durationSeconds: 10,
   }]);
   assert.equal(cues[0]?.programTimeSeconds, 6);
-  assert.equal(cues[0]?.pts, 540_000);
+  assert.equal(cues[0]?.pts, 324_540_000);
   assert.equal(cues[0]?.durationTicks, 2_700_000);
 
   const xml = buildScte35CueXml(request, cues);
-  assert.match(xml, /<time_signal pts_time="540000"\/>/);
+  assert.match(xml, /<time_signal pts_time="324540000"\/>/);
   assert.match(xml, /segmentation_event_id="12345"/);
   assert.match(xml, /segmentation_duration="2700000"/);
   assert.match(xml, /segmentation_type_id="0x34"/);
@@ -1297,12 +1305,48 @@ test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", (
   const rendered = command.args.join(" ");
   assert.match(rendered, /-force_key_frames 6,12\.5/);
   assert.match(rendered, /-muxrate 3700000/);
+  assert.match(rendered, /-output_ts_offset 3598\.6/);
   assert.match(rendered, /-muxdelay 0\.7/);
   assert.match(rendered, /-muxpreload 0\.5/);
   assert.doesNotMatch(rendered, /-muxdelay 0(?:\s|$)/);
   assert.match(rendered, /-mpegts_service_id 1/);
   assert.match(rendered, /udp:\/\/127\.0\.0\.1:19001/);
   assert.equal(command.endpointLabel, "UDP 239.1.1.1:5000");
+});
+
+test("DVB subtitle clock aligns the first subtitle cue with the video PTS epoch", () => {
+  assert.equal(mpegTsClockOriginSeconds, 3_600);
+  assert.equal(ffmpegMpegTsOutputOffsetSeconds, 3_598.6);
+
+  const aligned = evaluateDvbSubtitleClock({
+    videoPtsOriginMs: 3_600_000,
+    subtitlePtsMs: 3_606_040,
+    firstCueStartSeconds: 6,
+    configuredOffsetMs: 0,
+  });
+  assert.deepEqual(aligned, {
+    clockErrorMs: 40,
+    expectedSubtitlePtsMs: 3_606_000,
+    synchronized: true,
+  });
+
+  const legacyMismatch = evaluateDvbSubtitleClock({
+    videoPtsOriginMs: 1_400,
+    subtitlePtsMs: 3_606_000,
+    firstCueStartSeconds: 6,
+    configuredOffsetMs: 0,
+  });
+  assert.equal(legacyMismatch.synchronized, false);
+  assert.equal(legacyMismatch.clockErrorMs, 3_598_600);
+
+  const wrapped = evaluateDvbSubtitleClock({
+    videoPtsOriginMs: mpegTsPtsWrapMs - 1_000,
+    subtitlePtsMs: 500,
+    firstCueStartSeconds: 1.5,
+    configuredOffsetMs: 0,
+  });
+  assert.equal(wrapped.clockErrorMs, 0);
+  assert.equal(wrapped.synchronized, true);
 });
 
 test("FFmpeg keeps only actionable playout warnings in the application log", () => {

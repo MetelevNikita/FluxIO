@@ -22,3 +22,10 @@ export function moveEffectLayerWindow({
     endSeconds: nextStart + layerDuration,
   };
 }
+
+export function removeEffectLayerById<T extends { id: string }>(
+  layers: readonly T[],
+  layerId: string,
+): T[] {
+  return layers.filter((layer) => layer.id !== layerId);
+}

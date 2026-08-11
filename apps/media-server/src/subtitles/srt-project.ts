@@ -11,6 +11,7 @@ export interface DvbSubtitleProject {
   content: string;
   cueCount: number;
   sourceItems: number;
+  firstCueStartSeconds: number | null;
 }
 
 export function parseSrt(content: string): SrtCue[] {
@@ -64,6 +65,7 @@ export async function buildDvbSubtitleProject(
     content: serializeSrt(programCues),
     cueCount: programCues.length,
     sourceItems,
+    firstCueStartSeconds: programCues[0]?.startSeconds ?? null,
   };
 }
 

@@ -453,6 +453,32 @@
 - DVB subtitle PES/PTS monitor после merge TSDuck и исправленный default offset `0 ms`;
 - русифицированный splash с версией, годом и контактами разработчика.
 
+### 4.12. Компактный эфирный таймер и удаление FX v6.0.11
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-12-playlist-air-timer-fx-removal-v6.0.11.md`](progress/04-12-playlist-air-timer-fx-removal-v6.0.11.md).
+
+- selector `MOVIE/CHOP/CLIP` перенесён к хронометражу ролика;
+- эфирный countdown отображается в той же компактной строке метаданных;
+- правая зона controls больше не меняет компоновку во время проигрывания;
+- каждый назначенный FX chip получил отдельную корзину;
+- удаление FX снимает назначение только с выбранного ролика и не меняет
+  библиотеку Effects проекта.
+
+### 4.13. Общая PTS-база DVB subtitles v6.0.12
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-13-dvb-subtitle-clock-sync-v6.0.12.md`](progress/04-13-dvb-subtitle-clock-sync-v6.0.12.md).
+
+- FFmpeg program MPEG-TS и GStreamer DVB subtitles переведены на общую часовую
+  точку MPEG-TS clock;
+- SCTE-35 raw PTS формируется в той же 90-кГц шкале;
+- TSDuck `pcrextract` наблюдает одновременно video PID и subtitle PID после
+  merge;
+- media-service сравнивает первый subtitle PTS с video origin и временем cue;
+- Encoding Monitor показывает `Video PTS origin`, `Aligned/Mismatch` и ошибку
+  синхронизации в миллисекундах.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

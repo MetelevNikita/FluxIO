@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { moveEffectLayerWindow } from "./effect-timeline-math.js";
+import { moveEffectLayerWindow, removeEffectLayerById } from "./effect-timeline-math.js";
 
 test("effect layer drag preserves duration and clamps to both clip edges", () => {
   assert.deepEqual(
@@ -30,4 +30,14 @@ test("effect layer drag preserves duration and clamps to both clip edges", () =>
     }),
     { startSeconds: 15, endSeconds: 20 },
   );
+});
+
+test("removing one assigned FX keeps the remaining layer order", () => {
+  const layers = [
+    { id: "lower", name: "Lower third" },
+    { id: "title", name: "Title" },
+    { id: "bug", name: "Corner bug" },
+  ];
+  assert.deepEqual(removeEffectLayerById(layers, "title"), [layers[0], layers[2]]);
+  assert.deepEqual(layers.map((layer) => layer.id), ["lower", "title", "bug"]);
 });

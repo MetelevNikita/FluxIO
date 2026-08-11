@@ -3,6 +3,7 @@ import type {
   StartPlayoutRequest,
 } from "@gruber/contracts";
 import type { PreparedPlayoutItem } from "../ffmpeg/command-builder.js";
+import { mpegTsClockOriginSeconds } from "../transport-clock.js";
 
 const scte35ClockRate = 90_000;
 const ptsModulo = 2 ** 33;
@@ -51,7 +52,9 @@ export function planScte35Cues(
         kind: marker.kind,
         markerId: marker.id,
         programTimeSeconds,
-        pts: Math.round(programTimeSeconds * scte35ClockRate) % ptsModulo,
+        pts: Math.round(
+          (mpegTsClockOriginSeconds + programTimeSeconds) * scte35ClockRate,
+        ) % ptsModulo,
         durationTicks: marker.durationSeconds == null
           ? null
           : Math.round(marker.durationSeconds * scte35ClockRate),

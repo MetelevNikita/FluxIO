@@ -23,7 +23,6 @@ import {
   SkipForward,
   Square,
   Trash2,
-  X,
   Volume2,
   VolumeX,
 } from "lucide-react";
@@ -32,7 +31,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { attachHlsVideo } from "../hls-video";
@@ -41,7 +39,7 @@ import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-a
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
-import { moveEffectLayerWindow } from "../effect-timeline-math";
+import { moveEffectLayerWindow, removeEffectLayerById } from "../effect-timeline-math";
 import type {
   BroadcastSettings,
   MediaAsset,
@@ -443,7 +441,10 @@ export function PlaylistPreviewScreen({
     });
   }
 
-  function selectPlaylistAsset(asset: MediaAsset, event: ReactMouseEvent): void {
+  function selectPlaylistAsset(
+    asset: MediaAsset,
+    event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
+  ): void {
     if (event.shiftKey) {
       const anchorIndex = playlist.findIndex((item) => item.id === selectionAnchorId.current);
       const targetIndex = playlist.findIndex((item) => item.id === asset.id);
@@ -522,8 +523,14 @@ export function PlaylistPreviewScreen({
 
   function removeEffectLayer(layerId: string): void {
     onUpdateItem(selectedAsset.id, {
-      effects: (selectedAsset.effects ?? []).filter((layer) => layer.id !== layerId),
+      effects: removeEffectLayerById(selectedAsset.effects ?? [], layerId),
     });
+  }
+
+  function removeEffectLayerFromItem(assetId: string, layerId: string): void {
+    onUpdateItems([assetId], (asset) => ({
+      effects: removeEffectLayerById(asset.effects ?? [], layerId),
+    }));
   }
 
   function toggleMute() {
@@ -872,18 +879,47 @@ export function PlaylistPreviewScreen({
               >
                 {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
               </button>
-              <button
+              <div
                 className="playlist-row-select"
                 onClick={(event) => selectPlaylistAsset(asset, event)}
-                type="button"
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  selectPlaylistAsset(asset, event);
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <span className="playlist-air-time">{entry.startTime}</span>
                 {!collapsed ? <img alt="" src={asset.preview} /> : null}
                 <span className="playlist-clip-info">
                   <strong title={asset.name}>{asset.name}</strong>
                   {!collapsed ? (
-                    <span>
-                      {asset.duration} <i /> {formatPlaylistStatus(asset)}
+                    <span className="playlist-clip-meta">
+                      <span>{asset.duration}</span>
+                      <select
+                        aria-label={`Schedule type for ${asset.name}`}
+                        className="playlist-schedule-type"
+                        draggable={false}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          const scheduleType = event.target.value as MediaAsset["scheduleType"];
+                          onUpdateItems(controlTargetIds(asset.id), () => ({ scheduleType }));
+                        }}
+                        value={asset.scheduleType ?? "clip"}
+                      >
+                        <option value="movie">MOVIE</option>
+                        <option value="chop">CHOP</option>
+                        <option value="clip">CLIP</option>
+                      </select>
+                      {onAir ? (
+                        <b className="playlist-clip-remaining">
+                          −{formatHours(onAirRemainingSeconds ?? 0)}
+                        </b>
+                      ) : null}
+                      <i /> <span className="playlist-clip-state">{formatPlaylistStatus(asset)}</span>
                       {scheduleStartMarker?.assetId === asset.id ? " · START" : ""}
                       {(asset.scte35Markers?.length ?? 0) > 0
                         ? ` · SCTE ${asset.scte35Markers?.length}`
@@ -897,7 +933,7 @@ export function PlaylistPreviewScreen({
                     <span>{asset.codecProfile}</span>
                   </span>
                 ) : null}
-              </button>
+              </div>
               {collapsed ? (
                 <div className="playlist-collapsed-summary">
                   {onAir ? (
@@ -919,7 +955,6 @@ export function PlaylistPreviewScreen({
                 {onAir ? (
                   <span className="playlist-on-air-chip" title="This clip is currently being sent to air">
                     <RadioTower size={12} /> ON AIR · {Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}%
-                    {" · "}{formatHours(onAirRemainingSeconds ?? 0)} left
                   </span>
                 ) : null}
                 {stoppedHere ? (
@@ -932,18 +967,6 @@ export function PlaylistPreviewScreen({
                     <MapPin size={12} /> START
                   </span>
                 ) : null}
-                <select
-                  aria-label={`Schedule type for ${asset.name}`}
-                  onChange={(event) => {
-                    const scheduleType = event.target.value as MediaAsset["scheduleType"];
-                    onUpdateItems(controlTargetIds(asset.id), () => ({ scheduleType }));
-                  }}
-                  value={asset.scheduleType ?? "clip"}
-                >
-                  <option value="movie">MOVIE</option>
-                  <option value="chop">CHOP</option>
-                  <option value="clip">CLIP</option>
-                </select>
                 <label
                   className={`overlay-chip age age-rating-control ${asset.ageTitle?.enabled ? "enabled" : ""}`}
                   title={asset.ageTitle?.filePath ?? asset.ageTitle?.text ?? "No age title assigned"}
@@ -1042,16 +1065,26 @@ export function PlaylistPreviewScreen({
                         const definition = effectLibrary.find((effect) => effect.id === layer.effectId);
                         const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
                         return (
-                          <i
-                            className={titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}
+                          <span
+                            className={`fx-layer-chip ${titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}`}
                             key={layer.id}
                             title={titleMissing
                               ? `No alpha title matched ${asset.name}`
                               : layer.titlePath ?? layer.backgroundPath ?? layer.filePath}
                           >
-                            {index + 1} · {shortEffectName(layer.name)}
-                            {titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
-                          </i>
+                            <i>
+                              {index + 1} · {shortEffectName(layer.name)}
+                              {titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
+                            </i>
+                            <button
+                              aria-label={`Remove ${layer.name} from ${asset.name}`}
+                              onClick={() => removeEffectLayerFromItem(asset.id, layer.id)}
+                              title={`Remove ${layer.name} from this clip`}
+                              type="button"
+                            >
+                              <Trash2 size={9} />
+                            </button>
+                          </span>
                         );
                       })()
                     ))}
@@ -1537,7 +1570,7 @@ function EffectTimeline({
                 />
               </div>
               <button aria-label={`Remove ${layer.name}`} onClick={() => onRemoveLayer(layer.id)} type="button">
-                <X size={12} />
+                <Trash2 size={11} />
               </button>
             </div>
           );

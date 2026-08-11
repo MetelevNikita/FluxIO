@@ -46,7 +46,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.10";
+const serviceVersion = "6.0.12";
 const workspaceCheckpointIntervalMs = 5_000;
 
 export function buildApp(options: FastifyServerOptions = {}) {

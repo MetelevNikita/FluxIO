@@ -10,6 +10,11 @@ import type {
   VideoEncoding,
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings } from "@gruber/contracts";
+import {
+  ffmpegMpegTsMuxDelaySeconds,
+  ffmpegMpegTsMuxPreloadSeconds,
+  ffmpegMpegTsOutputOffsetSeconds,
+} from "../transport-clock.js";
 
 export interface PreparedPlayoutItem {
   id: string;
@@ -582,10 +587,12 @@ function mpegTsOutputArgs(
     `0:${settings.videoPid}`,
     "-streamid",
     `1:${settings.audioPid}`,
+    "-output_ts_offset",
+    decimal(ffmpegMpegTsOutputOffsetSeconds),
     "-muxdelay",
-    "0.7",
+    decimal(ffmpegMpegTsMuxDelaySeconds),
     "-muxpreload",
-    "0.5",
+    decimal(ffmpegMpegTsMuxPreloadSeconds),
     "-mpegts_service_id",
     String(settings.serviceId),
     "-mpegts_service_type",

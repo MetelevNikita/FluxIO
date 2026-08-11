@@ -1,4 +1,5 @@
 import type { PlayoutEndpoint, StartPlayoutRequest } from "@gruber/contracts";
+import { defaultMpegTsOutputSettings } from "@gruber/contracts";
 
 export interface TsdDuckCommandOptions {
   cueFilePath: string | null;
@@ -61,6 +62,9 @@ export function buildTsdDuckCommand({
   }
 
   if (request.subtitleOutput.mode === "dvb" && subtitles) {
+    const videoPid = request.endpoint.protocol === "udp"
+      ? request.endpoint.mpegTs.videoPid
+      : defaultMpegTsOutputSettings.videoPid;
     args.push(
       "-P",
       "pmt",
@@ -87,6 +91,8 @@ export function buildTsdDuckCommand({
       buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
       "-P",
       "pcrextract",
+      "--pid",
+      String(videoPid),
       "--pid",
       String(request.subtitleOutput.pid),
       "--pts",

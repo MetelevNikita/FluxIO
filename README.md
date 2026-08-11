@@ -1,8 +1,12 @@
 # FluxIO
 
-Текущая версия: **v6.0.10**.
+Текущая версия: **v6.0.12**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
+
+В v6.0.12 FFmpeg video, GStreamer DVB subtitles и SCTE-35 используют общую
+MPEG-TS временную базу. Encoding Monitor измеряет PTS уже после TSDuck merge и
+показывает `Aligned` либо фактическое отклонение subtitle clock.
 
 Electron-интерфейс и installers используют бренд FluxIO: единый жёлто-чёрный antenna mark, wordmark с акцентным `IO` и пятисекундный стартовый экран размером с основное окно. Технические имена окружения `GRUBER_*`, PostgreSQL database и service IDs сохранены для обратной совместимости существующих установок.
 
@@ -91,7 +95,8 @@ node setup.mjs
 - подтверждённый сервером `Applied TS bitrate` и режим `manual/auto` в Encoding Monitor;
 - `Internal CC errors`, пассивный TSDuck continuity monitor и увеличенные UDP socket buffers для диагностики packet loss;
 - живой 16:9 program preview и оставшееся время всего плейлиста в Broadcast;
-- `ON AIR` таймер до конца текущего ролика рядом с его прогрессом в Playlist;
+- компактный `ON AIR` таймер до конца текущего ролика и selector `MOVIE/CHOP/CLIP`
+  рядом с хронометражем, без сдвига управляющих кнопок Playlist;
 - адаптивный 16:9 preview в Encoding Monitor;
 - бесконечный Repeat расписания с номером текущего цикла;
 - автоматическое повышение Future в Current после завершения Current и очистка
@@ -110,7 +115,9 @@ node setup.mjs
 - однострочные компактные элементы Playlist без переноса controls вниз;
 - индивидуальное и массовое раскрытие/сворачивание роликов расписания;
 - отдельная вкладка `Effects` с project library PNG/WebP/MOV/MP4 и Lottie JSON из After Effects: live preview, всегда открытый редактор Text Layers/Essential Graphics text slots, остальные operator Properties, transparent render cache и назначение всему проекту/выбранному ролику;
-- per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над video, имеют редактируемые In/Out handles и перетаскиваются целиком по шкале времени ролика без изменения длительности;
+- per-clip FX stack: эффекты добавляются слева направо, отображаются слоями над
+  video, удаляются отдельной корзиной у каждого chip, имеют редактируемые In/Out
+  handles и перетаскиваются целиком по шкале времени ролика без изменения длительности;
 - per-clip `SRT` captions: точное сопоставление имени ролика и `.srt`, автоматический OFF при отсутствии файла, выбор между FFmpeg burn-in и отдельным receiver-selectable DVB bitmap PID в UDP/SRT MPEG-TS;
 - отдельный DVB subtitle encoder через GStreamer `subparse → textrender → dvbsubenc → mpegtsmux`; TSDuck добавляет `stream_type 0x06`, `subtitling_descriptor`, выбранный PID и сохраняет CBR transport stuffing;
 - runtime-проверка DVB subtitle PES/PTS уже после merge TSDuck, чтобы отличить

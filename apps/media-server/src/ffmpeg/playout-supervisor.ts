@@ -31,6 +31,10 @@ import {
   type GstreamerCapabilities,
 } from "../subtitles/gstreamer.js";
 import { buildDvbSubtitleProject } from "../subtitles/srt-project.js";
+import {
+  dvbSubtitleClockToleranceMs,
+  evaluateDvbSubtitleClock,
+} from "../transport-clock.js";
 
 const previewPath = "/api/playout/preview/index.m3u8";
 const injectorStartupSafetyMs = 2_000;
@@ -68,6 +72,9 @@ export class PlayoutSupervisor {
   #commandArgs: string[] = [];
   #tsduckArgs: string[] = [];
   #subtitleArgs: string[] = [];
+  #subtitleFirstCueStartSeconds: number | null = null;
+  #firstSubtitlePtsMs: number | null = null;
+  #subtitleClockReport: "aligned" | "mismatch" | null = null;
   #cues: PlannedScte35Cue[] = [];
   #observedCueKeys = new Set<string>();
   #status: PlayoutStatus = idleStatus();
@@ -325,7 +332,13 @@ export class PlayoutSupervisor {
     this.#status.subtitles.sourceItems = 0;
     this.#status.subtitles.observedPes = 0;
     this.#status.subtitles.lastPtsMs = null;
+    this.#status.subtitles.videoPtsOriginMs = null;
+    this.#status.subtitles.clockErrorMs = null;
+    this.#status.subtitles.clockSynchronized = null;
     this.#subtitleArgs = [];
+    this.#subtitleFirstCueStartSeconds = null;
+    this.#firstSubtitlePtsMs = null;
+    this.#subtitleClockReport = null;
 
     if (!usesTsdDuckTransport(request)) {
       const command = buildFfmpegCommand(
@@ -361,6 +374,7 @@ export class PlayoutSupervisor {
       const project = await buildDvbSubtitleProject(this.#items);
       this.#status.subtitles.plannedCues = project.cueCount;
       this.#status.subtitles.sourceItems = project.sourceItems;
+      this.#subtitleFirstCueStartSeconds = project.firstCueStartSeconds;
       if (project.cueCount > 0) {
         const subtitleInputPath = path.join(
           this.previewDirectory,
@@ -550,7 +564,7 @@ export class PlayoutSupervisor {
       const marker = line.indexOf(tsduckMonitorPrefix);
       if (marker >= 0) {
         this.#handleTsdDuckMonitorJson(line.slice(marker + tsduckMonitorPrefix.length));
-      } else if (this.#handleDvbSubtitlePtsLog(line)) {
+      } else if (this.#handleDvbClockPtsLog(line)) {
         continue;
       } else if (isTsdDuckContinuityWarning(line)) {
         const message = redactSecrets(line.trim(), this.#request);
@@ -567,22 +581,78 @@ export class PlayoutSupervisor {
     }
   }
 
-  #handleDvbSubtitlePtsLog(line: string): boolean {
-    const pid = this.#status.subtitles.pid;
-    if (!this.#status.subtitles.enabled || pid == null || !line.includes("pcrextract:")) {
+  #handleDvbClockPtsLog(line: string): boolean {
+    const subtitlePid = this.#status.subtitles.pid;
+    const videoPid = this.#request?.endpoint.protocol === "udp"
+      ? this.#request.endpoint.mpegTs.videoPid
+      : defaultMpegTsOutputSettings.videoPid;
+    if (
+      !this.#status.subtitles.enabled ||
+      subtitlePid == null ||
+      !line.includes("pcrextract:")
+    ) {
       return false;
     }
     const match = line.match(/PID:\s+0x[0-9A-F]+\s+\((\d+)\),\s+PTS:\s+0x([0-9A-F]+)/i);
-    if (!match || Number(match[1]) !== pid) return false;
+    if (!match) return false;
+    const pid = Number(match[1]);
+    if (pid !== videoPid && pid !== subtitlePid) return false;
     const pts = Number.parseInt(match[2] ?? "", 16);
     if (!Number.isFinite(pts)) return false;
+    const ptsMs = Math.max(0, Math.round(pts / 90));
+    if (pid === videoPid) {
+      if (
+        this.#status.subtitles.videoPtsOriginMs == null ||
+        ptsMs < this.#status.subtitles.videoPtsOriginMs
+      ) {
+        this.#status.subtitles.videoPtsOriginMs = ptsMs;
+        this.#evaluateDvbSubtitleClock();
+      }
+      return true;
+    }
     this.#status.subtitles.observedPes += 1;
-    this.#status.subtitles.lastPtsMs = Math.max(0, Math.round(pts / 90));
+    this.#status.subtitles.lastPtsMs = ptsMs;
+    this.#firstSubtitlePtsMs ??= ptsMs;
+    this.#evaluateDvbSubtitleClock();
     this.#appendEvent(
       `DVB subtitle PES #${this.#status.subtitles.observedPes} observed in final TS ` +
-        `on PID ${pid} at PTS ${formatClock(this.#status.subtitles.lastPtsMs / 1_000)}`,
+        `on PID ${pid} at PTS ${formatClock(ptsMs / 1_000)}`,
     );
     return true;
+  }
+
+  #evaluateDvbSubtitleClock(): void {
+    const videoPtsOriginMs = this.#status.subtitles.videoPtsOriginMs;
+    const subtitlePtsMs = this.#firstSubtitlePtsMs;
+    const cueStartSeconds = this.#subtitleFirstCueStartSeconds;
+    if (videoPtsOriginMs == null || subtitlePtsMs == null || cueStartSeconds == null) return;
+    const configuredOffsetMs = this.#request?.subtitleOutput.ptsOffsetMs ?? 0;
+    const { clockErrorMs, synchronized } = evaluateDvbSubtitleClock({
+      videoPtsOriginMs,
+      subtitlePtsMs,
+      firstCueStartSeconds: cueStartSeconds,
+      configuredOffsetMs,
+    });
+    this.#status.subtitles.clockErrorMs = clockErrorMs;
+    this.#status.subtitles.clockSynchronized = synchronized;
+    const summary = `video origin ${formatClockWithMilliseconds(videoPtsOriginMs)}, ` +
+      `first subtitle PTS ${formatClockWithMilliseconds(subtitlePtsMs)}, ` +
+      `clock error ${formatSignedMilliseconds(clockErrorMs)}`;
+    if (synchronized) {
+      if (this.#status.subtitles.error?.startsWith("DVB subtitle clock mismatch")) {
+        this.#status.subtitles.error = null;
+      }
+      if (this.#subtitleClockReport === "aligned") return;
+      this.#subtitleClockReport = "aligned";
+      this.#appendEvent(`DVB subtitle clock synchronized: ${summary}`);
+    } else {
+      const error = `DVB subtitle clock mismatch: ${summary}; ` +
+        `allowed ±${dvbSubtitleClockToleranceMs} ms`;
+      this.#status.subtitles.error = error;
+      if (this.#subtitleClockReport === "mismatch") return;
+      this.#subtitleClockReport = "mismatch";
+      this.#appendEvent(error);
+    }
   }
 
   #handleTsdDuckMonitorJson(value: string): void {
@@ -1253,6 +1323,9 @@ function idleStatus(): PlayoutStatus {
       sourceItems: 0,
       observedPes: 0,
       lastPtsMs: null,
+      videoPtsOriginMs: null,
+      clockErrorMs: null,
+      clockSynchronized: null,
       error: null,
     },
     error: null,
@@ -1347,6 +1420,15 @@ function formatClock(seconds: number): string {
   return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+function formatClockWithMilliseconds(milliseconds: number): string {
+  const safeMilliseconds = Math.max(0, Math.round(milliseconds));
+  return `${formatClock(safeMilliseconds / 1_000)}.${String(safeMilliseconds % 1_000).padStart(3, "0")}`;
+}
+
+function formatSignedMilliseconds(milliseconds: number): string {
+  return `${milliseconds >= 0 ? "+" : ""}${milliseconds} ms`;
 }
 
 export async function waitForPlayoutStop(

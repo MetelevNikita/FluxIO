@@ -703,6 +703,9 @@ export const dvbSubtitleStatusSchema = z.object({
   sourceItems: z.number().int().nonnegative().default(0),
   observedPes: z.number().int().nonnegative().default(0),
   lastPtsMs: z.number().int().nonnegative().nullable().default(null),
+  videoPtsOriginMs: z.number().int().nonnegative().nullable().default(null),
+  clockErrorMs: z.number().int().nullable().default(null),
+  clockSynchronized: z.boolean().nullable().default(null),
   error: z.string().nullable().default(null),
 });
 
@@ -754,6 +757,9 @@ export const playoutStatusSchema = z.object({
     sourceItems: 0,
     observedPes: 0,
     lastPtsMs: null,
+    videoPtsOriginMs: null,
+    clockErrorMs: null,
+    clockSynchronized: null,
     error: null,
   }),
   error: z.string().nullable(),

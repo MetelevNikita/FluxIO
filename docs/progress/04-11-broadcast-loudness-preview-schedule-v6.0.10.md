@@ -34,9 +34,10 @@ debounce, поэтому оператор может загрузить или �
 
 ## DVB subtitles
 
-Legacy default `PTS offset = 1400 ms` заменён на `0 ms`, поскольку основной
-FFmpeg MPEG-TS FluxIO работает с `muxdelay=0`. Значение `1400` из старой
-workspace session мигрирует в `0`.
+Legacy heuristic `PTS offset = 1400 ms` заменён на `0 ms`; значение `1400` из
+старой workspace session мигрирует в `0`. На этом этапе монитор показывал
+реальный subtitle PTS, а полное выравнивание producer clock FFmpeg/GStreamer
+добавлено позднее в v6.0.12.
 
 После subtitle merge TSDuck запускает `pcrextract` на subtitle PID. Encoding
 Monitor показывает количество реально найденных subtitle PES и последний PTS.

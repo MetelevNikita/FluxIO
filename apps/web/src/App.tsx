@@ -372,9 +372,9 @@ export function App() {
       ...initialBroadcastSettings,
       ...snapshot.settings,
     } as BroadcastSettings;
-    // Before 6.0.10 the saved default was 1400 ms, inherited from FFmpeg's
-    // generic MPEG-TS delay. FluxIO explicitly uses muxdelay=0, so carrying
-    // that legacy value shifts every DVB subtitle away from the programme PTS.
+    // Before 6.0.10 the saved default used a 1400 ms legacy compensation.
+    // v6.0.12 aligns FFmpeg and GStreamer on one MPEG-TS clock, so carrying
+    // that old value would add an unwanted constant subtitle delay.
     if (snapshot.settings.subtitlePtsOffsetMs === 1_400) {
       restoredSettings.subtitlePtsOffsetMs = 0;
     }
@@ -1282,7 +1282,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.10",
+        connection.kind === "ready" ? connection.health.version : "6.0.12",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");

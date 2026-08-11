@@ -1888,21 +1888,23 @@ p {
   white-space: nowrap;
 }
 
-.playlist-item-metadata select {
-  width: 68px;
-  height: 22px;
+.playlist-schedule-type {
+  width: 52px;
+  height: 18px;
+  flex: 0 0 52px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0 4px;
+  padding: 0 3px;
   color: var(--text);
   background: #0a0b0d;
-  font-size: 9px;
+  color-scheme: dark;
+  font-size: 7px;
   font-weight: 800;
 }
 
-.schedule-type-movie .playlist-item-metadata select { color: #c4b5fd; border-color: rgba(139, 92, 246, 0.45); }
-.schedule-type-chop .playlist-item-metadata select { color: #fda4af; border-color: rgba(244, 63, 94, 0.45); }
-.schedule-type-clip .playlist-item-metadata select { color: #7dd3fc; border-color: rgba(14, 165, 233, 0.45); }
+.schedule-type-movie .playlist-schedule-type { color: #c4b5fd; border-color: rgba(139, 92, 246, 0.45); }
+.schedule-type-chop .playlist-schedule-type { color: #fda4af; border-color: rgba(244, 63, 94, 0.45); }
+.schedule-type-clip .playlist-schedule-type { color: #7dd3fc; border-color: rgba(14, 165, 233, 0.45); }
 
 .schedule-start-chip,
 .playlist-start-button,
@@ -2134,6 +2136,34 @@ p {
   font-size: 9px;
 }
 
+.playlist-clip-info > .playlist-clip-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.playlist-clip-meta > span:first-child,
+.playlist-clip-remaining {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.playlist-clip-remaining {
+  color: #86efac;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.playlist-clip-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .playlist-clip-info i {
   display: inline-block;
   width: 3px;
@@ -2235,26 +2265,58 @@ p {
   gap: 3px;
 }
 
-.fx-layer-chips i {
-  max-width: 126px;
+.fx-layer-chip {
+  max-width: 154px;
+  height: 22px;
+  display: inline-flex;
+  align-items: stretch;
   overflow: hidden;
   border: 1px solid rgba(56, 189, 248, 0.34);
   border-radius: 3px;
-  padding: 3px 5px;
   color: #7dd3fc;
   background: rgba(14, 165, 233, 0.08);
+}
+
+.fx-layer-chip > i {
+  min-width: 0;
+  max-width: 126px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 5px;
+  color: inherit;
   font-size: 7px;
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.fx-layer-chips i.title-matched {
+.fx-layer-chip > button {
+  width: 18px;
+  min-width: 18px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid currentColor;
+  padding: 0;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.16);
+  opacity: 0.72;
+}
+
+.fx-layer-chip > button:hover,
+.fx-layer-chip > button:focus-visible {
+  color: var(--danger);
+  background: var(--danger-soft);
+  opacity: 1;
+}
+
+.fx-layer-chip.title-matched {
   border-color: rgba(74, 222, 128, 0.42);
   color: #86efac;
 }
 
-.fx-layer-chips i.title-missing {
+.fx-layer-chip.title-missing {
   border-color: rgba(251, 191, 36, 0.5);
   color: var(--warning);
 }

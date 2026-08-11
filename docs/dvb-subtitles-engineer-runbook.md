@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.10**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.12**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -73,11 +73,14 @@ $LASTEXITCODE
 7. Проверьте font, размер, нижний отступ, palette и reserved bitrate. DVB renderer
    использует только документированные свойства `textrender`; отдельной настройки
    outline в этом режиме нет.
-8. Оставьте `PTS offset = 0 ms`. FluxIO формирует основную программу с
-   `muxdelay=0`, поэтому дополнительный сдвиг не нужен. Меняйте его только после
-   измеренного постоянного рассогласования на конкретном декодере.
+8. Оставьте `PTS offset = 0 ms`. Начиная с v6.0.12 FluxIO задаёт FFmpeg и
+   GStreamer общую MPEG-TS шкалу с началом около `01:00:00.000`, поэтому
+   ручной сдвиг для устранения прежней разницы примерно в один час не нужен.
+   Меняйте offset только после измеренного небольшого постоянного
+   рассогласования на конкретном декодере.
 9. Нажмите Start. В Encoding Monitor карточка `DVB Subtitles` должна перейти в
-   `running`, показать число cue, `Observed subtitle PES` и последний PTS.
+   `running`, показать число cue, `Observed subtitle PES`, `Video PTS origin`
+   и `Subtitle clock = Aligned`.
 
 Page IDs первой реализации фиксированы: `composition_page_id=1`,
 `ancillary_page_id=1`. Для HD используется subtitling type `0x14`, для
@@ -90,8 +93,11 @@ hearing-impaired HD — `0x24`.
 - в PMT subtitle component находится `subtitling_descriptor` с language/type/page IDs;
 - SCTE-35 остаётся отдельным PID, если planner включён;
 - TSDuck заменяет stuffing пакетами subtitle stream и восстанавливает заданную постоянную transport rate.
-- TSDuck после merge проверяет subtitle PID через `pcrextract`; каждый найденный
-  PES с PTS увеличивает `Observed subtitle PES` в Encoding Monitor.
+- TSDuck после merge проверяет video и subtitle PID через `pcrextract`; каждый
+  найденный subtitle PES с PTS увеличивает `Observed subtitle PES` в Encoding
+  Monitor;
+- первый subtitle PTS сравнивается с `Video PTS origin + start первого SRT cue
+  + PTS offset`; допустимое отклонение — `±250 ms`.
 
 Субтитры каждого ролика обрезаются его фактическим trim range и смещаются на
 суммарную длительность предыдущих роликов. Отсутствующий `.srt` пропускается;
@@ -113,6 +119,8 @@ ffprobe -hide_banner -show_programs -show_streams "udp://239.10.10.10:5000?local
 - язык совпадает с `rus/eng/...`;
 - PMT version обновлена и descriptor виден;
 - continuity counter subtitle PID не содержит ошибок;
+- `Subtitle clock` показывает `Aligned`, а модуль отклонения не превышает
+  `250 ms`;
 - текст появляется и исчезает в cue time, а decoder позволяет выключить его;
 - итоговая transport bitrate и PCR interval не изменились после включения subtitles.
 
@@ -136,7 +144,7 @@ ffprobe -hide_banner -show_programs -show_streams "udp://239.10.10.10:5000?local
 - язык выбирается в прямом multicast, но `Observed subtitle PES = 0` — PMT есть,
   но GStreamer не передал bitmap PES в финальный TS; смотреть Log Output;
 - `Observed subtitle PES > 0`, но прямой multicast не рисует текст — проверить
-  PTS offset, page IDs `1/1`, subtitling type и возможности декодера;
+  `Subtitle clock`, page IDs `1/1`, subtitling type и возможности декодера;
 - прямой multicast работает в VLC, но не на STB — проверить поддержку DVB bitmap
   subtitles и HD type `0x14` на целевом устройстве.
 
@@ -168,9 +176,16 @@ media-service.
 Язык не появился в телевизоре — проверить трёхбуквенный код и
 `subtitling_descriptor` в PMT; одного `stream_type 0x06` недостаточно.
 
-Текст идёт раньше/позже — начать с `PTS offset = 0 ms` и изменять его небольшими
-шагами после измерения на конечном decoder. Значение компенсирует только
-постоянный трактовый сдвиг, а не индивидуальную ошибку тайминга внутри SRT.
+`Subtitle clock = Mismatch` — сравнить показанные `Video PTS origin`, первый
+subtitle PTS и `clock error`. Разница примерно `+01:00:00` означает старую
+сборку media-service без общей временной базы: обновить и пересобрать FluxIO.
+Небольшое постоянное отклонение можно компенсировать `PTS offset`; значение не
+исправляет индивидуальные ошибки тайминга внутри SRT.
+
+Текст идёт раньше/позже при `Subtitle clock = Aligned` — начать с
+`PTS offset = 0 ms` и изменять его небольшими шагами только после измерения на
+конечном decoder. Входной PTS около `01:00:00` является штатной общей шкалой
+FluxIO v6.0.12, а не ошибкой длительностью в час.
 
 Язык выбирается, но текста нет — сравнить `Planned cues` и
 `Observed subtitle PES`. Нулевое второе значение означает, что PMT сигнализация

@@ -1061,6 +1061,19 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
                 ? "—"
                 : formatMonitorTime(status.subtitles.lastPtsMs / 1_000)}
             />
+            <Stat
+              label="Video PTS origin"
+              value={status.subtitles.videoPtsOriginMs == null
+                ? "Waiting…"
+                : formatMonitorTime(status.subtitles.videoPtsOriginMs / 1_000)}
+            />
+            <Stat
+              label="Subtitle clock"
+              value={formatSubtitleClockStatus(
+                status.subtitles.clockSynchronized,
+                status.subtitles.clockErrorMs,
+              )}
+            />
             {status.subtitles.error ? (
               <span className="scte35-monitor-error">{status.subtitles.error}</span>
             ) : null}
@@ -1443,4 +1456,13 @@ function formatMonitorTime(seconds: number): string {
   return [hours, minutes, remaining]
     .map((value) => String(value).padStart(2, "0"))
     .join(":");
+}
+
+function formatSubtitleClockStatus(
+  synchronized: boolean | null,
+  clockErrorMs: number | null,
+): string {
+  if (synchronized == null || clockErrorMs == null) return "Waiting…";
+  const sign = clockErrorMs > 0 ? "+" : "";
+  return `${synchronized ? "Aligned" : "Mismatch"} · ${sign}${clockErrorMs} ms`;
 }
