@@ -31,6 +31,7 @@ import {
   type WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
 import { mediaApiUrl } from "./runtime";
+import { mediaRequestTimeoutMs } from "./media-request-timeout";
 
 export async function getFfmpegCapabilities(): Promise<FfmpegCapabilities> {
   return ffmpegCapabilitiesSchema.parse(await request("/api/capabilities"));
@@ -266,17 +267,9 @@ export async function saveBroadcastConfiguration(
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
-  const longRunning = [
-    "/api/effects/analyze",
-    "/api/effects/scan",
-    "/api/effects/lottie/render",
-    "/api/media/probe",
-    "/api/media/scan",
-    "/api/schedule/parse",
-  ].some((prefix) => path.startsWith(prefix));
   const response = await fetch(mediaApiUrl(path), {
     ...init,
-    signal: init?.signal ?? AbortSignal.timeout(longRunning ? 10 * 60_000 : 10_000),
+    signal: init?.signal ?? AbortSignal.timeout(mediaRequestTimeoutMs(path)),
   });
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {

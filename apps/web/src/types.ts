@@ -36,6 +36,7 @@ export interface MediaAsset {
   filePath: string;
   colorSpace: string;
   audio: string;
+  hasAudio?: boolean;
   sha256: string;
   scte35Markers?: Scte35Marker[];
   scheduleType?: ScheduleItemType;

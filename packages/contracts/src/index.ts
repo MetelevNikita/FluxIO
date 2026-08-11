@@ -164,7 +164,7 @@ export const mediaProbeSchema = z.object({
 });
 
 export const probeMediaRequestSchema = z.object({
-  paths: z.array(z.string().min(1)).min(1).max(500),
+  paths: z.array(z.string().min(1)).min(1).max(1_000),
 });
 
 export const scanMediaRequestSchema = z.object({
@@ -320,6 +320,8 @@ export const playoutItemSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   filePath: z.string().min(1),
+  sourceDurationSeconds: z.number().positive().optional(),
+  hasAudio: z.boolean().optional(),
   trimInSeconds: z.number().nonnegative().default(0),
   trimOutSeconds: z.number().positive().nullable().default(null),
   scte35Markers: z.array(scte35MarkerSchema).max(1_000).default([]),
@@ -619,8 +621,8 @@ export const defaultSubtitleOutput = {
 };
 
 export const startPlayoutRequestSchema = z.object({
-  playlist: z.array(playoutItemSchema).min(1).max(500),
-  nextPlaylist: z.array(playoutItemSchema).max(500).default([]),
+  playlist: z.array(playoutItemSchema).min(1).max(1_000),
+  nextPlaylist: z.array(playoutItemSchema).max(1_000).default([]),
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
   logo: logoOverlaySchema.nullable().default(null),
@@ -664,7 +666,7 @@ export const startPlayoutRequestSchema = z.object({
 });
 
 export const updateNextPlaylistRequestSchema = z.object({
-  nextPlaylist: z.array(playoutItemSchema).max(500),
+  nextPlaylist: z.array(playoutItemSchema).max(1_000),
 });
 
 export const playoutStateSchema = z.enum([
@@ -784,6 +786,7 @@ export const workspaceSessionAssetSchema = z.object({
   filePath: z.string().min(1),
   colorSpace: z.string(),
   audio: z.string(),
+  hasAudio: z.boolean().optional(),
   sha256: z.string(),
   scte35Markers: z.array(scte35MarkerSchema).max(1_000).optional(),
   scheduleType: scheduleItemTypeSchema.optional(),
@@ -829,9 +832,9 @@ const workspaceSettingValueSchema = z.union([
 
 export const workspaceSessionSnapshotSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]),
-  assets: z.array(workspaceSessionAssetSchema).max(1_000),
-  currentPlaylist: z.array(workspaceSessionAssetSchema).max(500),
-  futurePlaylist: z.array(workspaceSessionAssetSchema).max(500),
+  assets: z.array(workspaceSessionAssetSchema).max(2_500),
+  currentPlaylist: z.array(workspaceSessionAssetSchema).max(1_000),
+  futurePlaylist: z.array(workspaceSessionAssetSchema).max(1_000),
   activeSchedule: z.enum(["current", "future"]),
   selectedAssetId: z.string().min(1).nullable(),
   currentScheduleMetadata: workspaceScheduleMetadataSchema.nullable(),

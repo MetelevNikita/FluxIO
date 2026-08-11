@@ -46,6 +46,7 @@ const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
 const windowsCommandLineSafetyLimit = 30_000;
+const playlistPreparationConcurrency = 8;
 
 export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
@@ -55,6 +56,13 @@ interface PreparedRequest {
   items: PreparedPlayoutItem[];
   request: StartPlayoutRequest;
 }
+
+type PreparationStage = "graphics" | "media";
+type PreparationProgress = (
+  stage: PreparationStage,
+  completed: number,
+  total: number,
+) => void;
 
 export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
   return request.endpoint.protocol === "udp" || request.endpoint.protocol === "srt";
@@ -193,6 +201,17 @@ export class PlayoutSupervisor {
         language: request.subtitleOutput.mode === "dvb" ? request.subtitleOutput.language : null,
       },
     };
+    const declaredDurationSeconds = request.playlist.reduce(
+      (total, item) => total + (item.declaredDurationSeconds ?? item.sourceDurationSeconds ?? 0),
+      0,
+    );
+    this.#appendEvent(
+      `Preparing ${request.playlist.length}-clip schedule` +
+        (declaredDurationSeconds > 0
+          ? ` (${(declaredDurationSeconds / 3_600).toFixed(1)} hours)`
+          : "") +
+        ` with ${playlistPreparationConcurrency} parallel media checks`,
+    );
 
     try {
       const next = prepared ?? await this.#prepareRequest(request);
@@ -259,7 +278,15 @@ export class PlayoutSupervisor {
     if (request.subtitleOutput.mode === "dvb") {
       await this.gstreamerCapabilities.assertDvbSubtitlesAvailable();
     }
-    const resolvedRequest = await resolveGraphics(request);
+    const reportProgress: PreparationProgress = (stage, completed, total) => {
+      if (completed === total || completed === 1 || completed % 50 === 0) {
+        this.#appendEvent(
+          `${stage === "graphics" ? "Graphics" : "Media"} preparation: ` +
+            `${completed}/${total} clip(s) checked`,
+        );
+      }
+    };
+    const resolvedRequest = await resolveGraphics(request, reportProgress);
     const ignoredSubtitles = request.playlist.filter((item, index) =>
       item.subtitles?.enabled && !resolvedRequest.playlist[index]?.subtitles?.enabled
     );
@@ -269,7 +296,11 @@ export class PlayoutSupervisor {
       );
     }
     return {
-      items: await prepareItems(resolvedRequest, this.capabilities.ffprobePath),
+      items: await prepareItems(
+        resolvedRequest,
+        this.capabilities.ffprobePath,
+        reportProgress,
+      ),
       request: resolvedRequest,
     };
   }
@@ -1095,11 +1126,15 @@ export class PlayoutSupervisor {
   }
 }
 
-async function resolveGraphics(request: StartPlayoutRequest): Promise<StartPlayoutRequest> {
+async function resolveGraphics(
+  request: StartPlayoutRequest,
+  onProgress?: PreparationProgress,
+): Promise<StartPlayoutRequest> {
   const logo = request.logo ? await resolveLogoOverlay(request.logo) : null;
-  const playlist: StartPlayoutRequest["playlist"] = [];
-  for (const item of request.playlist) {
-    playlist.push({
+  const playlist = await mapWithConcurrency(
+    request.playlist,
+    playlistPreparationConcurrency,
+    async (item) => ({
       ...item,
       ageTitle: item.ageTitle?.enabled && item.ageTitle.filePath
         ? {
@@ -1114,8 +1149,9 @@ async function resolveGraphics(request: StartPlayoutRequest): Promise<StartPlayo
       subtitles: item.subtitles?.enabled && item.subtitles.filePath
         ? await resolveSubtitleOverlay(item.subtitles)
         : item.subtitles,
-    });
-  }
+    }),
+    (completed, total) => onProgress?.("graphics", completed, total),
+  );
   return { ...request, logo, playlist };
 }
 
@@ -1195,27 +1231,90 @@ async function resolveAgeOverlay<T extends { filePath: string }>(overlay: T): Pr
 async function prepareItems(
   request: StartPlayoutRequest,
   ffprobePath: string,
+  onProgress?: PreparationProgress,
 ): Promise<PreparedPlayoutItem[]> {
-  const prepared: PreparedPlayoutItem[] = [];
-  for (const item of request.playlist) {
-    const probe = await probeMedia(item.filePath, ffprobePath);
-    const end = item.trimOutSeconds ?? probe.durationSeconds;
-    const duration = Math.min(end, probe.durationSeconds) - item.trimInSeconds;
-    if (duration <= 0) throw new PlayoutPreflightError(`Invalid trim range for ${item.name}`);
-    prepared.push({
-      id: item.id,
-      name: item.name,
-      filePath: probe.filePath,
-      trimInSeconds: item.trimInSeconds,
-      durationSeconds: duration,
-      hasAudio: probe.hasAudio,
-      ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
-      itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
-      effects: item.effects,
-      subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
-    });
+  const probeCache = new Map<string, ReturnType<typeof probeMedia>>();
+  return mapWithConcurrency(
+    request.playlist,
+    playlistPreparationConcurrency,
+    async (item) => {
+      let filePath: string;
+      let sourceDurationSeconds: number;
+      let hasAudio: boolean;
+      if (item.sourceDurationSeconds != null && item.hasAudio != null) {
+        if (!path.isAbsolute(item.filePath)) {
+          throw new PlayoutPreflightError(`Media path must be absolute: ${item.filePath}`);
+        }
+        filePath = await realpath(item.filePath);
+        const fileStat = await stat(filePath);
+        if (!fileStat.isFile()) {
+          throw new PlayoutPreflightError(`Media path is not a file: ${filePath}`);
+        }
+        sourceDurationSeconds = item.sourceDurationSeconds;
+        hasAudio = item.hasAudio;
+      } else {
+        let pendingProbe = probeCache.get(item.filePath);
+        if (!pendingProbe) {
+          pendingProbe = probeMedia(item.filePath, ffprobePath);
+          probeCache.set(item.filePath, pendingProbe);
+        }
+        const probe = await pendingProbe;
+        filePath = probe.filePath;
+        sourceDurationSeconds = probe.durationSeconds;
+        hasAudio = probe.hasAudio;
+      }
+      const end = item.trimOutSeconds ?? sourceDurationSeconds;
+      const duration = Math.min(end, sourceDurationSeconds) - item.trimInSeconds;
+      if (duration <= 0) {
+        throw new PlayoutPreflightError(`Invalid trim range for ${item.name}`);
+      }
+      return {
+        id: item.id,
+        name: item.name,
+        filePath,
+        trimInSeconds: item.trimInSeconds,
+        durationSeconds: duration,
+        hasAudio,
+        ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
+        itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
+        effects: item.effects,
+        subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
+      };
+    },
+    (completed, total) => onProgress?.("media", completed, total),
+  );
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+  onProgress?: (completed: number, total: number) => void,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error("Concurrency must be a positive integer");
   }
-  return prepared;
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let completed = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const item = items[index];
+      if (item === undefined) continue;
+      results[index] = await mapper(item, index);
+      completed += 1;
+      onProgress?.(completed, items.length);
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, items.length) },
+      () => worker(),
+    ),
+  );
+  return results;
 }
 
 function validateCapabilities(

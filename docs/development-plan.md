@@ -507,6 +507,20 @@
   более чем 38 000 до менее чем 30 000 command characters;
 - Log Output явно показывает `media paths embedded`.
 
+### 4.16. Запуск недельного Playlist v6.0.15
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-16-weekly-playlist-start-v6.0.15.md`](progress/04-16-weekly-playlist-start-v6.0.15.md).
+
+- start/take API больше не наследуют общий 10-секундный timeout Electron;
+- уже проанализированные duration/audio metadata передаются в playout request и
+  исключают повторный `ffprobe` при старте;
+- legacy sessions без metadata проверяются не более чем восемью параллельными
+  workers с сохранением порядка роликов;
+- Log Output сообщает начало подготовки и progress каждые 50 элементов;
+- Current, Future, workspace и media scan поддерживают до 1000 элементов;
+- regression scenario моделирует ровно 168 часов: 504 ролика по 20 минут.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

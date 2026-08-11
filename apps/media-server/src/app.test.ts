@@ -24,6 +24,7 @@ import {
   formatFrameProgressLog,
   estimateCommandLineCharacters,
   isTsdDuckContinuityWarning,
+  mapWithConcurrency,
   PlayoutSupervisor,
   shouldReportEncodingActivity,
   shouldTransitionToFutureSchedule,
@@ -78,7 +79,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.14");
+    assert.equal(health.version, "6.0.15");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -733,15 +734,15 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
   assert.equal(command.totalDurationSeconds, 5);
 });
 
-test("large playlists move the FFmpeg filter graph out of the process command line", () => {
+test("a 168-hour playlist keeps FFmpeg inputs out of the Windows command line", () => {
   const request = baseRequest();
-  const items = Array.from({ length: 216 }, (_, index) => ({
+  const items = Array.from({ length: 504 }, (_, index) => ({
     id: `clip-${index}`,
     name: `Weekly programme ${index}.mp4`,
     filePath: `R:\\FluxIO\\${"Very long weekly schedule directory\\".repeat(5)}` +
       `Weekly programme ${String(index).padStart(3, "0")}.mp4`,
     trimInSeconds: 0,
-    durationSeconds: 60,
+    durationSeconds: 20 * 60,
     hasAudio: true,
   }));
   const scriptPath = "C:\\Users\\iptv\\AppData\\Local\\Temp\\gruber-playout-preview\\filter.txt";
@@ -770,6 +771,45 @@ test("large playlists move the FFmpeg filter graph out of the process command li
   assert.equal(embedded.inputSourcesEmbedded, true);
   assert.ok(embedded.filterGraph.startsWith("movie=filename='R\\:\\\\FluxIO"));
   assert.match(embedded.filterGraph, /:streams=v\+a\[inputv0\]\[inputa0\]/);
+  assert.equal(embedded.totalDurationSeconds, 168 * 60 * 60);
+  assert.equal(startPlayoutRequestSchema.safeParse({
+    ...request,
+    playlist: items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      filePath: item.filePath,
+      sourceDurationSeconds: item.durationSeconds,
+      hasAudio: item.hasAudio,
+      trimInSeconds: 0,
+      trimOutSeconds: item.durationSeconds,
+      scte35Markers: [],
+    })),
+  }).success, true);
+});
+
+test("weekly playlist preparation is bounded and preserves all 504 clip positions", async () => {
+  const items = Array.from({ length: 504 }, (_, index) => index);
+  let active = 0;
+  let maximumActive = 0;
+  const progress: number[] = [];
+  const prepared = await mapWithConcurrency(
+    items,
+    8,
+    async (item) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return `clip-${item}`;
+    },
+    (completed) => progress.push(completed),
+  );
+
+  assert.equal(maximumActive, 8);
+  assert.equal(prepared.length, 504);
+  assert.equal(prepared[0], "clip-0");
+  assert.equal(prepared[503], "clip-503");
+  assert.equal(progress.at(-1), 504);
 });
 
 test("FFmpeg optionally normalizes final programme and preview audio to -23 LUFS", () => {

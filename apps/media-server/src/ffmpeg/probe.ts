@@ -93,7 +93,7 @@ export async function probeMedia(
 
 export async function scanMediaDirectory(
   directoryPath: string,
-  maxFiles = 500,
+  maxFiles = 1_000,
 ): Promise<string[]> {
   if (!path.isAbsolute(directoryPath)) {
     throw new Error(`Directory path must be absolute: ${directoryPath}`);

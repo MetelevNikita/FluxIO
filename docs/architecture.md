@@ -272,6 +272,8 @@ Media-service отправляет `SIGTERM` и применяет принуд�
   media/AGE/logo/FX input paths и не расходуют Windows command line, однако
   для 24/7 rolling preparation и бесшовного обновления очень больших расписаний
   по-прежнему нужен отдельный scheduler/rolling pipeline;
+- подготовка недельного Playlist с v6.0.15 использует сохранённые результаты
+  анализа media и не более восьми параллельных filesystem/ffprobe checks;
 - нет резервного media-service и автоматического failover;
 - нет независимого return-feed monitor головной станции;
 - SCTE-35 injector реализован для SPTS по UDP/SRT; MPTS и внешнее резервирование injector остаются за границей текущего этапа;

@@ -252,6 +252,10 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
   `FFmpeg graph prepared ... media paths embedded`;
 - `Save session list` получает HTTP 413 либо перестаёт сохранять большой проект
   — обновить media-service до v6.0.13, где workspace body limit равен 32 MiB;
+- Electron показывает `signal timed out` после `Start`, но эфир позднее всё же
+  начинается — обновить FluxIO до v6.0.15 и пересобрать web/desktop/media-service:
+  playout preparation должна иметь timeout 30 минут, а Log Output — показывать
+  `Preparing ...-clip schedule` и progress media checks;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
 - electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.10 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;

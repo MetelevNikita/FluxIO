@@ -1282,7 +1282,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.14",
+        connection.kind === "ready" ? connection.health.version : "6.0.15",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1692,6 +1692,7 @@ function probeToAsset(probe: MediaProbe): MediaAsset {
     preview: mediaThumbnailUrl(probe.filePath),
     filePath: probe.filePath,
     colorSpace: probe.colorSpace,
+    hasAudio: probe.hasAudio,
     audio: probe.hasAudio
       ? `${probe.audioCodec ?? "audio"} ${probe.audioSampleRate ?? 0} Hz ${probe.audioChannels ?? 0} ch`
       : "No audio stream",
@@ -1926,6 +1927,8 @@ function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlis
     id: asset.id,
     name: asset.name,
     filePath: asset.filePath,
+    sourceDurationSeconds: asset.durationSeconds > 0 ? asset.durationSeconds : undefined,
+    hasAudio: asset.hasAudio ?? !/^no audio stream$/i.test(asset.audio.trim()),
     trimInSeconds: 0,
     trimOutSeconds: asset.declaredDurationSeconds ?? null,
     scte35Markers: asset.scte35Markers ?? [],

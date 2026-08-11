@@ -221,6 +221,8 @@ export class DatabaseService {
           id: item.id,
           name: item.mediaAsset.name,
           filePath: item.mediaAsset.filePath,
+          sourceDurationSeconds: item.mediaAsset.durationSeconds,
+          hasAudio: item.mediaAsset.hasAudio,
           trimInSeconds: item.trimInSeconds,
           trimOutSeconds: item.trimOutSeconds,
           scte35Markers: item.scte35Markers,

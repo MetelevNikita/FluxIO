@@ -17,6 +17,8 @@
     "src/graphic-title-matching.test.ts",
     "src/lottie-properties.ts",
     "src/lottie-properties.test.ts",
+    "src/media-request-timeout.ts",
+    "src/media-request-timeout.test.ts",
     "src/schedule-timeline.ts",
     "src/schedule-timeline.test.ts",
     "src/types.ts"
