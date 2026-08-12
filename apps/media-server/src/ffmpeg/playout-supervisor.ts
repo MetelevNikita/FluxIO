@@ -40,8 +40,13 @@ import {
   dvbSubtitleClockToleranceMs,
   evaluateDvbSubtitleClock,
 } from "../transport-clock.js";
+import {
+  buildTransportPreviewCommand,
+  transportPreviewPlaylistName,
+} from "./transport-preview.js";
 
 const previewPath = "/api/playout/preview/index.m3u8";
+const transportPreviewPath = `/api/playout/preview/${transportPreviewPlaylistName}`;
 const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
@@ -76,16 +81,21 @@ export class PlayoutSupervisor {
   #child: ChildProcessWithoutNullStreams | null = null;
   #tsduckChild: ChildProcessWithoutNullStreams | null = null;
   #subtitleChild: ChildProcessWithoutNullStreams | null = null;
+  #transportPreviewChild: ChildProcessWithoutNullStreams | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedSubtitleStops = new WeakSet<ChildProcessWithoutNullStreams>();
+  #expectedTransportPreviewStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #killTimer: NodeJS.Timeout | null = null;
   #tsduckKillTimer: NodeJS.Timeout | null = null;
   #subtitleKillTimer: NodeJS.Timeout | null = null;
+  #transportPreviewKillTimer: NodeJS.Timeout | null = null;
+  #transportPreviewRestartTimer: NodeJS.Timeout | null = null;
   #request: StartPlayoutRequest | null = null;
   #items: PreparedPlayoutItem[] = [];
   #commandArgs: string[] = [];
   #tsduckArgs: string[] = [];
   #subtitleArgs: string[] = [];
+  #transportPreviewArgs: string[] = [];
   #subtitleFirstCueStartSeconds: number | null = null;
   #firstSubtitlePtsMs: number | null = null;
   #subtitleClockReport: "aligned" | "mismatch" | null = null;
@@ -96,6 +106,8 @@ export class PlayoutSupervisor {
   #logBuffer = "";
   #tsduckLogBuffer = "";
   #subtitleLogBuffer = "";
+  #transportPreviewLogBuffer = "";
+  #transportPreviewRestartAttempts = 0;
   #lastLoggedFrame = -1;
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
@@ -137,7 +149,9 @@ export class PlayoutSupervisor {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
     }
-    const active = Boolean(this.#child || this.#tsduckChild || this.#subtitleChild) ||
+    const active = Boolean(
+      this.#child || this.#tsduckChild || this.#subtitleChild || this.#transportPreviewChild,
+    ) ||
       ["starting", "running", "stopping"].includes(this.#status.state);
     if (!active) return this.start(request);
 
@@ -147,7 +161,9 @@ export class PlayoutSupervisor {
       const prepared = await this.#prepareRequest(request);
       this.#appendEvent(`Hot take requested from clip "${request.playlist[0]?.name ?? "unknown"}"`);
       await this.stop();
-      await waitForPlayoutStop(() => Boolean(this.#child || this.#tsduckChild || this.#subtitleChild) ||
+      await waitForPlayoutStop(() => Boolean(
+        this.#child || this.#tsduckChild || this.#subtitleChild || this.#transportPreviewChild,
+      ) ||
         ["starting", "running", "stopping"].includes(this.#status.state));
       const status = await this.#startPrepared(request, prepared);
       this.#appendEvent(`Hot take is on air from clip "${request.playlist[0]?.name ?? "unknown"}"`);
@@ -165,6 +181,7 @@ export class PlayoutSupervisor {
       this.#child ||
       this.#tsduckChild ||
       this.#subtitleChild ||
+      this.#transportPreviewChild ||
       ["starting", "running", "stopping"].includes(this.#status.state)
     ) {
       throw new PlayoutConflictError("A playout session is already active");
@@ -239,6 +256,7 @@ export class PlayoutSupervisor {
       }
       if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
+        await this.#spawnTransportPreview();
       }
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
@@ -249,6 +267,7 @@ export class PlayoutSupervisor {
     } catch (error) {
       this.#terminateTsdDuck();
       this.#terminateDvbSubtitles();
+      this.#terminateTransportPreview();
       this.#terminateFfmpeg();
       this.#status.state = "failed";
       this.#status.stoppedAt = new Date().toISOString();
@@ -307,7 +326,7 @@ export class PlayoutSupervisor {
 
   async stop(): Promise<PlayoutStatus> {
     const child = this.#child;
-    if (!child && !this.#tsduckChild && !this.#subtitleChild) {
+    if (!child && !this.#tsduckChild && !this.#subtitleChild && !this.#transportPreviewChild) {
       return this.getStatus();
     }
     if (this.#status.state !== "stopping") {
@@ -315,6 +334,7 @@ export class PlayoutSupervisor {
       this.#appendEvent("Graceful stop requested");
       this.#terminateTsdDuck();
       this.#terminateDvbSubtitles();
+      this.#terminateTransportPreview();
       child?.kill("SIGTERM");
       if (child) {
         this.#killTimer = setTimeout(() => {
@@ -373,6 +393,8 @@ export class PlayoutSupervisor {
     this.#status.subtitles.clockErrorMs = null;
     this.#status.subtitles.clockSynchronized = null;
     this.#subtitleArgs = [];
+    this.#transportPreviewArgs = [];
+    this.#transportPreviewRestartAttempts = 0;
     this.#subtitleFirstCueStartSeconds = null;
     this.#firstSubtitlePtsMs = null;
     this.#subtitleClockReport = null;
@@ -394,6 +416,7 @@ export class PlayoutSupervisor {
 
     if (request.scte35.enabled) validateScte35Cues(request, this.#cues);
     const inputPort = await reserveUdpPort();
+    const transportPreviewPort = await reserveDistinctUdpPort(inputPort);
     const cueFilePath = request.scte35.enabled && this.#cues.length > 0
       ? path.join(this.previewDirectory, `scte35-loop-${this.#status.loopCount}.xml`)
       : null;
@@ -457,11 +480,16 @@ export class PlayoutSupervisor {
       cueFilePath,
       inputPort,
       monitorPrefix: tsduckMonitorPrefix,
+      previewPort: transportPreviewPort,
       request,
       subtitles: subtitleTransport,
     });
     this.#commandArgs = command.args;
     this.#tsduckArgs = tsduck.args;
+    this.#transportPreviewArgs = buildTransportPreviewCommand({
+      inputPort: transportPreviewPort,
+      previewDirectory: this.previewDirectory,
+    });
     this.#applyCommandStatus(command.totalDurationSeconds, tsduck.endpointLabel);
   }
 
@@ -524,7 +552,10 @@ export class PlayoutSupervisor {
       phase: this.#status.schedulePhase,
       session: this.#status.sessionId ?? "starting",
     });
-    this.#status.previewPath = `${previewPath}?${previewVersion}`;
+    const selectedPreviewPath = this.#transportPreviewArgs.length > 0
+      ? transportPreviewPath
+      : previewPath;
+    this.#status.previewPath = `${selectedPreviewPath}?${previewVersion}`;
   }
 
   #readProgress(chunk: Buffer): void {
@@ -785,6 +816,7 @@ export class PlayoutSupervisor {
     this.#child = null;
     this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
+    this.#terminateTransportPreview();
 
     if (!wasStopping && !failedByInjector && code === 0 && this.#request?.repeatPlaylist) {
       this.#status.loopCount += 1;
@@ -840,6 +872,7 @@ export class PlayoutSupervisor {
       await this.#prepareLoopCommands();
       if (this.#request && usesTsdDuckTransport(this.#request)) {
         await this.#spawnTsdDuck();
+        await this.#spawnTransportPreview();
       }
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
@@ -879,6 +912,7 @@ export class PlayoutSupervisor {
       await this.#prepareLoopCommands();
       if (usesTsdDuckTransport(prepared.request)) {
         await this.#spawnTsdDuck();
+        await this.#spawnTransportPreview();
       }
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
@@ -899,6 +933,7 @@ export class PlayoutSupervisor {
     this.#appendEvent(`FFmpeg process error: ${error.message}`);
     this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
+    this.#terminateTransportPreview();
   }
 
   #spawnPreparedFfmpeg(): ChildProcessWithoutNullStreams {
@@ -967,6 +1002,90 @@ export class PlayoutSupervisor {
           `audio PID ${endpoint.mpegTs.audioPid}`,
       );
     }
+  }
+
+  async #spawnTransportPreview(): Promise<void> {
+    if (this.#transportPreviewArgs.length === 0 || this.#transportPreviewChild) return;
+    if (this.#transportPreviewRestartTimer) {
+      clearTimeout(this.#transportPreviewRestartTimer);
+      this.#transportPreviewRestartTimer = null;
+    }
+    const child = spawn(this.capabilities.ffmpegPath, this.#transportPreviewArgs, {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.#transportPreviewChild = child;
+    this.#transportPreviewLogBuffer = "";
+    const readLogs = (chunk: Buffer) => this.#readTransportPreviewLogs(chunk);
+    child.stdout.on("data", readLogs);
+    child.stderr.on("data", readLogs);
+    child.once("close", (code, signal) => {
+      this.#handleTransportPreviewClose(child, code, signal);
+    });
+    child.once("error", (error) => this.#handleTransportPreviewError(child, error));
+    await waitForSpawn(child);
+    if (this.#transportPreviewChild !== child) {
+      throw new Error("Final transport preview exited during startup");
+    }
+    this.#appendEvent(
+      `Final transport preview started with PID ${child.pid ?? "unknown"}; ` +
+        "source is the post-TSDuck MPEG-TS mirror",
+    );
+  }
+
+  #readTransportPreviewLogs(chunk: Buffer): void {
+    this.#transportPreviewLogBuffer += chunk.toString("utf8");
+    const lines = this.#transportPreviewLogBuffer.split(/\r?\n/);
+    this.#transportPreviewLogBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const message = line.trim();
+      if (/\b(error|failed|invalid|not found|corrupt)\b/i.test(message)) {
+        this.#appendLog(`Transport preview: ${message}`);
+      }
+    }
+  }
+
+  #handleTransportPreviewClose(
+    child: ChildProcessWithoutNullStreams,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.#transportPreviewChild === child) this.#transportPreviewChild = null;
+    if (this.#transportPreviewKillTimer) {
+      clearTimeout(this.#transportPreviewKillTimer);
+      this.#transportPreviewKillTimer = null;
+    }
+    if (this.#expectedTransportPreviewStops.has(child)) return;
+    this.#scheduleTransportPreviewRestart(`exited with ${code ?? signal ?? "unknown"}`);
+  }
+
+  #handleTransportPreviewError(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.#expectedTransportPreviewStops.has(child)) return;
+    if (this.#transportPreviewChild === child) this.#transportPreviewChild = null;
+    this.#expectedTransportPreviewStops.add(child);
+    this.#scheduleTransportPreviewRestart(`process error: ${error.message}`);
+  }
+
+  #scheduleTransportPreviewRestart(reason: string): void {
+    const playoutActive = Boolean(this.#tsduckChild) &&
+      ["starting", "running"].includes(this.#status.state);
+    if (!playoutActive || this.#transportPreviewArgs.length === 0) return;
+    if (this.#transportPreviewRestartAttempts >= 3) {
+      this.#appendEvent(`Final transport preview unavailable after 3 retries (${reason})`);
+      return;
+    }
+    this.#transportPreviewRestartAttempts += 1;
+    const attempt = this.#transportPreviewRestartAttempts;
+    this.#appendEvent(`Final transport preview ${reason}; retry ${attempt}/3`);
+    this.#transportPreviewRestartTimer = setTimeout(() => {
+      this.#transportPreviewRestartTimer = null;
+      void this.#spawnTransportPreview().catch((error: unknown) => {
+        this.#scheduleTransportPreviewRestart(
+          error instanceof Error ? error.message : "restart failed",
+        );
+      });
+    }, attempt * 750);
+    this.#transportPreviewRestartTimer.unref();
   }
 
   async #spawnDvbSubtitles(): Promise<void> {
@@ -1066,6 +1185,7 @@ export class PlayoutSupervisor {
     this.#appendEvent(error);
     this.#child?.kill("SIGTERM");
     this.#terminateDvbSubtitles();
+    this.#terminateTransportPreview();
   }
 
   #handleTsdDuckError(child: ChildProcessWithoutNullStreams, error: Error): void {
@@ -1079,6 +1199,7 @@ export class PlayoutSupervisor {
     this.#appendEvent(`TSDuck process error: ${error.message}`);
     this.#child?.kill("SIGTERM");
     this.#terminateDvbSubtitles();
+    this.#terminateTransportPreview();
   }
 
   #terminateTsdDuck(): void {
@@ -1099,6 +1220,20 @@ export class PlayoutSupervisor {
     child.kill("SIGTERM");
     this.#subtitleKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
     this.#subtitleKillTimer.unref();
+  }
+
+  #terminateTransportPreview(): void {
+    if (this.#transportPreviewRestartTimer) {
+      clearTimeout(this.#transportPreviewRestartTimer);
+      this.#transportPreviewRestartTimer = null;
+    }
+    const child = this.#transportPreviewChild;
+    if (!child) return;
+    this.#transportPreviewChild = null;
+    this.#expectedTransportPreviewStops.add(child);
+    child.kill("SIGTERM");
+    this.#transportPreviewKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
+    this.#transportPreviewKillTimer.unref();
   }
 
   #terminateFfmpeg(): void {
@@ -1627,6 +1762,14 @@ async function reserveUdpPort(): Promise<number> {
   } finally {
     socket.close();
   }
+}
+
+async function reserveDistinctUdpPort(excludedPort: number): Promise<number> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const port = await reserveUdpPort();
+    if (port !== excludedPort) return port;
+  }
+  throw new Error("Failed to reserve a distinct UDP port for final transport preview");
 }
 
 function formatSeconds(value: number): string {

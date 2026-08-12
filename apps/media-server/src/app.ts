@@ -46,7 +46,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.15";
+const serviceVersion = "6.0.17";
 const workspaceCheckpointIntervalMs = 5_000;
 const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
 
@@ -449,7 +449,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
     "/api/playout/preview/:file",
     async (request, reply) => {
       const file = request.params.file;
-      if (!/^(?:index\.m3u8|segment-\d+\.ts)$/.test(file)) {
+      if (!/^(?:(?:transport-)?index\.m3u8|(?:transport-)?segment-\d+\.ts)$/.test(file)) {
         return reply.code(404).send({ error: "Preview file not found" });
       }
       try {

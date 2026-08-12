@@ -521,6 +521,28 @@
 - Current, Future, workspace и media scan поддерживают до 1000 элементов;
 - regression scenario моделирует ровно 168 часов: 504 ролика по 20 минут.
 
+### 4.17. Future import, адаптивный Broadcast и transport preview v6.0.16
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-17-future-import-layout-transport-preview-v6.0.16.md`](progress/04-17-future-import-layout-transport-preview-v6.0.16.md).
+
+- отдельные Current/Future Import queues и прямой переход на пустой Future;
+- независимая прокрутка encoder settings и нижней части Encoding Monitor;
+- растущие Playlist rows и двухколоночный FX layout;
+- локальный post-TSDuck MPEG-TS mirror для UDP/SRT preview;
+- реальная localhost transport-to-HLS проверка и адаптивный Browser QA.
+
+### 4.18. Повторные FX и тёмные selectors v6.0.17
+
+Статус: завершён 2026-08-11. Отчёт:
+[`progress/04-18-repeat-fx-dark-selects-v6.0.17.md`](progress/04-18-repeat-fx-dark-selects-v6.0.17.md).
+
+- один effect asset назначается одному ролику многократно;
+- каждое назначение имеет отдельный layer ID и Timeline IN/OUT;
+- `Add to clip`, `Add to entire project` и Playlist FX используют одну логику;
+- все selectors Effects принудительно используют читаемую dark color scheme;
+- добавлен regression test повторного назначения.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

@@ -35,6 +35,7 @@ import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
+import { assignEffectToAssets } from "./effect-assignment";
 import { mediaPath } from "./runtime";
 import {
   getFfmpegCapabilities,
@@ -450,7 +451,7 @@ export function App() {
     }
   }
 
-  const addFiles = useCallback((files: File[]) => {
+  const addFiles = useCallback((files: File[], slot: ScheduleSlot = "current") => {
     const accepted = files.filter(
       (file) =>
         file.type.startsWith("video/") ||
@@ -462,7 +463,7 @@ export function App() {
         .map((file) => window.gruberDesktop?.getMediaFilePath(file) ?? "")
         .filter(Boolean);
       if (paths.length > 0) {
-        void analyzePaths(paths);
+        void analyzePaths(paths, slot);
         return;
       }
     }
@@ -489,17 +490,18 @@ export function App() {
     }));
 
     setAssets((current) => [...current, ...imported]);
-    setPlaylist((current) => [...current, ...imported]);
+    if (slot === "current") setPlaylist((current) => [...current, ...imported]);
+    else setFuturePlaylist((current) => [...current, ...imported]);
   }, []);
 
-  async function addNativeFiles() {
+  async function addNativeFiles(slot: ScheduleSlot = "current") {
     const paths = await window.gruberDesktop?.selectMediaFiles();
     if (paths?.length) {
-      await analyzePaths(paths);
+      await analyzePaths(paths, slot);
     }
   }
 
-  async function addNativeDirectory() {
+  async function addNativeDirectory(slot: ScheduleSlot = "current") {
     const directoryPath = await window.gruberDesktop?.selectMediaDirectory();
     if (!directoryPath) {
       return;
@@ -507,7 +509,7 @@ export function App() {
     setMediaBusy(true);
     setOperationError(null);
     try {
-      addProbes(await scanMediaDirectory(directoryPath));
+      addProbes(await scanMediaDirectory(directoryPath), slot);
     } catch (error) {
       setOperationError(errorMessage(error));
     } finally {
@@ -737,6 +739,24 @@ export function App() {
     setSelectedAssetId("");
   }
 
+  function clearActiveImport() {
+    const retainedPlaylist = activeSchedule === "current" ? futurePlaylist : playlist;
+    const retainedPaths = new Set(retainedPlaylist.map((asset) => asset.filePath));
+    setAssets((current) => current.filter((asset) => retainedPaths.has(asset.filePath)));
+    if (activeSchedule === "current") {
+      setPlaylist([]);
+      setCurrentScheduleMetadata(null);
+      setScheduleStartMarker(null);
+    } else {
+      setFuturePlaylist([]);
+      setFutureScheduleMetadata(null);
+    }
+    setSelectedAssetId(retainedPlaylist[0]?.id ?? "");
+    setScheduleActionMessage(
+      `${activeSchedule === "current" ? "Current" : "Future"} import cleared.`,
+    );
+  }
+
   async function saveSessionList() {
     if (playlist.length === 0 && futurePlaylist.length === 0) {
       setOperationError("Add media to Current or Future before saving a session list.");
@@ -811,14 +831,7 @@ export function App() {
   }
 
   function addFilesToActiveSchedule(files: File[]) {
-    if (activeSchedule === "current" || !window.gruberDesktop) {
-      addFiles(files);
-      return;
-    }
-    const paths = files
-      .map((file) => window.gruberDesktop?.getMediaFilePath(file) ?? "")
-      .filter(Boolean);
-    if (paths.length > 0) void analyzePaths(paths, "future");
+    addFiles(files, activeSchedule);
   }
 
   async function addNativeFilesToActiveSchedule() {
@@ -960,9 +973,8 @@ export function App() {
     setFuturePlaylist(futureResult.items);
     const count = currentResult.added + futureResult.added;
     setEffectsMessage(
-      count > 0
-        ? `${effect.name} added to ${count} clip(s). Set its IN/OUT in Playlist → Timeline Trimming.`
-        : `${effect.name} is already assigned to every project clip.`,
+      `${effect.name}: a new FX instance was added to ${count} clip(s). ` +
+        "Set each instance IN/OUT in Playlist → Timeline Trimming.",
     );
   }
 
@@ -977,8 +989,9 @@ export function App() {
     const count = currentResult.added + futureResult.added;
     setEffectsMessage(
       count > 0
-        ? `${effect.name} added to the selected clip. Set its IN/OUT in Playlist → Timeline Trimming.`
-        : `${effect.name} is already assigned to the selected clip.`,
+        ? `${effect.name}: a new independent FX instance was added to the selected clip. ` +
+          "Set its IN/OUT in Playlist → Timeline Trimming."
+        : "The selected clip is no longer available.",
     );
   }
 
@@ -1094,6 +1107,12 @@ export function App() {
     setActiveSchedule(slot);
     const target = slot === "current" ? playlist : futurePlaylist;
     setSelectedAssetId(target[0]?.id ?? "");
+  }
+
+  function openPlaylistSchedule(slot: ScheduleSlot) {
+    setScheduleTab(slot);
+    const target = slot === "current" ? playlist : futurePlaylist;
+    if (target.length === 0) setView("import");
   }
 
   function setActivePlaylist(next: MediaAsset[]) {
@@ -1282,7 +1301,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.15",
+        connection.kind === "ready" ? connection.health.version : "6.0.17",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1458,12 +1477,20 @@ export function App() {
 
       {view === "import" ? (
         <ImportAnalyzeScreen
-          assets={assets}
-          onAddFiles={addFiles}
+          activeSchedule={activeSchedule}
+          assets={visiblePlaylist}
+          currentCount={playlist.length}
+          futureCount={futurePlaylist.length}
+          onAddFiles={addFilesToActiveSchedule}
           busy={mediaBusy}
-          onClear={clearMedia}
-          onSelectDirectory={window.gruberDesktop ? addNativeDirectory : undefined}
-          onSelectFiles={window.gruberDesktop ? addNativeFiles : undefined}
+          onClear={clearActiveImport}
+          onScheduleChange={setScheduleTab}
+          onSelectDirectory={window.gruberDesktop
+            ? () => addNativeDirectory(activeSchedule)
+            : undefined}
+          onSelectFiles={window.gruberDesktop
+            ? () => addNativeFiles(activeSchedule)
+            : undefined}
           onSelectSchedule={window.gruberDesktop ? importNativeSchedule : undefined}
           onProceed={() => setView("playlist")}
           operationError={operationError}
@@ -1508,7 +1535,7 @@ export function App() {
             onRemoveItem={removePlaylistItem}
             onRemoveScte35Marker={removeScte35Marker}
             onSelectAsset={setSelectedAssetId}
-            onScheduleChange={setScheduleTab}
+            onScheduleChange={openPlaylistSchedule}
             onSaveSchedule={saveActiveSchedule}
             onSaveSessionList={saveSessionList}
             onNewPlaylist={createNewPlaylist}
@@ -1556,7 +1583,7 @@ export function App() {
             currentCount={playlist.length}
             futureCount={futurePlaylist.length}
             onOpenLibrary={() => setView("import")}
-            onScheduleChange={setScheduleTab}
+            onScheduleChange={openPlaylistSchedule}
           />
         )
       ) : null}
@@ -2085,49 +2112,6 @@ function mergeEffectAssets(
       : effect);
   }
   return [...byId.values()];
-}
-
-function assignEffectToAssets(
-  items: MediaAsset[],
-  effect: GraphicEffectAsset,
-  targetIds?: Set<string>,
-): { items: MediaAsset[]; added: number } {
-  let added = 0;
-  return {
-    items: items.map((asset) => {
-      if (targetIds && !targetIds.has(asset.id)) return asset;
-      if (asset.effects?.some((layer) => layer.effectId === effect.id)) return asset;
-      const clipDuration = Math.max(0.04, effectiveAssetDuration(asset));
-      const endSeconds = Math.max(
-        0.04,
-        Math.min(
-          clipDuration,
-          effect.kind === "static" || effect.durationSeconds <= 0
-            ? clipDuration
-            : effect.durationSeconds,
-        ),
-      );
-      added += 1;
-      return {
-        ...asset,
-        effects: [...(asset.effects ?? []), {
-          backgroundPath: effect.filePath,
-          effectId: effect.id,
-          endSeconds,
-          filePath: effect.filePath,
-          id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
-          kind: effect.kind,
-          name: effect.name,
-          sourceDurationSeconds: effect.durationSeconds,
-          startSeconds: 0,
-          titlePath: effect.titleDirectoryPath
-            ? matchingNamedAssetPath(asset.name, effect.titlePaths)
-            : null,
-        }],
-      };
-    }),
-    added,
-  };
 }
 
 function assignEffectTitles(

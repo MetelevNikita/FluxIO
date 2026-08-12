@@ -256,6 +256,11 @@ curl http://127.0.0.1:4310/api/system/network-interfaces
   начинается — обновить FluxIO до v6.0.15 и пересобрать web/desktop/media-service:
   playout preparation должна иметь timeout 30 минут, а Log Output — показывать
   `Preparing ...-clip schedule` и progress media checks;
+- UDP/SRT эфир работает, но Encoding Monitor не показывает изображение —
+  начиная с v6.0.16 проверить `Final transport preview started` в Log Output,
+  `transport-index.m3u8` в `/api/playout/preview/` и отсутствие ошибок второго
+  FFmpeg decoder; preview получает локальный post-TSDuck TS, а не внешний
+  multicast return feed;
 - после rebuild FFmpeg всё ещё получает старые arguments — повторно установить Windows background service через мастер; начиная с этапа 2.14 мастер сначала останавливает старый Scheduled Task;
 - electron-builder завершается `connect ETIMEDOUT ...:443` — обновить FluxIO до v4.2.10 и использовать `node setup.mjs --offline`; в логе должна запускаться команда `package:desktop:offline-dir`, а не `package`;
 - Windows tool не найден автоматически — проверить, что `.exe` существует, и один раз указать полный путь в мастере;

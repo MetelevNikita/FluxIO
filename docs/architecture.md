@@ -274,6 +274,10 @@ Media-service отправляет `SIGTERM` и применяет принуд�
   по-прежнему нужен отдельный scheduler/rolling pipeline;
 - подготовка недельного Playlist с v6.0.15 использует сохранённые результаты
   анализа media и не более восьми параллельных filesystem/ffprobe checks;
+- UDP/SRT preview с v6.0.16 строится из локального post-TSDuck MPEG-TS mirror:
+  processor `ip` дублирует TS после `regulate`, отдельный FFmpeg преобразует
+  его в browser-compatible HLS; это внутренний program monitor, не сетевой
+  return feed головной станции;
 - нет резервного media-service и автоматического failover;
 - нет независимого return-feed monitor головной станции;
 - SCTE-35 injector реализован для SPTS по UDP/SRT; MPTS и внешнее резервирование injector остаются за границей текущего этапа;

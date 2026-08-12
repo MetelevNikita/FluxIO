@@ -17,6 +17,10 @@ import {
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
 import { buildFfmpegCommand } from "./ffmpeg/command-builder.js";
+import {
+  buildTransportPreviewCommand,
+  transportPreviewPlaylistName,
+} from "./ffmpeg/transport-preview.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
@@ -79,7 +83,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.15");
+    assert.equal(health.version, "6.0.17");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -1295,6 +1299,35 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
   assert.match(rendered, /--force-local-multicast-outgoing/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
+});
+
+test("final transport monitor mirrors post-TSDuck MPEG-TS into an HLS preview", () => {
+  const request = baseRequest();
+  const command = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 19_001,
+    previewPort: 19_002,
+    request,
+  });
+  const renderedTsdDuck = command.args.join(" ");
+  assert.match(
+    renderedTsdDuck,
+    /-P regulate .* -P ip --buffer-size 4194304 --packet-burst 7 127\.0\.0\.1:19002 -O ip/,
+  );
+
+  const previewDirectory = path.join(tmpdir(), "fluxio-transport-preview");
+  const renderedFfmpeg = buildTransportPreviewCommand({
+    inputPort: 19_002,
+    previewDirectory,
+  }).join(" ");
+  assert.match(renderedFfmpeg, /udp:\/\/127\.0\.0\.1:19002\?fifo_size=1000000/);
+  assert.match(renderedFfmpeg, /-map 0:v:0 -map 0:a:0\?/);
+  assert.match(renderedFfmpeg, /-f hls/);
+  assert.ok(renderedFfmpeg.includes(path.join(
+    previewDirectory,
+    transportPreviewPlaylistName,
+  )));
 });
 
 test("CBR transport muxrate uses target bitrate and supports an explicit TS rate", () => {

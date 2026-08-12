@@ -846,7 +846,7 @@ export function PlaylistPreviewScreen({
                 </div>
               ) : null}
             <div
-              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${(asset.effects?.length ?? 0) > 2 ? "has-many-fx" : ""} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               data-asset-id={asset.id}
               draggable
               onDragEnd={() => setDraggingIds([])}

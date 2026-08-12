@@ -3,11 +3,15 @@ import { useRef, useState } from "react";
 import type { MediaAsset, ScheduleSlot } from "../types";
 
 interface ImportAnalyzeScreenProps {
+  activeSchedule: ScheduleSlot;
   assets: MediaAsset[];
   busy: boolean;
+  currentCount: number;
+  futureCount: number;
   onAddFiles: (files: File[]) => void;
   onClear: () => void;
   onProceed: () => void;
+  onScheduleChange: (slot: ScheduleSlot) => void;
   onSelectDirectory?: () => Promise<void>;
   onSelectFiles?: () => Promise<void>;
   onSelectSchedule?: (slot: ScheduleSlot) => Promise<void>;
@@ -15,11 +19,15 @@ interface ImportAnalyzeScreenProps {
 }
 
 export function ImportAnalyzeScreen({
+  activeSchedule,
   assets,
   busy,
+  currentCount,
+  futureCount,
   onAddFiles,
   onClear,
   onProceed,
+  onScheduleChange,
   onSelectDirectory,
   onSelectFiles,
   onSelectSchedule,
@@ -46,9 +54,21 @@ export function ImportAnalyzeScreen({
 
   return (
     <main className="import-screen screen-body">
+      <div className="schedule-tabs import-schedule-tabs">
+        <button
+          className={activeSchedule === "current" ? "active" : ""}
+          onClick={() => onScheduleChange("current")}
+          type="button"
+        >Current import <span>{currentCount}</span></button>
+        <button
+          className={activeSchedule === "future" ? "active" : ""}
+          onClick={() => onScheduleChange("future")}
+          type="button"
+        >Future import <span>{futureCount}</span></button>
+      </div>
       <div className="section-heading">
         <div>
-          <h1>Media Library</h1>
+          <h1>{activeSchedule === "current" ? "Current" : "Future"} Media Library</h1>
           <p>
             Ingest camera cards, directories, or standalone assets for deep
             stream parsing.
@@ -58,20 +78,11 @@ export function ImportAnalyzeScreen({
           <button
             className="secondary-button schedule-import-button"
             disabled={busy || !onSelectSchedule}
-            onClick={() => void onSelectSchedule?.("current")}
+            onClick={() => void onSelectSchedule?.(activeSchedule)}
             title={onSelectSchedule ? undefined : "Schedule import is available in Electron"}
             type="button"
           >
-            <CalendarClock size={16} /> Current .AIR/.TXT
-          </button>
-          <button
-            className="secondary-button schedule-import-button"
-            disabled={busy || !onSelectSchedule}
-            onClick={() => void onSelectSchedule?.("future")}
-            title={onSelectSchedule ? undefined : "Schedule import is available in Electron"}
-            type="button"
-          >
-            <CalendarClock size={16} /> Future .AIR/.TXT
+            <CalendarClock size={16} /> Import {activeSchedule === "current" ? "Current" : "Future"} .AIR/.TXT
           </button>
           <button
             className="secondary-button"
@@ -184,7 +195,9 @@ export function ImportAnalyzeScreen({
               {assets.length === 0 ? (
                 <tr>
                   <td className="empty-library" colSpan={9}>
-                    Queue is empty. Drop a folder or add standalone files.
+                    {activeSchedule === "future"
+                      ? "Future import is empty. Load the next schedule or add standalone files."
+                      : "Current import is empty. Drop a folder or add standalone files."}
                   </td>
                 </tr>
               ) : null}

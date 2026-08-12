@@ -5,6 +5,7 @@ export interface TsdDuckCommandOptions {
   cueFilePath: string | null;
   cueCount: number;
   inputPort: number;
+  previewPort?: number | null;
   monitorPrefix?: string;
   request: StartPlayoutRequest;
   subtitles?: {
@@ -26,6 +27,7 @@ export function buildTsdDuckCommand({
   cueCount,
   inputPort,
   monitorPrefix = "GRUBER_SCTE35:",
+  previewPort = null,
   request,
   subtitles = null,
 }: TsdDuckCommandOptions): TsdDuckCommand {
@@ -167,6 +169,17 @@ export function buildTsdDuckCommand({
     "--packet-burst",
     String(transportPacketBurst(request.endpoint)),
   );
+  if (previewPort != null) {
+    args.push(
+      "-P",
+      "ip",
+      "--buffer-size",
+      String(udpSocketBufferSizeBytes),
+      "--packet-burst",
+      "7",
+      `127.0.0.1:${previewPort}`,
+    );
+  }
   args.push(...buildOutput(request.endpoint, request));
 
   return {

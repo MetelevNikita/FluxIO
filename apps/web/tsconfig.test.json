@@ -11,6 +11,8 @@
     "src/default-broadcast-settings.ts",
     "src/encoding-settings-profile.ts",
     "src/encoding-settings-profile.test.ts",
+    "src/effect-assignment.ts",
+    "src/effect-assignment.test.ts",
     "src/effect-timeline-math.ts",
     "src/effect-timeline-math.test.ts",
     "src/graphic-title-matching.ts",

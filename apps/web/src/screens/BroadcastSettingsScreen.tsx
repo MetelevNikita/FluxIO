@@ -904,6 +904,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
   const previewUrl = active && status?.previewPath
     ? mediaApiUrl(status.previewPath)
     : null;
+  const postTransportPreview = status?.previewPath?.includes("transport-index.m3u8") ?? false;
   const progress = status?.progressPercent ?? 0;
   const remainingSeconds = Math.max(
     0,
@@ -922,11 +923,13 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
         <div className="monitor-preview">
           <LivePreview
             active={active}
-            key={status?.sessionId ?? "idle"}
+            key={`${status?.sessionId ?? "idle"}:${status?.previewPath ?? "none"}`}
             source={previewUrl}
           />
           <span className="decoding-status">
-            <i /> {active ? "Final Program Monitor" : "Preview Idle"}
+            <i /> {active
+              ? postTransportPreview ? "Post-TSDuck TS Monitor" : "Final Program Monitor"
+              : "Preview Idle"}
           </span>
           <span className="monitor-resolution">
             {status?.endpointLabel ?? "No endpoint selected"}
@@ -947,6 +950,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
         </div>
       </div>
 
+      <div className="monitor-details-scroll">
       <MonitorCard
         action={<span className="muted">{status?.totalItems ?? 0} clips</span>}
         title="Playlist Progress"
@@ -1091,6 +1095,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
           )) : <span>Waiting for FFmpeg session…</span>}
         </div>
       </MonitorCard>
+      </div>
     </aside>
   );
 }
@@ -1120,7 +1125,7 @@ function LivePreview({ active, source }: { active: boolean; source: string | nul
         setPreviewError(null);
       },
       onWaiting: () => setPreviewState("loading"),
-      retryLimit: 30,
+      retryLimit: 900,
     });
   }, [active, source]);
 
