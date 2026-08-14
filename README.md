@@ -1,6 +1,6 @@
 # FluxIO
 
-Текущая версия: **v6.0.18**.
+Текущая версия: **v6.0.19**.
 
 Desktop-приложение для анализа локальных видеофайлов, сборки эфирного плейлиста, кодирования через FFmpeg и передачи сигнала на головную станцию по UDP, SRT, RTMP или RTMPS.
 
@@ -40,6 +40,13 @@ TSDuck transport живут между роликами, а отдельные c
 AGE/LOGO/FX и burn-in SRT будущих роликов синхронизируются без рестарта эфира. Добавлены
 clip progress, live dBFS meter и composite preview; DVB subtitle PID больше не
 несёт чужой PCR и передаёт bitmap PES с двухсекундным pre-roll.
+
+В v6.0.19 устранена блокировка первого кадра rolling playout на рабочих
+1080p/4K raw video/audio pipes. Clip renderer использует ограниченные startup
+buffers, а следующий ролик подключается только после полного drain предыдущего.
+Playlist Preview снова запускает composite HLS, в том числе для роликов из
+восстановленной сессии; post-TSDuck Broadcast Preview проверен реальным UDP
+сценарием.
 
 Electron-интерфейс и installers используют бренд FluxIO: единый жёлто-чёрный antenna mark, wordmark с акцентным `IO` и пятисекундный стартовый экран размером с основное окно. Технические имена окружения `GRUBER_*`, PostgreSQL database и service IDs сохранены для обратной совместимости существующих установок.
 

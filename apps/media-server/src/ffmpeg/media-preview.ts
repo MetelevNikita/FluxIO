@@ -143,7 +143,10 @@ export class MediaPreviewService {
   ): Promise<ClipPreviewSession> {
     const source = request.playlist[0];
     if (!source) throw new Error("Composite preview requires one playlist item");
-    const media = await this.#resolveRegistered(source.filePath);
+    const media = await this.#resolveRegistered(
+      source.filePath,
+      source.sourceDurationSeconds,
+    );
     await this.stop();
     const sourceDuration = source.sourceDurationSeconds ?? media.durationSeconds;
     const clipEnd = Math.min(source.trimOutSeconds ?? sourceDuration, sourceDuration);
@@ -194,6 +197,9 @@ export class MediaPreviewService {
     });
     const active: ActivePreview = { child, directory, sessionId, stderr: "" };
     this.#active = active;
+    // Composite previews report FFmpeg progress on stdout. Drain it so a long
+    // preview cannot block when the child-process pipe becomes full.
+    child.stdout.resume();
     child.stderr.on("data", (chunk: Buffer) => {
       active.stderr = `${active.stderr}${chunk.toString("utf8")}`.slice(-16_384);
     });
@@ -282,12 +288,25 @@ export class MediaPreviewService {
     return readFile(thumbnailPath);
   }
 
-  async #resolveRegistered(filePath: string): Promise<RegisteredMedia> {
+  async #resolveRegistered(
+    filePath: string,
+    persistedDurationSeconds?: number,
+  ): Promise<RegisteredMedia> {
     if (!path.isAbsolute(filePath)) {
       throw new Error("Media path must be absolute");
     }
     const resolvedPath = await realpath(filePath);
-    const media = this.#registered.get(resolvedPath);
+    let media = this.#registered.get(resolvedPath);
+    const restoredDuration = persistedDurationSeconds ?? 0;
+    if (
+      !media &&
+      Number.isFinite(restoredDuration) &&
+      restoredDuration > 0 &&
+      (await stat(resolvedPath)).isFile()
+    ) {
+      media = { durationSeconds: restoredDuration, filePath: resolvedPath };
+      this.#registered.set(resolvedPath, media);
+    }
     if (!media) {
       throw new Error("Media file has not been analyzed in this session");
     }

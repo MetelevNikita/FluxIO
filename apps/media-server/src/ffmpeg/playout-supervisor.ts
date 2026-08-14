@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Readable, Writable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import type {
   FfmpegCapabilities,
   GraphicEffectLayer,
@@ -54,6 +54,21 @@ const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
 const playlistPreparationConcurrency = 8;
+const clipProducerStartupTimeoutMs = 30_000;
+const minimumClipPipeBufferBytes = 1_048_576;
+
+interface ClipProducerRuntime {
+  audioBridge: PassThrough;
+  audioEnded: boolean;
+  audioReady: boolean;
+  child: ChildProcessWithoutNullStreams;
+  closeResult: { code: number | null; signal: NodeJS.Signals | null } | null;
+  index: number;
+  readyLogged: boolean;
+  videoBridge: PassThrough;
+  videoEnded: boolean;
+  videoReady: boolean;
+}
 
 export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
@@ -86,6 +101,8 @@ export class PlayoutSupervisor {
   #transportPreviewChild: ChildProcessWithoutNullStreams | null = null;
   #producerChild: ChildProcessWithoutNullStreams | null = null;
   #prefetchedProducerChild: ChildProcessWithoutNullStreams | null = null;
+  #producerRuntimes = new Map<ChildProcessWithoutNullStreams, ClipProducerRuntime>();
+  #producerStartupTimer: NodeJS.Timeout | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedSubtitleStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedTransportPreviewStops = new WeakSet<ChildProcessWithoutNullStreams>();
@@ -1062,6 +1079,39 @@ export class PlayoutSupervisor {
       shell: false,
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
+    const audioOutput = child.stdio[3] as Readable | null;
+    if (!audioOutput) throw new Error("FFmpeg raw audio pipe is unavailable");
+    const videoFrameBytes = Math.ceil(request.video.width * request.video.height * 1.5);
+    const audioBufferBytes = request.audio.sampleRate * request.audio.channels * 2 * 2;
+    const runtime: ClipProducerRuntime = {
+      audioBridge: new PassThrough({
+        highWaterMark: Math.max(minimumClipPipeBufferBytes, audioBufferBytes),
+      }),
+      audioEnded: false,
+      audioReady: false,
+      child,
+      closeResult: null,
+      index,
+      readyLogged: false,
+      videoBridge: new PassThrough({
+        highWaterMark: Math.max(minimumClipPipeBufferBytes, videoFrameBytes + 65_536),
+      }),
+      videoEnded: false,
+      videoReady: false,
+    };
+    this.#producerRuntimes.set(child, runtime);
+    child.stdout.once("data", () => this.#handleClipProducerData(runtime, "video"));
+    audioOutput.once("data", () => this.#handleClipProducerData(runtime, "audio"));
+    runtime.videoBridge.once("end", () => {
+      runtime.videoEnded = true;
+      this.#completeClipProducer(runtime);
+    });
+    runtime.audioBridge.once("end", () => {
+      runtime.audioEnded = true;
+      this.#completeClipProducer(runtime);
+    });
+    child.stdout.pipe(runtime.videoBridge);
+    audioOutput.pipe(runtime.audioBridge);
     let logBuffer = "";
     child.stderr.on("data", (chunk: Buffer) => {
       logBuffer += chunk.toString("utf8");
@@ -1074,6 +1124,7 @@ export class PlayoutSupervisor {
     });
     child.once("error", (error) => this.#handleClipProducerError(child, index, error));
     child.once("close", (code, signal) => {
+      runtime.closeResult = { code, signal };
       this.#handleClipProducerClose(child, index, code, signal);
     });
     return child;
@@ -1082,16 +1133,17 @@ export class PlayoutSupervisor {
   #activateClipProducer(child: ChildProcessWithoutNullStreams, index: number): void {
     const encoder = this.#child;
     if (!encoder) throw new Error("Persistent encoder is not running");
-    const audioOutput = child.stdio[3] as Readable | null;
+    const runtime = this.#producerRuntimes.get(child);
     const audioInput = encoder.stdio[3] as Writable | null;
-    if (!audioOutput || !audioInput) throw new Error("FFmpeg raw audio pipe is unavailable");
+    if (!runtime || !audioInput) throw new Error("FFmpeg raw media buffers are unavailable");
     this.#producerChild = child;
-    child.stdout.pipe(encoder.stdin, { end: false });
-    audioOutput.pipe(audioInput, { end: false });
+    runtime.videoBridge.pipe(encoder.stdin, { end: false });
+    runtime.audioBridge.pipe(audioInput, { end: false });
     this.#appendEvent(
       `Clip renderer ${index + 1}/${this.#items.length} started with PID ` +
         `${child.pid ?? "unknown"}: "${this.#items[index]?.name ?? "unknown"}"`,
     );
+    this.#armClipProducerStartup(runtime);
     const nextIndex = index + 1;
     this.#prefetchedProducerChild = nextIndex < this.#items.length
       ? this.#spawnClipProducer(nextIndex)
@@ -1119,7 +1171,6 @@ export class PlayoutSupervisor {
       return;
     }
     if (this.#producerChild !== child) return;
-    this.#producerChild = null;
     if (code !== 0) {
       this.#handleClipProducerError(
         child,
@@ -1128,6 +1179,22 @@ export class PlayoutSupervisor {
       );
       return;
     }
+    const runtime = this.#producerRuntimes.get(child);
+    if (runtime) this.#completeClipProducer(runtime);
+  }
+
+  #completeClipProducer(runtime: ClipProducerRuntime): void {
+    const { child, closeResult, index } = runtime;
+    if (
+      this.#producerChild !== child ||
+      !closeResult ||
+      closeResult.code !== 0 ||
+      !runtime.videoEnded ||
+      !runtime.audioEnded
+    ) return;
+    this.#clearClipProducerStartupTimer();
+    this.#producerChild = null;
+    this.#producerRuntimes.delete(child);
     const next = this.#prefetchedProducerChild;
     this.#prefetchedProducerChild = null;
     if (next && index + 1 < this.#items.length) {
@@ -1141,12 +1208,56 @@ export class PlayoutSupervisor {
     this.#appendEvent("Last clip rendered; draining the persistent encoder");
   }
 
+  #handleClipProducerData(
+    runtime: ClipProducerRuntime,
+    stream: "audio" | "video",
+  ): void {
+    if (stream === "video") runtime.videoReady = true;
+    else runtime.audioReady = true;
+    if (this.#producerChild === runtime.child) this.#reportClipProducerReady(runtime);
+  }
+
+  #reportClipProducerReady(runtime: ClipProducerRuntime): void {
+    if (!runtime.videoReady || !runtime.audioReady || runtime.readyLogged) return;
+    runtime.readyLogged = true;
+    this.#clearClipProducerStartupTimer();
+    this.#appendEvent(
+      `Clip renderer ${runtime.index + 1}/${this.#items.length} pipe ready: video + audio`,
+    );
+  }
+
+  #armClipProducerStartup(runtime: ClipProducerRuntime): void {
+    this.#clearClipProducerStartupTimer();
+    this.#reportClipProducerReady(runtime);
+    if (runtime.readyLogged) return;
+    this.#producerStartupTimer = setTimeout(() => {
+      if (this.#producerChild !== runtime.child || runtime.readyLogged) return;
+      const waitingFor = [
+        runtime.videoReady ? null : "video",
+        runtime.audioReady ? null : "audio",
+      ].filter(Boolean).join(" + ");
+      this.#handleClipProducerError(
+        runtime.child,
+        runtime.index,
+        new Error(`no ${waitingFor} data received within 30 seconds`),
+      );
+    }, clipProducerStartupTimeoutMs);
+    this.#producerStartupTimer.unref();
+  }
+
+  #clearClipProducerStartupTimer(): void {
+    if (!this.#producerStartupTimer) return;
+    clearTimeout(this.#producerStartupTimer);
+    this.#producerStartupTimer = null;
+  }
+
   #handleClipProducerError(
     child: ChildProcessWithoutNullStreams,
     index: number,
     error: Error,
   ): void {
     if (this.#expectedProducerStops.has(child) || this.#status.state === "stopping") return;
+    this.#clearClipProducerStartupTimer();
     this.#status.state = "failed";
     this.#status.error = `Clip ${index + 1} renderer failed: ${error.message}`;
     this.#appendEvent(this.#status.error);
@@ -1443,11 +1554,16 @@ export class PlayoutSupervisor {
       .filter((child): child is ChildProcessWithoutNullStreams => Boolean(child));
     this.#producerChild = null;
     this.#prefetchedProducerChild = null;
+    this.#clearClipProducerStartupTimer();
     for (const child of producers) this.#terminateClipProducer(child);
   }
 
   #terminateClipProducer(child: ChildProcessWithoutNullStreams): void {
     this.#expectedProducerStops.add(child);
+    const runtime = this.#producerRuntimes.get(child);
+    this.#producerRuntimes.delete(child);
+    runtime?.videoBridge.destroy();
+    runtime?.audioBridge.destroy();
     child.stdout.destroy();
     (child.stdio[3] as Readable | null)?.destroy();
     child.stdin.destroy();

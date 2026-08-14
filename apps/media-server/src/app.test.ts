@@ -92,7 +92,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.18");
+    assert.equal(health.version, "6.0.19");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -798,6 +798,7 @@ test("composite clip preview renders the programme graph without opening the bro
   const rendered = command.args.join(" ");
 
   assert.match(rendered, /-map \[vpreview\] -map \[apreview\]/);
+  assert.match(rendered, /\[vprogram\]nullsink;\[aprogram\]anullsink/);
   assert.match(rendered, /-hls_start_number_source generic/);
   assert.match(rendered, /segment-%06d\.ts/);
   assert.doesNotMatch(rendered, /udp:\/\//);
@@ -1833,7 +1834,7 @@ test("SCTE-35 preflight rejects an elementary-stream PID collision", async () =>
 
 test(
   "real FFmpeg session keeps a stuffed CBR UDP transport across two clips",
-  { skip: process.env.GRUBER_RUN_FFMPEG_TESTS !== "1", timeout: 30_000 },
+  { skip: process.env.GRUBER_RUN_FFMPEG_TESTS !== "1", timeout: 45_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "gruber-ffmpeg-test-"));
     const clipOne = path.join(directory, "one.mp4");
@@ -1857,6 +1858,10 @@ test(
     const mediaPreview = new MediaPreviewService(
       capabilities.ffmpegPath,
       clipPreviewDirectory,
+    );
+    const restoredMediaPreview = new MediaPreviewService(
+      capabilities.ffmpegPath,
+      path.join(directory, "restored-clip-preview"),
     );
     try {
       await runCommand(capabilities.ffmpegPath, [
@@ -1894,10 +1899,10 @@ test(
         { id: "one", name: "one.mp4", filePath: clipOne, trimInSeconds: 0, trimOutSeconds: null, scte35Markers: [] },
         { id: "two", name: "two.mp4", filePath: clipTwo, trimInSeconds: 0, trimOutSeconds: null, scte35Markers: [] },
       ];
-      // Keep this transport-integrity test faster than realtime on modest CI CPUs.
-      // Codec throughput at 1080p is covered by field validation on target hardware.
-      request.video.width = 640;
-      request.video.height = 360;
+      // Keep the raw video bridge at the production 1080p frame size. A smaller
+      // frame does not reproduce the dual-pipe startup backpressure regression.
+      request.video.width = 1_920;
+      request.video.height = 1_080;
       request.video.preset = "ultrafast";
       request.video.rateControl = "vbr";
       request.video.targetBitrateKbps = 2_500;
@@ -1910,6 +1915,12 @@ test(
       request.audio.codec = "mp2";
       request.audio.sampleRate = 48_000;
       request.audio.bitrateKbps = 192;
+      request.audio.loudnessNormalization = {
+        enabled: true,
+        targetLufs: -23,
+        truePeakDbtp: -1,
+        loudnessRangeLufs: 7,
+      };
       request.endpoint = {
         protocol: "udp",
         host: "127.0.0.1",
@@ -1935,6 +1946,23 @@ test(
         margin: 16,
         opacity: 0.8,
       };
+      request.playlist[0] = {
+        ...request.playlist[0]!,
+        sourceDurationSeconds: 4.4,
+        hasAudio: true,
+      };
+      const restoredComposite = await restoredMediaPreview.startComposite(
+        { ...request, playlist: [request.playlist[0]!], nextPlaylist: [] },
+        0,
+      );
+      assert.match(
+        (await restoredMediaPreview.readPreviewFile(
+          restoredComposite.sessionId,
+          "index.m3u8",
+        )).toString("utf8"),
+        /#EXTM3U/,
+      );
+      await restoredMediaPreview.stop(restoredComposite.sessionId);
 
       const wallStartedAt = Date.now();
       await supervisor.start(request);
@@ -1952,6 +1980,10 @@ test(
       assert.equal(status.progressPercent, 100);
       assert.ok(
         status.logs.some((line) => line.includes("Transmitted frames:")),
+        status.logs.slice(-10).join("\n"),
+      );
+      assert.ok(
+        status.logs.some((line) => line.includes("pipe ready: video + audio")),
         status.logs.slice(-10).join("\n"),
       );
       assert.ok(
@@ -2039,6 +2071,7 @@ test(
     } finally {
       udpReceiver.close();
       await mediaPreview.close();
+      await restoredMediaPreview.close();
       await supervisor.close();
       await rm(directory, { force: true, recursive: true });
     }

@@ -559,6 +559,22 @@
   из вариантов сохранения;
 - реальный UDP regression проходит два ролика и Repeat без зависшего FFmpeg.
 
+### 4.20. Исправление старта rolling playout и Preview v6.0.19
+
+Статус: завершён 2026-08-14. Отчёт:
+[`progress/04-20-playout-startup-preview-v6.0.19.md`](progress/04-20-playout-startup-preview-v6.0.19.md).
+
+- video/audio выхода clip renderer разгружаются в ограниченные startup buffers;
+- следующий renderer подключается только после полного drain обоих потоков;
+- Log Output подтверждает `pipe ready: video + audio`, а 30-секундный watchdog
+  вместо бесконечного ожидания сообщает, какой raw stream не появился;
+- composite Playlist Preview закрывает неиспользуемые program branches через
+  sink и не блокируется заполненным FFmpeg progress pipe;
+- ролик из восстановленной сессии может стартовать в composite preview по
+  сохранённым duration metadata без повторного анализа всего расписания;
+- реальный 1080p тест проверяет восстановленный Preview, rolling стык, CBR UDP,
+  continuity, PCR и финальный post-TSDuck HLS.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

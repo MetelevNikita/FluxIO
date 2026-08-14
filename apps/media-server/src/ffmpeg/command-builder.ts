@@ -143,6 +143,9 @@ export function buildFfmpegCompositePreviewCommand(
   );
   if (firstMap < 0 || previewMap < 0) throw new Error("FFmpeg preview outputs are unavailable");
   const args = [...base.args.slice(0, firstMap), ...base.args.slice(previewMap)];
+  const filterGraph = `${base.filterGraph};[vprogram]nullsink;[aprogram]anullsink`;
+  const filterIndex = args.indexOf("-filter_complex");
+  if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
   const startNumberSource = args.indexOf("-hls_start_number_source");
   if (startNumberSource >= 0) args[startNumberSource + 1] = "generic";
   const segmentFilename = args.indexOf("-hls_segment_filename");
@@ -152,6 +155,7 @@ export function buildFfmpegCompositePreviewCommand(
   return {
     ...base,
     args,
+    filterGraph,
   };
 }
 
