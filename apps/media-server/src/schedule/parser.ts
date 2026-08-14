@@ -14,7 +14,8 @@ const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*del
 const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
 const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
-const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+titlePath\s*\{([^}]*)\}\s+duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}\s*$/i;
+const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+((?:titlePath(?:#\d+)?\s*\{[^}]*\}\s*)*)duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}(?:\s+endOn\s*\{([^}]*)\})?\s*$/i;
+const graphicTitlePattern = /titlePath(?:#(\d+))?\s*\{([^}]*)\}/gi;
 const srtPattern = /^insertSRT\s*\{([^}]*)\}\s*$/i;
 
 export class ScheduleParseError extends Error {}
@@ -104,26 +105,49 @@ export function parseScheduleText(
         entry.lineNumber,
       );
       const backgroundPath = optionalDirectiveValue(graphic[3]);
-      const titlePath = optionalDirectiveValue(graphic[4]);
+      const titleDirectives = [...(graphic[4] ?? "").matchAll(graphicTitlePattern)];
+      const titlePath = optionalDirectiveValue(
+        titleDirectives.find((directive) => directive[1] == null)?.[2],
+      );
+      const titlePaths = titleDirectives
+        .filter((directive) => directive[1] != null)
+        .sort((left, right) => Number(left[1]) - Number(right[1]))
+        .map((directive) => directive[2] ?? "");
       if (!backgroundPath && !titlePath) {
         throw new ScheduleParseError(
           `Line ${entry.lineNumber}: insertGraphicElement requires backgroundPath or titlePath`,
         );
       }
+      const startOnSeconds = parseDirectiveTime(
+        graphic[6] ?? "",
+        `Line ${entry.lineNumber}: invalid graphic startOn`,
+        false,
+      );
+      const declaredDurationSeconds = parseDirectiveTime(
+        graphic[5] ?? "",
+        `Line ${entry.lineNumber}: invalid graphic duration`,
+        true,
+      );
+      const endOnSeconds = graphic[7]
+        ? parseDirectiveTime(
+            graphic[7],
+            `Line ${entry.lineNumber}: invalid graphic endOn`,
+            false,
+          )
+        : startOnSeconds + declaredDurationSeconds;
+      if (endOnSeconds <= startOnSeconds) {
+        throw new ScheduleParseError(
+          `Line ${entry.lineNumber}: graphic endOn must be after startOn`,
+        );
+      }
       pendingGraphicElements.push({
         backgroundPath,
-        durationSeconds: parseDirectiveTime(
-          graphic[5] ?? "",
-          `Line ${entry.lineNumber}: invalid graphic duration`,
-          true,
-        ),
+        durationSeconds: endOnSeconds - startOnSeconds,
+        endOnSeconds,
         name,
-        startOnSeconds: parseDirectiveTime(
-          graphic[6] ?? "",
-          `Line ${entry.lineNumber}: invalid graphic startOn`,
-          false,
-        ),
+        startOnSeconds,
         titlePath,
+        titlePaths,
       });
       continue;
     }

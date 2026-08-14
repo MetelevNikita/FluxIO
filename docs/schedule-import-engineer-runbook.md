@@ -1,6 +1,6 @@
 # Импорт эфирного расписания `.air` / `.txt`
 
-Применимо к FluxIO **v6.0.17**.
+Применимо к FluxIO **v6.0.18**.
 
 ## 1. Назначение
 
@@ -111,8 +111,8 @@ insertLogoTitle {C:\FluxIO\branding\channel.png}movie 00:10:00.00 C:\media\movie
 указать несколько раз: порядок строк соответствует слоям снизу вверх.
 
 ```text
-insertGraphicElement_{Lower Third} backgroundPath {/Volumes/T7/fx/lower-third.mov} titlePath {/Volumes/T7/fx/titles/Programme [16+].png} duration {00:00:05.00} startOn {00:00:12.50}
-insertGraphicElement_{Channel Bug} backgroundPath {/Volumes/T7/fx/bug.png} titlePath {} duration {00:03:00.00} startOn {00:00:00.00}
+insertGraphicElement_{Lower Third} backgroundPath {/Volumes/T7/fx/lower-third.mov} titlePath {/Volumes/T7/fx/titles/Programme [16+].png} titlePath#1 {Programme} titlePath#2 {16+} duration {00:00:05.00} startOn {00:00:12.50} endOn {00:00:17.50}
+insertGraphicElement_{Channel Bug} backgroundPath {/Volumes/T7/fx/bug.png} titlePath {} duration {00:03:00.00} startOn {00:00:00.00} endOn {00:03:00.00}
 insertSRT {/Volumes/T7/subtitles/Programme [16+].srt}
 clip 00:03:00.00 /Volumes/T7/media/Programme [16+].mp4
 ```
@@ -125,7 +125,10 @@ clip 00:03:00.00 /Volumes/T7/media/Programme [16+].mp4
 - если заполнены оба поля, FFmpeg сначала накладывает BG, затем TITLE;
 - при экспорте сохраняется фактический `titlePath`, поэтому файл расписания
   полностью воспроизводим даже без повторного выбора title-папки;
-- `duration` и `startOn` принимают `HH:MM:SS.ff` либо число секунд;
+- `titlePath#1`, `titlePath#2` и далее сохраняют отредактированные Lottie text
+  fields в порядке, показанном на странице Effects;
+- `duration`, `startOn` и `endOn` принимают `HH:MM:SS.ff` либо число секунд;
+- для legacy-файла без `endOn` конец вычисляется как `startOn + duration`;
 - слой, выходящий за хронометраж ролика, импортируется с warning и в UI
   ограничивается концом ролика;
 - `insertSRT` содержит явный путь. Если файл исчез, media-service игнорирует
@@ -155,9 +158,9 @@ clip 00:03:00.00 /Volumes/T7/media/Programme [16+].mp4
 10. Для длинного расписания использовать стрелку у отдельного ролика или
     кнопки **Expand all / Collapse all** над списком. В свёрнутом виде остаются
     время, название, AGE и LOGO; настройки снова доступны после раскрытия.
-11. Перейти в Broadcast, настроить encoder и endpoint, затем запустить текущий
-   Playlist. Будущий Playlist не отправляется в эфир до выбора/переноса в
-   текущий в будущей версии rolling scheduler.
+11. Перейти в Broadcast, настроить encoder и endpoint, затем запустить Current.
+    После его завершения Future автоматически повышается в Current, если
+    выключен Repeat.
 
 ## 8. Папки LOGO и AGE
 
@@ -216,8 +219,7 @@ FluxIO ищет соответствующий PNG/WebP (`16+.png`, `age-16+.web
 
 1. Открыть нужную вкладку Current или Future.
 2. Проверить порядок материалов, типы, AGE и LOGO.
-3. Выбрать расширение `.AIR` или `.TXT`.
-4. Нажать **Save schedule** и выбрать путь.
+3. Нажать **Save .TXT** и выбрать путь.
 
 Экспорт сохраняется в UTF-8 с CRLF. В новый файл попадают:
 
@@ -231,8 +233,9 @@ FluxIO ищет соответствующий PNG/WebP (`16+.png`, `age-16+.web
 - `insertSRT {…}` для включённых субтитров;
 - актуальные пути видеоматериалов.
 
-Полученный файл можно снова импортировать как Current или Future и продолжить
-редактирование. SCTE-35 markers в `.air/.txt` не экспортируются: для них
+Полученный `.txt` можно снова импортировать как Current или Future и продолжить
+редактирование. `.air` поддерживается только как входной legacy-формат.
+SCTE-35 markers в расписание не экспортируются: для них
 действует отдельная схема проекта.
 
 ## 11. Ошибки

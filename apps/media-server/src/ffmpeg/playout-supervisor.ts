@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Readable, Writable } from "node:stream";
 import type {
   FfmpegCapabilities,
   GraphicEffectLayer,
@@ -11,7 +12,8 @@ import type {
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings, playoutStatusSchema } from "@gruber/contracts";
 import {
-  buildFfmpegCommand,
+  buildFfmpegClipProducerCommand,
+  buildFfmpegProgramEncoderCommand,
   type FfmpegCommand,
   type FfmpegCommandOptions,
   type PreparedPlayoutItem,
@@ -38,6 +40,7 @@ import {
 import { buildDvbSubtitleProject } from "../subtitles/srt-project.js";
 import {
   dvbSubtitleClockToleranceMs,
+  dvbSubtitlePreRollMs,
   evaluateDvbSubtitleClock,
 } from "../transport-clock.js";
 import {
@@ -50,7 +53,6 @@ const transportPreviewPath = `/api/playout/preview/${transportPreviewPlaylistNam
 const injectorStartupSafetyMs = 2_000;
 const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
-const windowsCommandLineSafetyLimit = 30_000;
 const playlistPreparationConcurrency = 8;
 
 export class PlayoutConflictError extends Error {}
@@ -82,9 +84,12 @@ export class PlayoutSupervisor {
   #tsduckChild: ChildProcessWithoutNullStreams | null = null;
   #subtitleChild: ChildProcessWithoutNullStreams | null = null;
   #transportPreviewChild: ChildProcessWithoutNullStreams | null = null;
+  #producerChild: ChildProcessWithoutNullStreams | null = null;
+  #prefetchedProducerChild: ChildProcessWithoutNullStreams | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedSubtitleStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedTransportPreviewStops = new WeakSet<ChildProcessWithoutNullStreams>();
+  #expectedProducerStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #killTimer: NodeJS.Timeout | null = null;
   #tsduckKillTimer: NodeJS.Timeout | null = null;
   #subtitleKillTimer: NodeJS.Timeout | null = null;
@@ -97,6 +102,7 @@ export class PlayoutSupervisor {
   #subtitleArgs: string[] = [];
   #transportPreviewArgs: string[] = [];
   #subtitleFirstCueStartSeconds: number | null = null;
+  #subtitlePreRollMs = 0;
   #firstSubtitlePtsMs: number | null = null;
   #subtitleClockReport: "aligned" | "mismatch" | null = null;
   #cues: PlannedScte35Cue[] = [];
@@ -335,6 +341,7 @@ export class PlayoutSupervisor {
       this.#terminateTsdDuck();
       this.#terminateDvbSubtitles();
       this.#terminateTransportPreview();
+      this.#terminateClipProducers();
       child?.kill("SIGTERM");
       if (child) {
         this.#killTimer = setTimeout(() => {
@@ -368,6 +375,93 @@ export class PlayoutSupervisor {
     return this.getStatus();
   }
 
+  async updatePlaylist(playlist: StartPlayoutRequest["playlist"]): Promise<PlayoutStatus> {
+    const request = this.#request;
+    if (
+      !request ||
+      this.#status.schedulePhase !== "current" ||
+      !["starting", "running"].includes(this.#status.state)
+    ) {
+      throw new PlayoutConflictError(
+        "The Current playlist can only be updated while rolling playout is on air",
+      );
+    }
+    const activeIndexBeforePreparation = this.#status.currentItemIndex;
+    assertPlaylistPrefixUnchanged(this.#items, playlist, activeIndexBeforePreparation);
+    const existingById = new Map(request.playlist.map((item, index) => [item.id, {
+      item,
+      prepared: this.#items[index],
+    }]));
+    const preparedTail = await mapWithConcurrency(
+      playlist.slice(activeIndexBeforePreparation + 1),
+      playlistPreparationConcurrency,
+      async (item) => {
+        const existing = existingById.get(item.id);
+        if (existing?.prepared && JSON.stringify(existing.item) === JSON.stringify(item)) {
+          return { item, prepared: existing.prepared };
+        }
+        const resolved = await this.#prepareRequest({
+          ...request,
+          playlist: [item],
+          nextPlaylist: [],
+        });
+        return { item: resolved.request.playlist[0]!, prepared: resolved.items[0]! };
+      },
+    );
+    const resolvedPlaylist = [
+      ...request.playlist.slice(0, activeIndexBeforePreparation + 1),
+      ...preparedTail.map((entry) => entry.item),
+    ];
+    const resolvedItems = [
+      ...this.#items.slice(0, activeIndexBeforePreparation + 1),
+      ...preparedTail.map((entry) => entry.prepared),
+    ];
+    if (!["starting", "running"].includes(this.#status.state)) {
+      throw new PlayoutConflictError("HOT CHANGE was cancelled because playout stopped");
+    }
+    const activeIndex = this.#status.currentItemIndex;
+    assertPlaylistPrefixUnchanged(this.#items, resolvedPlaylist, activeIndex);
+    for (let index = activeIndexBeforePreparation + 1; index <= activeIndex; index += 1) {
+      if (JSON.stringify(request.playlist[index]) !== JSON.stringify(resolvedPlaylist[index])) {
+        throw new PlayoutConflictError(
+          `HOT CHANGE missed clip ${index + 1} because it is already on air`,
+        );
+      }
+    }
+    const oldNext = this.#items[activeIndex + 1];
+    const newNext = resolvedItems[activeIndex + 1];
+    this.#items = [
+      ...this.#items.slice(0, activeIndex + 1),
+      ...resolvedItems.slice(activeIndex + 1),
+    ];
+    this.#request = {
+      ...request,
+      playlist: [
+        ...request.playlist.slice(0, activeIndex + 1),
+        ...resolvedPlaylist.slice(activeIndex + 1),
+      ],
+    };
+    this.#status.totalItems = this.#items.length;
+    this.#status.totalDurationSeconds = this.#items.reduce(
+      (total, item) => total + item.durationSeconds,
+      0,
+    );
+    if (JSON.stringify(oldNext) !== JSON.stringify(newNext)) {
+      const prefetched = this.#prefetchedProducerChild;
+      if (prefetched) {
+        this.#terminateClipProducer(prefetched);
+      }
+      this.#prefetchedProducerChild = newNext
+        ? this.#spawnClipProducer(activeIndex + 1)
+        : null;
+      this.#appendEvent(
+        `HOT CHANGE armed for clip ${activeIndex + 2}: ` +
+          `"${newNext?.name ?? "end of playlist"}"`,
+      );
+    }
+    return this.getStatus();
+  }
+
   async close(): Promise<void> {
     await this.stop();
   }
@@ -396,18 +490,16 @@ export class PlayoutSupervisor {
     this.#transportPreviewArgs = [];
     this.#transportPreviewRestartAttempts = 0;
     this.#subtitleFirstCueStartSeconds = null;
+    this.#subtitlePreRollMs = 0;
     this.#firstSubtitlePtsMs = null;
     this.#subtitleClockReport = null;
 
     if (!usesTsdDuckTransport(request)) {
-      const command = await this.#buildScriptedFfmpegCommand(
-        request,
-        {
+      const command = this.#buildRollingEncoderCommand(request, {
           transportMuxRateBps: request.endpoint.protocol === "udp"
             ? calculateTransportMuxRate(request)
             : undefined,
-        },
-      );
+        });
       this.#commandArgs = command.args;
       this.#tsduckArgs = [];
       this.#applyCommandStatus(command.totalDurationSeconds, command.endpointLabel);
@@ -429,10 +521,11 @@ export class PlayoutSupervisor {
       tspPath: string;
     } | null = null;
     if (request.subtitleOutput.mode === "dvb") {
-      const project = await buildDvbSubtitleProject(this.#items);
+      const project = await buildDvbSubtitleProject(this.#items, dvbSubtitlePreRollMs / 1_000);
       this.#status.subtitles.plannedCues = project.cueCount;
       this.#status.subtitles.sourceItems = project.sourceItems;
       this.#subtitleFirstCueStartSeconds = project.firstCueStartSeconds;
+      this.#subtitlePreRollMs = Math.round(project.preRollSeconds * 1_000);
       if (project.cueCount > 0) {
         const subtitleInputPath = path.join(
           this.previewDirectory,
@@ -450,6 +543,7 @@ export class PlayoutSupervisor {
         this.#subtitleArgs = buildGstreamerDvbSubtitleCommand({
           inputPath: subtitleInputPath,
           outputPort: subtitleInputPort,
+          preRollMs: this.#subtitlePreRollMs,
           request,
         });
       } else {
@@ -468,7 +562,7 @@ export class PlayoutSupervisor {
         ? { ...request.endpoint.mpegTs }
         : { ...defaultMpegTsOutputSettings },
     };
-    const command = await this.#buildScriptedFfmpegCommand(request, {
+    const command = this.#buildRollingEncoderCommand(request, {
       forceKeyFramesSeconds: request.scte35.enabled
         ? this.#cues.map((cue) => cue.programTimeSeconds)
         : undefined,
@@ -493,53 +587,26 @@ export class PlayoutSupervisor {
     this.#applyCommandStatus(command.totalDurationSeconds, tsduck.endpointLabel);
   }
 
-  async #buildScriptedFfmpegCommand(
+  #buildRollingEncoderCommand(
     request: StartPlayoutRequest,
     options: FfmpegCommandOptions,
-  ): Promise<FfmpegCommand> {
-    const filterScriptPath = path.join(
-      this.previewDirectory,
-      `ffmpeg-filter-${this.#status.schedulePhase}-${this.#status.loopCount}.txt`,
+  ): FfmpegCommand {
+    const firstItem = this.#items[0];
+    if (!firstItem) throw new Error("Playlist is empty");
+    const totalDurationSeconds = this.#items.reduce(
+      (total, item) => total + item.durationSeconds,
+      0,
     );
-    let command = buildFfmpegCommand(
+    const command = buildFfmpegProgramEncoderCommand(
       request,
-      this.#items,
+      firstItem,
       this.previewDirectory,
-      { ...options, filterComplexScriptPath: filterScriptPath },
+      totalDurationSeconds,
+      options,
     );
-    let commandLineCharacters = estimateCommandLineCharacters(
-      this.capabilities.ffmpegPath,
-      command.args,
-    );
-    if (commandLineCharacters > windowsCommandLineSafetyLimit) {
-      command = buildFfmpegCommand(
-        request,
-        this.#items,
-        this.previewDirectory,
-        {
-          ...options,
-          embedInputSourcesInFilterGraph: true,
-          filterComplexScriptPath: filterScriptPath,
-        },
-      );
-      commandLineCharacters = estimateCommandLineCharacters(
-        this.capabilities.ffmpegPath,
-        command.args,
-      );
-    }
-    await writeFile(filterScriptPath, command.filterGraph, "utf8");
-    if (process.platform === "win32" && commandLineCharacters > windowsCommandLineSafetyLimit) {
-      throw new PlayoutPreflightError(
-        `The playlist still requires a ${commandLineCharacters}-character FFmpeg command after ` +
-          `moving filter and input sources to a script. Reduce the number of SCTE-35 keyframes ` +
-          `or split the schedule; the safe Windows limit is ${windowsCommandLineSafetyLimit} characters.`,
-      );
-    }
     this.#appendEvent(
-      `FFmpeg graph prepared for ${this.#items.length} clip(s): ` +
-        `${formatKibibytes(Buffer.byteLength(command.filterGraph, "utf8"))} KiB script, ` +
-        `${commandLineCharacters} command characters, ` +
-        `${command.inputSourcesEmbedded ? "media paths embedded" : "direct media inputs"}`,
+      `Rolling playout prepared: persistent encoder, one active clip and one prefetched clip; ` +
+        `${this.#items.length} total clip(s) stay outside the encoder command line`,
     );
     return command;
   }
@@ -642,6 +709,7 @@ export class PlayoutSupervisor {
     this.#status.currentItemId = this.#items[currentIndex]?.id ?? null;
     this.#status.currentItemName = this.#items[currentIndex]?.name ?? null;
     const currentDuration = this.#items[currentIndex]?.durationSeconds ?? 0;
+    this.#status.currentItemDurationSeconds = currentDuration;
     this.#status.currentItemElapsedSeconds = Math.min(
       currentDuration,
       Math.max(0, this.#status.outTimeSeconds - elapsed),
@@ -669,7 +737,15 @@ export class PlayoutSupervisor {
     this.#logBuffer = lines.pop() ?? "";
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed) this.#appendLog(redactSecrets(trimmed, this.#request));
+      const audioLevel = trimmed.match(/^lavfi\.astats\.Overall\.RMS_level=(-?inf|-?\d+(?:\.\d+)?)$/i);
+      if (audioLevel) {
+        const value = Number(audioLevel[1]);
+        this.#status.audioLevelDbfs = Number.isFinite(value)
+          ? Math.max(-120, Math.min(12, value))
+          : -120;
+      } else if (trimmed && !/^frame:\d+\s+pts:/i.test(trimmed)) {
+        this.#appendLog(redactSecrets(trimmed, this.#request));
+      }
     }
   }
 
@@ -814,6 +890,7 @@ export class PlayoutSupervisor {
     const wasStopping = this.#status.state === "stopping";
     const failedByInjector = this.#status.state === "failed";
     this.#child = null;
+    this.#terminateClipProducers();
     this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
     this.#terminateTransportPreview();
@@ -931,6 +1008,7 @@ export class PlayoutSupervisor {
     this.#status.stoppedAt = new Date().toISOString();
     this.#status.error = error.message;
     this.#appendEvent(`FFmpeg process error: ${error.message}`);
+    this.#terminateClipProducers();
     this.#terminateDvbSubtitles();
     this.#terminateTsdDuck();
     this.#terminateTransportPreview();
@@ -940,24 +1018,140 @@ export class PlayoutSupervisor {
     if (this.#commandArgs.length === 0) throw new Error("FFmpeg command is not prepared");
     const child = spawn(this.capabilities.ffmpegPath, this.#commandArgs, {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+    }) as ChildProcessWithoutNullStreams;
     this.#child = child;
     this.#progressBuffer = "";
     this.#logBuffer = "";
     this.#lastLoggedFrame = -1;
     this.#lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
     this.#lastConsoleItemIndex = -1;
+    const handleInputPipeError = (error: NodeJS.ErrnoException) => {
+      // The renderer can still have one buffered raw frame when the encoder
+      // closes at loop drain/stop. EPIPE is expected during that hand-off.
+      if (error.code !== "EPIPE") this.#handleProcessError(error);
+    };
+    child.stdin.on("error", handleInputPipeError);
+    (child.stdio[3] as Writable | null)?.on("error", handleInputPipeError);
     child.stdout.on("data", (chunk: Buffer) => this.#readProgress(chunk));
     child.stderr.on("data", (chunk: Buffer) => this.#readLogs(chunk));
     child.once("spawn", () => {
       if (this.#child !== child) return;
       this.#status.state = "running";
       this.#appendEvent(`FFmpeg started with PID ${child.pid ?? "unknown"}`);
+      try {
+        this.#activateClipProducer(this.#spawnClipProducer(0), 0);
+      } catch (error) {
+        this.#handleProcessError(
+          error instanceof Error ? error : new Error("Failed to start clip renderer"),
+        );
+        child.kill("SIGTERM");
+      }
     });
     child.once("close", (code, signal) => this.#handleFfmpegClose(code, signal));
     child.once("error", (error) => this.#handleProcessError(error));
     return child;
+  }
+
+  #spawnClipProducer(index: number): ChildProcessWithoutNullStreams {
+    const request = this.#request;
+    const item = this.#items[index];
+    if (!request || !item) throw new Error(`Clip ${index + 1} is not prepared`);
+    const command = buildFfmpegClipProducerCommand(request, item, this.previewDirectory);
+    const child = spawn(this.capabilities.ffmpegPath, command.args, {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+    }) as ChildProcessWithoutNullStreams;
+    let logBuffer = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      logBuffer += chunk.toString("utf8");
+      const lines = logBuffer.split(/\r?\n/);
+      logBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const message = line.trim();
+        if (message) this.#appendLog(`Clip ${index + 1}: ${message}`);
+      }
+    });
+    child.once("error", (error) => this.#handleClipProducerError(child, index, error));
+    child.once("close", (code, signal) => {
+      this.#handleClipProducerClose(child, index, code, signal);
+    });
+    return child;
+  }
+
+  #activateClipProducer(child: ChildProcessWithoutNullStreams, index: number): void {
+    const encoder = this.#child;
+    if (!encoder) throw new Error("Persistent encoder is not running");
+    const audioOutput = child.stdio[3] as Readable | null;
+    const audioInput = encoder.stdio[3] as Writable | null;
+    if (!audioOutput || !audioInput) throw new Error("FFmpeg raw audio pipe is unavailable");
+    this.#producerChild = child;
+    child.stdout.pipe(encoder.stdin, { end: false });
+    audioOutput.pipe(audioInput, { end: false });
+    this.#appendEvent(
+      `Clip renderer ${index + 1}/${this.#items.length} started with PID ` +
+        `${child.pid ?? "unknown"}: "${this.#items[index]?.name ?? "unknown"}"`,
+    );
+    const nextIndex = index + 1;
+    this.#prefetchedProducerChild = nextIndex < this.#items.length
+      ? this.#spawnClipProducer(nextIndex)
+      : null;
+    if (this.#prefetchedProducerChild) {
+      this.#appendEvent(`Clip ${nextIndex + 1} prefetched and waiting on the local pipe`);
+    }
+  }
+
+  #handleClipProducerClose(
+    child: ChildProcessWithoutNullStreams,
+    index: number,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.#expectedProducerStops.has(child)) return;
+    if (this.#prefetchedProducerChild === child && this.#producerChild !== child) {
+      if (code !== 0) {
+        this.#handleClipProducerError(
+          child,
+          index,
+          new Error(`prefetch exited with ${code ?? signal ?? "unknown"}`),
+        );
+      }
+      return;
+    }
+    if (this.#producerChild !== child) return;
+    this.#producerChild = null;
+    if (code !== 0) {
+      this.#handleClipProducerError(
+        child,
+        index,
+        new Error(`renderer exited with ${code ?? signal ?? "unknown"}`),
+      );
+      return;
+    }
+    const next = this.#prefetchedProducerChild;
+    this.#prefetchedProducerChild = null;
+    if (next && index + 1 < this.#items.length) {
+      this.#activateClipProducer(next, index + 1);
+      return;
+    }
+    const encoder = this.#child;
+    if (!encoder) return;
+    encoder.stdin.end();
+    (encoder.stdio[3] as Writable | null)?.end();
+    this.#appendEvent("Last clip rendered; draining the persistent encoder");
+  }
+
+  #handleClipProducerError(
+    child: ChildProcessWithoutNullStreams,
+    index: number,
+    error: Error,
+  ): void {
+    if (this.#expectedProducerStops.has(child) || this.#status.state === "stopping") return;
+    this.#status.state = "failed";
+    this.#status.error = `Clip ${index + 1} renderer failed: ${error.message}`;
+    this.#appendEvent(this.#status.error);
+    this.#terminateClipProducers();
+    this.#child?.kill("SIGTERM");
   }
 
   async #spawnTsdDuck(): Promise<void> {
@@ -1116,7 +1310,8 @@ export class PlayoutSupervisor {
       `DVB subtitle encoder started with PID ${child.pid ?? "unknown"}; ` +
         `${this.#status.subtitles.plannedCues} cue(s) on TS PID ${this.#request?.subtitleOutput.pid}, ` +
         `language ${this.#request?.subtitleOutput.language}, page IDs 1/1, ` +
-        `PTS offset ${this.#request?.subtitleOutput.ptsOffsetMs ?? 0} ms`,
+        `PES pre-roll ${this.#subtitlePreRollMs} ms, ` +
+        `operator PTS offset ${this.#request?.subtitleOutput.ptsOffsetMs ?? 0} ms`,
     );
   }
 
@@ -1239,7 +1434,27 @@ export class PlayoutSupervisor {
   #terminateFfmpeg(): void {
     const child = this.#child;
     this.#child = null;
+    this.#terminateClipProducers();
     child?.kill("SIGTERM");
+  }
+
+  #terminateClipProducers(): void {
+    const producers = [this.#producerChild, this.#prefetchedProducerChild]
+      .filter((child): child is ChildProcessWithoutNullStreams => Boolean(child));
+    this.#producerChild = null;
+    this.#prefetchedProducerChild = null;
+    for (const child of producers) this.#terminateClipProducer(child);
+  }
+
+  #terminateClipProducer(child: ChildProcessWithoutNullStreams): void {
+    this.#expectedProducerStops.add(child);
+    child.stdout.destroy();
+    (child.stdio[3] as Readable | null)?.destroy();
+    child.stdin.destroy();
+    child.kill("SIGTERM");
+    const forceKill = setTimeout(() => child.kill("SIGKILL"), 1_000);
+    forceKill.unref();
+    child.once("close", () => clearTimeout(forceKill));
   }
 
   #resetLoopProgress(): void {
@@ -1247,6 +1462,7 @@ export class PlayoutSupervisor {
     this.#status.currentItemId = this.#items[0]?.id ?? null;
     this.#status.currentItemName = this.#items[0]?.name ?? null;
     this.#status.currentItemElapsedSeconds = 0;
+    this.#status.currentItemDurationSeconds = this.#items[0]?.durationSeconds ?? 0;
     this.#status.currentItemProgressPercent = 0;
     this.#status.outTimeSeconds = 0;
     this.#status.progressPercent = 0;
@@ -1573,6 +1789,7 @@ function idleStatus(): PlayoutStatus {
     currentItemId: null,
     currentItemName: null,
     currentItemElapsedSeconds: 0,
+    currentItemDurationSeconds: 0,
     currentItemProgressPercent: 0,
     totalItems: 0,
     outTimeSeconds: 0,
@@ -1581,6 +1798,7 @@ function idleStatus(): PlayoutStatus {
     frame: 0,
     fps: 0,
     bitrateKbps: 0,
+    audioLevelDbfs: null,
     transportBitrateBps: null,
     transportBitrateMode: null,
     continuityErrors: 0,
@@ -1635,12 +1853,22 @@ export function shouldTransitionToFutureSchedule(request: StartPlayoutRequest): 
   return !request.repeatPlaylist && request.nextPlaylist.length > 0;
 }
 
-export function estimateCommandLineCharacters(command: string, args: string[]): number {
-  return command.length + args.reduce((total, argument) => total + argument.length + 3, 1);
+function assertPlaylistPrefixUnchanged(
+  current: ReadonlyArray<{ id: string }>,
+  replacement: ReadonlyArray<{ id: string }>,
+  activeIndex: number,
+): void {
+  for (let index = 0; index <= activeIndex; index += 1) {
+    if (current[index]?.id !== replacement[index]?.id) {
+      throw new PlayoutConflictError(
+        "HOT CHANGE cannot remove or reorder the on-air and already played clips",
+      );
+    }
+  }
 }
 
-function formatKibibytes(bytes: number): string {
-  return (bytes / 1_024).toFixed(1);
+export function estimateCommandLineCharacters(command: string, args: string[]): number {
+  return command.length + args.reduce((total, argument) => total + argument.length + 3, 1);
 }
 
 function formatMbps(bitrateBps: number): string {

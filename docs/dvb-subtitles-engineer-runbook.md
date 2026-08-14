@@ -1,6 +1,6 @@
 # DVB-субтитры для эфирного инженера
 
-Применимо к FluxIO **v6.0.17**, однопрограммному UDP/SRT MPEG-TS.
+Применимо к FluxIO **v6.0.18**, однопрограммному UDP/SRT MPEG-TS.
 
 ## Назначение
 
@@ -96,6 +96,11 @@ hearing-impaired HD — `0x24`.
 - TSDuck после merge проверяет video и subtitle PID через `pcrextract`; каждый
   найденный subtitle PES с PTS увеличивает `Observed subtitle PES` в Encoding
   Monitor;
+- FluxIO передаёт subtitle PES до 2000 ms раньше его экранного времени, но
+  сохраняет исходный presentation PTS. Pre-roll автоматически ограничивается
+  временем первого cue, чтобы ранний титр не получил неверный PTS;
+- PCR удаляется из merged subtitle PID: единственным опорным PCR остаётся
+  program video PID. Это устраняет ложный `PCR_accuracy_error` на PID 288;
 - первый subtitle PTS сравнивается с `Video PTS origin + start первого SRT cue
   + PTS offset`; допустимое отклонение — `±250 ms`.
 
@@ -181,6 +186,10 @@ subtitle PTS и `clock error`. Разница примерно `+01:00:00` оз�
 сборку media-service без общей временной базы: обновить и пересобрать FluxIO.
 Небольшое постоянное отклонение можно компенсировать `PTS offset`; значение не
 исправляет индивидуальные ошибки тайминга внутри SRT.
+
+`PCR_accuracy_error` относится к subtitle PID — проверить, что используется
+v6.0.18 или новее. В этой версии TSDuck снимает PCR flag с PID DVB subtitles;
+PCR должен анализироваться на video PID программы.
 
 Текст идёт раньше/позже при `Subtitle clock = Aligned` — начать с
 `PTS offset = 0 ms` и изменять его небольшими шагами только после измерения на

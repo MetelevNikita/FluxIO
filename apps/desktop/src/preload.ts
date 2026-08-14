@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
   saveScheduleFile: (input: {
     content: string;
     defaultName: string;
-    extension: "air" | "txt";
+    extension: "txt";
   }): Promise<string | null> =>
     ipcRenderer.invoke(SAVE_SCHEDULE_FILE_CHANNEL, input) as Promise<string | null>,
   saveEncodingSettingsFile: (input: {

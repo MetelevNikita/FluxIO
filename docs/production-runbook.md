@@ -173,7 +173,8 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
 10. Подготовить головную станцию.
 11. Нажать `Start Stream`.
 12. Контролировать живой 16:9 HLS-preview, `Remaining HH:MM:SS`, таймер текущего
-    ролика в Playlist, номер loop, FFmpeg metrics, строки `Transmitted frames` в
+    ролика в Playlist, отдельный `Clip Progress`, live dBFS meter, номер loop,
+    FFmpeg metrics, строки `Transmitted frames` в
     Log Output, `[PLAYOUT] Encoding clip ...` в журнале media-service, SCTE-35
     Injector и DVB Subtitles: state, PID, language, source clips/cues, observed PES/PTS.
 13. Если в Current загружен Future и Repeat выключен, после последнего ролика
@@ -181,6 +182,10 @@ Health должен быть `ready`. `degraded` означает, что `DATAB
     Current и освобождает Future для следующего 168-часового расписания.
     Изменения Future во время эфира синхронизируются на сервер автоматически;
     число подготовленных элементов видно как `Future queued`.
+14. Изменения AGE/LOGO/FX и Burn-in SRT у следующего ролика можно делать во
+    время эфира: строка `HOT CHANGE armed` подтверждает пересборку prefetched
+    renderer. Текущий ролик не меняется задним числом. DVB/SCTE plans требуют
+    Stop/Start.
 
 Для UDP/SRT подпись `Post-TSDuck TS Monitor` означает, что preview декодируется
 из локальной копии финального TS после TSDuck. Строка
@@ -194,6 +199,13 @@ Media-service не пишет HTTP access logs. Во время активног
 ```text
 [PLAYOUT] Encoding clip 2/20 "News.mp4" | frame: 125 | FPS: 25.00 | bitrate: 2628 kbps | speed: 1.00x | time: 00:00:05
 ```
+
+Для стабильной CBR-выдачи `speed` на целевом профиле должен устойчиво быть не
+ниже `1.05x`, а CPU/GPU иметь рабочий запас. `muxrate` и TSDuck `regulate`
+сглаживают готовый TS, но не могут восполнить кадры, если encoder физически
+работает медленнее realtime. При `speed < 1.00x` сначала уменьшите сложность
+preset/preview, включите подходящий аппаратный encoder в будущей версии либо
+используйте более производительный сервер.
 
 На Linux эти строки видны через `journalctl -u gruber-media.service -f`, на
 macOS — в `media-service.log`; при foreground-запуске — прямо в terminal.
@@ -288,7 +300,7 @@ node setup.mjs
 
 Мастер повторно применит только новые Prisma migrations, пересоберёт приложение и перезапустит background service. Перед production update необходимо штатно остановить эфир и сделать PostgreSQL backup.
 
-Версия текущего этапа — `v6.0.17`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
+Версия текущего этапа — `v6.0.18`. Каждый следующий завершённый update увеличивает patch на единицу; подробности — в `docs/versioning.md`.
 
 ### Обновление без доступа к интернету
 

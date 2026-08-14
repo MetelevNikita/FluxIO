@@ -1,6 +1,6 @@
 # Графика, FX-слои и SRT-субтитры
 
-Применимо к FluxIO **v6.0.17**.
+Применимо к FluxIO **v6.0.18**.
 
 В раскрытой строке ролика вторичные функции расположены отдельным нижним рядом:
 сначала `SRT`, затем селектор `FX`, затем уже назначенные эффекты слева направо.
@@ -153,9 +153,11 @@ DVB: VIDEO → AGE → Channel LOGO → FX → video PID
 
 Последний FX находится сверху. Результат идёт одновременно в program output и HLS monitoring preview.
 
-## 6. Ограничения v6.0.17
+## 6. Ограничения v6.0.18
 
-- изменения FX активного filter graph применяются при следующем Start/Take;
+- изменения AGE/LOGO/FX/SRT текущего ролика не меняют уже закодированные кадры;
+  изменения следующего и более поздних роликов автоматически уходят на
+  media-service и применяются при старте соответствующего clip-renderer;
 - BG и title-файлы должны оставаться доступными по сохранённым абсолютным путям;
 - для прозрачной анимации рекомендуется MOV с alpha codec, поддерживаемым установленным FFmpeg;
 - DVB subtitles доступны только в UDP/SRT MPEG-TS; RTMP/RTMPS использует Burn-in;
@@ -168,12 +170,12 @@ DVB: VIDEO → AGE → Channel LOGO → FX → video PID
 
 ## 7. Импорт и экспорт вместе с расписанием
 
-`Save schedule` сохраняет FX-слои и SRT текущего Playlist. При повторном
-импорте FluxIO восстанавливает порядок слоёв, `startOn`, длительность и явный
-путь к субтитрам:
+`Save .TXT` сохраняет FX-слои и SRT текущего Playlist. При повторном
+импорте FluxIO восстанавливает порядок слоёв, значения Lottie text fields,
+`startOn`, `endOn` и явный путь к субтитрам:
 
 ```text
-insertGraphicElement_{Lower Third} backgroundPath {/media/fx/lower.mov} titlePath {/media/fx/titles/Programme.png} duration {00:00:05.00} startOn {00:00:12.50}
+insertGraphicElement_{Lower Third} backgroundPath {/media/fx/lower.mov} titlePath {/media/fx/titles/Programme.png} titlePath#1 {Programme} titlePath#2 {16+} duration {00:00:05.00} startOn {00:00:12.50} endOn {00:00:17.50}
 insertSRT {/media/subtitles/Programme.srt}
 movie 00:25:15.00 /media/Programme.mp4
 ```

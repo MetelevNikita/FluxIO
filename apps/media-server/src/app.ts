@@ -18,7 +18,9 @@ import {
   serviceHealthSchema,
   startPlayoutRequestSchema,
   startClipPreviewRequestSchema,
+  startCompositeClipPreviewRequestSchema,
   systemMetricsSchema,
+  updateCurrentPlaylistRequestSchema,
   updateNextPlaylistRequestSchema,
   workspaceSessionSaveRequestSchema,
   type ServiceHealth,
@@ -46,7 +48,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.17";
+const serviceVersion = "6.0.18";
 const workspaceCheckpointIntervalMs = 5_000;
 const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
 
@@ -268,6 +270,15 @@ export function buildApp(options: FastifyServerOptions = {}) {
     }
   });
 
+  app.post("/api/media/clip-preview/composite", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
+    try {
+      const body = startCompositeClipPreviewRequestSchema.parse(request.body);
+      return await mediaPreview.startComposite(body.request, body.startSeconds);
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post("/api/media/clip-preview/stop", async () => {
     await mediaPreview.stop();
     return { stopped: true };
@@ -361,6 +372,21 @@ export function buildApp(options: FastifyServerOptions = {}) {
     } catch (error) {
       if (error instanceof PlayoutConflictError) {
         return reply.code(409).send({ error: error.message });
+      }
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.put("/api/playout/playlist", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
+    try {
+      const body = updateCurrentPlaylistRequestSchema.parse(request.body);
+      return await playout.updatePlaylist(body.playlist);
+    } catch (error) {
+      if (error instanceof PlayoutConflictError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      if (error instanceof PlayoutPreflightError) {
+        return reply.code(400).send({ error: error.message });
       }
       return reply.code(400).send({ error: errorMessage(error) });
     }

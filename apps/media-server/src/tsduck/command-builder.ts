@@ -92,6 +92,17 @@ export function buildTsdDuckCommand({
       "4096",
       buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
       "-P",
+      "filter",
+      "--pid",
+      String(request.subtitleOutput.pid),
+      "--set-label",
+      "31",
+      "-P",
+      "craft",
+      "--only-label",
+      "31",
+      "--no-pcr",
+      "-P",
       "pcrextract",
       "--pid",
       String(videoPid),
@@ -155,7 +166,7 @@ export function buildTsdDuckCommand({
     monitoredPids.push(request.subtitleOutput.pid);
   }
   if (monitoredPids.length > 0) {
-    args.push("-P", "continuity");
+    args.push("-P", "continuity", "--fix");
     for (const monitoredPid of monitoredPids) {
       args.push("--pid", String(monitoredPid));
     }

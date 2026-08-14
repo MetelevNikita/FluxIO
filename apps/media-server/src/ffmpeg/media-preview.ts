@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ClipPreviewSession } from "@gruber/contracts";
+import type { ClipPreviewSession, StartPlayoutRequest } from "@gruber/contracts";
+import { buildFfmpegCompositePreviewCommand, type PreparedPlayoutItem } from "./command-builder.js";
 import { runCommand } from "./process.js";
 
 interface RegisteredMedia {
@@ -80,10 +81,6 @@ export class MediaPreviewService {
     const offsetSeconds = Math.min(Math.max(0, startSeconds), maximumStart);
     const sessionId = randomUUID();
     const directory = path.join(this.rootDirectory, "sessions", sessionId);
-    const manifestPath = path.join(directory, "index.m3u8");
-    const firstSegmentPath = path.join(directory, "segment-000000.ts");
-    await mkdir(directory, { recursive: true });
-
     const args = [
       "-hide_banner",
       "-nostdin",
@@ -135,8 +132,62 @@ export class MediaPreviewService {
       "independent_segments+append_list+temp_file",
       "-hls_segment_filename",
       path.join(directory, "segment-%06d.ts"),
-      manifestPath,
+      path.join(directory, "index.m3u8"),
     ];
+    return this.#launchPreview(args, sessionId, directory, offsetSeconds);
+  }
+
+  async startComposite(
+    request: StartPlayoutRequest,
+    startSeconds: number,
+  ): Promise<ClipPreviewSession> {
+    const source = request.playlist[0];
+    if (!source) throw new Error("Composite preview requires one playlist item");
+    const media = await this.#resolveRegistered(source.filePath);
+    await this.stop();
+    const sourceDuration = source.sourceDurationSeconds ?? media.durationSeconds;
+    const clipEnd = Math.min(source.trimOutSeconds ?? sourceDuration, sourceDuration);
+    const clipDuration = Math.max(0.1, clipEnd - source.trimInSeconds);
+    const offsetSeconds = Math.min(Math.max(0, startSeconds), clipDuration - 0.1);
+    const item: PreparedPlayoutItem = {
+      ageTitle: source.ageTitle?.enabled && offsetSeconds < source.ageTitle.durationSeconds
+        ? { ...source.ageTitle, durationSeconds: source.ageTitle.durationSeconds - offsetSeconds }
+        : undefined,
+      durationSeconds: clipDuration - offsetSeconds,
+      effects: source.effects?.flatMap((effect) => {
+        const start = effect.startSeconds - offsetSeconds;
+        const end = effect.endSeconds - offsetSeconds;
+        return end > 0
+          ? [{ ...effect, startSeconds: Math.max(0, start), endSeconds: end }]
+          : [];
+      }),
+      filePath: media.filePath,
+      hasAudio: source.hasAudio ?? true,
+      id: source.id,
+      itemLogo: source.itemLogo?.enabled ? source.itemLogo : undefined,
+      name: source.name,
+      subtitles: source.subtitles?.enabled ? source.subtitles : undefined,
+      trimInSeconds: source.trimInSeconds + offsetSeconds,
+    };
+    const sessionId = randomUUID();
+    const directory = path.join(this.rootDirectory, "sessions", sessionId);
+    const command = buildFfmpegCompositePreviewCommand(
+      { ...request, playlist: [source], nextPlaylist: [], repeatPlaylist: false },
+      item,
+      directory,
+    );
+    return this.#launchPreview(command.args, sessionId, directory, offsetSeconds);
+  }
+
+  async #launchPreview(
+    args: string[],
+    sessionId: string,
+    directory: string,
+    offsetSeconds: number,
+  ): Promise<ClipPreviewSession> {
+    const manifestPath = path.join(directory, "index.m3u8");
+    const firstSegmentPath = path.join(directory, "segment-000000.ts");
+    await mkdir(directory, { recursive: true });
     const child = spawn(this.ffmpegPath, args, {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],

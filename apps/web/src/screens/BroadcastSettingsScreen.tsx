@@ -910,6 +910,13 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
     0,
     (status?.totalDurationSeconds ?? 0) - (status?.outTimeSeconds ?? 0),
   );
+  const clipProgress = status?.currentItemProgressPercent ?? 0;
+  const clipRemainingSeconds = Math.max(
+    0,
+    (status?.currentItemDurationSeconds ?? 0) - (status?.currentItemElapsedSeconds ?? 0),
+  );
+  const audioLevelDbfs = status?.audioLevelDbfs ?? -60;
+  const audioLevelPercent = Math.max(0, Math.min(100, (audioLevelDbfs + 60) / 60 * 100));
   return (
     <aside className="encoding-monitor">
       <div className="monitor-heading">
@@ -920,6 +927,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
       </div>
 
       <div className="monitor-preview-card">
+        <div className="monitor-preview-layout">
         <div className="monitor-preview">
           <LivePreview
             active={active}
@@ -943,6 +951,20 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
           <span className="monitor-remaining">
             Remaining {formatMonitorTime(remainingSeconds)}
           </span>
+        </div>
+        <div
+          aria-label="Live programme audio level"
+          aria-valuemax={0}
+          aria-valuemin={-60}
+          aria-valuenow={Math.max(-60, audioLevelDbfs)}
+          className="live-audio-meter"
+          role="meter"
+        >
+          <span>LEVEL</span>
+          <div><i style={{ height: `${audioLevelPercent}%` }} /></div>
+          <strong>{status?.audioLevelDbfs == null ? "−∞" : audioLevelDbfs.toFixed(1)}</strong>
+          <small>dBFS</small>
+        </div>
         </div>
         <div className="monitor-preview-meta">
           <strong>{status?.currentItemName ?? "Waiting for playout"}</strong>
@@ -974,6 +996,34 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
             <div className="job-meta">
               <span>Clip {(status?.currentItemIndex ?? 0) + 1} / {status?.totalItems ?? 0}</span>
               <span>Remaining {formatMonitorTime(remainingSeconds)}</span>
+            </div>
+          </div>
+        </div>
+      </MonitorCard>
+
+      <MonitorCard
+        action={<span className="muted">{formatMonitorTime(clipRemainingSeconds)} left</span>}
+        title="Clip Progress"
+      >
+        <div className="encoding-jobs">
+          <div className="encoding-job">
+            <div>
+              <strong>{status?.currentItemName ?? "No active clip"}</strong>
+              <b>{clipProgress.toFixed(1)}%</b>
+            </div>
+            <div
+              className="job-progress"
+              aria-label="Clip progress"
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={clipProgress}
+              role="progressbar"
+            >
+              <span style={{ width: `${clipProgress}%` }} />
+            </div>
+            <div className="job-meta">
+              <span>{formatMonitorTime(status?.currentItemElapsedSeconds ?? 0)}</span>
+              <span>{formatMonitorTime(status?.currentItemDurationSeconds ?? 0)}</span>
             </div>
           </div>
         </div>

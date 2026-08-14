@@ -35,7 +35,11 @@ import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
-import { assignEffectToAssets } from "./effect-assignment";
+import {
+  appendLottieEffectInstances,
+  assignEffectToAssets,
+  lottieTextValues,
+} from "./effect-assignment";
 import { mediaPath } from "./runtime";
 import {
   getFfmpegCapabilities,
@@ -53,9 +57,11 @@ import {
   serializeScheduleFile,
   saveWorkspaceSession as persistWorkspaceSession,
   deleteWorkspaceSession as deletePersistedWorkspaceSession,
+  startCompositeClipPreview as startCompositeClipPreviewSession,
   startPlayout as startPlayoutSession,
   stopPlayout as stopPlayoutSession,
   takePlayout as takePlayoutSession,
+  updateCurrentPlayoutPlaylist,
   updateNextPlayoutPlaylist,
 } from "./media-api";
 import type {
@@ -131,6 +137,7 @@ export function App() {
   const workspaceRestoreStarted = useRef(false);
   const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
   const schedulePromotionHandled = useRef("");
+  const currentPlaylistSync = useRef({ sessionId: "", snapshot: "" });
 
   useEffect(() => {
     let cancelled = false;
@@ -349,6 +356,40 @@ export function App() {
   }, [
     workspaceAutosaveReady,
     futurePlaylist,
+    playoutStatus?.sessionId,
+    playoutStatus?.schedulePhase,
+    playoutStatus?.state,
+  ]);
+
+  useEffect(() => {
+    if (
+      !workspaceAutosaveReady ||
+      !playoutStatus?.sessionId ||
+      playoutStatus.schedulePhase !== "current" ||
+      !["starting", "running"].includes(playoutStatus.state)
+    ) {
+      return;
+    }
+    const snapshot = JSON.stringify(buildPlayoutItems(playlist));
+    if (currentPlaylistSync.current.sessionId !== playoutStatus.sessionId) {
+      currentPlaylistSync.current = { sessionId: playoutStatus.sessionId, snapshot };
+      return;
+    }
+    if (currentPlaylistSync.current.snapshot === snapshot) return;
+    const timer = window.setTimeout(() => {
+      void updateCurrentPlayoutPlaylist(buildPlayoutItems(playlist))
+        .then((status) => {
+          currentPlaylistSync.current = { sessionId: status.sessionId ?? "", snapshot };
+          setPlayoutStatus(status);
+        })
+        .catch((error) => setOperationError(
+          `On-air schedule sync failed: ${errorMessage(error)}`,
+        ));
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [
+    workspaceAutosaveReady,
+    playlist,
     playoutStatus?.sessionId,
     playoutStatus?.schedulePhase,
     playoutStatus?.state,
@@ -584,6 +625,7 @@ export function App() {
               sourceDurationSeconds: libraryEffect?.durationSeconds ?? element.durationSeconds,
               startSeconds,
               titlePath: element.titlePath,
+              titlePaths: element.titlePaths,
             };
           }),
           subtitles: item.srtPath
@@ -886,7 +928,10 @@ export function App() {
     setOperationError(null);
     try {
       const imported = await load();
-      setEffectLibrary((current) => mergeEffectAssets(current, imported));
+      setEffectLibrary((current) => appendLottieEffectInstances(
+        mergeEffectAssets(current, imported.filter((effect) => !effect.lottie)),
+        imported.filter((effect) => Boolean(effect.lottie)),
+      ));
       setEffectsMessage(`${imported.length} effect(s) analyzed and added to this project.`);
     } catch (error) {
       setOperationError(errorMessage(error));
@@ -911,6 +956,7 @@ export function App() {
               filePath: rendered.filePath,
               kind: rendered.kind,
               sourceDurationSeconds: rendered.durationSeconds,
+              titlePaths: lottieTextValues(rendered),
             }
           : layer),
       }));
@@ -950,6 +996,7 @@ export function App() {
                 filePath: rendered.filePath,
                 kind: rendered.kind,
                 sourceDurationSeconds: rendered.durationSeconds,
+                titlePaths: lottieTextValues(rendered),
               }
             : layer;
         }),
@@ -1261,9 +1308,11 @@ export function App() {
           graphicElements: (asset.effects ?? []).map((effect) => ({
             backgroundPath: effect.backgroundPath ?? effect.filePath,
             durationSeconds: effect.endSeconds - effect.startSeconds,
+            endOnSeconds: effect.endSeconds,
             name: effect.name,
             startOnSeconds: effect.startSeconds,
             titlePath: effect.titlePath ?? null,
+            titlePaths: effect.titlePaths,
           })),
           srtPath: asset.subtitles?.enabled ? asset.subtitles.filePath : null,
         })),
@@ -1301,7 +1350,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.17",
+        connection.kind === "ready" ? connection.health.version : "6.0.18",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1428,6 +1477,13 @@ export function App() {
     } finally {
       setTakeBusy(false);
     }
+  }
+
+  async function startCompositePreview(asset: MediaAsset, startSeconds: number) {
+    return startCompositeClipPreviewSession(
+      buildStartRequest([asset], settings, []),
+      startSeconds,
+    );
   }
 
   async function startPlayout(mode: "default" | "resume" | "beginning" = "default") {
@@ -1576,6 +1632,7 @@ export function App() {
             onLogoSettingsChange={updateScheduleLogoSettings}
             onClearStartMarker={clearStartMarker}
             onStartFromItem={startFromPlaylistItem}
+            onStartCompositePreview={startCompositePreview}
           />
         ) : (
           <EmptyPlaylist

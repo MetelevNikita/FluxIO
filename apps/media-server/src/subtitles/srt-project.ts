@@ -12,6 +12,7 @@ export interface DvbSubtitleProject {
   cueCount: number;
   sourceItems: number;
   firstCueStartSeconds: number | null;
+  preRollSeconds: number;
 }
 
 export function parseSrt(content: string): SrtCue[] {
@@ -37,36 +38,62 @@ export function parseSrt(content: string): SrtCue[] {
 
 export async function buildDvbSubtitleProject(
   items: PreparedPlayoutItem[],
+  preRollSeconds = 0,
 ): Promise<DvbSubtitleProject> {
-  const programCues: SrtCue[] = [];
-  let programOffset = 0;
-  let sourceItems = 0;
-
+  const offsets: number[] = [];
+  let offset = 0;
   for (const item of items) {
-    if (item.subtitles?.enabled && item.subtitles.filePath) {
-      const source = await readFile(item.subtitles.filePath, "utf8");
-      const clipStart = item.trimInSeconds;
-      const cues = parseSrt(source)
+    offsets.push(offset);
+    offset += item.durationSeconds;
+  }
+  const cueGroups = new Array<SrtCue[]>(items.length).fill([]);
+  const subtitleReadConcurrency = 8;
+  for (let start = 0; start < items.length; start += subtitleReadConcurrency) {
+    await Promise.all(items.slice(start, start + subtitleReadConcurrency).map(async (item, localIndex) => {
+      const index = start + localIndex;
+      if (!item.subtitles?.enabled || !item.subtitles.filePath) return;
+      const source = decodeSubtitleBuffer(await readFile(item.subtitles.filePath));
+      const programOffset = offsets[index] ?? 0;
+      cueGroups[index] = parseSrt(source)
         .map((cue) => ({
-          startSeconds: programOffset + Math.max(0, cue.startSeconds - clipStart),
-          endSeconds: programOffset + Math.min(item.durationSeconds, cue.endSeconds - clipStart),
+          startSeconds: programOffset + Math.max(0, cue.startSeconds - item.trimInSeconds),
+          endSeconds: programOffset + Math.min(
+            item.durationSeconds,
+            cue.endSeconds - item.trimInSeconds,
+          ),
           text: cue.text,
         }))
-        .filter((cue) => cue.endSeconds > programOffset && cue.endSeconds > cue.startSeconds);
-      if (cues.length > 0) {
-        sourceItems += 1;
-        programCues.push(...cues);
-      }
-    }
-    programOffset += item.durationSeconds;
+        .filter((cue) => cue.endSeconds > cue.startSeconds);
+    }));
   }
+  const programCues = cueGroups.flat();
+  const sourceItems = cueGroups.filter((cues) => cues.length > 0).length;
+  const firstCueStartSeconds = programCues[0]?.startSeconds ?? null;
 
+  const effectivePreRollSeconds = Math.min(
+    Math.max(0, preRollSeconds),
+    firstCueStartSeconds ?? 0,
+  );
+  const transmittedCues = programCues.map((cue) => ({
+    ...cue,
+    endSeconds: cue.endSeconds - effectivePreRollSeconds,
+    startSeconds: cue.startSeconds - effectivePreRollSeconds,
+  }));
   return {
-    content: serializeSrt(programCues),
+    content: serializeSrt(transmittedCues),
     cueCount: programCues.length,
     sourceItems,
-    firstCueStartSeconds: programCues[0]?.startSeconds ?? null,
+    firstCueStartSeconds,
+    preRollSeconds: effectivePreRollSeconds,
   };
+}
+
+export function decodeSubtitleBuffer(buffer: Uint8Array): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    return new TextDecoder("windows-1251").decode(buffer);
+  }
 }
 
 export function serializeSrt(cues: SrtCue[]): string {

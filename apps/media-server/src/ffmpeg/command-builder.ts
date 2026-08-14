@@ -45,6 +45,116 @@ export interface FfmpegCommandOptions {
   transportMuxRateBps?: number;
 }
 
+export function buildFfmpegClipProducerCommand(
+  request: StartPlayoutRequest,
+  item: PreparedPlayoutItem,
+  previewDirectory: string,
+): FfmpegCommand {
+  const base = buildFfmpegCommand(request, [item], previewDirectory);
+  const firstMap = base.args.indexOf("-map");
+  const args = base.args.slice(0, firstMap);
+  const progressIndex = args.indexOf("-progress");
+  if (progressIndex >= 0) args.splice(progressIndex, 2);
+  const filterIndex = args.indexOf("-filter_complex");
+  const filterGraph = buildFilterGraph(request, [item], false, false);
+  if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
+  args.push(
+    "-map", "[vprogram]",
+    "-pix_fmt", "yuv420p",
+    "-f", "rawvideo",
+    "pipe:1",
+    "-map", "[aprogram]",
+    "-c:a", "pcm_s16le",
+    "-ar", String(request.audio.sampleRate),
+    "-ac", String(request.audio.channels),
+    "-f", "s16le",
+    "pipe:3",
+  );
+  return { ...base, args, filterGraph };
+}
+
+export function buildFfmpegProgramEncoderCommand(
+  request: StartPlayoutRequest,
+  templateItem: PreparedPlayoutItem,
+  previewDirectory: string,
+  totalDurationSeconds: number,
+  options: FfmpegCommandOptions = {},
+): FfmpegCommand {
+  const base = buildFfmpegCommand(request, [templateItem], previewDirectory, options);
+  const firstMap = base.args.indexOf("-map");
+  const previewMap = base.args.findIndex(
+    (value, index) => value === "-map" && base.args[index + 1] === "[vpreview]",
+  );
+  const finalTransportPreview = request.endpoint.protocol === "udp" ||
+    request.endpoint.protocol === "srt";
+  const audioMeter =
+    `asetpts=PTS-STARTPTS,aresample=${request.audio.sampleRate}:async=1:first_pts=0,` +
+    `asetnsamples=n=${Math.max(1, Math.round(request.audio.sampleRate / 10))}:p=0,` +
+    `astats=metadata=1:reset=1,` +
+    `ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file='pipe\\:2',arealtime`;
+  const filterGraph = finalTransportPreview
+    ? [
+        `[0:v]setpts=PTS-STARTPTS,realtime,` +
+          `setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
+        `[1:a]${audioMeter}[aprogram]`,
+      ].join(";")
+    : [
+        `[0:v]setpts=PTS-STARTPTS,realtime,split=2[vprogrambase][vpreviewbase]`,
+        `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
+        `[1:a]${audioMeter},asplit=2[aprogram][apreview]`,
+        `[vpreviewbase]scale=960:-2:force_original_aspect_ratio=decrease,setsar=1[vpreview]`,
+      ].join(";");
+  const outputArgs = finalTransportPreview && previewMap > firstMap
+    ? base.args.slice(firstMap, previewMap)
+    : base.args.slice(firstMap);
+  const args = [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-loglevel", "warning",
+    "-nostats",
+    "-progress", "pipe:1",
+    "-thread_queue_size", "512",
+    "-f", "rawvideo",
+    "-pixel_format", "yuv420p",
+    "-video_size", `${request.video.width}x${request.video.height}`,
+    "-framerate", decimal(request.video.frameRate),
+    "-i", "pipe:0",
+    "-thread_queue_size", "512",
+    "-f", "s16le",
+    "-ar", String(request.audio.sampleRate),
+    "-ac", String(request.audio.channels),
+    "-i", "pipe:3",
+    "-filter_complex", filterGraph,
+    ...outputArgs,
+  ];
+  return { ...base, args, filterGraph, totalDurationSeconds };
+}
+
+export function buildFfmpegCompositePreviewCommand(
+  request: StartPlayoutRequest,
+  item: PreparedPlayoutItem,
+  previewDirectory: string,
+): FfmpegCommand {
+  const base = buildFfmpegCommand(request, [item], previewDirectory);
+  const firstMap = base.args.indexOf("-map");
+  const previewMap = base.args.findIndex(
+    (value, index) => value === "-map" && base.args[index + 1] === "[vpreview]",
+  );
+  if (firstMap < 0 || previewMap < 0) throw new Error("FFmpeg preview outputs are unavailable");
+  const args = [...base.args.slice(0, firstMap), ...base.args.slice(previewMap)];
+  const startNumberSource = args.indexOf("-hls_start_number_source");
+  if (startNumberSource >= 0) args[startNumberSource + 1] = "generic";
+  const segmentFilename = args.indexOf("-hls_segment_filename");
+  if (segmentFilename >= 0) {
+    args[segmentFilename + 1] = path.join(previewDirectory, "segment-%06d.ts");
+  }
+  return {
+    ...base,
+    args,
+  };
+}
+
 export function buildFfmpegCommand(
   request: StartPlayoutRequest,
   items: PreparedPlayoutItem[],
@@ -214,6 +324,7 @@ function buildFilterGraph(
   request: StartPlayoutRequest,
   items: PreparedPlayoutItem[],
   inputSourcesEmbedded: boolean,
+  includePreview = true,
 ): string {
   const filters: string[] = [];
   const sampleRate = request.audio.sampleRate;
@@ -403,14 +514,21 @@ function buildFilterGraph(
     );
     videoSource = "vbranded";
   }
-  filters.push(
-    `[${videoSource}]realtime[vrealtime]`,
-    `[${audioSource}]arealtime[arealtime]`,
-    "[vrealtime]split=2[vprogrambase][vpreviewbase]",
-    `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
-    "[arealtime]asplit=2[aprogram][apreview]",
-    "[vpreviewbase]scale=960:-2:force_original_aspect_ratio=decrease,setsar=1[vpreview]",
-  );
+  if (includePreview) {
+    filters.push(
+      `[${videoSource}]realtime[vrealtime]`,
+      `[${audioSource}]arealtime[arealtime]`,
+      "[vrealtime]split=2[vprogrambase][vpreviewbase]",
+      `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
+      "[arealtime]asplit=2[aprogram][apreview]",
+      "[vpreviewbase]scale=960:-2:force_original_aspect_ratio=decrease,setsar=1[vpreview]",
+    );
+  } else {
+    filters.push(
+      `[${videoSource}]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
+      `[${audioSource}]anull[aprogram]`,
+    );
+  }
 
   return filters.join(";");
 }

@@ -306,6 +306,7 @@ export const graphicEffectLayerSchema = z.object({
   endSeconds: z.number().positive(),
   backgroundPath: z.string().min(1).nullable().optional(),
   titlePath: z.string().min(1).nullable().optional(),
+  titlePaths: z.array(z.string().max(4_096)).max(2_000).default([]),
 }).refine((layer) => layer.endSeconds > layer.startSeconds, {
   message: "FX layer end must be after its start",
   path: ["endSeconds"],
@@ -364,11 +365,16 @@ export const scheduleGraphicElementSchema = z.object({
   name: z.string().trim().min(1).max(128),
   backgroundPath: z.string().min(1).nullable(),
   titlePath: z.string().min(1).nullable(),
+  titlePaths: z.array(z.string().max(4_096)).max(2_000).default([]),
   durationSeconds: z.number().positive(),
   startOnSeconds: z.number().nonnegative(),
+  endOnSeconds: z.number().positive(),
 }).refine((element) => Boolean(element.backgroundPath || element.titlePath), {
   message: "Graphic element requires backgroundPath or titlePath",
   path: ["backgroundPath"],
+}).refine((element) => element.endOnSeconds > element.startOnSeconds, {
+  message: "Graphic element endOn must be after startOn",
+  path: ["endOnSeconds"],
 });
 
 export const parsedScheduleItemSchema = z.object({
@@ -398,7 +404,7 @@ export const parsedScheduleSchema = z.object({
   warnings: z.array(z.string()),
 });
 
-export const scheduleExportExtensionSchema = z.enum(["air", "txt"]);
+export const scheduleExportExtensionSchema = z.literal("txt");
 
 export const scheduleExportItemSchema = z.object({
   type: scheduleItemTypeSchema,
@@ -665,8 +671,17 @@ export const startPlayoutRequestSchema = z.object({
   }
 });
 
+export const startCompositeClipPreviewRequestSchema = z.object({
+  request: startPlayoutRequestSchema,
+  startSeconds: z.number().nonnegative().default(0),
+});
+
 export const updateNextPlaylistRequestSchema = z.object({
   nextPlaylist: z.array(playoutItemSchema).max(1_000),
+});
+
+export const updateCurrentPlaylistRequestSchema = z.object({
+  playlist: z.array(playoutItemSchema).min(1).max(1_000),
 });
 
 export const playoutStateSchema = z.enum([
@@ -720,6 +735,7 @@ export const playoutStatusSchema = z.object({
   currentItemId: z.string().nullable().default(null),
   currentItemName: z.string().nullable(),
   currentItemElapsedSeconds: z.number().nonnegative().default(0),
+  currentItemDurationSeconds: z.number().nonnegative().default(0),
   currentItemProgressPercent: z.number().min(0).max(100).default(0),
   totalItems: z.number().int().nonnegative(),
   outTimeSeconds: z.number().nonnegative(),
@@ -728,6 +744,7 @@ export const playoutStatusSchema = z.object({
   frame: z.number().int().nonnegative(),
   fps: z.number().nonnegative(),
   bitrateKbps: z.number().nonnegative(),
+  audioLevelDbfs: z.number().min(-120).max(12).nullable().default(null),
   transportBitrateBps: z.number().int().nonnegative().nullable().default(null),
   transportBitrateMode: z.enum(["auto", "manual"]).nullable().default(null),
   continuityErrors: z.number().int().nonnegative().default(0),

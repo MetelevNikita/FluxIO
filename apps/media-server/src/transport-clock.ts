@@ -9,6 +9,7 @@ export const ffmpegMpegTsOutputOffsetSeconds =
   mpegTsClockOriginSeconds - 2 * ffmpegMpegTsMuxDelaySeconds;
 
 export const dvbSubtitleClockToleranceMs = 250;
+export const dvbSubtitlePreRollMs = 2_000;
 export const mpegTsPtsWrapMs = (2 ** 33) / 90;
 
 export interface DvbSubtitleClockResult {

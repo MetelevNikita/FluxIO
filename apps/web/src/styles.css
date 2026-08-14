@@ -2581,6 +2581,42 @@ p {
   object-fit: cover;
 }
 
+.monitor-preview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 10px;
+}
+
+.live-audio-meter {
+  display: grid;
+  grid-template-rows: auto minmax(100px, 1fr) auto auto;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.live-audio-meter > div {
+  position: relative;
+  width: 12px;
+  min-height: 100px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: linear-gradient(to top, #17221a 0 70%, #2b2513 70% 90%, #2b1717 90%);
+}
+
+.live-audio-meter i {
+  position: absolute;
+  inset: auto 1px 1px;
+  border-radius: 2px;
+  background: linear-gradient(to top, #42d77d 0 70%, #f5d565 70% 90%, #ef6461 90%);
+  transition: height 90ms linear;
+}
+
+.live-audio-meter strong { color: var(--text); font-size: 10px; }
+
 .preview-error-message {
   position: absolute;
   z-index: 3;

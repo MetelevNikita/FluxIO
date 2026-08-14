@@ -543,6 +543,22 @@
 - все selectors Effects принудительно используют читаемую dark color scheme;
 - добавлен regression test повторного назначения.
 
+### 4.19. Rolling playout и transport hardening v6.0.18
+
+Статус: завершён 2026-08-14. Отчёт:
+[`progress/04-19-rolling-playout-hot-change-v6.0.18.md`](progress/04-19-rolling-playout-hot-change-v6.0.18.md).
+
+- один persistent encoder заменил недельный FFmpeg concat graph;
+- текущий и следующий clip-renderer подают raw video/audio через local pipes;
+- HOT CHANGE пересобирает изменённый будущий renderer без рестарта transport;
+- TSDuck исправляет CC, снимает ошибочный PCR с DVB subtitle PID и выдаёт
+  subtitle PES с двухсекундным pre-roll;
+- Broadcast показывает Playlist/Clip progress и live RMS dBFS;
+- Playlist preview строит полную композицию ролика;
+- `.txt` export хранит Lottie `titlePath#N`, `startOn`, `endOn`; `.air` удалён
+  из вариантов сохранения;
+- реальный UDP regression проходит два ролика и Repeat без зависшего FFmpeg.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

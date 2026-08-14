@@ -168,6 +168,19 @@ export async function startClipPreview(
   );
 }
 
+export async function startCompositeClipPreview(
+  requestBody: StartPlayoutRequest,
+  startSeconds: number,
+): Promise<ClipPreviewSession> {
+  return clipPreviewSessionSchema.parse(
+    await request("/api/media/clip-preview/composite", {
+      body: JSON.stringify({ request: requestBody, startSeconds }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
 export async function stopClipPreview(): Promise<void> {
   await request("/api/media/clip-preview/stop", { method: "POST" });
 }
@@ -208,6 +221,18 @@ export async function updateNextPlayoutPlaylist(
   return playoutStatusSchema.parse(
     await request("/api/playout/next-playlist", {
       body: JSON.stringify({ nextPlaylist }),
+      headers: { "content-type": "application/json" },
+      method: "PUT",
+    }),
+  );
+}
+
+export async function updateCurrentPlayoutPlaylist(
+  playlist: StartPlayoutRequest["playlist"],
+): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(
+    await request("/api/playout/playlist", {
+      body: JSON.stringify({ playlist }),
       headers: { "content-type": "application/json" },
       method: "PUT",
     }),

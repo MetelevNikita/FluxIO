@@ -21,12 +21,17 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
       lines.push(`insertLogoTitle {${item.logoPath}}`);
     }
     for (const element of item.graphicElements) {
+      const lottieTitles = element.titlePaths
+        .map((value, index) => `titlePath#${index + 1} {${value}} `)
+        .join("");
       lines.push(
         `insertGraphicElement_{${element.name}} ` +
           `backgroundPath {${element.backgroundPath ?? ""}} ` +
           `titlePath {${element.titlePath ?? ""}} ` +
+          lottieTitles +
           `duration {${formatScheduleTimecode(element.durationSeconds)}} ` +
-          `startOn {${formatScheduleTimecode(element.startOnSeconds)}}`,
+          `startOn {${formatScheduleTimecode(element.startOnSeconds)}} ` +
+          `endOn {${formatScheduleTimecode(element.endOnSeconds)}}`,
       );
     }
     if (item.srtPath) {

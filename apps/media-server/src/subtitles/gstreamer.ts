@@ -5,6 +5,7 @@ import type { StartPlayoutRequest } from "@gruber/contracts";
 export interface GstreamerDvbSubtitleCommandOptions {
   inputPath: string;
   outputPort: number;
+  preRollMs?: number;
   request: StartPlayoutRequest;
 }
 
@@ -34,6 +35,7 @@ export function createGstreamerCapabilities(
 export function buildGstreamerDvbSubtitleCommand({
   inputPath,
   outputPort,
+  preRollMs = 0,
   request,
 }: GstreamerDvbSubtitleCommandOptions): string[] {
   const subtitles = request.subtitleOutput;
@@ -69,7 +71,7 @@ export function buildGstreamerDvbSubtitleCommand({
     "!",
     "dvbsubenc",
     `max-colours=${subtitles.maxColours}`,
-    `ts-offset=${subtitles.ptsOffsetMs * 1_000_000}`,
+    `ts-offset=${(subtitles.ptsOffsetMs + preRollMs) * 1_000_000}`,
     "!",
     "queue",
     "!",

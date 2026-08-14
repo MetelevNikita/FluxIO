@@ -36,7 +36,7 @@ declare global {
       saveScheduleFile: (input: {
         content: string;
         defaultName: string;
-        extension: "air" | "txt";
+        extension: "txt";
       }) => Promise<string | null>;
       saveEncodingSettingsFile: (input: {
         content: string;

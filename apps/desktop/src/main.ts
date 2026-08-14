@@ -216,7 +216,7 @@ void app.whenReady().then(() => {
     const result = await dialog.showSaveDialog({
       defaultPath: input.defaultName,
       filters: [{
-        name: input.extension === "air" ? "FluxIO AIR schedule" : "Text schedule",
+        name: "Text schedule",
         extensions: [input.extension],
       }],
       title: "Save edited weekly schedule",
@@ -344,14 +344,14 @@ function isSupportedImage(fileName: string): boolean {
 function scheduleSaveInput(value: unknown): {
   content: string;
   defaultName: string;
-  extension: "air" | "txt";
+  extension: "txt";
 } {
   if (!value || typeof value !== "object") throw new Error("Invalid schedule save request");
   const candidate = value as Record<string, unknown>;
   const extension = candidate.extension;
   const content = candidate.content;
   const defaultName = candidate.defaultName;
-  if (extension !== "air" && extension !== "txt") throw new Error("Invalid schedule extension");
+  if (extension !== "txt") throw new Error("Invalid schedule extension");
   if (typeof content !== "string" || content.length === 0 || content.length > 10 * 1024 * 1024) {
     throw new Error("Schedule content must be between 1 byte and 10 MB");
   }

@@ -4,6 +4,31 @@ import type { MediaAsset } from "./types.js";
 
 export type EffectLayerIdFactory = (assetId: string, effectId: string) => string;
 
+export function appendLottieEffectInstances(
+  current: GraphicEffectAsset[],
+  incoming: GraphicEffectAsset[],
+  createId: () => string = () => globalThis.crypto.randomUUID(),
+): GraphicEffectAsset[] {
+  const result = [...current];
+  for (const effect of incoming) {
+    const sourcePath = effect.lottie?.sourcePath;
+    if (!sourcePath) continue;
+    const copies = result.filter((candidate) => candidate.lottie?.sourcePath === sourcePath).length;
+    result.push({
+      ...effect,
+      id: `${effect.id}-${createId()}`,
+      name: copies === 0 ? effect.name : `${effect.name} (${copies + 1})`,
+    });
+  }
+  return result;
+}
+
+export function lottieTextValues(effect: GraphicEffectAsset): string[] {
+  return effect.lottie?.properties
+    .filter((property) => property.type === "text")
+    .map((property) => String(property.value)) ?? [];
+}
+
 export function assignEffectToAssets(
   items: MediaAsset[],
   effect: GraphicEffectAsset,
@@ -37,6 +62,7 @@ export function assignEffectToAssets(
         titlePath: effect.titleDirectoryPath
           ? matchingNamedAssetPath(asset.name, effect.titlePaths)
           : null,
+        titlePaths: lottieTextValues(effect),
       };
       added += 1;
       return { ...asset, effects: [...(asset.effects ?? []), layer] };

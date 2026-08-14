@@ -12,14 +12,15 @@ flowchart LR
   API --> MediaPreview["FFmpeg thumbnails + clip HLS"]
   API --> DB[("PostgreSQL via Prisma")]
   API --> Supervisor["FFmpeg supervisor"]
-  Supervisor --> FFmpeg["One realtime FFmpeg pipeline"]
+  Supervisor --> Producer["Current + prefetched clip renderers"]
+  Producer --> FFmpeg["Persistent realtime encoder"]
   Supervisor --> DVB["GStreamer DVB subtitle encoder"]
   FFmpeg --> Program["Program output"]
   DVB --> Program
   Program --> UDP["UDP / MPEG-TS"]
   Program --> SRT["SRT / MPEG-TS"]
   Program --> RTMP["RTMP(S) / FLV"]
-  FFmpeg --> Preview["Local HLS preview"]
+  Program --> Preview["Post-TSDuck HLS preview"]
   Preview --> UI
   MediaPreview --> UI
 ```
@@ -74,31 +75,42 @@ Renderer работает с `contextIsolation: true`, `nodeIntegration: false`,
 
 SRT passphrase и RTMP stream key исключаются из JSON-конфигурации и шифруются AES-256-GCM. Ключ берётся из `GRUBER_SECRET_KEY` и не хранится в БД.
 
-## FFmpeg pipeline
+## Rolling FFmpeg pipeline
 
 ```mermaid
 flowchart LR
-  Inputs["Playlist inputs"] --> Normalize["trim + scale/pad + fps + audio normalize"]
-  Silence["Silence for missing audio"] --> Normalize
-  Normalize --> Concat["concat in playlist order"]
-  Logo["Optional RGBA logo"] --> Overlay["overlay"]
-  Concat --> Overlay
-  Overlay --> Realtime["video/audio realtime pacing"]
-  Realtime --> Split["program/preview split"]
-  Split --> Encode["Selected video/audio encoders"]
-  Encode --> RTMP["Direct RTMP(S)"]
-  Encode --> Loopback["Loopback UDP for every UDP/SRT"]
-  Loopback --> Transport["TSDuck regulate; UDP PCR adjust"]
-  SRTFiles["Per-clip SRT files"] --> DVBSub["GStreamer textrender + dvbsubenc"]
-  DVBSub --> Transport
+  Current["Current clip"] --> Producer["Per-clip trim / AGE / LOGO / FX / burn-in SRT"]
+  Next["Next clip prefetched"] --> Producer
+  Producer --> Raw["Raw YUV + PCM pipes"]
+  Raw --> Encoder["Persistent encoder + audio meter"]
+  Encoder --> RTMP["Direct RTMP(S)"]
+  Encoder --> Loopback["CBR MPEG-TS loopback"]
+  DVB["GStreamer DVB subtitle PES"] --> Transport["Persistent TSDuck transport"]
+  SCTE["SCTE-35 cue plan"] --> Transport
+  Loopback --> Transport
   Transport --> UDP["UDP MPEG-TS"]
   Transport --> SRT["SRT MPEG-TS"]
-  Split --> HLS["Low-latency-oriented H.264/AAC HLS preview"]
+  Transport --> Mirror["Post-TSDuck mirror → HLS monitor"]
 ```
 
-Все playlist inputs входят в один filter graph. Это даёт последовательность ролик-за-роликом и единый timeline. Разные источники приводятся к заданным resolution, FPS, SAR, pixel format, sample rate и channel layout. Для файла без аудио создаётся тишина нужной длительности.
+Недельный Playlist не передаётся FFmpeg целиком. Supervisor запускает один
+долгоживущий encoder и отдельный renderer только для текущего ролика. Следующий
+renderer уже запущен и блокируется на локальном pipe; после окончания текущего
+он подключается к тому же encoder без сброса video/audio PID, mux clock и
+TSDuck output. Разные источники приводятся к одному resolution, FPS, SAR,
+pixel format, sample rate и channel layout; для файла без audio создаётся
+тишина нужной длительности.
 
-Логотип накладывается до `split`, поэтому одинаково виден в program output и preview. SRT в режиме Burn-in также входит в video filter graph. В режиме DVB video остаётся clean, а subtitle stream объединяется с ним только в TSDuck transport stage.
+Изменения будущих элементов Playlist отправляются через `PUT
+/api/playout/playlist`. Уже идущий ролик не переписывается, а изменённый
+prefetched renderer пересоздаётся. Поэтому AGE, LOGO, FX и burn-in SRT начинают
+действовать на следующем старте этого ролика без перезапуска program encoder.
+DVB subtitle и SCTE-35 plans создаются на старте транспортной сессии: изменение
+их PID/cue plan во время эфира требует Stop/Start.
+
+Логотип, AGE, FX и Burn-in SRT накладываются в clip-renderer до raw pipe,
+поэтому одинаково попадают в program output и preview. В режиме DVB video
+остаётся clean, а subtitle stream объединяется с ним только в TSDuck transport.
 
 ### DVB subtitles
 
@@ -119,15 +131,19 @@ Burn-in. HLS preview ответвляется до merge и намеренно �
 
 ### Preview
 
-Preview формируется второй веткой того же FFmpeg-процесса. Это показывает программу после нормализации и overlay, но HLS добавляет несколько секунд задержки. Preview не является независимым доказательством доставки до головной станции.
+Для UDP/SRT TSDuck зеркалирует уже финальный TS после merge/regulate в локальный
+socket, а отдельный FFmpeg формирует из него HLS. Так preview показывает
+фактическую программу после transport stage и не заставляет основной encoder
+кодировать вторую HLS-ветку. Для RTMP HLS остаётся локальной веткой program
+encoder. Любой локальный preview не доказывает доставку до головной станции.
 
 Renderer приоритетно использует HLS.js даже в Electron на macOS. Это исключает ложный выбор нативной HLS-ветки Chromium. Если manifest запрошен раньше появления первого сегмента, клиент повторяет загрузку с ограниченной задержкой; recoverable media errors вызывают восстановление decoder без остановки program output.
 
 Broadcast вычисляет оставшееся время всей программы как `totalDurationSeconds - outTimeSeconds`. Значение показывается в формате `HH:MM:SS` поверх program preview, в Playlist Progress и в Real-time Stats.
 
-Program video получает отдельный `setfield` после split. `progressive`, `upper`
+Program video получает отдельный `setfield` перед encoder. `progressive`, `upper`
 (TFF) и `lower` (BFF) преобразуются в encoder-specific параметры x264, x265 или
-MPEG-2 и в `field_order` FFmpeg; HLS preview при этом остаётся отдельной веткой.
+MPEG-2 и в `field_order` FFmpeg.
 GOP задаётся как точное число кадров между I-frame, число последовательных
 B-frame перед P-frame и режим Closed/Open. Для детерминированной структуры
 адаптивный выбор B-frame и scenecut отключены. При `B=0` H.264 сохраняет
@@ -159,10 +175,10 @@ preflight и не может быть ниже безопасной вмести
 
 FFmpeg loopback send, TSDuck loopback receive и endpoint UDP send используют
 увеличенные socket buffers; output объединяет семь 188-byte TS packets в
-1316-byte datagram. Перед `regulate` пассивный TSDuck `continuity` проверяет
-video/audio PID. Он не переписывает CC: найденные gaps попадают в status и logs,
-а счётчик `Internal CC errors` позволяет отделить локальную ошибку от packet
-loss после сетевого адаптера.
+1316-byte datagram. Перед `regulate` TSDuck `continuity --fix` проверяет и
+нормализует счётчики video/audio/subtitle PID; найденные входные gaps попадают в
+status и logs. Это устраняет внутренний CC reset, но не восстанавливает payload,
+потерянный уже на NIC/switch/receiver.
 
 Каждый блок `-progress` добавляет в rolling Log Output количество переданных
 кадров, FPS, bitrate и output time. Это телеметрия FFmpeg, а не подтверждение
@@ -170,7 +186,10 @@ loss после сетевого адаптера.
 применённый сервером `transportBitrateBps` и режим `manual/auto`; эти значения
 одинаково передаются в FFmpeg muxrate/pacing и TSDuck fixed-bitrate `regulate`.
 
-При включённом `Repeat` supervisor после штатного завершения FFmpeg увеличивает `loopCount`, сбрасывает прогресс цикла и повторно запускает заранее проверенную команду с первого ролика. Это бесконечное расписание до команды Stop. Между двумя FFmpeg-процессами возможен короткий стык, поэтому бесшовный 24/7 loop остаётся задачей rolling scheduler.
+При включённом `Repeat` supervisor после штатного завершения цикла увеличивает
+`loopCount`, сбрасывает прогресс и заново запускает rolling encoder с первого
+ролика. Внутри одного цикла переходы между роликами не перезапускают encoder;
+граница Repeat пока создаёт новый encoder/transport cycle.
 
 ## SCTE-35
 
@@ -212,7 +231,11 @@ RTMP/FLV не переносит SCTE-35 MPEG-TS PID и при включённ�
 
 ### Preview выбранного материала
 
-Playlist Preview не использует макетный таймер. Отдельный `MediaPreviewService` извлекает JPEG-кадры и запускает один realtime HLS-процесс FFmpeg для выбранного ролика. При Play или Seek предыдущий процесс завершается, новый стартует с заданного времени, а renderer воспроизводит manifest через HLS.js с native HLS fallback.
+Playlist Preview не использует макетный таймер. Отдельный
+`MediaPreviewService` извлекает JPEG-кадры и запускает HLS-композицию выбранного
+ролика с AGE, LOGO, FX и burn-in SRT. При Play или Seek предыдущий процесс
+завершается, новый стартует с заданного времени, а renderer воспроизводит
+manifest через HLS.js с native HLS fallback.
 
 Клиент не может передать произвольный путь в thumbnail/preview API: разрешены только файлы, которые media-service успешно проанализировал в текущем процессе. Cache key включает канонический путь, размер, mtime и позицию кадра.
 
@@ -225,11 +248,13 @@ Playlist Preview не использует макетный таймер. Отд
 - `POST /api/media/scan` — рекурсивный поиск и анализ папки;
 - `GET /api/media/thumbnail` — кэшированный JPEG-кадр проанализированного файла;
 - `POST /api/media/clip-preview/start` — запуск HLS-preview выбранного ролика;
+- `POST /api/media/clip-preview/composite` — preview полной композиции ролика;
 - `POST /api/media/clip-preview/stop` — остановка clip preview;
 - `GET /api/media/clip-preview/:sessionId/:file` — manifest/segments clip preview;
 - `GET /api/playout/status` — текущее состояние и метрики;
 - `POST /api/playout/start` — preflight и запуск;
 - `POST /api/playout/stop` — graceful stop;
+- `PUT /api/playout/playlist` — HOT CHANGE будущих элементов Current;
 - `GET /api/playout/preview/:file` — HLS playlist/segments;
 - `GET/PUT/DELETE /api/configurations` — PostgreSQL-конфигурации.
 
@@ -267,11 +292,8 @@ Media-service отправляет `SIGTERM` и применяет принуд�
 ## Текущие ограничения
 
 - один канал и один активный endpoint;
-- playlist пока собирается в один FFmpeg filter graph; с v6.0.13 graph хранится
-  во временном script-файле, а с v6.0.14 туда же при необходимости переносятся
-  media/AGE/logo/FX input paths и не расходуют Windows command line, однако
-  для 24/7 rolling preparation и бесшовного обновления очень больших расписаний
-  по-прежнему нужен отдельный scheduler/rolling pipeline;
+- rolling pipeline держит один encoder внутри Playlist, но на границе Repeat и
+  автоматического Current → Future пока создаётся новый transport cycle;
 - подготовка недельного Playlist с v6.0.15 использует сохранённые результаты
   анализа media и не более восьми параллельных filesystem/ffprobe checks;
 - UDP/SRT preview с v6.0.16 строится из локального post-TSDuck MPEG-TS mirror:
@@ -282,4 +304,6 @@ Media-service отправляет `SIGTERM` и применяет принуд�
 - нет независимого return-feed monitor головной станции;
 - SCTE-35 injector реализован для SPTS по UDP/SRT; MPTS и внешнее резервирование injector остаются за границей текущего этапа;
 - CPU encoders используются по умолчанию, hardware profiles ещё не включены в command builder;
+- HOT CHANGE не перестраивает уже запущенные DVB subtitle/SCTE-35 планы; для
+  изменения этих PID/cue plans требуется контролируемый Stop/Start;
 - production readiness требует soak-теста на целевом железе.

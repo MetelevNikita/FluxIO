@@ -35,10 +35,11 @@ import {
 } from "react";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
-import { mediaThumbnailUrl, startClipPreview, stopClipPreview } from "../media-api";
+import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
+import { lottieTextValues } from "../effect-assignment";
 import { moveEffectLayerWindow, removeEffectLayerById } from "../effect-timeline-math";
 import type {
   BroadcastSettings,
@@ -52,6 +53,7 @@ import type {
 } from "../types";
 import type {
   PlayoutStatus,
+  ClipPreviewSession,
   ScheduleExportExtension,
   ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
@@ -105,6 +107,7 @@ interface PlaylistPreviewScreenProps {
   onNewPlaylist: () => Promise<void>;
   onClearStartMarker: () => void;
   onStartFromItem: (assetId: string) => Promise<void>;
+  onStartCompositePreview: (asset: MediaAsset, startSeconds: number) => Promise<ClipPreviewSession>;
   onSelectAgeDirectory?: () => Promise<void>;
   onSelectScheduleLogoDirectory?: () => Promise<void>;
   onSelectScheduleLogoFile?: () => Promise<void>;
@@ -161,6 +164,7 @@ export function PlaylistPreviewScreen({
   onNewPlaylist,
   onClearStartMarker,
   onStartFromItem,
+  onStartCompositePreview,
   onSelectAgeDirectory,
   onSelectScheduleLogoDirectory,
   onSelectScheduleLogoFile,
@@ -196,7 +200,6 @@ export function PlaylistPreviewScreen({
     scte35Defaults.scte35DefaultBreakDuration,
   );
   const [markerUpid, setMarkerUpid] = useState(scte35Defaults.scte35DefaultUpid);
-  const [scheduleExportExtension, setScheduleExportExtension] = useState<ScheduleExportExtension>("air");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set([selectedAsset.id]));
   const selectionAnchorId = useRef<string | null>(selectedAsset.id);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
@@ -344,7 +347,7 @@ export function PlaylistPreviewScreen({
     let waitingForVideo = false;
     try {
       await stopClipPreview();
-      const session = await startClipPreview(selectedAsset.filePath, position);
+      const session = await onStartCompositePreview(selectedAsset, position);
       if (previewRequest.current !== requestId) {
         await stopClipPreview();
         return;
@@ -498,6 +501,7 @@ export function PlaylistPreviewScreen({
         startSeconds: 0,
         endSeconds,
         titlePath: findMatchingEffectTitle(asset.name, effect),
+        titlePaths: lottieTextValues(effect),
       };
       return { effects: [...(asset.effects ?? []), layer] };
     });
@@ -677,16 +681,8 @@ export function PlaylistPreviewScreen({
         <div className="schedule-save-control">
           <span>Export edited schedule</span>
           <div>
-            <select
-              aria-label="Schedule export extension"
-              onChange={(event) => setScheduleExportExtension(event.target.value as ScheduleExportExtension)}
-              value={scheduleExportExtension}
-            >
-              <option value="air">.AIR</option>
-              <option value="txt">.TXT</option>
-            </select>
-            <button disabled={scheduleBusy || playlist.length === 0} onClick={() => void onSaveSchedule(scheduleExportExtension)} type="button">
-              <Save size={14} /> Save schedule
+            <button disabled={scheduleBusy || playlist.length === 0} onClick={() => void onSaveSchedule("txt")} type="button">
+              <Save size={14} /> Save .TXT
             </button>
           </div>
           <small title={scheduleActionMessage ?? undefined}>
