@@ -603,6 +603,18 @@
 - реальный UDP regression изменяет LOGO второго ролика во время первого и
   подтверждает непрерывное завершение обоих клипов.
 
+### 4.23. HOT CHANGE после marker/recovery и PCM meter v6.0.22
+
+Статус: завершён 2026-08-14. Отчёт:
+[`progress/04-23-hot-change-alignment-pcm-meter-v6.0.22.md`](progress/04-23-hot-change-alignment-pcm-meter-v6.0.22.md).
+
+- полный UI Playlist выравнивается с rolling playout по `currentItemId`;
+- строки до текущего эфирного ролика не считаются удалением или reorder;
+- будущие AGE/LOGO/FX/SRT по-прежнему заменяют prefetched renderer;
+- dBFS вычисляется из PCM, фактически передаваемого активным renderer в encoder;
+- prefetched audio не влияет на индикатор;
+- реальный UDP regression проверяет UI-префикс, HOT CHANGE и ненулевой RMS.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

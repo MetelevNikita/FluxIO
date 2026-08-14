@@ -133,21 +133,19 @@ export function buildFfmpegProgramEncoderCommand(
   );
   const finalTransportPreview = request.endpoint.protocol === "udp" ||
     request.endpoint.protocol === "srt";
-  const audioMeter =
+  const programAudio =
     `asetpts=PTS-STARTPTS,aresample=${request.audio.sampleRate}:async=1:first_pts=0,` +
-    `asetnsamples=n=${Math.max(1, Math.round(request.audio.sampleRate / 10))}:p=0,` +
-    `astats=metadata=1:reset=1,` +
-    `ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file='pipe\\:2',arealtime`;
+    "arealtime";
   const filterGraph = finalTransportPreview
     ? [
         `[0:v]setpts=PTS-STARTPTS,realtime,` +
           `setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
-        `[1:a]${audioMeter}[aprogram]`,
+        `[1:a]${programAudio}[aprogram]`,
       ].join(";")
     : [
         `[0:v]setpts=PTS-STARTPTS,realtime,split=2[vprogrambase][vpreviewbase]`,
         `[vprogrambase]setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
-        `[1:a]${audioMeter},asplit=2[aprogram][apreview]`,
+        `[1:a]${programAudio},asplit=2[aprogram][apreview]`,
         `[vpreviewbase]scale=960:-2:force_original_aspect_ratio=decrease,setsar=1[vpreview]`,
       ].join(";");
   const outputArgs = finalTransportPreview && previewMap > firstMap

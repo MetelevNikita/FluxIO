@@ -411,13 +411,19 @@ export class PlayoutSupervisor {
       );
     }
     const activeIndexBeforePreparation = this.#status.currentItemIndex;
-    assertPlaylistPrefixUnchanged(this.#items, playlist, activeIndexBeforePreparation);
+    const alignedPlaylist = alignHotChangePlaylist(
+      request.playlist,
+      playlist,
+      activeIndexBeforePreparation,
+      this.#status.currentItemId,
+    );
+    assertPlaylistPrefixUnchanged(this.#items, alignedPlaylist, activeIndexBeforePreparation);
     const existingById = new Map(request.playlist.map((item, index) => [item.id, {
       item,
       prepared: this.#items[index],
     }]));
     const preparedTail = await mapWithConcurrency(
-      playlist.slice(activeIndexBeforePreparation + 1),
+      alignedPlaylist.slice(activeIndexBeforePreparation + 1),
       playlistPreparationConcurrency,
       async (item) => {
         const existing = existingById.get(item.id);
@@ -761,13 +767,7 @@ export class PlayoutSupervisor {
     this.#logBuffer = lines.pop() ?? "";
     for (const line of lines) {
       const trimmed = line.trim();
-      const audioLevel = trimmed.match(/^lavfi\.astats\.Overall\.RMS_level=(-?inf|-?\d+(?:\.\d+)?)$/i);
-      if (audioLevel) {
-        const value = Number(audioLevel[1]);
-        this.#status.audioLevelDbfs = Number.isFinite(value)
-          ? Math.max(-120, Math.min(12, value))
-          : -120;
-      } else if (trimmed && !/^frame:\d+\s+pts:/i.test(trimmed)) {
+      if (trimmed && !/^frame:\d+\s+pts:/i.test(trimmed)) {
         this.#appendLog(redactSecrets(trimmed, this.#request));
       }
     }
@@ -1167,6 +1167,11 @@ export class PlayoutSupervisor {
     const audioInput = encoder.stdio[3] as Writable | null;
     if (!runtime || !audioInput) throw new Error("FFmpeg raw media buffers are unavailable");
     this.#producerChild = child;
+    this.#status.audioLevelDbfs = null;
+    runtime.audioBridge.on("data", (chunk: Buffer) => {
+      const level = measurePcmS16leDbfs(chunk);
+      if (level != null) this.#status.audioLevelDbfs = level;
+    });
     runtime.videoBridge.pipe(encoder.stdin, { end: false });
     runtime.audioBridge.pipe(audioInput, { end: false });
     this.#appendEvent(
@@ -2013,6 +2018,37 @@ function assertPlaylistPrefixUnchanged(
       );
     }
   }
+}
+
+export function alignHotChangePlaylist<T extends { id: string }>(
+  current: readonly T[],
+  replacement: readonly T[],
+  activeIndex: number,
+  activeId: string | null,
+): T[] {
+  const onAirId = activeId ?? current[activeIndex]?.id;
+  const replacementActiveIndex = onAirId
+    ? replacement.findIndex((item) => item.id === onAirId)
+    : -1;
+  if (replacementActiveIndex < 0) {
+    throw new PlayoutConflictError("HOT CHANGE cannot remove the on-air clip");
+  }
+  return [
+    ...current.slice(0, activeIndex),
+    ...replacement.slice(replacementActiveIndex),
+  ];
+}
+
+export function measurePcmS16leDbfs(chunk: Buffer): number | null {
+  const sampleCount = Math.floor(chunk.length / 2);
+  if (sampleCount === 0) return null;
+  let sumSquares = 0;
+  for (let offset = 0; offset < sampleCount * 2; offset += 2) {
+    const sample = chunk.readInt16LE(offset) / 32_768;
+    sumSquares += sample * sample;
+  }
+  const rms = Math.sqrt(sumSquares / sampleCount);
+  return rms > 0 ? Math.max(-120, Math.min(0, 20 * Math.log10(rms))) : -120;
 }
 
 export function estimateCommandLineCharacters(command: string, args: string[]): number {

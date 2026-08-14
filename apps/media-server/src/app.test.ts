@@ -30,11 +30,13 @@ import {
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
+  alignHotChangePlaylist,
   formatEncodingActivity,
   formatFrameProgressLog,
   estimateCommandLineCharacters,
   isTsdDuckContinuityWarning,
   mapWithConcurrency,
+  measurePcmS16leDbfs,
   PlayoutSupervisor,
   shouldReportEncodingActivity,
   shouldTransitionToFutureSchedule,
@@ -93,7 +95,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.21");
+    assert.equal(health.version, "6.0.22");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -1704,6 +1706,31 @@ test("playout frame progress is formatted for Log Output", () => {
   );
 });
 
+test("HOT CHANGE aligns a full UI schedule to the on-air clip after a marked start", () => {
+  const current = [{ id: "on-air", value: "old" }, { id: "next", value: "old" }];
+  const replacement = [
+    { id: "already-played", value: "unchanged" },
+    { id: "on-air", value: "ignored" },
+    { id: "next", value: "new" },
+  ];
+  assert.deepEqual(
+    alignHotChangePlaylist(current, replacement, 0, "on-air").map((item) => item.id),
+    ["on-air", "next"],
+  );
+  assert.throws(
+    () => alignHotChangePlaylist(current, replacement, 0, "missing"),
+    /cannot remove the on-air clip/,
+  );
+});
+
+test("live audio meter calculates dBFS directly from PCM s16le", () => {
+  const pcm = Buffer.alloc(4);
+  pcm.writeInt16LE(16_384, 0);
+  pcm.writeInt16LE(-16_384, 2);
+  assert.ok(Math.abs((measurePcmS16leDbfs(pcm) ?? 0) - -6.0206) < 0.001);
+  assert.equal(measurePcmS16leDbfs(Buffer.alloc(4)), -120);
+});
+
 test("media-server console reports periodic encoding activity and clip changes", () => {
   assert.equal(
     formatEncodingActivity({
@@ -1991,22 +2018,28 @@ test(
 
       const wallStartedAt = Date.now();
       await supervisor.start(request);
-      const hotChangedPlaylist = request.playlist.map((item, index) => index === 1
-        ? {
-            ...item,
-            itemLogo: {
-              enabled: true as const,
-              filePath: logo,
-              margin: 20,
-              opacity: 0.9,
-              position: "bottom-right" as const,
-              widthPercent: 12,
-            },
-          }
-        : item);
+      const hotChangedPlaylist = [
+        { ...request.playlist[0]!, id: "already-played-in-ui" },
+        ...request.playlist.map((item, index) => index === 1
+          ? {
+              ...item,
+              itemLogo: {
+                enabled: true as const,
+                filePath: logo,
+                margin: 20,
+                opacity: 0.9,
+                position: "bottom-right" as const,
+                widthPercent: 12,
+              },
+            }
+          : item),
+      ];
       await supervisor.updatePlaylist(hotChangedPlaylist);
       const deadline = Date.now() + 20_000;
+      let observedAudioLevel = false;
       while (["starting", "running"].includes(supervisor.getStatus().state)) {
+        const level = supervisor.getAudioLevelDbfs();
+        observedAudioLevel ||= level != null && level > -120 && level <= 0;
         if (Date.now() > deadline) {
           throw new Error(
             `Timed out waiting for FFmpeg session\n${supervisor.getStatus().logs.slice(-25).join("\n")}`,
@@ -2028,6 +2061,10 @@ test(
       assert.ok(
         status.logs.some((line) => line.includes("HOT CHANGE armed for clip 2")),
         status.logs.slice(-10).join("\n"),
+      );
+      assert.ok(
+        observedAudioLevel,
+        `Expected a non-silent live PCM audio level during playout`,
       );
       assert.ok(
         status.logs.some((line) => line.includes("TSDuck UDP PCR relay started")),
