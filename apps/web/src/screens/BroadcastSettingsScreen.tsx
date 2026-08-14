@@ -25,6 +25,7 @@ import type {
   WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
+import { getPlayoutAudioLevel } from "../media-api";
 import { mediaApiUrl, mediaPath } from "../runtime";
 import type { BroadcastSettings } from "../types";
 
@@ -898,6 +899,7 @@ function SrtFields({
 }
 
 function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
+  const [liveAudioLevelDbfs, setLiveAudioLevelDbfs] = useState<number | null>(null);
   const active = status
     ? ["starting", "running", "stopping"].includes(status.state)
     : false;
@@ -915,8 +917,37 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
     0,
     (status?.currentItemDurationSeconds ?? 0) - (status?.currentItemElapsedSeconds ?? 0),
   );
-  const audioLevelDbfs = status?.audioLevelDbfs ?? -60;
+  const measuredAudioLevelDbfs = liveAudioLevelDbfs ?? status?.audioLevelDbfs;
+  const audioLevelDbfs = measuredAudioLevelDbfs ?? -60;
   const audioLevelPercent = Math.max(0, Math.min(100, (audioLevelDbfs + 60) / 60 * 100));
+
+  useEffect(() => {
+    if (!active) {
+      setLiveAudioLevelDbfs(null);
+      return;
+    }
+    let cancelled = false;
+    let requestInFlight = false;
+    const refresh = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const level = await getPlayoutAudioLevel();
+        if (!cancelled) setLiveAudioLevelDbfs(level);
+      } catch {
+        // The regular playout status remains the fallback meter source.
+      } finally {
+        requestInFlight = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 100);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [active]);
+
   return (
     <aside className="encoding-monitor">
       <div className="monitor-heading">
@@ -962,7 +993,7 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
         >
           <span>LEVEL</span>
           <div><i style={{ height: `${audioLevelPercent}%` }} /></div>
-          <strong>{status?.audioLevelDbfs == null ? "−∞" : audioLevelDbfs.toFixed(1)}</strong>
+          <strong>{measuredAudioLevelDbfs == null ? "−∞" : audioLevelDbfs.toFixed(1)}</strong>
           <small>dBFS</small>
         </div>
         </div>

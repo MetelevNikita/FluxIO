@@ -589,6 +589,20 @@
 - реальный 1080p UDP regression с -23 LUFS проходит CBR, continuity, PCR,
   post-TSDuck Preview, стык двух роликов и Repeat.
 
+### 4.22. Надёжный HOT CHANGE и live audio meter v6.0.21
+
+Статус: завершён 2026-08-14. Отчёт:
+[`progress/04-22-hot-change-live-meter-v6.0.21.md`](progress/04-22-hot-change-live-meter-v6.0.21.md).
+
+- Current Playlist синхронизируется с rolling playout независимо от recovery
+  autosave и PostgreSQL;
+- быстрые операторские изменения AGE/LOGO/FX/SRT отправляются последовательно;
+- следующий prefetched renderer пересобирается без рестарта encoder/TSDuck;
+- live RMS meter обновляется десять раз в секунду через лёгкий endpoint;
+- Playlist Preview больше не перекрывается большим экранным таймером;
+- реальный UDP regression изменяет LOGO второго ролика во время первого и
+  подтверждает непрерывное завершение обоих клипов.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

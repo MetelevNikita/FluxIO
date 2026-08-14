@@ -164,6 +164,10 @@ export class PlayoutSupervisor {
     });
   }
 
+  getAudioLevelDbfs(): number | null {
+    return this.#status.audioLevelDbfs;
+  }
+
   async start(request: StartPlayoutRequest): Promise<PlayoutStatus> {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");

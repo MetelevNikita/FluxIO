@@ -1161,9 +1161,6 @@ export function PlaylistPreviewScreen({
               {selectedAsset.resolution} @ {selectedAsset.fps} | {selectedAsset.codec}
             </span>
           </div>
-          <strong className="preview-timecode">
-            {formatTimecode(currentTime, selectedAsset.fps)}
-          </strong>
           <button
             aria-label={playing ? "Pause preview" : "Play preview"}
             className="preview-center-control"

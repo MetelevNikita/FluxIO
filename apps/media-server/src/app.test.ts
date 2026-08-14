@@ -93,7 +93,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.20");
+    assert.equal(health.version, "6.0.21");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -398,6 +398,17 @@ test("GET /api/playout/status starts idle", async () => {
     assert.equal(status.transportBitrateBps, null);
     assert.equal(status.transportBitrateMode, null);
     assert.equal(status.continuityErrors, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /api/playout/audio-level returns the live meter sample", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({ method: "GET", url: "/api/playout/audio-level" });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { audioLevelDbfs: null });
   } finally {
     await app.close();
   }
@@ -1980,6 +1991,20 @@ test(
 
       const wallStartedAt = Date.now();
       await supervisor.start(request);
+      const hotChangedPlaylist = request.playlist.map((item, index) => index === 1
+        ? {
+            ...item,
+            itemLogo: {
+              enabled: true as const,
+              filePath: logo,
+              margin: 20,
+              opacity: 0.9,
+              position: "bottom-right" as const,
+              widthPercent: 12,
+            },
+          }
+        : item);
+      await supervisor.updatePlaylist(hotChangedPlaylist);
       const deadline = Date.now() + 20_000;
       while (["starting", "running"].includes(supervisor.getStatus().state)) {
         if (Date.now() > deadline) {
@@ -1998,6 +2023,10 @@ test(
       );
       assert.ok(
         status.logs.some((line) => line.includes("pipe ready: video + audio")),
+        status.logs.slice(-10).join("\n"),
+      );
+      assert.ok(
+        status.logs.some((line) => line.includes("HOT CHANGE armed for clip 2")),
         status.logs.slice(-10).join("\n"),
       );
       assert.ok(

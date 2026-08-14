@@ -139,6 +139,18 @@ export async function getPlayoutStatus(): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(await request("/api/playout/status"));
 }
 
+export async function getPlayoutAudioLevel(): Promise<number | null> {
+  const payload = await request("/api/playout/audio-level");
+  if (!payload || typeof payload !== "object" || !("audioLevelDbfs" in payload)) {
+    throw new Error("Media service returned an invalid audio level");
+  }
+  const value = payload.audioLevelDbfs;
+  if (value !== null && typeof value !== "number") {
+    throw new Error("Media service returned an invalid audio level");
+  }
+  return value;
+}
+
 export async function getSystemMetrics(): Promise<SystemMetrics> {
   return systemMetricsSchema.parse(await request("/api/system/metrics"));
 }

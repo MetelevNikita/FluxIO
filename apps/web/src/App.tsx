@@ -136,6 +136,7 @@ export function App() {
   const [settingsProfileMessage, setSettingsProfileMessage] = useState<string | null>(null);
   const workspaceRestoreStarted = useRef(false);
   const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
+  const currentPlaylistSyncChain = useRef<Promise<void>>(Promise.resolve());
   const schedulePromotionHandled = useRef("");
   const currentPlaylistSync = useRef({ sessionId: "", snapshot: "" });
 
@@ -338,7 +339,6 @@ export function App() {
 
   useEffect(() => {
     if (
-      !workspaceAutosaveReady ||
       !playoutStatus?.sessionId ||
       playoutStatus.schedulePhase !== "current" ||
       !["starting", "running"].includes(playoutStatus.state)
@@ -354,7 +354,6 @@ export function App() {
     }, 750);
     return () => window.clearTimeout(timer);
   }, [
-    workspaceAutosaveReady,
     futurePlaylist,
     playoutStatus?.sessionId,
     playoutStatus?.schedulePhase,
@@ -363,7 +362,6 @@ export function App() {
 
   useEffect(() => {
     if (
-      !workspaceAutosaveReady ||
       !playoutStatus?.sessionId ||
       playoutStatus.schedulePhase !== "current" ||
       !["starting", "running"].includes(playoutStatus.state)
@@ -377,18 +375,26 @@ export function App() {
     }
     if (currentPlaylistSync.current.snapshot === snapshot) return;
     const timer = window.setTimeout(() => {
-      void updateCurrentPlayoutPlaylist(buildPlayoutItems(playlist))
-        .then((status) => {
+      const sessionId = playoutStatus.sessionId!;
+      const nextPlaylist = buildPlayoutItems(playlist);
+      currentPlaylistSyncChain.current = currentPlaylistSyncChain.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (currentPlaylistSync.current.sessionId !== sessionId) return;
+          const status = await updateCurrentPlayoutPlaylist(nextPlaylist);
           currentPlaylistSync.current = { sessionId: status.sessionId ?? "", snapshot };
           setPlayoutStatus(status);
+          setOperationError(null);
+          setScheduleActionMessage(
+            `HOT CHANGE applied: upcoming clips will use the latest LOGO, AGE, FX and SRT settings.`,
+          );
         })
         .catch((error) => setOperationError(
           `On-air schedule sync failed: ${errorMessage(error)}`,
         ));
-    }, 750);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [
-    workspaceAutosaveReady,
     playlist,
     playoutStatus?.sessionId,
     playoutStatus?.schedulePhase,
@@ -1350,7 +1356,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.20",
+        connection.kind === "ready" ? connection.health.version : "6.0.21",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");

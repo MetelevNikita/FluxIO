@@ -48,7 +48,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.20";
+const serviceVersion = "6.0.21";
 const workspaceCheckpointIntervalMs = 5_000;
 const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
 
@@ -316,6 +316,10 @@ export function buildApp(options: FastifyServerOptions = {}) {
     }
     return status;
   });
+
+  app.get("/api/playout/audio-level", async () => ({
+    audioLevelDbfs: playout.getAudioLevelDbfs(),
+  }));
 
   app.post("/api/playout/start", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     try {
