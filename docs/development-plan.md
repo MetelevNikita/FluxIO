@@ -575,6 +575,20 @@
 - реальный 1080p тест проверяет восстановленный Preview, rolling стык, CBR UDP,
   continuity, PCR и финальный post-TSDuck HLS.
 
+### 4.21. Независимые video/audio renderers для UDP playout v6.0.20
+
+Статус: завершён 2026-08-14. Отчёт:
+[`progress/04-21-independent-av-renderers-v6.0.20.md`](progress/04-21-independent-av-renderers-v6.0.20.md).
+
+- каждый ролик получает независимые video и audio FFmpeg renderers;
+- video renderer строит AGE/LOGO/FX/Burn-in композицию и отдаёт YUV420P;
+- audio renderer независимо декодирует PCM и выполняет включённый `-23 LUFS`;
+- persistent encoder больше не запускает latency-bearing `loudnorm` в общем
+  video/audio scheduler;
+- Stop, HOT CHANGE и prefetch завершают обе дочерние ветки одного ролика;
+- реальный 1080p UDP regression с -23 LUFS проходит CBR, continuity, PCR,
+  post-TSDuck Preview, стык двух роликов и Repeat.
+
 ### 3. Надёжность playlist engine
 
 - rolling scheduler вместо одного большого filter graph;

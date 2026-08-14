@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { PassThrough, type Readable, type Writable } from "node:stream";
+import { PassThrough, type Writable } from "node:stream";
 import type {
   FfmpegCapabilities,
   GraphicEffectLayer,
@@ -12,7 +12,8 @@ import type {
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings, playoutStatusSchema } from "@gruber/contracts";
 import {
-  buildFfmpegClipProducerCommand,
+  buildFfmpegClipAudioProducerCommand,
+  buildFfmpegClipVideoProducerCommand,
   buildFfmpegProgramEncoderCommand,
   type FfmpegCommand,
   type FfmpegCommandOptions,
@@ -59,13 +60,15 @@ const minimumClipPipeBufferBytes = 1_048_576;
 
 interface ClipProducerRuntime {
   audioBridge: PassThrough;
+  audioChild: ChildProcessWithoutNullStreams;
+  audioCloseResult: { code: number | null; signal: NodeJS.Signals | null } | null;
   audioEnded: boolean;
   audioReady: boolean;
   child: ChildProcessWithoutNullStreams;
-  closeResult: { code: number | null; signal: NodeJS.Signals | null } | null;
   index: number;
   readyLogged: boolean;
   videoBridge: PassThrough;
+  videoCloseResult: { code: number | null; signal: NodeJS.Signals | null } | null;
   videoEnded: boolean;
   videoReady: boolean;
 }
@@ -1074,34 +1077,43 @@ export class PlayoutSupervisor {
     const request = this.#request;
     const item = this.#items[index];
     if (!request || !item) throw new Error(`Clip ${index + 1} is not prepared`);
-    const command = buildFfmpegClipProducerCommand(request, item, this.previewDirectory);
-    const child = spawn(this.capabilities.ffmpegPath, command.args, {
+    const videoCommand = buildFfmpegClipVideoProducerCommand(
+      request,
+      item,
+      this.previewDirectory,
+    );
+    const audioCommand = buildFfmpegClipAudioProducerCommand(request, item);
+    const child = spawn(this.capabilities.ffmpegPath, videoCommand.args, {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
-    const audioOutput = child.stdio[3] as Readable | null;
-    if (!audioOutput) throw new Error("FFmpeg raw audio pipe is unavailable");
+    const audioChild = spawn(this.capabilities.ffmpegPath, audioCommand.args, {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as ChildProcessWithoutNullStreams;
     const videoFrameBytes = Math.ceil(request.video.width * request.video.height * 1.5);
     const audioBufferBytes = request.audio.sampleRate * request.audio.channels * 2 * 2;
     const runtime: ClipProducerRuntime = {
       audioBridge: new PassThrough({
         highWaterMark: Math.max(minimumClipPipeBufferBytes, audioBufferBytes),
       }),
+      audioChild,
+      audioCloseResult: null,
       audioEnded: false,
       audioReady: false,
       child,
-      closeResult: null,
       index,
       readyLogged: false,
       videoBridge: new PassThrough({
         highWaterMark: Math.max(minimumClipPipeBufferBytes, videoFrameBytes + 65_536),
       }),
+      videoCloseResult: null,
       videoEnded: false,
       videoReady: false,
     };
     this.#producerRuntimes.set(child, runtime);
     child.stdout.once("data", () => this.#handleClipProducerData(runtime, "video"));
-    audioOutput.once("data", () => this.#handleClipProducerData(runtime, "audio"));
+    audioChild.stdout.once("data", () => this.#handleClipProducerData(runtime, "audio"));
     runtime.videoBridge.once("end", () => {
       runtime.videoEnded = true;
       this.#completeClipProducer(runtime);
@@ -1111,7 +1123,27 @@ export class PlayoutSupervisor {
       this.#completeClipProducer(runtime);
     });
     child.stdout.pipe(runtime.videoBridge);
-    audioOutput.pipe(runtime.audioBridge);
+    audioChild.stdout.pipe(runtime.audioBridge);
+    this.#readClipProducerLogs(child, index, "video");
+    this.#readClipProducerLogs(audioChild, index, "audio");
+    child.once("error", (error) => this.#handleClipProducerError(child, index, error));
+    audioChild.once("error", (error) => this.#handleClipProducerError(audioChild, index, error));
+    child.once("close", (code, signal) => {
+      runtime.videoCloseResult = { code, signal };
+      this.#handleClipProducerClose(runtime, "video", code, signal);
+    });
+    audioChild.once("close", (code, signal) => {
+      runtime.audioCloseResult = { code, signal };
+      this.#handleClipProducerClose(runtime, "audio", code, signal);
+    });
+    return child;
+  }
+
+  #readClipProducerLogs(
+    child: ChildProcessWithoutNullStreams,
+    index: number,
+    stream: "audio" | "video",
+  ): void {
     let logBuffer = "";
     child.stderr.on("data", (chunk: Buffer) => {
       logBuffer += chunk.toString("utf8");
@@ -1119,15 +1151,9 @@ export class PlayoutSupervisor {
       logBuffer = lines.pop() ?? "";
       for (const line of lines) {
         const message = line.trim();
-        if (message) this.#appendLog(`Clip ${index + 1}: ${message}`);
+        if (message) this.#appendLog(`Clip ${index + 1} ${stream}: ${message}`);
       }
     });
-    child.once("error", (error) => this.#handleClipProducerError(child, index, error));
-    child.once("close", (code, signal) => {
-      runtime.closeResult = { code, signal };
-      this.#handleClipProducerClose(child, index, code, signal);
-    });
-    return child;
   }
 
   #activateClipProducer(child: ChildProcessWithoutNullStreams, index: number): void {
@@ -1140,8 +1166,9 @@ export class PlayoutSupervisor {
     runtime.videoBridge.pipe(encoder.stdin, { end: false });
     runtime.audioBridge.pipe(audioInput, { end: false });
     this.#appendEvent(
-      `Clip renderer ${index + 1}/${this.#items.length} started with PID ` +
-        `${child.pid ?? "unknown"}: "${this.#items[index]?.name ?? "unknown"}"`,
+      `Clip renderer ${index + 1}/${this.#items.length} started with video PID ` +
+        `${child.pid ?? "unknown"}, audio PID ${runtime.audioChild.pid ?? "unknown"}: ` +
+        `"${this.#items[index]?.name ?? "unknown"}"`,
     );
     this.#armClipProducerStartup(runtime);
     const nextIndex = index + 1;
@@ -1154,41 +1181,41 @@ export class PlayoutSupervisor {
   }
 
   #handleClipProducerClose(
-    child: ChildProcessWithoutNullStreams,
-    index: number,
+    runtime: ClipProducerRuntime,
+    stream: "audio" | "video",
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
-    if (this.#expectedProducerStops.has(child)) return;
-    if (this.#prefetchedProducerChild === child && this.#producerChild !== child) {
+    const stoppedChild = stream === "video" ? runtime.child : runtime.audioChild;
+    if (this.#expectedProducerStops.has(stoppedChild)) return;
+    if (this.#prefetchedProducerChild === runtime.child && this.#producerChild !== runtime.child) {
       if (code !== 0) {
         this.#handleClipProducerError(
-          child,
-          index,
-          new Error(`prefetch exited with ${code ?? signal ?? "unknown"}`),
+          stoppedChild,
+          runtime.index,
+          new Error(`${stream} prefetch exited with ${code ?? signal ?? "unknown"}`),
         );
       }
       return;
     }
-    if (this.#producerChild !== child) return;
+    if (this.#producerChild !== runtime.child) return;
     if (code !== 0) {
       this.#handleClipProducerError(
-        child,
-        index,
-        new Error(`renderer exited with ${code ?? signal ?? "unknown"}`),
+        stoppedChild,
+        runtime.index,
+        new Error(`${stream} renderer exited with ${code ?? signal ?? "unknown"}`),
       );
       return;
     }
-    const runtime = this.#producerRuntimes.get(child);
-    if (runtime) this.#completeClipProducer(runtime);
+    this.#completeClipProducer(runtime);
   }
 
   #completeClipProducer(runtime: ClipProducerRuntime): void {
-    const { child, closeResult, index } = runtime;
+    const { child, index } = runtime;
     if (
       this.#producerChild !== child ||
-      !closeResult ||
-      closeResult.code !== 0 ||
+      runtime.videoCloseResult?.code !== 0 ||
+      runtime.audioCloseResult?.code !== 0 ||
       !runtime.videoEnded ||
       !runtime.audioEnded
     ) return;
@@ -1559,18 +1586,19 @@ export class PlayoutSupervisor {
   }
 
   #terminateClipProducer(child: ChildProcessWithoutNullStreams): void {
-    this.#expectedProducerStops.add(child);
     const runtime = this.#producerRuntimes.get(child);
     this.#producerRuntimes.delete(child);
     runtime?.videoBridge.destroy();
     runtime?.audioBridge.destroy();
-    child.stdout.destroy();
-    (child.stdio[3] as Readable | null)?.destroy();
-    child.stdin.destroy();
-    child.kill("SIGTERM");
-    const forceKill = setTimeout(() => child.kill("SIGKILL"), 1_000);
-    forceKill.unref();
-    child.once("close", () => clearTimeout(forceKill));
+    for (const producer of runtime ? [runtime.child, runtime.audioChild] : [child]) {
+      this.#expectedProducerStops.add(producer);
+      producer.stdout.destroy();
+      producer.stdin.destroy();
+      producer.kill("SIGTERM");
+      const forceKill = setTimeout(() => producer.kill("SIGKILL"), 1_000);
+      forceKill.unref();
+      producer.once("close", () => clearTimeout(forceKill));
+    }
   }
 
   #resetLoopProgress(): void {

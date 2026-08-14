@@ -48,7 +48,7 @@ import {
   rerenderLottieEffect,
 } from "./effects/lottie.js";
 
-const serviceVersion = "6.0.19";
+const serviceVersion = "6.0.20";
 const workspaceCheckpointIntervalMs = 5_000;
 const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
 

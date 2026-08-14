@@ -45,7 +45,7 @@ export interface FfmpegCommandOptions {
   transportMuxRateBps?: number;
 }
 
-export function buildFfmpegClipProducerCommand(
+export function buildFfmpegClipVideoProducerCommand(
   request: StartPlayoutRequest,
   item: PreparedPlayoutItem,
   previewDirectory: string,
@@ -56,21 +56,67 @@ export function buildFfmpegClipProducerCommand(
   const progressIndex = args.indexOf("-progress");
   if (progressIndex >= 0) args.splice(progressIndex, 2);
   const filterIndex = args.indexOf("-filter_complex");
-  const filterGraph = buildFilterGraph(request, [item], false, false);
+  const filterGraph = `${buildFilterGraph(request, [item], false, false, false)};` +
+    "[aprogram]anullsink";
   if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
   args.push(
     "-map", "[vprogram]",
     "-pix_fmt", "yuv420p",
     "-f", "rawvideo",
     "pipe:1",
-    "-map", "[aprogram]",
-    "-c:a", "pcm_s16le",
-    "-ar", String(request.audio.sampleRate),
-    "-ac", String(request.audio.channels),
-    "-f", "s16le",
-    "pipe:3",
   );
   return { ...base, args, filterGraph };
+}
+
+export function buildFfmpegClipAudioProducerCommand(
+  request: StartPlayoutRequest,
+  item: PreparedPlayoutItem,
+): FfmpegCommand {
+  const sampleRate = request.audio.sampleRate;
+  const channelLayout = request.audio.channels === 1
+    ? "mono"
+    : request.audio.channels === 6
+      ? "5.1"
+      : "stereo";
+  const start = decimal(item.trimInSeconds);
+  const duration = decimal(item.durationSeconds);
+  const sourceFilter = item.hasAudio
+    ? `[0:a:0]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,` +
+      `aresample=${sampleRate}:async=1:first_pts=0,` +
+      `aformat=sample_fmts=fltp:sample_rates=${sampleRate}:` +
+      `channel_layouts=${channelLayout}`
+    : `anullsrc=r=${sampleRate}:cl=${channelLayout},atrim=duration=${duration},` +
+      "asetpts=PTS-STARTPTS";
+  const loudness = request.audio.loudnessNormalization;
+  const loudnessFilter = loudness.enabled
+    ? `,loudnorm=I=${decimal(loudness.targetLufs)}:` +
+      `TP=${decimal(loudness.truePeakDbtp)}:` +
+      `LRA=${decimal(loudness.loudnessRangeLufs)}:` +
+      `dual_mono=${request.audio.channels === 1 ? "true" : "false"},` +
+      `aresample=${sampleRate},asetpts=PTS-STARTPTS`
+    : "";
+  const filterGraph = `${sourceFilter}${loudnessFilter}[aprogram]`;
+  const args = [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-loglevel", "warning",
+    ...(item.hasAudio ? ["-i", item.filePath] : []),
+    "-filter_complex", filterGraph,
+    "-map", "[aprogram]",
+    "-c:a", "pcm_s16le",
+    "-ar", String(sampleRate),
+    "-ac", String(request.audio.channels),
+    "-f", "s16le",
+    "pipe:1",
+  ];
+  return {
+    args,
+    endpointLabel: "local PCM",
+    filterGraph,
+    inputSourcesEmbedded: false,
+    totalDurationSeconds: item.durationSeconds,
+  };
 }
 
 export function buildFfmpegProgramEncoderCommand(
@@ -329,6 +375,7 @@ function buildFilterGraph(
   items: PreparedPlayoutItem[],
   inputSourcesEmbedded: boolean,
   includePreview = true,
+  includeLoudnessNormalization = true,
 ): string {
   const filters: string[] = [];
   const sampleRate = request.audio.sampleRate;
@@ -486,7 +533,7 @@ function buildFilterGraph(
   const concatInputs = items.map((_, index) => `[v${index}][a${index}]`).join("");
   filters.push(`${concatInputs}concat=n=${items.length}:v=1:a=1[vconcat][aconcat]`);
   let audioSource = "aconcat";
-  if (request.audio.loudnessNormalization.enabled) {
+  if (includeLoudnessNormalization && request.audio.loudnessNormalization.enabled) {
     const loudness = request.audio.loudnessNormalization;
     filters.push(
       `[aconcat]loudnorm=I=${decimal(loudness.targetLufs)}:` +

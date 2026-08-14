@@ -51,6 +51,12 @@ Broadcast Preview оставался пустым. Composite Preview во вкл
   video/audio continuity errors, PCR interval менее 40 ms и post-TSDuck HLS;
 - Repeat успешно начал следующий цикл и все child processes штатно завершились.
 
+## Уточнение после полевого теста
+
+На отдельных исходниках с включённым динамическим `loudnorm` один video/audio
+renderer всё ещё мог заполнить video pipe до первого нормализованного audio
+chunk. Этот случай устранён в v6.0.20 разделением video и audio renderers.
+
 ## Операторская проверка после обновления
 
 После `git pull` запустить `node setup.mjs`, затем Start Broadcast. До первого

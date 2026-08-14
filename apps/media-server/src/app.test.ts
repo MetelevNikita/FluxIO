@@ -17,7 +17,8 @@ import {
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
 import {
-  buildFfmpegClipProducerCommand,
+  buildFfmpegClipAudioProducerCommand,
+  buildFfmpegClipVideoProducerCommand,
   buildFfmpegCompositePreviewCommand,
   buildFfmpegCommand,
   buildFfmpegProgramEncoderCommand,
@@ -92,7 +93,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.19");
+    assert.equal(health.version, "6.0.20");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -768,8 +769,15 @@ test("FFmpeg command concatenates clips and creates UDP plus HLS outputs", () =>
 
 test("rolling playout keeps the weekly playlist out of the persistent encoder", () => {
   const request = baseRequest();
+  request.audio.loudnessNormalization = {
+    enabled: true,
+    targetLufs: -23,
+    truePeakDbtp: -1,
+    loudnessRangeLufs: 7,
+  };
   const item = preparedItems()[0]!;
-  const producer = buildFfmpegClipProducerCommand(request, item, "/tmp/preview");
+  const videoProducer = buildFfmpegClipVideoProducerCommand(request, item, "/tmp/preview");
+  const audioProducer = buildFfmpegClipAudioProducerCommand(request, item);
   const encoder = buildFfmpegProgramEncoderCommand(
     request,
     item,
@@ -777,15 +785,21 @@ test("rolling playout keeps the weekly playlist out of the persistent encoder", 
     168 * 60 * 60,
     { transportMuxRateBps: 12_000_000 },
   );
-  const producerArgs = producer.args.join(" ");
+  const videoProducerArgs = videoProducer.args.join(" ");
+  const audioProducerArgs = audioProducer.args.join(" ");
   const encoderArgs = encoder.args.join(" ");
 
-  assert.match(producerArgs, /-i \/media\/one\.mp4/);
-  assert.match(producerArgs, /-f rawvideo pipe:1/);
-  assert.match(producerArgs, /-f s16le pipe:3/);
-  assert.doesNotMatch(producerArgs, /-progress pipe:1/);
+  assert.match(videoProducerArgs, /-i \/media\/one\.mp4/);
+  assert.match(videoProducerArgs, /-f rawvideo pipe:1/);
+  assert.match(videoProducerArgs, /\[aprogram\]anullsink/);
+  assert.doesNotMatch(videoProducerArgs, /loudnorm=/);
+  assert.doesNotMatch(videoProducerArgs, /-progress pipe:1/);
+  assert.match(audioProducerArgs, /-i \/media\/one\.mp4/);
+  assert.match(audioProducerArgs, /-f s16le pipe:1/);
+  assert.match(audioProducerArgs, /loudnorm=I=-23:TP=-1:LRA=7/);
   assert.match(encoderArgs, /-f rawvideo .* -i pipe:0/);
   assert.match(encoderArgs, /-f s16le .* -i pipe:3/);
+  assert.doesNotMatch(encoderArgs, /loudnorm=/);
   assert.doesNotMatch(encoderArgs, /\/media\/one\.mp4/);
   assert.match(encoderArgs, /-muxrate 12000000/);
   assert.equal(encoder.totalDurationSeconds, 168 * 60 * 60);
