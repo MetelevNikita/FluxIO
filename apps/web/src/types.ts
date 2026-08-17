@@ -61,6 +61,20 @@ export interface MediaAsset {
     enabled: boolean;
     filePath: string | null;
   };
+  audioTracks?: AudioTrackInfo[];
+}
+
+/** Дополнительная звуковая дорожка ролика, найденная по имени файла. */
+export interface AudioTrackInfo {
+  languageCode: string;
+  label: string;
+  filePath: string;
+  streamIndex: number;
+}
+
+export interface AudioTrackLibrary {
+  directoryPath: string;
+  languages: { languageCode: string; label: string; itemCount: number }[];
 }
 
 export interface ScheduleOverlayLibrary {
@@ -109,6 +123,10 @@ export interface BroadcastSettings {
   audioBitrate: number;
   loudnessNormalizationEnabled: boolean;
   loudnessTargetLufs: number;
+  audioTracksEnabled: boolean;
+  audioTrackDirectory: string;
+  audioOriginalLanguage: string;
+  audioOriginalLabel: string;
   streamingEnabled: boolean;
   protocol: string;
   serverUrl: string;
@@ -164,6 +182,13 @@ export interface BroadcastSettings {
   scte35UpidType: string;
   scte35DefaultUpid: string;
   scte35LoopEventStrategy: string;
+}
+
+export interface AudioTrackSettings {
+  audioTracksEnabled: boolean;
+  audioTrackDirectory: string;
+  audioOriginalLanguage: string;
+  audioOriginalLabel: string;
 }
 
 export interface EncodingJob {

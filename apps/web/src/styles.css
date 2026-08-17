@@ -1342,7 +1342,7 @@ p {
   min-height: 136px;
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: 160px minmax(320px, 1.5fr) minmax(180px, 0.8fr) 190px 205px 215px minmax(260px, 1.2fr);
+  grid-template-columns: minmax(270px, 1.6fr) minmax(145px, 0.75fr) 155px minmax(165px, 0.8fr) 175px 185px minmax(225px, 1.15fr);
   gap: 10px;
   align-items: stretch;
   border-bottom: 1px solid var(--border);
@@ -4085,4 +4085,154 @@ input[type="range"] {
   .global-status-bar {
     grid-template-columns: 165px minmax(210px, 1fr) 150px auto;
   }
+}
+
+/* Многоязычный звук: бейджи языков, блок выбора папки и дорожки на таймлайне */
+
+.playlist-row-select:has(.playlist-language-badges) {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: center;
+  row-gap: 3px;
+}
+
+.playlist-row-select:has(.playlist-language-badges) > :not(.playlist-language-badges) {
+  grid-row: 2;
+}
+
+.playlist-row:has(.playlist-language-badges) {
+  height: auto;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.playlist-language-badges {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.playlist-language-badges b {
+  background: rgba(255, 199, 0, 0.16);
+  border: 1px solid rgba(255, 199, 0, 0.45);
+  border-radius: 4px;
+  color: #ffc700;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 6px;
+  text-transform: lowercase;
+}
+
+.audio-track-control .audio-track-appearance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+}
+
+.audio-track-control .audio-track-appearance label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.audio-track-control .audio-track-appearance label > span {
+  overflow: hidden;
+  color: var(--muted-dark);
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-control .audio-track-toggle {
+  justify-content: flex-start !important;
+  white-space: nowrap;
+}
+
+.audio-track-control .audio-track-toggle input[type="checkbox"] {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.audio-track-control .audio-track-appearance label > input[type="text"],
+.audio-track-control .audio-track-appearance label > input:not([type="checkbox"]) {
+  width: 42px;
+  min-height: 18px;
+  flex: none;
+  padding: 2px 4px;
+  font-size: 9px;
+  text-align: center;
+  text-transform: lowercase;
+}
+
+.audio-program-languages {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 7px;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.audio-track-lane {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.audio-track-lane-label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-lane-bar {
+  border-radius: 3px;
+  height: 14px;
+}
+
+.audio-track-lane.original .audio-track-lane-bar {
+  background: linear-gradient(90deg, rgba(255, 199, 0, 0.55), rgba(255, 199, 0, 0.25));
+}
+
+.audio-track-lane.present .audio-track-lane-bar {
+  background: linear-gradient(90deg, rgba(90, 200, 250, 0.55), rgba(90, 200, 250, 0.22));
+}
+
+.audio-track-lane.silent .audio-track-lane-bar {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.08) 6px,
+    rgba(255, 255, 255, 0.02) 6px,
+    rgba(255, 255, 255, 0.02) 12px
+  );
+}
+
+.audio-track-lane.silent .audio-track-lane-label {
+  color: rgba(255, 255, 255, 0.42);
 }

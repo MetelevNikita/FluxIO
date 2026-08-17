@@ -4,6 +4,14 @@ import {
 } from "@gruber/contracts";
 import { runCommand } from "./process.js";
 
+/** `ffmpeg -filters` печатает строки вида ` ... subtitles         V->V  Render text ...`. */
+export function hasFilter(filterList: string, name: string): boolean {
+  return filterList.split(/\r?\n/).some((line) => {
+    const columns = line.trim().split(/\s+/);
+    return columns.length >= 2 && columns[1] === name;
+  });
+}
+
 export class FfmpegCapabilitiesService {
   readonly ffmpegPath: string;
   readonly ffprobePath: string;
@@ -23,11 +31,12 @@ export class FfmpegCapabilitiesService {
   }
 
   async #detect(): Promise<FfmpegCapabilities> {
-    const [version, encoders, protocols, accelerators] = await Promise.all([
+    const [version, encoders, protocols, accelerators, filters] = await Promise.all([
       runCommand(this.ffmpegPath, ["-hide_banner", "-version"]),
       runCommand(this.ffmpegPath, ["-hide_banner", "-encoders"]),
       runCommand(this.ffmpegPath, ["-hide_banner", "-protocols"]),
       runCommand(this.ffmpegPath, ["-hide_banner", "-hwaccels"]),
+      runCommand(this.ffmpegPath, ["-hide_banner", "-filters"]),
     ]);
     const videoEncoders = parseEncoders(encoders.stdout, "V");
     const audioEncoders = parseEncoders(encoders.stdout, "A");
@@ -57,6 +66,7 @@ export class FfmpegCapabilitiesService {
         ),
         mpeg2: videoEncoders.includes("mpeg2video"),
         aac: audioEncoders.includes("aac") || audioEncoders.includes("aac_at"),
+        burnInSubtitles: hasFilter(filters.stdout, "subtitles"),
       },
     });
   }

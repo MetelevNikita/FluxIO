@@ -33,6 +33,10 @@ declare global {
         directoryPath: string;
         filePaths: string[];
       } | null>;
+      selectAudioTrackDirectory: () => Promise<{
+        directoryPath: string;
+        filePaths: string[];
+      } | null>;
       saveScheduleFile: (input: {
         content: string;
         defaultName: string;

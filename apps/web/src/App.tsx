@@ -40,6 +40,8 @@ import {
   assignEffectToAssets,
   lottieTextValues,
 } from "./effect-assignment";
+import { buildAudioProgram } from "./audio-program";
+import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
 import {
   getFfmpegCapabilities,
@@ -53,6 +55,7 @@ import {
   probeMediaPaths,
   renderLottieEffect,
   scanMediaDirectory,
+  scanAudioTracks,
   scanGraphicEffectDirectory,
   serializeScheduleFile,
   saveWorkspaceSession as persistWorkspaceSession,
@@ -123,6 +126,7 @@ export function App() {
   const [ageLibrary, setAgeLibrary] = useState<ScheduleOverlayLibrary | null>(null);
   const [effectLibrary, setEffectLibrary] = useState<GraphicEffectAsset[]>([]);
   const [subtitleLibrary, setSubtitleLibrary] = useState<SubtitleLibrary | null>(null);
+  const [audioTrackLibrary, setAudioTrackLibrary] = useState<AudioTrackLibrary | null>(null);
   const [effectsBusy, setEffectsBusy] = useState(false);
   const [effectsMessage, setEffectsMessage] = useState<string | null>(null);
   const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
@@ -1074,6 +1078,46 @@ export function App() {
     setScheduleActionMessage(`SRT folder loaded: ${selected.filePaths.length} subtitle file(s).`);
   }
 
+  async function selectAudioTrackDirectory() {
+    const selected = await window.gruberDesktop?.selectAudioTrackDirectory();
+    if (!selected) return;
+    setSettings((current) => ({ ...current, audioTrackDirectory: selected.directoryPath }));
+    await refreshAudioTracks(selected.directoryPath);
+  }
+
+  /** Пересобирает дорожки для обоих плейлистов и включает многоязычный звук. */
+  async function refreshAudioTracks(directoryPath: string | null) {
+    const mediaPaths = [...playlist, ...futurePlaylist]
+      .map((asset) => asset.filePath)
+      .filter(Boolean);
+    if (mediaPaths.length === 0) {
+      setAudioTrackLibrary(null);
+      return;
+    }
+
+    try {
+      const scan = await scanAudioTracks(directoryPath, mediaPaths);
+      const byPath = new Map(scan.items.map((item) => [item.mediaFilePath, item.tracks]));
+      const attach = (items: MediaAsset[]) => items.map((asset) => ({
+        ...asset,
+        audioTracks: byPath.get(asset.filePath) ?? [],
+      }));
+      setPlaylist(attach);
+      setFuturePlaylist(attach);
+      setAudioTrackLibrary({ directoryPath: directoryPath ?? "", languages: scan.languages });
+      if (scan.languages.length > 0) {
+        setSettings((current) => ({ ...current, audioTracksEnabled: true }));
+      }
+      setScheduleActionMessage(
+        scan.languages.length > 0
+          ? `Audio tracks: ${scan.languages.map((l) => `{${l.label}}`).join(" ")}`
+          : "Audio tracks: nothing matched the media file names.",
+      );
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    }
+  }
+
   function updatePlaylistItem(assetId: string, patch: Partial<MediaAsset>) {
     updateActivePlaylist((current) => current.map((asset) =>
       asset.id === assetId ? { ...asset, ...patch } : asset
@@ -1320,7 +1364,12 @@ export function App() {
             titlePath: effect.titlePath ?? null,
             titlePaths: effect.titlePaths,
           })),
-          srtPath: asset.subtitles?.enabled ? asset.subtitles.filePath : null,
+          srtPath: asset.subtitles?.filePath ?? null,
+          srtEnabled: Boolean(asset.subtitles?.enabled),
+          audioTracks: (asset.audioTracks ?? []).map((track) => ({
+            language: track.label,
+            filePath: track.filePath,
+          })),
         })),
         startTime: metadata?.startTime ?? "12:00:00.00",
       };
@@ -1613,6 +1662,15 @@ export function App() {
             effectLibrary={effectLibrary}
             subtitleLibrary={subtitleLibrary}
             onSelectSubtitleDirectory={window.gruberDesktop ? selectSubtitleDirectory : undefined}
+            audioTracksEnabled={settings.audioTracksEnabled}
+            audioTrackDirectory={settings.audioTrackDirectory}
+            audioOriginalLanguage={settings.audioOriginalLanguage}
+            audioProgramLanguages={(audioTrackLibrary?.languages ?? []).map((l) => l.label)}
+            onSelectAudioTrackDirectory={
+              window.gruberDesktop ? selectAudioTrackDirectory : undefined
+            }
+            onAudioTrackSettingsChange={(patch) =>
+              setSettings((current) => ({ ...current, ...patch }))}
             ageDurationSeconds={settings.ageTitleDurationSeconds}
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
@@ -1922,6 +1980,13 @@ function buildStartRequest(
   return {
     playlist: buildPlayoutItems(playlist),
     nextPlaylist: buildPlayoutItems(nextPlaylist),
+    audioProgram: buildAudioProgram([...playlist, ...nextPlaylist], {
+      basePid: settings.udpAudioPid,
+      directoryPath: settings.audioTrackDirectory || null,
+      enabled: settings.audioTracksEnabled,
+      originalLabel: settings.audioOriginalLabel,
+      originalLanguageCode: settings.audioOriginalLanguage,
+    }),
     video: {
       codec: settings.videoCodec === "H.264"
         ? "h264"
@@ -2024,6 +2089,7 @@ function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlis
     scte35Markers: asset.scte35Markers ?? [],
     scheduleType: asset.scheduleType ?? null,
     declaredDurationSeconds: asset.declaredDurationSeconds ?? null,
+    audioTracks: asset.audioTracks ?? [],
     ageTitle: asset.ageTitle?.enabled
       ? {
           durationSeconds: asset.ageTitle.durationSeconds,

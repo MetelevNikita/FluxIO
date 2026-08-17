@@ -7,7 +7,6 @@ import {
   ChevronsUp,
   FlagTriangleRight,
   FilePlus2,
-  FileText,
   FolderOpen,
   Image,
   Maximize2,
@@ -38,6 +37,7 @@ import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
+import { assetLanguageLabels } from "../audio-program";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
 import { lottieTextValues } from "../effect-assignment";
 import { moveEffectLayerWindow, removeEffectLayerById } from "../effect-timeline-math";
@@ -76,6 +76,15 @@ interface PlaylistPreviewScreenProps {
     BroadcastSettings,
     "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
   >;
+  audioTracksEnabled: boolean;
+  audioTrackDirectory: string;
+  audioOriginalLanguage: string;
+  audioProgramLanguages: string[];
+  onSelectAudioTrackDirectory?: () => Promise<void>;
+  onAudioTrackSettingsChange: (patch: {
+    audioTracksEnabled?: boolean;
+    audioOriginalLanguage?: string;
+  }) => void;
   scheduleActionMessage: string | null;
   scheduleBusy: boolean;
   workspaceBusy: boolean;
@@ -136,6 +145,12 @@ export function PlaylistPreviewScreen({
   scheduleLogoSource,
   scheduleLogoPath,
   logoSettings,
+  audioTracksEnabled,
+  audioTrackDirectory,
+  audioOriginalLanguage,
+  audioProgramLanguages,
+  onSelectAudioTrackDirectory,
+  onAudioTrackSettingsChange,
   scheduleActionMessage,
   scheduleBusy,
   workspaceBusy,
@@ -567,13 +582,6 @@ export function PlaylistPreviewScreen({
   return (
     <main className="playlist-screen">
       <section className="schedule-resource-toolbar">
-        <div className="schedule-resource-heading">
-          <FileText size={16} />
-          <span>
-            <strong>Schedule resources</strong>
-            <small>Full-frame AGE canvas is detected from suffixes such as [16+]</small>
-          </span>
-        </div>
         <div className="schedule-resource-control logo-source-control">
           <span>Channel logo</span>
           <strong title={scheduleLogoSource || undefined}>
@@ -677,6 +685,49 @@ export function PlaylistPreviewScreen({
             <Captions size={13} /> Select folder
           </button>
           <small>Exact video/SRT basename match; missing files stay OFF</small>
+        </div>
+        <div className="schedule-resource-control audio-track-control">
+          <span>Audio tracks</span>
+          <strong title={audioTrackDirectory || undefined}>
+            {shortPath(audioTrackDirectory) || "Same folder as media"}
+          </strong>
+          <div className="schedule-source-actions">
+            <button
+              disabled={!onSelectAudioTrackDirectory || scheduleBusy}
+              onClick={() => void onSelectAudioTrackDirectory?.()}
+              type="button"
+            >
+              <FolderOpen size={13} /> Folder
+            </button>
+          </div>
+          <div className="audio-track-appearance">
+            <label className="audio-track-toggle">
+              <input
+                checked={audioTracksEnabled}
+                onChange={(event) =>
+                  onAudioTrackSettingsChange({ audioTracksEnabled: event.target.checked })}
+                type="checkbox"
+              />
+              <span>Separate PID per language</span>
+            </label>
+            <label>
+              <span>Original language</span>
+              <input
+                aria-label="Original audio language"
+                maxLength={3}
+                onChange={(event) =>
+                  onAudioTrackSettingsChange({
+                    audioOriginalLanguage: event.target.value.toLowerCase(),
+                  })}
+                value={audioOriginalLanguage}
+              />
+            </label>
+            <span className="audio-program-languages">
+              {audioProgramLanguages.length > 0
+                ? audioProgramLanguages.map((language) => `{${language}}`).join(" ")
+                : "No additional tracks found"}
+            </span>
+          </div>
         </div>
         <div className="schedule-save-control">
           <span>Export edited schedule</span>
@@ -886,6 +937,18 @@ export function PlaylistPreviewScreen({
                 role="button"
                 tabIndex={0}
               >
+                {assetLanguageLabels(asset).length > 0 ? (
+                  <span className="playlist-language-badges">
+                    {assetLanguageLabels(asset).map((language) => (
+                      <b
+                        key={language}
+                        title={`Дополнительная звуковая дорожка: ${language}`}
+                      >
+                        {`{${language}}`}
+                      </b>
+                    ))}
+                  </span>
+                ) : null}
                 <span className="playlist-air-time">{entry.startTime}</span>
                 {!collapsed ? <img alt="" src={asset.preview} /> : null}
                 <span className="playlist-clip-info">
@@ -1276,6 +1339,25 @@ export function PlaylistPreviewScreen({
             onRemoveLayer={removeEffectLayer}
             onUpdateLayer={updateEffectLayer}
           />
+          {audioTracksEnabled ? (
+            <div className="audio-track-timeline">
+              <div className="audio-track-lane original">
+                <span className="audio-track-lane-label">{`{${audioOriginalLanguage}}`} original</span>
+                <div className="audio-track-lane-bar" />
+              </div>
+              {audioProgramLanguages.map((language) => {
+                const present = assetLanguageLabels(selectedAsset).includes(language);
+                return (
+                  <div className={`audio-track-lane ${present ? "present" : "silent"}`} key={language}>
+                    <span className="audio-track-lane-label">
+                      {`{${language}}`} {present ? "" : "· silence"}
+                    </span>
+                    <div className="audio-track-lane-bar" />
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
           <div className="filmstrip-track">
             {Array.from({ length: 8 }, (_, index) => {
               const atSeconds = selectedAsset.durationSeconds * ((index + 0.5) / 8);

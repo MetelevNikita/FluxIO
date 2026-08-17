@@ -15,6 +15,9 @@ import {
   buildFfmpegClipAudioProducerCommand,
   buildFfmpegClipVideoProducerCommand,
   buildFfmpegProgramEncoderCommand,
+  clipAudioSource,
+  programAudioTracks,
+  type ClipAudioSource,
   type FfmpegCommand,
   type FfmpegCommandOptions,
   type PreparedPlayoutItem,
@@ -32,6 +35,7 @@ import {
   buildDvbSubtitlePmtPatch,
   calculateMinimumTransportMuxRate,
   calculateTransportMuxRate,
+  type SubtitleTransport,
 } from "../tsduck/command-builder.js";
 import {
   buildGstreamerDvbSubtitleCommand,
@@ -58,17 +62,25 @@ const playlistPreparationConcurrency = 8;
 const clipProducerStartupTimeoutMs = 30_000;
 const minimumClipPipeBufferBytes = 1_048_576;
 
+type CloseResult = { code: number | null; signal: NodeJS.Signals | null } | null;
+
+/** Один элементарный аудиопоток ролика: свой FFmpeg, свой pipe в encoder. */
+interface ClipAudioRuntime {
+  bridge: PassThrough;
+  child: ChildProcessWithoutNullStreams;
+  closeResult: CloseResult;
+  ended: boolean;
+  label: string;
+  ready: boolean;
+}
+
 interface ClipProducerRuntime {
-  audioBridge: PassThrough;
-  audioChild: ChildProcessWithoutNullStreams;
-  audioCloseResult: { code: number | null; signal: NodeJS.Signals | null } | null;
-  audioEnded: boolean;
-  audioReady: boolean;
+  audio: ClipAudioRuntime[];
   child: ChildProcessWithoutNullStreams;
   index: number;
   readyLogged: boolean;
   videoBridge: PassThrough;
-  videoCloseResult: { code: number | null; signal: NodeJS.Signals | null } | null;
+  videoCloseResult: CloseResult;
   videoEnded: boolean;
   videoReady: boolean;
 }
@@ -500,87 +512,20 @@ export class PlayoutSupervisor {
     const request = this.#request;
     if (!request) throw new Error("Playout request is not prepared");
 
-    this.#cues = request.scte35.enabled
-      ? planScte35Cues(request, this.#items, this.#status.loopCount)
-      : [];
-    this.#observedCueKeys.clear();
-    this.#status.scte35.plannedEvents = this.#cues.length;
-    this.#status.scte35.observedEvents = 0;
-    this.#status.scte35.lastEventId = null;
-    this.#status.scte35.error = null;
-    this.#status.subtitles.error = null;
-    this.#status.subtitles.plannedCues = 0;
-    this.#status.subtitles.sourceItems = 0;
-    this.#status.subtitles.observedPes = 0;
-    this.#status.subtitles.lastPtsMs = null;
-    this.#status.subtitles.videoPtsOriginMs = null;
-    this.#status.subtitles.clockErrorMs = null;
-    this.#status.subtitles.clockSynchronized = null;
-    this.#subtitleArgs = [];
-    this.#transportPreviewArgs = [];
-    this.#transportPreviewRestartAttempts = 0;
-    this.#subtitleFirstCueStartSeconds = null;
-    this.#subtitlePreRollMs = 0;
-    this.#firstSubtitlePtsMs = null;
-    this.#subtitleClockReport = null;
+    this.#resetLoopState(request);
 
     if (!usesTsdDuckTransport(request)) {
-      const command = this.#buildRollingEncoderCommand(request, {
-          transportMuxRateBps: request.endpoint.protocol === "udp"
-            ? calculateTransportMuxRate(request)
-            : undefined,
-        });
-      this.#commandArgs = command.args;
-      this.#tsduckArgs = [];
-      this.#applyCommandStatus(command.totalDurationSeconds, command.endpointLabel);
+      this.#prepareDirectEncoderCommand(request);
       return;
     }
 
     if (request.scte35.enabled) validateScte35Cues(request, this.#cues);
+
     const inputPort = await reserveUdpPort();
     const transportPreviewPort = await reserveDistinctUdpPort(inputPort);
-    const cueFilePath = request.scte35.enabled && this.#cues.length > 0
-      ? path.join(this.previewDirectory, `scte35-loop-${this.#status.loopCount}.xml`)
-      : null;
-    if (cueFilePath) {
-      await writeFile(cueFilePath, buildScte35CueXml(request, this.#cues), "utf8");
-    }
-    let subtitleTransport: {
-      inputPort: number;
-      pmtPatchFilePath: string;
-      tspPath: string;
-    } | null = null;
-    if (request.subtitleOutput.mode === "dvb") {
-      const project = await buildDvbSubtitleProject(this.#items, dvbSubtitlePreRollMs / 1_000);
-      this.#status.subtitles.plannedCues = project.cueCount;
-      this.#status.subtitles.sourceItems = project.sourceItems;
-      this.#subtitleFirstCueStartSeconds = project.firstCueStartSeconds;
-      this.#subtitlePreRollMs = Math.round(project.preRollSeconds * 1_000);
-      if (project.cueCount > 0) {
-        const subtitleInputPath = path.join(
-          this.previewDirectory,
-          `dvb-subtitles-loop-${this.#status.loopCount}.srt`,
-        );
-        const pmtPatchFilePath = path.join(this.previewDirectory, "dvb-subtitles-pmt.xml");
-        const subtitleInputPort = await reserveUdpPort();
-        await writeFile(subtitleInputPath, project.content, "utf8");
-        await writeFile(pmtPatchFilePath, buildDvbSubtitlePmtPatch(request), "utf8");
-        subtitleTransport = {
-          inputPort: subtitleInputPort,
-          pmtPatchFilePath,
-          tspPath: this.tsduckCapabilities.tspPath,
-        };
-        this.#subtitleArgs = buildGstreamerDvbSubtitleCommand({
-          inputPath: subtitleInputPath,
-          outputPort: subtitleInputPort,
-          preRollMs: this.#subtitlePreRollMs,
-          request,
-        });
-      } else {
-        this.#status.subtitles.state = "completed";
-        this.#appendEvent("DVB subtitles enabled, but the selected playlist contains no valid SRT cues");
-      }
-    }
+    const cueFilePath = await this.#writeScte35CueFile(request);
+    const subtitleTransport = await this.#prepareDvbSubtitleTransport(request);
+
     const internalEndpoint = {
       protocol: "udp" as const,
       host: "127.0.0.1",
@@ -615,6 +560,109 @@ export class PlayoutSupervisor {
       previewDirectory: this.previewDirectory,
     });
     this.#applyCommandStatus(command.totalDurationSeconds, tsduck.endpointLabel);
+  }
+
+  /** Сбрасывает SCTE-35 и subtitle-состояние перед подготовкой нового цикла. */
+  #resetLoopState(request: StartPlayoutRequest): void {
+    this.#cues = request.scte35.enabled
+      ? planScte35Cues(request, this.#items, this.#status.loopCount)
+      : [];
+    this.#observedCueKeys.clear();
+
+    this.#status.scte35.plannedEvents = this.#cues.length;
+    this.#status.scte35.observedEvents = 0;
+    this.#status.scte35.lastEventId = null;
+    this.#status.scte35.error = null;
+
+    this.#status.subtitles.error = null;
+    this.#status.subtitles.plannedCues = 0;
+    this.#status.subtitles.sourceItems = 0;
+    this.#status.subtitles.observedPes = 0;
+    this.#status.subtitles.lastPtsMs = null;
+    this.#status.subtitles.videoPtsOriginMs = null;
+    this.#status.subtitles.clockErrorMs = null;
+    this.#status.subtitles.clockSynchronized = null;
+
+    this.#subtitleArgs = [];
+    this.#transportPreviewArgs = [];
+    this.#transportPreviewRestartAttempts = 0;
+    this.#subtitleFirstCueStartSeconds = null;
+    this.#subtitlePreRollMs = 0;
+    this.#firstSubtitlePtsMs = null;
+    this.#subtitleClockReport = null;
+  }
+
+  /** RTMP(S): encoder отдаёт поток напрямую, без TSDuck transport. */
+  #prepareDirectEncoderCommand(request: StartPlayoutRequest): void {
+    const command = this.#buildRollingEncoderCommand(request, {
+      transportMuxRateBps: request.endpoint.protocol === "udp"
+        ? calculateTransportMuxRate(request)
+        : undefined,
+    });
+
+    this.#commandArgs = command.args;
+    this.#tsduckArgs = [];
+    this.#applyCommandStatus(command.totalDurationSeconds, command.endpointLabel);
+  }
+
+  async #writeScte35CueFile(request: StartPlayoutRequest): Promise<string | null> {
+    if (!request.scte35.enabled) return null;
+    if (this.#cues.length === 0) return null;
+
+    const cueFilePath = path.join(
+      this.previewDirectory,
+      `scte35-loop-${this.#status.loopCount}.xml`,
+    );
+    await writeFile(cueFilePath, buildScte35CueXml(request, this.#cues), "utf8");
+
+    return cueFilePath;
+  }
+
+  /**
+   * Готовит отдельный DVB subtitle PID: собирает cue всех роликов в общий
+   * program timeline и поднимает GStreamer-ветку. null — subtitle PID не нужен.
+   */
+  async #prepareDvbSubtitleTransport(
+    request: StartPlayoutRequest,
+  ): Promise<SubtitleTransport | null> {
+    if (request.subtitleOutput.mode !== "dvb") return null;
+
+    const project = await buildDvbSubtitleProject(this.#items, dvbSubtitlePreRollMs / 1_000);
+    this.#status.subtitles.plannedCues = project.cueCount;
+    this.#status.subtitles.sourceItems = project.sourceItems;
+    this.#subtitleFirstCueStartSeconds = project.firstCueStartSeconds;
+    this.#subtitlePreRollMs = Math.round(project.preRollSeconds * 1_000);
+
+    if (project.cueCount === 0) {
+      this.#status.subtitles.state = "completed";
+      this.#appendEvent(
+        "DVB subtitles enabled, but the selected playlist contains no valid SRT cues",
+      );
+      return null;
+    }
+
+    const subtitleInputPath = path.join(
+      this.previewDirectory,
+      `dvb-subtitles-loop-${this.#status.loopCount}.srt`,
+    );
+    const pmtPatchFilePath = path.join(this.previewDirectory, "dvb-subtitles-pmt.xml");
+    const subtitleInputPort = await reserveUdpPort();
+
+    await writeFile(subtitleInputPath, project.content, "utf8");
+    await writeFile(pmtPatchFilePath, buildDvbSubtitlePmtPatch(request), "utf8");
+
+    this.#subtitleArgs = buildGstreamerDvbSubtitleCommand({
+      inputPath: subtitleInputPath,
+      outputPort: subtitleInputPort,
+      preRollMs: this.#subtitlePreRollMs,
+      request,
+    });
+
+    return {
+      inputPort: subtitleInputPort,
+      pmtPatchFilePath,
+      tspPath: this.tsduckCapabilities.tspPath,
+    };
   }
 
   #buildRollingEncoderCommand(
@@ -1040,9 +1088,14 @@ export class PlayoutSupervisor {
 
   #spawnPreparedFfmpeg(): ChildProcessWithoutNullStreams {
     if (this.#commandArgs.length === 0) throw new Error("FFmpeg command is not prepared");
+    // stdin — raw video, затем по одному pipe на каждую дорожку программы:
+    // pipe:3, pipe:4, ... Их число совпадает с аудио-входами в команде encoder.
+    const request = this.#request;
+    if (!request) throw new Error("Playout request is not prepared");
+    const audioPipeCount = Math.max(1, programAudioTracks(request).length);
     const child = spawn(this.capabilities.ffmpegPath, this.#commandArgs, {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", ...Array<"pipe">(audioPipeCount).fill("pipe")],
     }) as ChildProcessWithoutNullStreams;
     this.#child = child;
     this.#progressBuffer = "";
@@ -1056,7 +1109,9 @@ export class PlayoutSupervisor {
       if (error.code !== "EPIPE") this.#handleProcessError(error);
     };
     child.stdin.on("error", handleInputPipeError);
-    (child.stdio[3] as Writable | null)?.on("error", handleInputPipeError);
+    for (let pipeIndex = 3; pipeIndex < child.stdio.length; pipeIndex += 1) {
+      (child.stdio[pipeIndex] as Writable | null)?.on("error", handleInputPipeError);
+    }
     child.stdout.on("data", (chunk: Buffer) => this.#readProgress(chunk));
     child.stderr.on("data", (chunk: Buffer) => this.#readLogs(chunk));
     child.once("spawn", () => {
@@ -1086,25 +1141,13 @@ export class PlayoutSupervisor {
       item,
       this.previewDirectory,
     );
-    const audioCommand = buildFfmpegClipAudioProducerCommand(request, item);
     const child = spawn(this.capabilities.ffmpegPath, videoCommand.args, {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
-    const audioChild = spawn(this.capabilities.ffmpegPath, audioCommand.args, {
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    }) as ChildProcessWithoutNullStreams;
     const videoFrameBytes = Math.ceil(request.video.width * request.video.height * 1.5);
-    const audioBufferBytes = request.audio.sampleRate * request.audio.channels * 2 * 2;
     const runtime: ClipProducerRuntime = {
-      audioBridge: new PassThrough({
-        highWaterMark: Math.max(minimumClipPipeBufferBytes, audioBufferBytes),
-      }),
-      audioChild,
-      audioCloseResult: null,
-      audioEnded: false,
-      audioReady: false,
+      audio: [],
       child,
       index,
       readyLogged: false,
@@ -1117,36 +1160,83 @@ export class PlayoutSupervisor {
     };
     this.#producerRuntimes.set(child, runtime);
     child.stdout.once("data", () => this.#handleClipProducerData(runtime, "video"));
-    audioChild.stdout.once("data", () => this.#handleClipProducerData(runtime, "audio"));
     runtime.videoBridge.once("end", () => {
       runtime.videoEnded = true;
       this.#completeClipProducer(runtime);
     });
-    runtime.audioBridge.once("end", () => {
-      runtime.audioEnded = true;
-      this.#completeClipProducer(runtime);
-    });
     child.stdout.pipe(runtime.videoBridge);
-    audioChild.stdout.pipe(runtime.audioBridge);
     this.#readClipProducerLogs(child, index, "video");
-    this.#readClipProducerLogs(audioChild, index, "audio");
     child.once("error", (error) => this.#handleClipProducerError(child, index, error));
-    audioChild.once("error", (error) => this.#handleClipProducerError(audioChild, index, error));
     child.once("close", (code, signal) => {
       runtime.videoCloseResult = { code, signal };
       this.#handleClipProducerClose(runtime, "video", code, signal);
     });
-    audioChild.once("close", (code, signal) => {
-      runtime.audioCloseResult = { code, signal };
-      this.#handleClipProducerClose(runtime, "audio", code, signal);
-    });
+
+    for (const source of this.#clipAudioSources(item)) {
+      runtime.audio.push(this.#spawnClipAudioProducer(runtime, item, source));
+    }
+
     return child;
+  }
+
+  /** Источники звука ролика в порядке элементарных потоков программы. */
+  #clipAudioSources(item: PreparedPlayoutItem): (ClipAudioSource | undefined)[] {
+    const request = this.#request;
+    if (!request) throw new Error("Playout request is not prepared");
+
+    const tracks = programAudioTracks(request);
+    // Многоязычный звук выключен — одна дорожка из самого ролика, как раньше.
+    if (tracks.length === 0) return [undefined];
+
+    return tracks.map((track) => clipAudioSource(item, track));
+  }
+
+  #spawnClipAudioProducer(
+    runtime: ClipProducerRuntime,
+    item: PreparedPlayoutItem,
+    source: ClipAudioSource | undefined,
+  ): ClipAudioRuntime {
+    const request = this.#request;
+    if (!request) throw new Error("Playout request is not prepared");
+
+    const command = buildFfmpegClipAudioProducerCommand(request, item, source);
+    const child = spawn(this.capabilities.ffmpegPath, command.args, {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as ChildProcessWithoutNullStreams;
+    const audioBufferBytes = request.audio.sampleRate * request.audio.channels * 2 * 2;
+    const label = source ? source.label : "audio";
+    const audio: ClipAudioRuntime = {
+      bridge: new PassThrough({
+        highWaterMark: Math.max(minimumClipPipeBufferBytes, audioBufferBytes),
+      }),
+      child,
+      closeResult: null,
+      ended: false,
+      label,
+      ready: false,
+    };
+
+    child.stdout.once("data", () => this.#handleClipAudioData(runtime, audio));
+    audio.bridge.once("end", () => {
+      audio.ended = true;
+      this.#completeClipProducer(runtime);
+    });
+    child.stdout.pipe(audio.bridge);
+    this.#readClipProducerLogs(child, runtime.index, `audio ${label}`);
+    child.once("error", (error) => this.#handleClipProducerError(child, runtime.index, error));
+    child.once("close", (code, signal) => {
+      audio.closeResult = { code, signal };
+      this.#handleClipProducerClose(runtime, `audio ${label}`, code, signal);
+    });
+
+    return audio;
   }
 
   #readClipProducerLogs(
     child: ChildProcessWithoutNullStreams,
     index: number,
-    stream: "audio" | "video",
+    stream: string,
   ): void {
     let logBuffer = "";
     child.stderr.on("data", (chunk: Buffer) => {
@@ -1164,19 +1254,32 @@ export class PlayoutSupervisor {
     const encoder = this.#child;
     if (!encoder) throw new Error("Persistent encoder is not running");
     const runtime = this.#producerRuntimes.get(child);
-    const audioInput = encoder.stdio[3] as Writable | null;
-    if (!runtime || !audioInput) throw new Error("FFmpeg raw media buffers are unavailable");
+    if (!runtime) throw new Error("FFmpeg raw media buffers are unavailable");
     this.#producerChild = child;
     this.#status.audioLevelDbfs = null;
-    runtime.audioBridge.on("data", (chunk: Buffer) => {
-      const level = measurePcmS16leDbfs(chunk);
-      if (level != null) this.#status.audioLevelDbfs = level;
-    });
     runtime.videoBridge.pipe(encoder.stdin, { end: false });
-    runtime.audioBridge.pipe(audioInput, { end: false });
+
+    runtime.audio.forEach((audio, trackIndex) => {
+      const audioInput = encoder.stdio[3 + trackIndex] as Writable | null;
+      if (!audioInput) {
+        throw new Error(`Encoder audio pipe ${trackIndex} is unavailable`);
+      }
+      // Индикатор громкости слушает только первую дорожку программы.
+      if (trackIndex === 0) {
+        audio.bridge.on("data", (chunk: Buffer) => {
+          const level = measurePcmS16leDbfs(chunk);
+          if (level != null) this.#status.audioLevelDbfs = level;
+        });
+      }
+      audio.bridge.pipe(audioInput, { end: false });
+    });
+
+    const audioPids = runtime.audio
+      .map((audio) => `${audio.label}=${audio.child.pid ?? "unknown"}`)
+      .join(", ");
     this.#appendEvent(
       `Clip renderer ${index + 1}/${this.#items.length} started with video PID ` +
-        `${child.pid ?? "unknown"}, audio PID ${runtime.audioChild.pid ?? "unknown"}: ` +
+        `${child.pid ?? "unknown"}, audio PID ${audioPids}: ` +
         `"${this.#items[index]?.name ?? "unknown"}"`,
     );
     this.#armClipProducerStartup(runtime);
@@ -1191,11 +1294,13 @@ export class PlayoutSupervisor {
 
   #handleClipProducerClose(
     runtime: ClipProducerRuntime,
-    stream: "audio" | "video",
+    stream: string,
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
-    const stoppedChild = stream === "video" ? runtime.child : runtime.audioChild;
+    const stoppedChild = stream === "video"
+      ? runtime.child
+      : (runtime.audio.find((audio) => stream === `audio ${audio.label}`)?.child ?? runtime.child);
     if (this.#expectedProducerStops.has(stoppedChild)) return;
     if (this.#prefetchedProducerChild === runtime.child && this.#producerChild !== runtime.child) {
       if (code !== 0) {
@@ -1224,9 +1329,8 @@ export class PlayoutSupervisor {
     if (
       this.#producerChild !== child ||
       runtime.videoCloseResult?.code !== 0 ||
-      runtime.audioCloseResult?.code !== 0 ||
       !runtime.videoEnded ||
-      !runtime.audioEnded
+      runtime.audio.some((audio) => audio.closeResult?.code !== 0 || !audio.ended)
     ) return;
     this.#clearClipProducerStartupTimer();
     this.#producerChild = null;
@@ -1240,25 +1344,33 @@ export class PlayoutSupervisor {
     const encoder = this.#child;
     if (!encoder) return;
     encoder.stdin.end();
-    (encoder.stdio[3] as Writable | null)?.end();
+    for (let pipeIndex = 3; pipeIndex < encoder.stdio.length; pipeIndex += 1) {
+      (encoder.stdio[pipeIndex] as Writable | null)?.end();
+    }
     this.#appendEvent("Last clip rendered; draining the persistent encoder");
   }
 
   #handleClipProducerData(
     runtime: ClipProducerRuntime,
-    stream: "audio" | "video",
+    stream: "video",
   ): void {
     if (stream === "video") runtime.videoReady = true;
-    else runtime.audioReady = true;
+    if (this.#producerChild === runtime.child) this.#reportClipProducerReady(runtime);
+  }
+
+  #handleClipAudioData(runtime: ClipProducerRuntime, audio: ClipAudioRuntime): void {
+    audio.ready = true;
     if (this.#producerChild === runtime.child) this.#reportClipProducerReady(runtime);
   }
 
   #reportClipProducerReady(runtime: ClipProducerRuntime): void {
-    if (!runtime.videoReady || !runtime.audioReady || runtime.readyLogged) return;
+    if (!runtime.videoReady || runtime.readyLogged) return;
+    if (runtime.audio.some((audio) => !audio.ready)) return;
     runtime.readyLogged = true;
     this.#clearClipProducerStartupTimer();
+    const tracks = runtime.audio.map((audio) => audio.label).join(" + ");
     this.#appendEvent(
-      `Clip renderer ${runtime.index + 1}/${this.#items.length} pipe ready: video + audio`,
+      `Clip renderer ${runtime.index + 1}/${this.#items.length} pipe ready: video + ${tracks}`,
     );
   }
 
@@ -1270,7 +1382,7 @@ export class PlayoutSupervisor {
       if (this.#producerChild !== runtime.child || runtime.readyLogged) return;
       const waitingFor = [
         runtime.videoReady ? null : "video",
-        runtime.audioReady ? null : "audio",
+        ...runtime.audio.filter((audio) => !audio.ready).map((audio) => `audio ${audio.label}`),
       ].filter(Boolean).join(" + ");
       this.#handleClipProducerError(
         runtime.child,
@@ -1598,8 +1710,11 @@ export class PlayoutSupervisor {
     const runtime = this.#producerRuntimes.get(child);
     this.#producerRuntimes.delete(child);
     runtime?.videoBridge.destroy();
-    runtime?.audioBridge.destroy();
-    for (const producer of runtime ? [runtime.child, runtime.audioChild] : [child]) {
+    for (const audio of runtime?.audio ?? []) audio.bridge.destroy();
+    const producers = runtime
+      ? [runtime.child, ...runtime.audio.map((audio) => audio.child)]
+      : [child];
+    for (const producer of producers) {
       this.#expectedProducerStops.add(producer);
       producer.stdout.destroy();
       producer.stdin.destroy();
@@ -1783,6 +1898,7 @@ async function prepareItems(
         itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
         effects: item.effects,
         subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
+        audioTracks: item.audioTracks,
       };
     },
     (completed, total) => onProgress?.("media", completed, total),
@@ -1833,6 +1949,19 @@ function validateCapabilities(
   if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol === "rtmp") {
     throw new PlayoutPreflightError(
       "DVB subtitles require UDP or SRT MPEG-TS output; RTMP/FLV is not supported",
+    );
+  }
+  // Фильтр subtitles живёт только в сборках с libass. Без него FFmpeg падает
+  // невнятным "AVFilterGraph: No such filter", поэтому объясняем заранее.
+  if (
+    request.subtitleOutput.mode === "burn-in" &&
+    !capabilities.supports.burnInSubtitles &&
+    request.playlist.some((item) => item.subtitles?.enabled)
+  ) {
+    throw new PlayoutPreflightError(
+      "This FFmpeg build has no 'subtitles' filter, so burn-in captions cannot be rendered. " +
+        "Install a libass-enabled build (on macOS: brew install ffmpeg-full), " +
+        "switch Subtitle output to DVB, or turn SRT off for the affected clips.",
     );
   }
   const ffmpegProtocol = usesTsdDuckTransport(request)

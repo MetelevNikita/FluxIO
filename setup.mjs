@@ -15,6 +15,8 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
 const offline = process.argv.includes("--offline");
+const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
+  ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
 const applicationVersion = "6.0.22";
 
@@ -179,308 +181,419 @@ class Prompt {
 async function main() {
   printHeader();
   assertNodeVersion();
+
   if (process.platform === "win32") {
     refreshWindowsProcessPath();
   }
+
   const existingEnv = await loadExistingEnv();
-  const existingDatabase = parseExistingDatabase(existingEnv.DATABASE_URL);
   const prompt = new Prompt();
 
   try {
-    const mode = await prompt.choose(
-      "1. Режим проекта",
-      [
-        { label: "Тест / разработка", value: "test" },
-        { label: "Production", value: "production" },
-      ],
-      0,
-    );
-
-    console.log("\n2. PostgreSQL (без Docker)");
-    const databaseReady = await prompt.confirm(
-      "Пользователь и база уже существуют?",
-      mode === "production",
-    );
-    const pgHost = "127.0.0.1";
-    console.log("  PostgreSQL: 127.0.0.1 (локально, SSL отключён)");
-    const pgPort = await prompt.text(
-      "PostgreSQL port",
-      String(existingDatabase.port ?? 5432),
-      (value) => validatePort(value, "PostgreSQL port"),
-    );
-    const pgDatabase = await prompt.text(
-      "Имя базы",
-      existingDatabase.database ?? "gruber",
-      validatePgName,
-    );
-    const pgUsername = await prompt.text(
-      "Имя пользователя PostgreSQL",
-      existingDatabase.username ?? "gruber",
-      validatePgName,
-    );
-    let pgPassword = await prompt.secret(
-      "Пароль пользователя PostgreSQL",
-      existingDatabase.password ?? "",
-    );
-    if (!databaseReady && !pgPassword) {
-      pgPassword = randomBytes(24).toString("base64url");
-      console.log("  Пароль сгенерирован автоматически и будет сохранён только в .env.");
-    }
-    let admin = null;
-    if (!databaseReady) {
-      const defaultAdmin = process.platform === "darwin"
-        ? process.env.USER ?? path.basename(homedir())
-        : "postgres";
-      const adminUsername = await prompt.text("Администратор PostgreSQL", defaultAdmin, validatePgName);
-      const adminPassword = await prompt.secret("Пароль администратора PostgreSQL");
-      admin = { username: adminUsername, password: adminPassword };
-    }
-
-    console.log("\n3. Media-service, FFmpeg, TSDuck и GStreamer");
-    const apiHost = await prompt.text("GRUBER_HOST", existingEnv.GRUBER_HOST ?? "127.0.0.1");
-    const apiPort = await prompt.text(
-      "GRUBER_PORT",
-      existingEnv.GRUBER_PORT ?? "4310",
-      (value) => validatePort(value, "GRUBER_PORT"),
-    );
-    const detectedFfmpegPath = discoverToolPath(
-      existingEnv.FFMPEG_PATH ?? "ffmpeg",
-      "ffmpeg",
-    );
-    const detectedFfprobePath = discoverToolPath(
-      existingEnv.FFPROBE_PATH ?? siblingExecutable(detectedFfmpegPath, "ffprobe"),
-      "ffprobe",
-    );
-    const detectedTsdDuckPath = discoverToolPath(
-      existingEnv.TSDUCK_PATH ?? "tsp",
-      "tsp",
-    );
-    const detectedGstreamerPath = discoverToolPath(
-      existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
-      "gst-launch-1.0",
-    );
-    printToolDetection("FFmpeg", detectedFfmpegPath);
-    printToolDetection("ffprobe", detectedFfprobePath);
-    printToolDetection("TSDuck tsp", detectedTsdDuckPath);
-    printToolDetection("GStreamer gst-launch", detectedGstreamerPath);
-    const ffmpegPath = await prompt.text(
-      "FFmpeg (Enter — найти автоматически)",
-      detectedFfmpegPath ?? existingEnv.FFMPEG_PATH ?? "ffmpeg",
-    );
-    const ffprobePath = await prompt.text(
-      "ffprobe (Enter — найти автоматически)",
-      detectedFfprobePath ?? existingEnv.FFPROBE_PATH ?? "ffprobe",
-    );
-    const tsduckPath = await prompt.text(
-      "TSDuck tsp (UDP/SRT transport и SCTE-35; Enter — найти автоматически)",
-      detectedTsdDuckPath ?? existingEnv.TSDUCK_PATH ?? "tsp",
-    );
-    const gstreamerPath = await prompt.text(
-      "GStreamer gst-launch (DVB subtitles; Enter — найти автоматически)",
-      detectedGstreamerPath ?? existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
-    );
-
-    console.log("\n4. Действия мастера");
-    const installDependencies = offline
-      ? false
-      : await prompt.confirm(
-          "Установить все build dependencies через npm ci --include=dev?",
-          true,
-        );
-    if (offline) {
-      console.log("  Offline: npm ci и автоматические загрузки отключены.");
-    }
-    const runChecks = await prompt.confirm("Запустить typecheck и tests?", true);
-    const buildInstaller = mode === "production" && !offline
-      ? await prompt.confirm(
-          "Собрать Electron installer для текущей ОС?",
-          true,
-        )
-      : false;
-    if (mode === "production" && offline) {
-      console.log(
-        "  Offline: будет автоматически собран запускаемый Electron-каталог без NSIS.",
-      );
-    }
-    const createShortcut = mode === "production"
-      ? await prompt.confirm("Создать ярлык FluxIO на рабочем столе?", true)
-      : false;
-    const serviceKind = platformServiceKind();
-    const installBackgroundService =
-      mode === "production" &&
-      await prompt.confirm(
-        `Установить и запустить media-service через ${serviceKind.label}?`,
-        true,
-      );
-    const serviceUser = installBackgroundService && serviceKind.id === "systemd"
-      ? await prompt.text(
-          "Linux-пользователь для media-service",
-          process.env.SUDO_USER ?? process.env.USER ?? "gruber",
-          validateSystemUser,
-        )
-      : null;
-    const startNow = noStart
-      ? false
-      : await prompt.confirm(
-          installBackgroundService
-            ? "Запустить Electron-интерфейс после старта media-service?"
-            : "Запустить приложение после установки?",
-          true,
-        );
+    const mode = await askProjectMode(prompt);
+    const database = await askDatabase(prompt, mode, existingEnv);
+    const service = await askMediaService(prompt, existingEnv);
+    const actions = await askWizardActions(prompt, mode);
 
     if (offline) {
       assertOfflineBuildDependencies({ requireElectron: true });
     }
 
-    const resolvedFfmpegPath = await ensureTool(
-      prompt,
-      ffmpegPath,
-      "FFmpeg",
-      "ffmpeg",
-      "ffmpeg",
-      offline,
-    );
-    const resolvedFfprobePath = await ensureTool(
-      prompt,
-      ffprobePath,
-      "ffprobe",
-      "ffmpeg",
-      "ffprobe",
-      offline,
-    );
-    const resolvedTsdDuckPath = await ensureTool(
-      prompt,
-      tsduckPath,
-      "TSDuck",
-      "tsduck",
-      "tsp",
-      offline,
-    );
-    const resolvedGstreamerPath = await ensureTool(
-      prompt,
-      gstreamerPath,
-      "GStreamer",
-      "gstreamer",
-      "gst-launch-1.0",
-      offline,
-    );
-    const gstreamerProbe = probeGstreamerDvbPlugin(resolvedGstreamerPath);
-    if (!gstreamerProbe.available) {
-      throw new Error(
-        "GStreamer установлен, но обязательный DVB plugin dvbsubenc не найден. " +
-          "На Windows установите официальный MSVC x86_64 Runtime с полным набором " +
-          `plug-ins и повторите мастер. Проверка: "${gstreamerProbe.inspectPath}" ` +
-          `--exists dvbsubenc (${gstreamerProbe.reason}).`,
-      );
-    }
-    console.log(`  ✓ GStreamer dvbsubenc: ${gstreamerProbe.inspectPath}`);
-    if (!databaseReady) {
-      const psqlPath = await ensureTool(
-        prompt,
-        "psql",
-        "PostgreSQL client",
-        "postgresql",
-        "psql",
-        offline,
-      );
-      const pgIsReadyPath = discoverToolPath(
-        siblingExecutable(psqlPath, "pg_isready"),
-        "pg_isready",
-      );
-      await ensurePostgresReady(prompt, pgHost, pgPort, pgIsReadyPath);
-      await createPostgresDatabase({
-        admin,
-        database: pgDatabase,
-        host: pgHost,
-        password: pgPassword,
-        port: pgPort,
-        psqlPath,
-        username: pgUsername,
-      });
-    }
+    const tools = await resolveMediaTools(prompt, service);
+    await preparePostgres(prompt, database);
 
-    const databaseUrl = buildDatabaseUrl({
-      database: pgDatabase,
-      password: pgPassword,
-      port: pgPort,
-      username: pgUsername,
-    });
-    const apiClientHost = ["0.0.0.0", "::"].includes(apiHost) ? "127.0.0.1" : apiHost;
-    const values = {
-      NODE_ENV: mode === "production" ? "production" : "development",
-      DATABASE_URL: databaseUrl,
-      GRUBER_SECRET_KEY:
-        existingEnv.GRUBER_SECRET_KEY || randomBytes(32).toString("base64"),
-      GRUBER_HOST: apiHost,
-      GRUBER_PORT: String(apiPort),
-      GRUBER_MEDIA_API_URL: `http://${formatUrlHost(apiClientHost)}:${apiPort}`,
-      FFMPEG_PATH: resolvedFfmpegPath,
-      FFPROBE_PATH: resolvedFfprobePath,
-      TSDUCK_PATH: resolvedTsdDuckPath,
-      GSTREAMER_LAUNCH_PATH: resolvedGstreamerPath,
-      GSTREAMER_INSPECT_PATH: siblingExecutable(resolvedGstreamerPath, "gst-inspect-1.0"),
-    };
+    const values = buildEnvironmentValues({ database, existingEnv, mode, service, tools });
     await saveEnv(values);
+
     const commandEnv = { ...process.env, ...values };
 
-    if (installDependencies) {
-      await runNpmCommand(npmCiArguments(), { env: commandEnv });
-    }
-    await ensureElectronRuntime({ env: commandEnv, offlineMode: offline });
-    await runNpmCommand(["run", "db:generate"], { env: commandEnv });
-    await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
-    if (runChecks) {
-      await runNpmCommand(["run", "typecheck"], { env: commandEnv });
-      await runNpmCommand(["test"], { env: commandEnv });
-    }
-
-    if (mode === "production") {
-      const packagingScript = desktopPackagingScript({
-        buildInstaller,
-        mode,
-        offlineMode: offline,
-      });
-      await runNpmCommand(
-        packagingScript ? ["run", packagingScript] : ["run", "build"],
-        { env: commandEnv },
-      );
-    }
-
-    let installedService = null;
-    if (installBackgroundService) {
-      installedService = await installPlatformService({
-        envPath,
-        kind: serviceKind.id,
-        serviceUser,
-        start: !noStart,
-      });
-      if (!noStart) {
-        await waitForUrl(`${values.GRUBER_MEDIA_API_URL}/api/health`, 30_000);
-      }
-    }
-
-    const desktopShortcut = createShortcut
-      ? await createDesktopShortcut()
-      : null;
-
-    printSummary({
-      databaseUrl,
-      desktopShortcut,
-      installedService,
-      mode,
-      startNow,
-      values,
-    });
-    if (startNow) {
-      if (installBackgroundService) {
-        await launchDesktop(commandEnv, installedService);
-      } else {
-        await launchApplication(mode, commandEnv, values.GRUBER_MEDIA_API_URL);
-      }
-    }
+    await runBuildPipeline(commandEnv, mode, actions);
+    await finishInstallation(commandEnv, mode, actions, values);
   } finally {
     prompt.close();
   }
+}
+
+//
+// Вопросы мастера: каждый блок отвечает за один экран установки
+//
+
+async function askProjectMode(prompt) {
+  return prompt.choose(
+    "1. Режим проекта",
+    [
+      { label: "Тест / разработка", value: "test" },
+      { label: "Production", value: "production" },
+    ],
+    0,
+  );
+}
+
+async function askDatabase(prompt, mode, existingEnv) {
+  const existing = parseExistingDatabase(existingEnv.DATABASE_URL);
+  const host = "127.0.0.1";
+
+  console.log("\n2. PostgreSQL (без Docker)");
+  const ready = await prompt.confirm(
+    "Пользователь и база уже существуют?",
+    mode === "production",
+  );
+
+  console.log("  PostgreSQL: 127.0.0.1 (локально, SSL отключён)");
+  const port = await prompt.text(
+    "PostgreSQL port",
+    String(existing.port ?? 5432),
+    (value) => validatePort(value, "PostgreSQL port"),
+  );
+  const database = await prompt.text(
+    "Имя базы",
+    existing.database ?? "gruber",
+    validatePgName,
+  );
+  const username = await prompt.text(
+    "Имя пользователя PostgreSQL",
+    existing.username ?? "gruber",
+    validatePgName,
+  );
+  const password = await askDatabasePassword(prompt, ready, existing.password ?? "");
+  const admin = await askDatabaseAdmin(prompt, ready);
+
+  return { admin, database, host, password, port, ready, username };
+}
+
+async function askDatabasePassword(prompt, databaseReady, existingPassword) {
+  const password = await prompt.secret("Пароль пользователя PostgreSQL", existingPassword);
+  if (password) return password;
+  if (databaseReady) return password;
+
+  console.log("  Пароль сгенерирован автоматически и будет сохранён только в .env.");
+  return randomBytes(24).toString("base64url");
+}
+
+async function askDatabaseAdmin(prompt, databaseReady) {
+  if (databaseReady) return null;
+
+  const defaultAdmin = process.platform === "darwin"
+    ? process.env.USER ?? path.basename(homedir())
+    : "postgres";
+  const username = await prompt.text("Администратор PostgreSQL", defaultAdmin, validatePgName);
+  const password = await prompt.secret("Пароль администратора PostgreSQL");
+
+  return { username, password };
+}
+
+async function askMediaService(prompt, existingEnv) {
+  console.log("\n3. Media-service, FFmpeg, TSDuck и GStreamer");
+
+  const apiHost = await prompt.text("GRUBER_HOST", existingEnv.GRUBER_HOST ?? "127.0.0.1");
+  const apiPort = await prompt.text(
+    "GRUBER_PORT",
+    existingEnv.GRUBER_PORT ?? "4310",
+    (value) => validatePort(value, "GRUBER_PORT"),
+  );
+
+  const detected = detectMediaToolPaths(existingEnv);
+  printToolDetection("FFmpeg", detected.ffmpeg);
+  printToolDetection("ffprobe", detected.ffprobe);
+  printToolDetection("TSDuck tsp", detected.tsduck);
+  printToolDetection("GStreamer gst-launch", detected.gstreamer);
+
+  const ffmpegPath = await prompt.text(
+    "FFmpeg (Enter — найти автоматически)",
+    detected.ffmpeg ?? existingEnv.FFMPEG_PATH ?? "ffmpeg",
+  );
+  const ffprobePath = await prompt.text(
+    "ffprobe (Enter — найти автоматически)",
+    detected.ffprobe ?? existingEnv.FFPROBE_PATH ?? "ffprobe",
+  );
+  const tsduckPath = await prompt.text(
+    "TSDuck tsp (UDP/SRT transport и SCTE-35; Enter — найти автоматически)",
+    detected.tsduck ?? existingEnv.TSDUCK_PATH ?? "tsp",
+  );
+  const gstreamerPath = await prompt.text(
+    "GStreamer gst-launch (DVB subtitles; Enter — найти автоматически)",
+    detected.gstreamer ?? existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
+  );
+
+  return { apiHost, apiPort, ffmpegPath, ffprobePath, gstreamerPath, tsduckPath };
+}
+
+function detectMediaToolPaths(existingEnv) {
+  const ffmpeg = discoverToolPath(existingEnv.FFMPEG_PATH ?? "ffmpeg", "ffmpeg");
+  const ffprobe = discoverToolPath(
+    existingEnv.FFPROBE_PATH ?? siblingExecutable(ffmpeg, "ffprobe"),
+    "ffprobe",
+  );
+  const tsduck = discoverToolPath(existingEnv.TSDUCK_PATH ?? "tsp", "tsp");
+  const gstreamer = discoverToolPath(
+    existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
+    "gst-launch-1.0",
+  );
+
+  return { ffmpeg, ffprobe, gstreamer, tsduck };
+}
+
+async function askWizardActions(prompt, mode) {
+  console.log("\n4. Действия мастера");
+
+  const installDependencies = await askInstallDependencies(prompt);
+  const runChecks = await prompt.confirm("Запустить typecheck и tests?", true);
+  const buildInstaller = await askBuildInstaller(prompt, mode);
+  const createShortcut = await askDesktopShortcut(prompt, mode);
+  const serviceKind = platformServiceKind();
+  const installBackgroundService = await askBackgroundService(prompt, mode, serviceKind);
+  const serviceUser = await askServiceUser(prompt, installBackgroundService, serviceKind);
+  const startNow = await askStartNow(prompt, installBackgroundService);
+
+  return {
+    buildInstaller,
+    createShortcut,
+    installBackgroundService,
+    installDependencies,
+    runChecks,
+    serviceKind,
+    serviceUser,
+    startNow,
+  };
+}
+
+async function askInstallDependencies(prompt) {
+  if (offline) {
+    console.log("  Offline: npm ci и автоматические загрузки отключены.");
+    return false;
+  }
+
+  return prompt.confirm(
+    "Установить все build dependencies через npm ci --include=dev?",
+    true,
+  );
+}
+
+async function askBuildInstaller(prompt, mode) {
+  if (mode !== "production") return false;
+
+  if (offline) {
+    console.log("  Offline: будет автоматически собран запускаемый Electron-каталог без NSIS.");
+    return false;
+  }
+
+  return prompt.confirm("Собрать Electron installer для текущей ОС?", true);
+}
+
+async function askDesktopShortcut(prompt, mode) {
+  if (mode !== "production") return false;
+
+  return prompt.confirm("Создать ярлык FluxIO на рабочем столе?", true);
+}
+
+async function askBackgroundService(prompt, mode, serviceKind) {
+  if (mode !== "production") return false;
+
+  return prompt.confirm(
+    `Установить и запустить media-service через ${serviceKind.label}?`,
+    true,
+  );
+}
+
+async function askServiceUser(prompt, installBackgroundService, serviceKind) {
+  if (!installBackgroundService) return null;
+  if (serviceKind.id !== "systemd") return null;
+
+  return prompt.text(
+    "Linux-пользователь для media-service",
+    process.env.SUDO_USER ?? process.env.USER ?? "gruber",
+    validateSystemUser,
+  );
+}
+
+async function askStartNow(prompt, installBackgroundService) {
+  if (noStart) return false;
+
+  return prompt.confirm(
+    installBackgroundService
+      ? "Запустить Electron-интерфейс после старта media-service?"
+      : "Запустить приложение после установки?",
+    true,
+  );
+}
+
+//
+// Подготовка окружения: инструменты, база, .env
+//
+
+async function resolveMediaTools(prompt, service) {
+  const ffmpeg = await ensureTool(prompt, service.ffmpegPath, "FFmpeg", "ffmpeg", "ffmpeg", offline);
+  const ffprobe = await ensureTool(prompt, service.ffprobePath, "ffprobe", "ffmpeg", "ffprobe", offline);
+  const tsduck = await ensureTool(prompt, service.tsduckPath, "TSDuck", "tsduck", "tsp", offline);
+  const gstreamer = await ensureTool(
+    prompt,
+    service.gstreamerPath,
+    "GStreamer",
+    "gstreamer",
+    "gst-launch-1.0",
+    offline,
+  );
+
+  verifyGstreamerDvbPlugin(gstreamer);
+
+  return { ffmpeg, ffprobe, gstreamer, tsduck };
+}
+
+function verifyGstreamerDvbPlugin(gstreamerLaunchPath) {
+  if (skipGstreamerDvbCheck) {
+    console.log("  ! Проверка GStreamer dvbsubenc пропущена (--skip-gstreamer-check).");
+    return;
+  }
+
+  console.log("  … проверяю GStreamer dvbsubenc (первый запуск строит кэш плагинов, до нескольких минут)");
+  const probe = probeGstreamerDvbPlugin(gstreamerLaunchPath);
+
+  if (probe.available) {
+    console.log(`  ✓ GStreamer dvbsubenc: ${probe.inspectPath}`);
+    return;
+  }
+
+  if (probe.inconclusive) {
+    console.warn(
+      `  ! Не удалось проверить GStreamer dvbsubenc (${probe.reason}). ` +
+        "Установка продолжается. Проверьте вручную: " +
+        `"${probe.inspectPath}" --exists dvbsubenc`,
+    );
+    return;
+  }
+
+  throw new Error(
+    "GStreamer установлен, но обязательный DVB plugin dvbsubenc не найден. " +
+      "На Windows установите официальный MSVC x86_64 Runtime с полным набором " +
+      `plug-ins и повторите мастер. Проверка: "${probe.inspectPath}" ` +
+      `--exists dvbsubenc (${probe.reason}). ` +
+      "Чтобы пропустить проверку: node setup.mjs --skip-gstreamer-check",
+  );
+}
+
+async function preparePostgres(prompt, database) {
+  if (database.ready) return;
+
+  const psqlPath = await ensureTool(
+    prompt,
+    "psql",
+    "PostgreSQL client",
+    "postgresql",
+    "psql",
+    offline,
+  );
+  const pgIsReadyPath = discoverToolPath(
+    siblingExecutable(psqlPath, "pg_isready"),
+    "pg_isready",
+  );
+
+  await ensurePostgresReady(prompt, database.host, database.port, pgIsReadyPath);
+  await createPostgresDatabase({
+    admin: database.admin,
+    database: database.database,
+    host: database.host,
+    password: database.password,
+    port: database.port,
+    psqlPath,
+    username: database.username,
+  });
+}
+
+function buildEnvironmentValues({ database, existingEnv, mode, service, tools }) {
+  const apiClientHost = ["0.0.0.0", "::"].includes(service.apiHost)
+    ? "127.0.0.1"
+    : service.apiHost;
+
+  return {
+    NODE_ENV: mode === "production" ? "production" : "development",
+    DATABASE_URL: buildDatabaseUrl({
+      database: database.database,
+      password: database.password,
+      port: database.port,
+      username: database.username,
+    }),
+    GRUBER_SECRET_KEY:
+      existingEnv.GRUBER_SECRET_KEY || randomBytes(32).toString("base64"),
+    GRUBER_HOST: service.apiHost,
+    GRUBER_PORT: String(service.apiPort),
+    GRUBER_MEDIA_API_URL: `http://${formatUrlHost(apiClientHost)}:${service.apiPort}`,
+    FFMPEG_PATH: tools.ffmpeg,
+    FFPROBE_PATH: tools.ffprobe,
+    TSDUCK_PATH: tools.tsduck,
+    GSTREAMER_LAUNCH_PATH: tools.gstreamer,
+    GSTREAMER_INSPECT_PATH: siblingExecutable(tools.gstreamer, "gst-inspect-1.0"),
+  };
+}
+
+//
+// Сборка, фоновый сервис и запуск
+//
+
+async function runBuildPipeline(commandEnv, mode, actions) {
+  if (actions.installDependencies) {
+    await runNpmCommand(npmCiArguments(), { env: commandEnv });
+  }
+
+  await ensureElectronRuntime({ env: commandEnv, offlineMode: offline });
+  await runNpmCommand(["run", "db:generate"], { env: commandEnv });
+  await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
+
+  if (actions.runChecks) {
+    await runNpmCommand(["run", "typecheck"], { env: commandEnv });
+    await runNpmCommand(["test"], { env: commandEnv });
+  }
+
+  if (mode !== "production") return;
+
+  const packagingScript = desktopPackagingScript({
+    buildInstaller: actions.buildInstaller,
+    mode,
+    offlineMode: offline,
+  });
+  await runNpmCommand(
+    packagingScript ? ["run", packagingScript] : ["run", "build"],
+    { env: commandEnv },
+  );
+}
+
+async function finishInstallation(commandEnv, mode, actions, values) {
+  const installedService = await setupBackgroundService(actions, values);
+  const desktopShortcut = actions.createShortcut ? await createDesktopShortcut() : null;
+
+  printSummary({
+    databaseUrl: values.DATABASE_URL,
+    desktopShortcut,
+    installedService,
+    mode,
+    startNow: actions.startNow,
+    values,
+  });
+
+  if (!actions.startNow) return;
+
+  if (installedService) {
+    await launchDesktop(commandEnv, installedService);
+    return;
+  }
+
+  await launchApplication(mode, commandEnv, values.GRUBER_MEDIA_API_URL);
+}
+
+async function setupBackgroundService(actions, values) {
+  if (!actions.installBackgroundService) return null;
+
+  const installedService = await installPlatformService({
+    envPath,
+    kind: actions.serviceKind.id,
+    serviceUser: actions.serviceUser,
+    start: !noStart,
+  });
+
+  if (!noStart) {
+    await waitForUrl(`${values.GRUBER_MEDIA_API_URL}/api/health`, 30_000);
+  }
+
+  return installedService;
 }
 
 async function ensurePostgresReady(prompt, host, port, pgIsReadyPath) {
@@ -791,19 +904,34 @@ export function probeGstreamerDvbPlugin(
   {
     platform = process.platform,
     spawnSyncImpl = spawnSync,
+    timeoutMs = 300_000,
+    attempts = 2,
   } = {},
 ) {
   const inspectPath = siblingExecutable(launchPath, "gst-inspect-1.0", platform);
-  const result = spawnSyncImpl(inspectPath, ["--exists", "dvbsubenc"], {
-    encoding: "utf8",
-    timeout: 15_000,
-    windowsHide: true,
-  });
+  let result;
+  // Первый запуск gst-inspect строит реестр плагинов (несколько минут на свежей
+  // установке), поэтому таймаут щедрый, а таймаут/ошибку запуска пробуем повторить.
+  for (let attempt = 1; attempt <= Math.max(1, attempts); attempt += 1) {
+    result = spawnSyncImpl(inspectPath, ["--exists", "dvbsubenc"], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    if (!result.error) break;
+    if (attempt < attempts) {
+      console.log(
+        `  … проверка GStreamer dvbsubenc не завершилась (${result.error.message}), повтор ${attempt + 1}/${attempts}`,
+      );
+    }
+  }
   const reason = result.error?.message ||
     [result.stderr, result.stdout].find((value) => String(value ?? "").trim())?.trim() ||
     `exit code ${result.status ?? "unknown"}`;
   return {
     available: !result.error && result.status === 0,
+    // gst-inspect не смог отработать — это не доказательство отсутствия плагина.
+    inconclusive: Boolean(result.error),
     inspectPath,
     reason,
   };
@@ -962,38 +1090,44 @@ function windowsToolSearchRoots(command, environment = process.env) {
 
 function findExecutableBelow(root, executable, maxDepth = 5) {
   if (!existsSync(root)) return null;
+
   const win = path.win32;
   const queue = [{ directory: root, depth: 0 }];
   let visited = 0;
+
   while (queue.length > 0 && visited < 2_000) {
     const current = queue.shift();
     if (!current) break;
     visited += 1;
-    let entries;
-    try {
-      entries = readdirSync(current.directory, { withFileTypes: true })
-        .sort((left, right) =>
-          right.name.localeCompare(left.name, undefined, { numeric: true }),
-        );
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.toLowerCase() === executable.toLowerCase()) {
-        return win.join(current.directory, entry.name);
-      }
-    }
+
+    const entries = readDirectoryNewestFirst(current.directory);
+    const match = entries.find(
+      (entry) => entry.isFile() && entry.name.toLowerCase() === executable.toLowerCase(),
+    );
+    if (match) return win.join(current.directory, match.name);
+
     if (current.depth >= maxDepth) continue;
+
     for (const entry of entries) {
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
-        queue.push({
-          directory: win.join(current.directory, entry.name),
-          depth: current.depth + 1,
-        });
-      }
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      queue.push({
+        directory: win.join(current.directory, entry.name),
+        depth: current.depth + 1,
+      });
     }
   }
+
   return null;
+}
+
+function readDirectoryNewestFirst(directory) {
+  try {
+    return readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      right.name.localeCompare(left.name, undefined, { numeric: true }),
+    );
+  } catch {
+    return [];
+  }
 }
 
 function windowsExecutableName(command) {
@@ -1033,64 +1167,72 @@ function tcpPortReady(host, port) {
 
 async function installPackage(packageName) {
   if (process.platform === "darwin") {
-    if (!commandAvailable("brew")) {
-      throw new Error("Homebrew не найден. Установите Homebrew или пакет вручную.");
-    }
-    const formula = packageName === "postgresql" ? "postgresql@17" : packageName;
-    await runCommand("brew", ["install", formula]);
-    if (packageName === "postgresql") {
-      await runCommand("brew", ["services", "start", formula]);
-    }
-    return;
+    return installWithHomebrew(packageName);
   }
+
   if (process.platform === "linux" && commandAvailable("apt-get")) {
-    await runCommand("sudo", ["apt-get", "update"]);
-    const packages = packageName === "postgresql"
-      ? ["postgresql", "postgresql-client"]
-      : packageName === "gstreamer"
-        ? ["gstreamer1.0-tools", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-bad"]
-        : [packageName];
-    await runCommand("sudo", ["apt-get", "install", "-y", ...packages]);
-    if (packageName === "postgresql") {
-      await runCommand("sudo", ["systemctl", "enable", "--now", "postgresql"]);
-    }
-    return;
+    return installWithApt(packageName);
   }
+
   if (process.platform === "win32" && commandAvailable("winget")) {
-    if (packageName === "tsduck") {
-      await runCommand("winget", [
-        "install",
-        "tsduck",
-        "--accept-package-agreements",
-        "--accept-source-agreements",
-      ]);
-      return;
-    }
-    if (packageName === "gstreamer") {
-      await runCommand("winget", [
-        "install",
-        "--id",
-        "gstreamerproject.gstreamer",
-        "--exact",
-        "--accept-package-agreements",
-        "--accept-source-agreements",
-      ]);
-      return;
-    }
-    const packageId = packageName === "postgresql"
-      ? "PostgreSQL.PostgreSQL.17"
-      : "Gyan.FFmpeg";
-    await runCommand("winget", [
-      "install",
-      "--id",
-      packageId,
-      "--exact",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-    ]);
-    return;
+    return installWithWinget(packageName);
   }
+
   throw new Error(`Автоустановка ${packageName} не поддерживается на этой ОС`);
+}
+
+async function installWithHomebrew(packageName) {
+  if (!commandAvailable("brew")) {
+    throw new Error("Homebrew не найден. Установите Homebrew или пакет вручную.");
+  }
+
+  const formula = packageName === "postgresql" ? "postgresql@17" : packageName;
+  await runCommand("brew", ["install", formula]);
+
+  if (packageName !== "postgresql") return;
+
+  await runCommand("brew", ["services", "start", formula]);
+}
+
+async function installWithApt(packageName) {
+  await runCommand("sudo", ["apt-get", "update"]);
+  await runCommand("sudo", ["apt-get", "install", "-y", ...aptPackages(packageName)]);
+
+  if (packageName !== "postgresql") return;
+
+  await runCommand("sudo", ["systemctl", "enable", "--now", "postgresql"]);
+}
+
+function aptPackages(packageName) {
+  if (packageName === "postgresql") {
+    return ["postgresql", "postgresql-client"];
+  }
+  if (packageName === "gstreamer") {
+    return ["gstreamer1.0-tools", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-bad"];
+  }
+  return [packageName];
+}
+
+async function installWithWinget(packageName) {
+  const agreements = ["--accept-package-agreements", "--accept-source-agreements"];
+
+  if (packageName === "tsduck") {
+    return runCommand("winget", ["install", "tsduck", ...agreements]);
+  }
+
+  return runCommand("winget", [
+    "install",
+    "--id",
+    wingetPackageId(packageName),
+    "--exact",
+    ...agreements,
+  ]);
+}
+
+function wingetPackageId(packageName) {
+  if (packageName === "gstreamer") return "gstreamerproject.gstreamer";
+  if (packageName === "postgresql") return "PostgreSQL.PostgreSQL.17";
+  return "Gyan.FFmpeg";
 }
 
 async function createPostgresDatabase({
@@ -1657,21 +1799,23 @@ function spawnManaged(command, args, env, options = {}) {
 async function stopProcesses(processes) {
   for (const child of processes) {
     if (child.exitCode != null || child.signalCode != null) continue;
-    try {
-      if (process.platform === "win32") {
-        spawnSync(
-          "taskkill.exe",
-          ["/PID", String(child.pid), "/T", "/F"],
-          { stdio: "ignore" },
-        );
-      } else {
-        process.kill(-child.pid, "SIGTERM");
-      }
-    } catch {
-      // Process already stopped.
-    }
+    killProcessTree(child);
   }
+
   await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
+function killProcessTree(child) {
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      return;
+    }
+
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    // Процесс уже остановлен.
+  }
 }
 
 async function waitForUrl(url, timeoutMs) {

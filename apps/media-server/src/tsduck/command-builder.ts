@@ -1,6 +1,12 @@
 import type { PlayoutEndpoint, StartPlayoutRequest } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings } from "@gruber/contracts";
 
+export interface SubtitleTransport {
+  inputPort: number;
+  pmtPatchFilePath: string;
+  tspPath: string;
+}
+
 export interface TsdDuckCommandOptions {
   cueFilePath: string | null;
   cueCount: number;
@@ -8,11 +14,7 @@ export interface TsdDuckCommandOptions {
   previewPort?: number | null;
   monitorPrefix?: string;
   request: StartPlayoutRequest;
-  subtitles?: {
-    inputPort: number;
-    pmtPatchFilePath: string;
-    tspPath: string;
-  } | null;
+  subtitles?: SubtitleTransport | null;
 }
 
 export interface TsdDuckCommand {
@@ -21,6 +23,7 @@ export interface TsdDuckCommand {
 }
 
 const udpSocketBufferSizeBytes = 4 * 1_024 * 1_024;
+const subtitleMergeQueuePackets = 256;
 
 export function buildTsdDuckCommand({
   cueFilePath,
@@ -67,7 +70,24 @@ export function buildTsdDuckCommand({
     const videoPid = request.endpoint.protocol === "udp"
       ? request.endpoint.mpegTs.videoPid
       : defaultMpegTsOutputSettings.videoPid;
+    // merge обязан идти ДО обеих стадий pmt: TSDuck считает PID, уже объявленный
+    // в PMT основного потока, конфликтующим и молча выбрасывает его из merged TS
+    // (--ignore-conflicts на этот случай не действует). Объявляем subtitle PID
+    // только после того, как его пакеты влиты в поток.
     args.push(
+      "-P",
+      "merge",
+      "--bitrate",
+      String(request.subtitleOutput.bitrateKbps * 1_000),
+      "--no-psi-merge",
+      "--no-pcr-restamp",
+      // Очередь merge должна набраться, прежде чем начнётся вставка. Subtitle PID
+      // отдаёт всего ~60 kbps, поэтому 4096 пакетов копятся около полутора минут —
+      // за это время короткий ролик успевает закончиться, и в эфир не уходит ни
+      // одного subtitle-пакета. 256 набирается за секунды и сохраняет запас на всплеск.
+      "--max-queue",
+      String(subtitleMergeQueuePackets),
+      buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
       "-P",
       "pmt",
       "--service",
@@ -82,15 +102,6 @@ export function buildTsdDuckCommand({
       "--patch-xml",
       subtitles.pmtPatchFilePath,
       "--increment-version",
-      "-P",
-      "merge",
-      "--bitrate",
-      String(request.subtitleOutput.bitrateKbps * 1_000),
-      "--no-psi-merge",
-      "--no-pcr-restamp",
-      "--max-queue",
-      "4096",
-      buildSubtitleMergeCommand(request, subtitles.inputPort, subtitles.tspPath),
       "-P",
       "filter",
       "--pid",

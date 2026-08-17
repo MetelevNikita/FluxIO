@@ -1,8 +1,10 @@
 import path from "node:path";
 import type {
   AgeTitleOverlay,
+  AudioTrack,
   GraphicEffectLayer,
   ItemLogoOverlay,
+  ProgramAudioTrack,
   SubtitleOverlay,
   MpegTsOutputSettings,
   PlayoutEndpoint,
@@ -27,6 +29,55 @@ export interface PreparedPlayoutItem {
   itemLogo?: ItemLogoOverlay;
   effects?: GraphicEffectLayer[];
   subtitles?: SubtitleOverlay;
+  audioTracks?: AudioTrack[];
+}
+
+/** Источник звука для одного элементарного потока конкретного ролика. */
+export interface ClipAudioSource {
+  filePath: string | null;
+  hasAudio: boolean;
+  languageCode: string;
+  label: string;
+}
+
+/**
+ * Дорожки программы в порядке элементарных потоков. Пустой массив — многоязычный
+ * звук выключен, работает прежняя одиночная дорожка без языковых дескрипторов.
+ */
+export function programAudioTracks(request: StartPlayoutRequest): ProgramAudioTrack[] {
+  if (!request.audioProgram?.enabled) return [];
+  return request.audioProgram.tracks;
+}
+
+/**
+ * Что подать в рендерер дорожки `track` для ролика `item`: файл нужного языка,
+ * сам ролик для оригинала или тишину, если перевода нет.
+ */
+export function clipAudioSource(
+  item: PreparedPlayoutItem,
+  track: ProgramAudioTrack,
+): ClipAudioSource {
+  const matched = item.audioTracks?.find((candidate) => candidate.languageCode === track.languageCode);
+  if (matched) {
+    return {
+      filePath: matched.filePath,
+      hasAudio: true,
+      languageCode: track.languageCode,
+      label: matched.label,
+    };
+  }
+
+  if (track.original) {
+    return {
+      filePath: item.hasAudio ? item.filePath : null,
+      hasAudio: item.hasAudio,
+      languageCode: track.languageCode,
+      label: track.label,
+    };
+  }
+
+  // Перевода для этого ролика нет: PID остаётся в PMT и отдаёт тишину.
+  return { filePath: null, hasAudio: false, languageCode: track.languageCode, label: track.label };
 }
 
 export interface FfmpegCommand {
@@ -71,6 +122,7 @@ export function buildFfmpegClipVideoProducerCommand(
 export function buildFfmpegClipAudioProducerCommand(
   request: StartPlayoutRequest,
   item: PreparedPlayoutItem,
+  source?: ClipAudioSource,
 ): FfmpegCommand {
   const sampleRate = request.audio.sampleRate;
   const channelLayout = request.audio.channels === 1
@@ -80,7 +132,10 @@ export function buildFfmpegClipAudioProducerCommand(
       : "stereo";
   const start = decimal(item.trimInSeconds);
   const duration = decimal(item.durationSeconds);
-  const sourceFilter = item.hasAudio
+  // Без явного источника дорожка берётся из самого ролика — прежнее поведение.
+  const inputPath = source ? source.filePath : (item.hasAudio ? item.filePath : null);
+  const hasAudio = source ? source.hasAudio && Boolean(source.filePath) : item.hasAudio;
+  const sourceFilter = hasAudio
     ? `[0:a:0]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,` +
       `aresample=${sampleRate}:async=1:first_pts=0,` +
       `aformat=sample_fmts=fltp:sample_rates=${sampleRate}:` +
@@ -101,7 +156,7 @@ export function buildFfmpegClipAudioProducerCommand(
     "-nostdin",
     "-y",
     "-loglevel", "warning",
-    ...(item.hasAudio ? ["-i", item.filePath] : []),
+    ...(hasAudio && inputPath ? ["-i", inputPath] : []),
     "-filter_complex", filterGraph,
     "-map", "[aprogram]",
     "-c:a", "pcm_s16le",
@@ -136,11 +191,16 @@ export function buildFfmpegProgramEncoderCommand(
   const programAudio =
     `asetpts=PTS-STARTPTS,aresample=${request.audio.sampleRate}:async=1:first_pts=0,` +
     "arealtime";
+  // Каждая дорожка приходит отдельным raw PCM pipe: pipe:3, pipe:4, ... Первая
+  // сохраняет метку [aprogram], чтобы одноязычный эфир собирался ровно как раньше.
+  const audioPipeCount = Math.max(1, programAudioTracks(request).length);
+  const audioFilters = Array.from({ length: audioPipeCount }, (_, index) =>
+    `[${index + 1}:a]${programAudio}[${audioLabel(index)}]`);
   const filterGraph = finalTransportPreview
     ? [
         `[0:v]setpts=PTS-STARTPTS,realtime,` +
           `setfield=mode=${filterFieldOrder(request.video.fieldOrder)}[vprogram]`,
-        `[1:a]${programAudio}[aprogram]`,
+        ...audioFilters,
       ].join(";")
     : [
         `[0:v]setpts=PTS-STARTPTS,realtime,split=2[vprogrambase][vpreviewbase]`,
@@ -151,6 +211,13 @@ export function buildFfmpegProgramEncoderCommand(
   const outputArgs = finalTransportPreview && previewMap > firstMap
     ? base.args.slice(firstMap, previewMap)
     : base.args.slice(firstMap);
+  const audioInputs = Array.from({ length: audioPipeCount }, (_, index) => [
+    "-thread_queue_size", "512",
+    "-f", "s16le",
+    "-ar", String(request.audio.sampleRate),
+    "-ac", String(request.audio.channels),
+    "-i", `pipe:${index + 3}`,
+  ]).flat();
   const args = [
     "-hide_banner",
     "-nostdin",
@@ -164,11 +231,7 @@ export function buildFfmpegProgramEncoderCommand(
     "-video_size", `${request.video.width}x${request.video.height}`,
     "-framerate", decimal(request.video.frameRate),
     "-i", "pipe:0",
-    "-thread_queue_size", "512",
-    "-f", "s16le",
-    "-ar", String(request.audio.sampleRate),
-    "-ac", String(request.audio.channels),
-    "-i", "pipe:3",
+    ...audioInputs,
     "-filter_complex", filterGraph,
     ...outputArgs,
   ];
@@ -285,7 +348,15 @@ export function buildFfmpegCommand(
     args.push("-filter_complex", filterGraph);
   }
 
+  const audioTracks = programAudioTracks(request);
   args.push("-map", "[vprogram]", "-map", "[aprogram]");
+  for (let index = 1; index < audioTracks.length; index += 1) {
+    args.push("-map", `[${audioLabel(index)}]`);
+  }
+  audioTracks.forEach((track, index) => {
+    args.push(`-metadata:s:a:${index}`, `language=${track.languageCode}`);
+    args.push(`-metadata:s:a:${index}`, `title=${track.label}`);
+  });
   args.push(...videoEncoderArgs(request.video));
   if (options.forceKeyFramesSeconds?.length) {
     args.push(
@@ -298,6 +369,7 @@ export function buildFfmpegCommand(
   const endpoint = buildEndpoint(
     options.programEndpoint ?? request.endpoint,
     options.transportMuxRateBps,
+    audioTracks,
   );
   args.push(...endpoint.outputArgs);
 
@@ -751,7 +823,16 @@ function audioEncoderArgs(codec: "aac" | "mp2" | "ac3", bitrateKbps: number) {
   return ["-c:a", codec, "-b:a", `${bitrateKbps}k`];
 }
 
-function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number): {
+/** Первая дорожка сохраняет историческую метку [aprogram]; далее [aprogram1], [aprogram2]… */
+export function audioLabel(index: number): string {
+  return index === 0 ? "aprogram" : `aprogram${index}`;
+}
+
+function buildEndpoint(
+  endpoint: PlayoutEndpoint,
+  transportMuxRateBps?: number,
+  audioTracks: ProgramAudioTrack[] = [],
+): {
   outputArgs: string[];
   label: string;
 } {
@@ -770,7 +851,7 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
     }
     const target = `udp://${formatHost(endpoint.host)}:${endpoint.port}?${params}`;
     return {
-      outputArgs: mpegTsOutputArgs(target, endpoint.mpegTs, transportMuxRateBps),
+      outputArgs: mpegTsOutputArgs(target, endpoint.mpegTs, transportMuxRateBps, audioTracks),
       label: `UDP ${endpoint.host}:${endpoint.port}`,
     };
   }
@@ -794,6 +875,7 @@ function buildEndpoint(endpoint: PlayoutEndpoint, transportMuxRateBps?: number):
         target,
         defaultMpegTsOutputSettings,
         transportMuxRateBps,
+        audioTracks,
       ),
       label: `SRT ${endpoint.mode} ${endpoint.host}:${endpoint.port}`,
     };
@@ -811,7 +893,13 @@ function mpegTsOutputArgs(
   target: string,
   settings: MpegTsOutputSettings,
   transportMuxRateBps?: number,
+  audioTracks: ProgramAudioTrack[] = [],
 ): string[] {
+  // Каждая дорожка получает собственный PID: головная станция отбирает их по
+  // отдельности. Без многоязычного звука раскладка прежняя — video/audio.
+  const audioStreamIds = audioTracks.length > 0
+    ? audioTracks.flatMap((track, index) => ["-streamid", `${index + 1}:${track.pid}`])
+    : ["-streamid", `1:${settings.audioPid}`];
   const args = [
     "-metadata",
     `service_name=${settings.serviceName}`,
@@ -819,8 +907,7 @@ function mpegTsOutputArgs(
     `service_provider=${settings.providerName}`,
     "-streamid",
     `0:${settings.videoPid}`,
-    "-streamid",
-    `1:${settings.audioPid}`,
+    ...audioStreamIds,
     "-output_ts_offset",
     decimal(ffmpegMpegTsOutputOffsetSeconds),
     "-muxdelay",

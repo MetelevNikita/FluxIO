@@ -35,11 +35,16 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
       );
     }
     if (item.srtPath) {
-      lines.push(`insertSRT {${item.srtPath}}`);
+      // Явное состояние: оператор мог отключить burn-in, оставив путь в расписании.
+      lines.push(`insertSRT {${item.srtPath}} state {${item.srtEnabled === false ? "off" : "on"}}`);
     }
     lines.push(
       `${item.type} ${formatScheduleTimecode(item.declaredDurationSeconds)} ${item.filePath}`,
     );
+    // Звуковые дорожки идут под роликом: графика сверху, звук снизу.
+    for (const track of item.audioTracks ?? []) {
+      lines.push(`insertAudioTrack_{${track.language}} {${track.filePath}}`);
+    }
   }
 
   return serializedScheduleSchema.parse({

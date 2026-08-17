@@ -7,6 +7,14 @@ import type { ClipPreviewSession, StartPlayoutRequest } from "@gruber/contracts"
 import { buildFfmpegCompositePreviewCommand, type PreparedPlayoutItem } from "./command-builder.js";
 import { runCommand } from "./process.js";
 
+/**
+ * Превью считаются параллельно, но с потолком: импорт недельного расписания
+ * запрашивает сотни картинок сразу, а неограниченный параллелизм увёл бы CPU
+ * у эфирного encoder-а. Одна общая очередь (как было) делала обратную ошибку —
+ * последняя картинка ждала все предыдущие.
+ */
+const thumbnailConcurrency = 4;
+
 interface RegisteredMedia {
   durationSeconds: number;
   filePath: string;
@@ -25,7 +33,8 @@ export class MediaPreviewService {
   #active: ActivePreview | null = null;
   #registered = new Map<string, RegisteredMedia>();
   #thumbnailJobs = new Map<string, Promise<Buffer>>();
-  #thumbnailTail: Promise<void> = Promise.resolve();
+  #thumbnailActive = 0;
+  #thumbnailWaiting: (() => void)[] = [];
 
   constructor(ffmpegPath: string, rootDirectory: string) {
     this.ffmpegPath = ffmpegPath;
@@ -61,10 +70,9 @@ export class MediaPreviewService {
 
     const existingJob = this.#thumbnailJobs.get(key);
     if (existingJob) return existingJob;
-    const job = this.#thumbnailTail.then(() =>
+    const job = this.#withThumbnailSlot(() =>
       this.#generateThumbnail(media, seekSeconds, thumbnailDirectory, thumbnailPath)
     );
-    this.#thumbnailTail = job.then(() => undefined, () => undefined);
     this.#thumbnailJobs.set(key, job);
     try {
       return await job;
@@ -259,6 +267,20 @@ export class MediaPreviewService {
     await this.stop();
   }
 
+  async #withThumbnailSlot<T>(task: () => Promise<T>): Promise<T> {
+    if (this.#thumbnailActive >= thumbnailConcurrency) {
+      await new Promise<void>((resolve) => this.#thumbnailWaiting.push(resolve));
+    }
+
+    this.#thumbnailActive += 1;
+    try {
+      return await task();
+    } finally {
+      this.#thumbnailActive -= 1;
+      this.#thumbnailWaiting.shift()?.();
+    }
+  }
+
   async #generateThumbnail(
     media: RegisteredMedia,
     seekSeconds: number,
@@ -279,7 +301,7 @@ export class MediaPreviewService {
       "-frames:v",
       "1",
       "-vf",
-      "thumbnail,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black",
+      "thumbnail=n=8,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black",
       "-q:v",
       "3",
       "-y",

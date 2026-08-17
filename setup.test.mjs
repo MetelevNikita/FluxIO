@@ -214,6 +214,29 @@ test("setup validates the Windows GStreamer dvbsubenc runtime", () => {
   );
 });
 
+test("setup retries the dvbsubenc probe and never reports a timeout as a missing plugin", () => {
+  let attempt = 0;
+  const probe = probeGstreamerDvbPlugin("/opt/homebrew/bin/gst-launch-1.0", {
+    platform: "darwin",
+    spawnSyncImpl() {
+      attempt += 1;
+      return { error: new Error("spawnSync gst-inspect-1.0 ETIMEDOUT"), status: null };
+    },
+  });
+  assert.equal(attempt, 2);
+  assert.equal(probe.available, false);
+  assert.equal(probe.inconclusive, true);
+});
+
+test("setup treats a clean non-zero dvbsubenc exit as a genuinely missing plugin", () => {
+  const probe = probeGstreamerDvbPlugin("/opt/homebrew/bin/gst-launch-1.0", {
+    platform: "darwin",
+    spawnSyncImpl: () => ({ error: undefined, status: 1, stderr: "", stdout: "" }),
+  });
+  assert.equal(probe.available, false);
+  assert.equal(probe.inconclusive, false);
+});
+
 test("setup merges refreshed Windows PATH values without duplicates", () => {
   assert.equal(
     mergeWindowsPathValues(

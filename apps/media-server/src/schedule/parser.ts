@@ -16,7 +16,9 @@ const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
 const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+((?:titlePath(?:#\d+)?\s*\{[^}]*\}\s*)*)duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}(?:\s+endOn\s*\{([^}]*)\})?\s*$/i;
 const graphicTitlePattern = /titlePath(?:#(\d+))?\s*\{([^}]*)\}/gi;
-const srtPattern = /^insertSRT\s*\{([^}]*)\}\s*$/i;
+const srtPattern = /^insertSRT\s*\{([^}]*)\}(?:\s*state\s*\{(on|off)\})?\s*$/i;
+// Путь дорожки сам начинается с {язык}, поэтому внешние скобки закрываются жадно.
+const audioTrackPattern = /^insertAudioTrack_\{([^}]{1,32})\}\s*\{(.+)\}\s*$/i;
 
 export class ScheduleParseError extends Error {}
 
@@ -67,6 +69,7 @@ export function parseScheduleText(
   let pendingLogoPath: string | null = null;
   let pendingGraphicElements: ScheduleGraphicElement[] = [];
   let pendingSrtPath: string | null = null;
+  let pendingSrtEnabled = true;
   const items: ParsedScheduleItem[] = [];
   const warnings: string[] = [];
 
@@ -154,6 +157,24 @@ export function parseScheduleText(
     const srt = line.match(srtPattern);
     if (srt) {
       pendingSrtPath = requiredDirectiveValue(srt[1], "insertSRT", entry.lineNumber);
+      pendingSrtEnabled = (srt[2] ?? "on").toLowerCase() !== "off";
+      continue;
+    }
+
+    const audioTrack = line.match(audioTrackPattern);
+    if (audioTrack) {
+      const previous = items[items.length - 1];
+      if (!previous) {
+        warnings.push(`Line ${entry.lineNumber}: insertAudioTrack has no preceding media item`);
+        continue;
+      }
+      const language = requiredDirectiveValue(audioTrack[1], "insertAudioTrack", entry.lineNumber);
+      const filePath = requiredDirectiveValue(audioTrack[2], "insertAudioTrack", entry.lineNumber);
+      if (previous.audioTracks.some((track) => track.language === language)) {
+        warnings.push(`Line ${entry.lineNumber}: duplicate audio track ${language} ignored`);
+        continue;
+      }
+      previous.audioTracks.push({ language, filePath });
       continue;
     }
 
@@ -191,6 +212,8 @@ export function parseScheduleText(
         lineNumber: entry.lineNumber,
         logoPath: pendingLogoPath,
         srtPath: pendingSrtPath,
+        srtEnabled: pendingSrtPath ? pendingSrtEnabled : true,
+        audioTracks: [],
         type,
         warnings: itemWarnings,
       });
@@ -200,6 +223,7 @@ export function parseScheduleText(
       pendingLogoPath = null;
       pendingGraphicElements = [];
       pendingSrtPath = null;
+      pendingSrtEnabled = true;
       continue;
     }
 

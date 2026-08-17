@@ -1,4 +1,6 @@
 import {
+  audioTrackScanSchema,
+  type AudioTrackScan,
   ffmpegCapabilitiesSchema,
   graphicEffectAssetSchema,
   graphicEffectAssetListSchema,
@@ -81,6 +83,19 @@ export async function scanGraphicEffectDirectory(
       method: "POST",
     }),
   ).items;
+}
+
+export async function scanAudioTracks(
+  directoryPath: string | null,
+  mediaPaths: string[],
+): Promise<AudioTrackScan> {
+  return audioTrackScanSchema.parse(
+    await request("/api/audio-tracks/scan", {
+      body: JSON.stringify({ directoryPath, mediaPaths }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
 }
 
 export function lottieWasmUrl(): string {

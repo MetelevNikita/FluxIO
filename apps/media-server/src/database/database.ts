@@ -1,49 +1,61 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  randomBytes,
-} from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
-import {
-  savedBroadcastConfigurationSchema,
-  startPlayoutRequestSchema,
-  savedWorkspaceSessionSchema,
-  workspaceSessionCheckpointSchema,
-  workspaceSessionSaveRequestSchema,
-  type BroadcastConfigurationSummary,
-  type MediaProbe,
-  type PlayoutEndpoint,
-  type PlayoutStatus,
-  type SaveBroadcastConfigurationRequest,
-  type SavedBroadcastConfiguration,
-  type SavedWorkspaceSession,
-  type StartPlayoutRequest,
-  type WorkspaceSessionSaveRequest,
+import type {
+  BroadcastConfigurationSummary,
+  MediaProbe,
+  PlayoutStatus,
+  SaveBroadcastConfigurationRequest,
+  SavedBroadcastConfiguration,
+  SavedWorkspaceSession,
+  StartPlayoutRequest,
+  WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
-import {
-  Prisma,
-  PrismaClient,
-} from "../generated/prisma/client.js";
-import {
-  BroadcastSessionState,
-  OutputProtocol,
-} from "../generated/prisma/enums.js";
 
-export class DatabaseService {
+//
+
+import { PrismaClient } from "../generated/prisma/client.js";
+import type { DatabaseContext } from "./context.js";
+import { SecretCipher } from "./secrets.js";
+import {
+  recordSessionStart,
+  syncSession,
+} from "./operations/broadcastSession.js";
+import { getConfiguration } from "./operations/getConfiguration.js";
+import {
+  deleteConfiguration,
+  listConfigurations,
+} from "./operations/listConfigurations.js";
+import { saveConfiguration } from "./operations/saveConfiguration.js";
+import {
+  deleteWorkspaceSession,
+  getWorkspaceSession,
+  saveWorkspaceSession,
+  syncWorkspaceCheckpoint,
+} from "./operations/workspaceSession.js";
+
+export {
+  checkpointFromStatus,
+  recoverableCheckpointFromStatus,
+  sanitizeWorkspaceSnapshot,
+} from "./checkpoint.js";
+
+/**
+ * Подключение к PostgreSQL. Класс держит только Prisma-клиент и шифр секретов;
+ * каждая операция живёт отдельным файлом в ./operations.
+ */
+export class DatabaseService implements DatabaseContext {
   readonly client: PrismaClient;
-  #secretKey: Buffer | null;
+  readonly secrets: SecretCipher;
 
   constructor(connectionString: string, secretKeyBase64?: string) {
-    const adapter = new PrismaPg({ connectionString });
-    this.client = new PrismaClient({ adapter });
-    this.#secretKey = parseSecretKey(secretKeyBase64);
+    this.client = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+    this.secrets = new SecretCipher(secretKeyBase64);
   }
 
   static fromEnvironment(): DatabaseService | null {
     const connectionString = process.env.DATABASE_URL;
-    return connectionString
-      ? new DatabaseService(connectionString, process.env.GRUBER_SECRET_KEY)
-      : null;
+    if (!connectionString) return null;
+
+    return new DatabaseService(connectionString, process.env.GRUBER_SECRET_KEY);
   }
 
   async connect(): Promise<void> {
@@ -54,501 +66,64 @@ export class DatabaseService {
     await this.client.$disconnect();
   }
 
+  //
+  // Broadcast configurations
+  //
+
   async saveConfiguration(
     input: SaveBroadcastConfigurationRequest,
     probes: MediaProbe[],
   ): Promise<SavedBroadcastConfiguration> {
-    const probeByPath = new Map(probes.map((probe) => [probe.filePath, probe]));
-    const secret = endpointSecret(input.endpoint);
-    const encryptedSecret = secret ? this.#encrypt(secret) : null;
-    const endpointConfiguration = endpointWithoutSecret(input.endpoint);
-    const profileSettings = jsonValue({
-      video: input.video,
-      audio: input.audio,
-      logo: input.logo,
-      repeatPlaylist: input.repeatPlaylist,
-      scte35: input.scte35,
-    });
-
-    const configurationId = await this.client.$transaction(async (transaction) => {
-      const existing = input.id
-        ? await transaction.broadcastConfiguration.findUnique({ where: { id: input.id } })
-        : await transaction.broadcastConfiguration.findUnique({ where: { name: input.name } });
-      const profileName = `${input.name}::profile`;
-      const endpointName = `${input.name}::endpoint`;
-      let playlistId: string;
-      let profileId: string;
-      let endpointId: string;
-      let savedConfigurationId: string;
-
-      if (existing) {
-        playlistId = existing.playlistId;
-        profileId = existing.profileId;
-        endpointId = existing.endpointId;
-        await transaction.playlistItem.deleteMany({ where: { playlistId } });
-        await transaction.playlist.update({
-          data: { name: input.name },
-          where: { id: playlistId },
-        });
-        await transaction.encodingProfile.update({
-          data: { name: profileName, settings: profileSettings },
-          where: { id: profileId },
-        });
-        await transaction.outputEndpoint.update({
-          data: {
-            name: endpointName,
-            protocol: protocolEnum(input.endpoint),
-            configuration: jsonValue(endpointConfiguration),
-            encryptedSecret,
-          },
-          where: { id: endpointId },
-        });
-        await transaction.broadcastConfiguration.update({
-          data: { name: input.name },
-          where: { id: existing.id },
-        });
-        savedConfigurationId = existing.id;
-      } else {
-        const playlist = await transaction.playlist.create({ data: { name: input.name } });
-        const profile = await transaction.encodingProfile.create({
-          data: { name: profileName, settings: profileSettings },
-        });
-        const endpoint = await transaction.outputEndpoint.create({
-          data: {
-            name: endpointName,
-            protocol: protocolEnum(input.endpoint),
-            configuration: jsonValue(endpointConfiguration),
-            encryptedSecret,
-          },
-        });
-        const configuration = await transaction.broadcastConfiguration.create({
-          data: {
-            name: input.name,
-            playlistId: playlist.id,
-            profileId: profile.id,
-            endpointId: endpoint.id,
-          },
-        });
-        playlistId = playlist.id;
-        profileId = profile.id;
-        endpointId = endpoint.id;
-        savedConfigurationId = configuration.id;
-      }
-
-      for (let position = 0; position < input.playlist.length; position += 1) {
-        const item = input.playlist[position];
-        if (!item) continue;
-        const probe = probeByPath.get(item.filePath);
-        if (!probe) {
-          throw new Error(`Missing ffprobe result for ${item.filePath}`);
-        }
-        const asset = await transaction.mediaAsset.upsert({
-          create: mediaAssetData(probe),
-          update: mediaAssetData(probe),
-          where: { filePath: probe.filePath },
-        });
-        await transaction.playlistItem.create({
-          data: {
-            playlistId,
-            mediaAssetId: asset.id,
-            position,
-            trimInSeconds: item.trimInSeconds,
-            trimOutSeconds: item.trimOutSeconds,
-            scte35Markers: jsonValue(item.scte35Markers),
-            scheduleMetadata: jsonValue({
-              ageTitle: item.ageTitle,
-              declaredDurationSeconds: item.declaredDurationSeconds,
-              itemLogo: item.itemLogo,
-              scheduleType: item.scheduleType,
-            }),
-          },
-        });
-      }
-
-      return savedConfigurationId;
-    });
-
-    return this.getConfiguration(configurationId);
+    return saveConfiguration(this, input, probes);
   }
 
   async listConfigurations(): Promise<BroadcastConfigurationSummary[]> {
-    const configurations = await this.client.broadcastConfiguration.findMany({
-      include: {
-        endpoint: true,
-        playlist: { select: { _count: { select: { items: true } } } },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-    return configurations.map((configuration) => ({
-      id: configuration.id,
-      name: configuration.name,
-      protocol: configuration.endpoint.protocol.toLowerCase() as "udp" | "srt" | "rtmp",
-      playlistItems: configuration.playlist._count.items,
-      updatedAt: configuration.updatedAt.toISOString(),
-    }));
+    return listConfigurations(this);
   }
 
   async getConfiguration(id: string): Promise<SavedBroadcastConfiguration> {
-    const configuration = await this.client.broadcastConfiguration.findUnique({
-      include: {
-        endpoint: true,
-        playlist: {
-          include: {
-            items: {
-              include: { mediaAsset: true },
-              orderBy: { position: "asc" },
-            },
-          },
-        },
-        profile: true,
-      },
-      where: { id },
-    });
-    if (!configuration) {
-      throw new Error("Broadcast configuration not found");
-    }
-    const profile = configuration.profile.settings as Record<string, unknown>;
-    const endpoint = restoreEndpoint(
-      configuration.endpoint.configuration,
-      configuration.endpoint.encryptedSecret
-        ? this.#decrypt(configuration.endpoint.encryptedSecret)
-        : "",
-    );
-    const request = startPlayoutRequestSchema.parse({
-      playlist: configuration.playlist.items.map((item) => {
-        const schedule = item.scheduleMetadata as Record<string, unknown>;
-        return {
-          id: item.id,
-          name: item.mediaAsset.name,
-          filePath: item.mediaAsset.filePath,
-          sourceDurationSeconds: item.mediaAsset.durationSeconds,
-          hasAudio: item.mediaAsset.hasAudio,
-          trimInSeconds: item.trimInSeconds,
-          trimOutSeconds: item.trimOutSeconds,
-          scte35Markers: item.scte35Markers,
-          scheduleType: schedule.scheduleType ?? null,
-          declaredDurationSeconds: schedule.declaredDurationSeconds ?? null,
-          ageTitle: schedule.ageTitle ?? null,
-          itemLogo: schedule.itemLogo ?? null,
-        };
-      }),
-      video: profile.video,
-      audio: profile.audio,
-      logo: profile.logo ?? null,
-      endpoint,
-      repeatPlaylist: profile.repeatPlaylist ?? false,
-      scte35: profile.scte35 ?? {},
-    });
-    return savedBroadcastConfigurationSchema.parse({
-      ...request,
-      id: configuration.id,
-      name: configuration.name,
-      createdAt: configuration.createdAt.toISOString(),
-      updatedAt: configuration.updatedAt.toISOString(),
-    });
+    return getConfiguration(this, id);
   }
 
   async deleteConfiguration(id: string): Promise<void> {
-    await this.client.$transaction(async (transaction) => {
-      const configuration = await transaction.broadcastConfiguration.delete({
-        where: { id },
-      });
-      await transaction.playlist.delete({ where: { id: configuration.playlistId } });
-      await transaction.encodingProfile.delete({ where: { id: configuration.profileId } });
-      await transaction.outputEndpoint.delete({ where: { id: configuration.endpointId } });
-    });
+    return deleteConfiguration(this, id);
   }
+
+  //
+  // Workspace session и recovery checkpoint
+  //
 
   async saveWorkspaceSession(
     input: WorkspaceSessionSaveRequest,
     status: PlayoutStatus,
   ): Promise<SavedWorkspaceSession> {
-    const request = workspaceSessionSaveRequestSchema.parse(input);
-    const { sanitized, secrets } = sanitizeWorkspaceSnapshot(request.snapshot);
-    const encryptedSecrets = Object.keys(secrets).length > 0
-      ? this.#encrypt(JSON.stringify(secrets))
-      : null;
-    const checkpoint = recoverableCheckpointFromStatus(status);
-    const session = await this.client.workspaceSession.upsert({
-      create: {
-        slot: "last",
-        snapshot: jsonValue(sanitized),
-        checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull,
-        encryptedSecrets,
-      },
-      update: {
-        snapshot: jsonValue(sanitized),
-        checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull,
-        encryptedSecrets,
-      },
-      where: { slot: "last" },
-    });
-    return this.#restoreWorkspaceSession(session, status);
+    return saveWorkspaceSession(this, input, status);
   }
 
-  async getWorkspaceSession(
-    status: PlayoutStatus,
-  ): Promise<SavedWorkspaceSession | null> {
-    const session = await this.client.workspaceSession.findUnique({
-      where: { slot: "last" },
-    });
-    return session ? this.#restoreWorkspaceSession(session, status) : null;
+  async getWorkspaceSession(status: PlayoutStatus): Promise<SavedWorkspaceSession | null> {
+    return getWorkspaceSession(this, status);
   }
 
   async deleteWorkspaceSession(): Promise<void> {
-    await this.client.workspaceSession.deleteMany({ where: { slot: "last" } });
+    return deleteWorkspaceSession(this);
   }
 
   async syncWorkspaceCheckpoint(status: PlayoutStatus): Promise<void> {
-    if (!status.sessionId) return;
-    const checkpoint = recoverableCheckpointFromStatus(status);
-    await this.client.workspaceSession.updateMany({
-      data: { checkpoint: checkpoint ? jsonValue(checkpoint) : Prisma.DbNull },
-      where: { slot: "last" },
-    });
+    return syncWorkspaceCheckpoint(this, status);
   }
+
+  //
+  // История эфирных сессий
+  //
 
   async recordSessionStart(
     request: StartPlayoutRequest,
     status: PlayoutStatus,
   ): Promise<void> {
-    if (!status.sessionId) return;
-    await this.client.broadcastSession.create({
-      data: {
-        runtimeSessionId: status.sessionId,
-        state: BroadcastSessionState.RUNNING,
-        requestSnapshot: jsonValue(redactRequest(request)),
-      },
-    });
+    return recordSessionStart(this, request, status);
   }
 
   async syncSession(status: PlayoutStatus): Promise<void> {
-    if (!status.sessionId || ["starting", "running", "stopping"].includes(status.state)) {
-      return;
-    }
-    await this.client.broadcastSession.updateMany({
-      data: {
-        state: sessionState(status.state),
-        error: status.error,
-        stoppedAt: status.stoppedAt ? new Date(status.stoppedAt) : new Date(),
-      },
-      where: {
-        runtimeSessionId: status.sessionId,
-        stoppedAt: null,
-      },
-    });
+    return syncSession(this, status);
   }
-
-  #restoreWorkspaceSession(
-    session: {
-      id: string;
-      snapshot: Prisma.JsonValue;
-      checkpoint: Prisma.JsonValue | null;
-      encryptedSecrets: string | null;
-      createdAt: Date;
-      updatedAt: Date;
-    },
-    currentStatus: PlayoutStatus,
-  ): SavedWorkspaceSession {
-    const snapshot = session.snapshot as Record<string, unknown>;
-    const settings = {
-      ...((snapshot.settings as Record<string, unknown> | undefined) ?? {}),
-    };
-    if (session.encryptedSecrets) {
-      const secrets = JSON.parse(this.#decrypt(session.encryptedSecrets)) as Record<string, string>;
-      Object.assign(settings, secrets);
-    }
-    const checkpoint = session.checkpoint
-      ? workspaceSessionCheckpointSchema.parse(session.checkpoint)
-      : null;
-    const activeStoredState = checkpoint
-      ? ["starting", "running", "stopping"].includes(checkpoint.state)
-      : false;
-    const sameRuntimeSession = Boolean(
-      checkpoint?.sessionId &&
-      currentStatus.sessionId === checkpoint.sessionId &&
-      ["starting", "running", "stopping"].includes(currentStatus.state),
-    );
-    const failedWithProgress = Boolean(
-      checkpoint?.state === "failed" &&
-      (checkpoint.outTimeSeconds > 0 ||
-        checkpoint.currentItemElapsedSeconds > 0 ||
-        checkpoint.currentItemIndex > 0 ||
-        checkpoint.progressPercent > 0),
-    );
-    const interrupted = Boolean(
-      checkpoint && (failedWithProgress || (activeStoredState && !sameRuntimeSession)),
-    );
-    return savedWorkspaceSessionSchema.parse({
-      id: session.id,
-      snapshot: { ...snapshot, settings },
-      checkpoint: checkpoint ? { ...checkpoint, interrupted } : null,
-      createdAt: session.createdAt.toISOString(),
-      updatedAt: session.updatedAt.toISOString(),
-    });
-  }
-
-  #encrypt(value: string): string {
-    if (!this.#secretKey) {
-      throw new Error(
-        "GRUBER_SECRET_KEY (32-byte base64) is required to store SRT/RTMP secrets",
-      );
-    }
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.#secretKey, iv);
-    const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return [iv, tag, encrypted].map((part) => part.toString("base64")).join(".");
-  }
-
-  #decrypt(value: string): string {
-    if (!this.#secretKey) {
-      throw new Error("GRUBER_SECRET_KEY is required to read endpoint secrets");
-    }
-    const [ivValue, tagValue, encryptedValue] = value.split(".");
-    if (!ivValue || !tagValue || !encryptedValue) {
-      throw new Error("Stored endpoint secret is invalid");
-    }
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      this.#secretKey,
-      Buffer.from(ivValue, "base64"),
-    );
-    decipher.setAuthTag(Buffer.from(tagValue, "base64"));
-    return Buffer.concat([
-      decipher.update(Buffer.from(encryptedValue, "base64")),
-      decipher.final(),
-    ]).toString("utf8");
-  }
-}
-
-export function sanitizeWorkspaceSnapshot(
-  snapshot: WorkspaceSessionSaveRequest["snapshot"],
-): {
-  sanitized: WorkspaceSessionSaveRequest["snapshot"];
-  secrets: Record<string, string>;
-} {
-  const settings = { ...snapshot.settings };
-  const secrets: Record<string, string> = {};
-  for (const key of ["streamKey", "srtPassphrase", "rtmpStreamKey"] as const) {
-    const value = settings[key];
-    if (typeof value === "string" && value) secrets[key] = value;
-    settings[key] = "";
-  }
-  return { sanitized: { ...snapshot, settings }, secrets };
-}
-
-export function checkpointFromStatus(status: PlayoutStatus) {
-  return workspaceSessionCheckpointSchema.parse({
-    sessionId: status.sessionId,
-    state: status.state,
-    currentItemIndex: status.currentItemIndex,
-    currentItemId: status.currentItemId,
-    currentItemName: status.currentItemName,
-    currentItemElapsedSeconds: status.currentItemElapsedSeconds,
-    outTimeSeconds: status.outTimeSeconds,
-    totalDurationSeconds: status.totalDurationSeconds,
-    progressPercent: status.progressPercent,
-    loopCount: status.loopCount,
-    updatedAt: new Date().toISOString(),
-    interrupted: false,
-  });
-}
-
-export function recoverableCheckpointFromStatus(status: PlayoutStatus) {
-  if (!status.sessionId) return null;
-  if (["starting", "running", "stopping"].includes(status.state)) {
-    return checkpointFromStatus(status);
-  }
-  if (
-    status.state === "failed" &&
-    (status.outTimeSeconds > 0 ||
-      status.currentItemElapsedSeconds > 0 ||
-      status.currentItemIndex > 0 ||
-      status.progressPercent > 0)
-  ) {
-    return checkpointFromStatus(status);
-  }
-  return null;
-}
-
-function mediaAssetData(probe: MediaProbe) {
-  return {
-    filePath: probe.filePath,
-    name: probe.name,
-    durationSeconds: probe.durationSeconds,
-    videoCodec: probe.videoCodec,
-    videoProfile: probe.videoProfile,
-    width: probe.width,
-    height: probe.height,
-    frameRate: probe.frameRate,
-    bitrate: BigInt(Math.round(probe.bitrate)),
-    sizeBytes: BigInt(Math.round(probe.sizeBytes)),
-    pixelFormat: probe.pixelFormat,
-    colorSpace: probe.colorSpace,
-    hasAudio: probe.hasAudio,
-    audioCodec: probe.audioCodec,
-    audioSampleRate: probe.audioSampleRate,
-    audioChannels: probe.audioChannels,
-  };
-}
-
-function jsonValue(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
-
-function protocolEnum(endpoint: PlayoutEndpoint): OutputProtocol {
-  if (endpoint.protocol === "udp") return OutputProtocol.UDP;
-  if (endpoint.protocol === "srt") return OutputProtocol.SRT;
-  return OutputProtocol.RTMP;
-}
-
-function endpointSecret(endpoint: PlayoutEndpoint): string {
-  if (endpoint.protocol === "srt") return endpoint.passphrase;
-  if (endpoint.protocol === "rtmp") return endpoint.streamKey;
-  return "";
-}
-
-function endpointWithoutSecret(endpoint: PlayoutEndpoint): Record<string, unknown> {
-  if (endpoint.protocol === "srt") {
-    const { passphrase: _passphrase, ...configuration } = endpoint;
-    return configuration;
-  }
-  if (endpoint.protocol === "rtmp") {
-    const { streamKey: _streamKey, ...configuration } = endpoint;
-    return configuration;
-  }
-  return endpoint;
-}
-
-function restoreEndpoint(configuration: Prisma.JsonValue, secret: string): PlayoutEndpoint {
-  const value = configuration as Record<string, unknown>;
-  if (value.protocol === "srt") return { ...value, passphrase: secret } as PlayoutEndpoint;
-  if (value.protocol === "rtmp") return { ...value, streamKey: secret } as PlayoutEndpoint;
-  return value as PlayoutEndpoint;
-}
-
-function parseSecretKey(value: string | undefined): Buffer | null {
-  if (!value) return null;
-  const key = Buffer.from(value, "base64");
-  if (key.length !== 32) {
-    throw new Error("GRUBER_SECRET_KEY must decode to exactly 32 bytes");
-  }
-  return key;
-}
-
-function redactRequest(request: StartPlayoutRequest): StartPlayoutRequest {
-  if (request.endpoint.protocol === "srt") {
-    return { ...request, endpoint: { ...request.endpoint, passphrase: "***" } };
-  }
-  if (request.endpoint.protocol === "rtmp") {
-    return { ...request, endpoint: { ...request.endpoint, streamKey: "***" } };
-  }
-  return request;
-}
-
-function sessionState(state: PlayoutStatus["state"]): BroadcastSessionState {
-  if (state === "completed") return BroadcastSessionState.COMPLETED;
-  if (state === "failed") return BroadcastSessionState.FAILED;
-  return BroadcastSessionState.STOPPED;
 }

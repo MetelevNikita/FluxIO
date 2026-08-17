@@ -68,6 +68,10 @@ export const portableEncodingSettingsSchema = z.object({
   audioBitrate: z.number().int().min(32).max(1_536),
   loudnessNormalizationEnabled: z.boolean().default(false),
   loudnessTargetLufs: z.number().min(-70).max(-5).default(-23),
+  audioTracksEnabled: z.boolean().default(false),
+  audioTrackDirectory: profileTextSchema.default(""),
+  audioOriginalLanguage: z.string().regex(/^[a-z]{3}$/).default("rus"),
+  audioOriginalLabel: z.string().trim().min(1).max(32).default("orig"),
   streamingEnabled: z.boolean(),
   protocol: z.enum(["SRT", "UDP", "RTMP", "RTMPS"]),
   serverUrl: profileTextSchema,
@@ -200,6 +204,8 @@ export const ffmpegCapabilitiesSchema = z.object({
     h265: z.boolean(),
     mpeg2: z.boolean(),
     aac: z.boolean(),
+    // фильтр subtitles есть только в сборках FFmpeg с libass
+    burnInSubtitles: z.boolean().default(false),
   }),
 });
 
@@ -317,6 +323,46 @@ export const subtitleOverlaySchema = z.object({
   filePath: z.string().min(1).nullable().default(null),
 });
 
+/**
+ * Дополнительная звуковая дорожка ролика. Файл лежит рядом с видео или в отдельной
+ * папке и назван `{язык} <то же имя, что у видео>`; язык приводится к ISO 639-2.
+ */
+export const audioTrackSchema = z.object({
+  languageCode: z.string().regex(/^[a-z]{3}$/, "Language must be an ISO 639-2 code"),
+  label: z.string().trim().min(1).max(32),
+  filePath: z.string().min(1),
+  streamIndex: z.number().int().nonnegative().default(0),
+});
+
+export const maximumProgramAudioTracks = 8;
+
+/** Дорожка программы: набор фиксируется на старте сессии, потому что PMT неизменна. */
+export const programAudioTrackSchema = z.object({
+  languageCode: z.string().regex(/^[a-z]{3}$/, "Language must be an ISO 639-2 code"),
+  label: z.string().trim().min(1).max(32),
+  pid: z.number().int().min(32).max(8_190),
+  original: z.boolean().default(false),
+});
+
+export const audioTrackMatchSchema = z.object({
+  mediaFilePath: z.string().min(1),
+  tracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks),
+});
+
+export const scanAudioTracksRequestSchema = z.object({
+  directoryPath: z.string().min(1).nullable().default(null),
+  mediaPaths: z.array(z.string().min(1)).min(1).max(1_000),
+});
+
+export const audioTrackScanSchema = z.object({
+  items: z.array(audioTrackMatchSchema),
+  languages: z.array(z.object({
+    languageCode: z.string().regex(/^[a-z]{3}$/),
+    label: z.string(),
+    itemCount: z.number().int().nonnegative(),
+  })),
+});
+
 export const playoutItemSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -332,6 +378,7 @@ export const playoutItemSchema = z.object({
   itemLogo: itemLogoOverlaySchema.nullable().optional(),
   effects: z.array(graphicEffectLayerSchema).max(64).optional(),
   subtitles: subtitleOverlaySchema.nullable().optional(),
+  audioTracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks).optional(),
 });
 
 export const analyzeGraphicEffectsRequestSchema = z.object({
@@ -361,6 +408,16 @@ export const parseScheduleRequestSchema = z.object({
   filePath: z.string().min(1),
 });
 
+/** Дорожка в расписании: строка `insertAudioTrack_{язык} {путь}` под роликом. */
+export const scheduleAudioTrackSchema = z.object({
+  language: z.string().trim().min(1).max(32).refine((value) => !/[\r\n{}]/.test(value), {
+    message: "Audio track language must not contain braces or line breaks",
+  }),
+  filePath: z.string().min(1).refine((value) => !/[\r\n]/.test(value), {
+    message: "Audio track path must not contain line breaks",
+  }),
+});
+
 export const scheduleGraphicElementSchema = z.object({
   name: z.string().trim().min(1).max(128),
   backgroundPath: z.string().min(1).nullable(),
@@ -387,6 +444,8 @@ export const parsedScheduleItemSchema = z.object({
   logoPath: z.string().nullable(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
   srtPath: z.string().nullable().default(null),
+  srtEnabled: z.boolean().default(true),
+  audioTracks: z.array(scheduleAudioTrackSchema).max(maximumProgramAudioTracks).default([]),
   lineNumber: z.number().int().positive(),
   warnings: z.array(z.string()),
 });
@@ -426,6 +485,8 @@ export const scheduleExportItemSchema = z.object({
   srtPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "SRT path must not contain braces or line breaks",
   }).nullable().optional(),
+  srtEnabled: z.boolean().optional(),
+  audioTracks: z.array(scheduleAudioTrackSchema).max(maximumProgramAudioTracks).optional(),
 });
 
 export const serializeScheduleRequestSchema = z.object({
@@ -546,6 +607,27 @@ export const mpegTsOutputSettingsSchema = z.object({
   path: ["audioPid"],
 });
 
+/**
+ * Многоязычный звук. Набор дорожек считается по всему плейлисту при Start:
+ * каждая получает собственный PID, поэтому головная станция может отбирать их
+ * по отдельности. Ролик без нужного файла отдаёт тишину — состав PMT не меняется.
+ */
+export const audioProgramSchema = z.object({
+  enabled: z.boolean().default(false),
+  directoryPath: z.string().min(1).nullable().default(null),
+  originalLanguageCode: z.string().regex(/^[a-z]{3}$/).default("rus"),
+  originalLabel: z.string().trim().min(1).max(32).default("orig"),
+  tracks: z.array(programAudioTrackSchema).max(maximumProgramAudioTracks).default([]),
+});
+
+export const defaultAudioProgram = {
+  enabled: false,
+  directoryPath: null,
+  originalLanguageCode: "rus",
+  originalLabel: "orig",
+  tracks: [],
+};
+
 export const udpEndpointSchema = z.object({
   protocol: z.literal("udp"),
   host: z.string().min(1),
@@ -634,6 +716,7 @@ export const startPlayoutRequestSchema = z.object({
   logo: logoOverlaySchema.nullable().default(null),
   endpoint: playoutEndpointSchema,
   subtitleOutput: subtitleOutputSchema.default(defaultSubtitleOutput),
+  audioProgram: audioProgramSchema.optional(),
   repeatPlaylist: z.boolean().default(false),
   scte35: scte35PlanningSchema.default({
     enabled: false,
@@ -669,6 +752,46 @@ export const startPlayoutRequestSchema = z.object({
       path: ["subtitleOutput", "pid"],
     });
   }
+}).superRefine((request, context) => {
+  if (!request.audioProgram?.enabled) return;
+
+  if (request.endpoint.protocol === "rtmp") {
+    context.addIssue({
+      code: "custom",
+      message: "Multiple audio tracks require an MPEG-TS UDP or SRT output; FLV carries one track",
+      path: ["audioProgram", "enabled"],
+    });
+    return;
+  }
+
+  const mpegTs = request.endpoint.protocol === "udp"
+    ? request.endpoint.mpegTs
+    : defaultMpegTsOutputSettings;
+  const reserved = new Map<number, string>([
+    [mpegTs.videoPid, "video"],
+    [mpegTs.audioPid, "primary audio"],
+  ]);
+  if (request.scte35.enabled) reserved.set(request.scte35.pid, "SCTE-35");
+  if (request.subtitleOutput.mode === "dvb") {
+    reserved.set(request.subtitleOutput.pid, "DVB subtitles");
+  }
+
+  request.audioProgram.tracks.forEach((track, index) => {
+    // Первая дорожка сознательно переиспользует основной audio PID: так поток
+    // остаётся совместимым с приёмником, который знает только одну дорожку.
+    if (index === 0 && track.pid === mpegTs.audioPid) return;
+
+    const conflict = reserved.get(track.pid);
+    if (conflict) {
+      context.addIssue({
+        code: "custom",
+        message: `Audio track ${track.label} PID ${track.pid} collides with the ${conflict} PID`,
+        path: ["audioProgram", "tracks", index, "pid"],
+      });
+      return;
+    }
+    reserved.set(track.pid, `audio ${track.label}`);
+  });
 });
 
 export const startCompositeClipPreviewRequestSchema = z.object({
@@ -934,6 +1057,12 @@ export type ScheduleExportExtension = z.infer<typeof scheduleExportExtensionSche
 export type SerializeScheduleRequest = z.infer<typeof serializeScheduleRequestSchema>;
 export type SerializedSchedule = z.infer<typeof serializedScheduleSchema>;
 export type PlayoutItem = z.infer<typeof playoutItemSchema>;
+export type AudioTrack = z.infer<typeof audioTrackSchema>;
+export type ProgramAudioTrack = z.infer<typeof programAudioTrackSchema>;
+export type AudioProgram = z.infer<typeof audioProgramSchema>;
+export type AudioTrackMatch = z.infer<typeof audioTrackMatchSchema>;
+export type AudioTrackScan = z.infer<typeof audioTrackScanSchema>;
+export type ScanAudioTracksRequest = z.infer<typeof scanAudioTracksRequestSchema>;
 export type VideoEncoding = z.infer<typeof videoEncodingSchema>;
 export type AudioEncoding = z.infer<typeof audioEncodingSchema>;
 export type LogoOverlay = z.infer<typeof logoOverlaySchema>;
