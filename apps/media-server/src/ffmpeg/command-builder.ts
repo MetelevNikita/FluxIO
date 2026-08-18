@@ -119,6 +119,24 @@ export function buildFfmpegClipVideoProducerCommand(
   return { ...base, args, filterGraph };
 }
 
+/**
+ * Сколько сэмплов обязан отдать рендерер дорожки за ролик. Все дорожки программы
+ * считают одно и то же число: encoder мультиплексирует их в один поток, и дорожка
+ * короче остальных останавливает выдачу целиком.
+ */
+export function clipAudioSampleCount(durationSeconds: number, sampleRate: number): number {
+  return Math.max(1, Math.round(durationSeconds * sampleRate));
+}
+
+/** Размер той же порции звука в байтах сырого s16le. */
+export function clipAudioByteCount(
+  durationSeconds: number,
+  sampleRate: number,
+  channels: number,
+): number {
+  return clipAudioSampleCount(durationSeconds, sampleRate) * channels * 2;
+}
+
 export function buildFfmpegClipAudioProducerCommand(
   request: StartPlayoutRequest,
   item: PreparedPlayoutItem,
@@ -150,7 +168,14 @@ export function buildFfmpegClipAudioProducerCommand(
       `dual_mono=${request.audio.channels === 1 ? "true" : "false"},` +
       `aresample=${sampleRate},asetpts=PTS-STARTPTS`
     : "";
-  const filterGraph = `${sourceFilter}${loudnessFilter}[aprogram]`;
+  // Хвост, который делает длину дорожки ровно равной длине ролика. Файл перевода
+  // короче видео (или короче после loudnorm) иначе просто обрывает подачу в
+  // encoder: тот ждёт отставший вход и эфир встаёт. `apad` дотягивает тишиной,
+  // `atrim=end_sample` срезает длинный файл по сэмплу — одинаково для всех дорожек.
+  const sampleCount = clipAudioSampleCount(item.durationSeconds, sampleRate);
+  const lengthFilter = `,apad=whole_len=${sampleCount},atrim=end_sample=${sampleCount},` +
+    "asetpts=PTS-STARTPTS";
+  const filterGraph = `${sourceFilter}${loudnessFilter}${lengthFilter}[aprogram]`;
   const args = [
     "-hide_banner",
     "-nostdin",

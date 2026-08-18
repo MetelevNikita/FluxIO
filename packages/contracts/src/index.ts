@@ -332,6 +332,9 @@ export const audioTrackSchema = z.object({
   label: z.string().trim().min(1).max(32),
   filePath: z.string().min(1),
   streamIndex: z.number().int().nonnegative().default(0),
+  // Длительность самого файла дорожки. `null` — ffprobe не смог её определить.
+  // Дорожка короче ролика доигрывает тишиной, и это видно в таймлайне.
+  durationSeconds: z.number().nonnegative().nullable().default(null),
 });
 
 export const maximumProgramAudioTracks = 8;

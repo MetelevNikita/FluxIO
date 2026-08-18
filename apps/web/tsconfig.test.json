@@ -5,10 +5,14 @@
     "moduleResolution": "NodeNext",
     "outDir": "dist-test",
     "rootDir": "src",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/default-broadcast-settings.ts",
+    "src/audio-program.ts",
+    "src/audio-program.test.ts",
     "src/encoding-settings-profile.ts",
     "src/encoding-settings-profile.test.ts",
     "src/effect-assignment.ts",

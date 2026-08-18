@@ -24,7 +24,7 @@ test("encoding settings profile round-trips every portable setting and omits sec
   };
   const profile = createEncodingSettingsProfile(
     source,
-    "6.0.22",
+    "6.0.24",
     new Date("2026-08-07T12:00:00.000Z"),
   );
   const serialized = serializeEncodingSettingsProfile(profile);

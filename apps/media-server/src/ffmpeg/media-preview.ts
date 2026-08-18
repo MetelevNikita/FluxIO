@@ -5,6 +5,7 @@ import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ClipPreviewSession, StartPlayoutRequest } from "@gruber/contracts";
 import { buildFfmpegCompositePreviewCommand, type PreparedPlayoutItem } from "./command-builder.js";
+import { probeMedia } from "./probe.js";
 import { runCommand } from "./process.js";
 
 /**
@@ -14,6 +15,16 @@ import { runCommand } from "./process.js";
  * последняя картинка ждала все предыдущие.
  */
 const thumbnailConcurrency = 4;
+
+/**
+ * media-service переживает окно, но не перезапуск приложения: launch.mjs гасит
+ * сервер вместе с Electron. Реестр роликов живёт в памяти, поэтому после
+ * повторного старта восстановленная из БД сессия просила превью для «неизвестных»
+ * файлов и получала 404 — все картинки в интерфейсе гасли. Теперь такой файл
+ * заново прогоняется через ffprobe. Ограничение параллелизма обязательно:
+ * восстановленное недельное расписание запрашивает сотни превью одновременно.
+ */
+const registrationConcurrency = 4;
 
 interface RegisteredMedia {
   durationSeconds: number;
@@ -29,15 +40,22 @@ interface ActivePreview {
 
 export class MediaPreviewService {
   readonly ffmpegPath: string;
+  readonly ffprobePath: string;
   readonly rootDirectory: string;
   #active: ActivePreview | null = null;
   #registered = new Map<string, RegisteredMedia>();
+  #registrationJobs = new Map<string, Promise<RegisteredMedia>>();
+  #registrationSlots = new Semaphore(registrationConcurrency);
   #thumbnailJobs = new Map<string, Promise<Buffer>>();
-  #thumbnailActive = 0;
-  #thumbnailWaiting: (() => void)[] = [];
+  #thumbnailSlots = new Semaphore(thumbnailConcurrency);
 
-  constructor(ffmpegPath: string, rootDirectory: string) {
+  constructor(
+    ffmpegPath: string,
+    rootDirectory: string,
+    ffprobePath = process.env.FFPROBE_PATH ?? "ffprobe",
+  ) {
     this.ffmpegPath = ffmpegPath;
+    this.ffprobePath = ffprobePath;
     this.rootDirectory = rootDirectory;
   }
 
@@ -70,7 +88,7 @@ export class MediaPreviewService {
 
     const existingJob = this.#thumbnailJobs.get(key);
     if (existingJob) return existingJob;
-    const job = this.#withThumbnailSlot(() =>
+    const job = this.#thumbnailSlots.run(() =>
       this.#generateThumbnail(media, seekSeconds, thumbnailDirectory, thumbnailPath)
     );
     this.#thumbnailJobs.set(key, job);
@@ -267,20 +285,6 @@ export class MediaPreviewService {
     await this.stop();
   }
 
-  async #withThumbnailSlot<T>(task: () => Promise<T>): Promise<T> {
-    if (this.#thumbnailActive >= thumbnailConcurrency) {
-      await new Promise<void>((resolve) => this.#thumbnailWaiting.push(resolve));
-    }
-
-    this.#thumbnailActive += 1;
-    try {
-      return await task();
-    } finally {
-      this.#thumbnailActive -= 1;
-      this.#thumbnailWaiting.shift()?.();
-    }
-  }
-
   async #generateThumbnail(
     media: RegisteredMedia,
     seekSeconds: number,
@@ -318,21 +322,69 @@ export class MediaPreviewService {
       throw new Error("Media path must be absolute");
     }
     const resolvedPath = await realpath(filePath);
-    let media = this.#registered.get(resolvedPath);
+    const media = this.#registered.get(resolvedPath);
+    if (media) return media;
+
     const restoredDuration = persistedDurationSeconds ?? 0;
     if (
-      !media &&
       Number.isFinite(restoredDuration) &&
       restoredDuration > 0 &&
       (await stat(resolvedPath)).isFile()
     ) {
-      media = { durationSeconds: restoredDuration, filePath: resolvedPath };
-      this.#registered.set(resolvedPath, media);
+      const restored = { durationSeconds: restoredDuration, filePath: resolvedPath };
+      this.#registered.set(resolvedPath, restored);
+      return restored;
     }
-    if (!media) {
-      throw new Error("Media file has not been analyzed in this session");
+
+    return this.#reregister(resolvedPath);
+  }
+
+  /** Файл известен интерфейсу, но не этому процессу: анализируем его заново. */
+  async #reregister(resolvedPath: string): Promise<RegisteredMedia> {
+    const running = this.#registrationJobs.get(resolvedPath);
+    if (running) return running;
+
+    const job = this.#registrationSlots.run(async () => {
+      const probe = await probeMedia(resolvedPath, this.ffprobePath).catch(() => null);
+      if (!probe) throw new Error("Media file has not been analyzed in this session");
+      const media = {
+        durationSeconds: Math.max(0, probe.durationSeconds),
+        filePath: probe.filePath,
+      };
+      this.#registered.set(probe.filePath, media);
+      return media;
+    });
+    this.#registrationJobs.set(resolvedPath, job);
+    try {
+      return await job;
+    } finally {
+      this.#registrationJobs.delete(resolvedPath);
     }
-    return media;
+  }
+}
+
+/** Потолок одновременных дочерних процессов: ffprobe для реестра, ffmpeg для превью. */
+class Semaphore {
+  readonly limit: number;
+  #active = 0;
+  #waiting: (() => void)[] = [];
+
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.#active >= this.limit) {
+      await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    }
+
+    this.#active += 1;
+    try {
+      return await task();
+    } finally {
+      this.#active -= 1;
+      this.#waiting.shift()?.();
+    }
   }
 }
 

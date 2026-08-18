@@ -30,6 +30,7 @@ interface ProbeStream {
   color_space?: string;
   sample_rate?: string;
   channels?: number;
+  duration?: string;
 }
 
 interface ProbeDocument {
@@ -89,6 +90,36 @@ export async function probeMedia(
     audioSampleRate: audio ? Math.round(numberValue(audio.sample_rate)) : null,
     audioChannels: audio?.channels ?? null,
   });
+}
+
+/**
+ * Длительность звукового файла в секундах. Нужна, чтобы показать оператору
+ * дорожку короче ролика: такую дорожку эфир доигрывает тишиной.
+ * `null` — ffprobe не смог определить длительность (битый или сырой поток).
+ */
+export async function probeAudioDurationSeconds(
+  filePath: string,
+  ffprobePath: string,
+): Promise<number | null> {
+  const result = await runCommand(ffprobePath, [
+    "-v",
+    "error",
+    "-select_streams",
+    "a:0",
+    "-show_entries",
+    "format=duration:stream=duration",
+    "-of",
+    "json",
+    filePath,
+  ]);
+  const document = JSON.parse(result.stdout) as ProbeDocument;
+  const candidates = [
+    document.format?.duration,
+    document.streams?.[0]?.duration,
+  ]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
 export async function scanMediaDirectory(

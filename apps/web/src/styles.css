@@ -4194,36 +4194,20 @@ input[type="range"] {
   margin-top: 8px;
 }
 
+/*
+ * Полоса дорожки повторяет геометрию кадров превью: тот же левый край, та же
+ * ширина. Заливка растёт слева направо на долю ролика, покрытую реальным звуком,
+ * подпись лежит поверх неё — отдельная колонка под подпись сдвигала бы полосы
+ * относительно картинки.
+ */
 .audio-track-lane {
-  display: grid;
-  grid-template-columns: 132px 1fr;
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.audio-track-lane-label {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 11px;
-  letter-spacing: 0.02em;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.audio-track-lane-bar {
+  height: 18px;
+  border: 1px solid var(--border);
   border-radius: 3px;
-  height: 14px;
-}
-
-.audio-track-lane.original .audio-track-lane-bar {
-  background: linear-gradient(90deg, rgba(255, 199, 0, 0.55), rgba(255, 199, 0, 0.25));
-}
-
-.audio-track-lane.present .audio-track-lane-bar {
-  background: linear-gradient(90deg, rgba(90, 200, 250, 0.55), rgba(90, 200, 250, 0.22));
-}
-
-.audio-track-lane.silent .audio-track-lane-bar {
   background: repeating-linear-gradient(
     45deg,
     rgba(255, 255, 255, 0.08),
@@ -4231,6 +4215,43 @@ input[type="range"] {
     rgba(255, 255, 255, 0.02) 6px,
     rgba(255, 255, 255, 0.02) 12px
   );
+}
+
+.audio-track-lane-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* Непрозрачная подложка: иначе штриховка «тишины» просвечивает через заливку
+     и полная дорожка визуально не отличается от пустой. */
+  background-color: #0b0f13;
+}
+
+.audio-track-lane-label {
+  position: relative;
+  z-index: 1;
+  padding: 0 8px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-lane.original .audio-track-lane-fill {
+  background-image: linear-gradient(90deg, rgba(255, 199, 0, 0.55), rgba(255, 199, 0, 0.25));
+}
+
+.audio-track-lane.present .audio-track-lane-fill,
+.audio-track-lane.partial .audio-track-lane-fill {
+  background-image: linear-gradient(90deg, rgba(90, 200, 250, 0.55), rgba(90, 200, 250, 0.22));
+}
+
+/* Обрыв короткой дорожки: дальше этой границы в эфир идёт тишина. */
+.audio-track-lane.partial .audio-track-lane-fill {
+  border-right: 2px solid var(--accent);
 }
 
 .audio-track-lane.silent .audio-track-lane-label {

@@ -66,7 +66,8 @@ function createRouteContext(): RouteContext {
       path.join(tmpdir(), "gruber-playout-effects"),
     mediaPreview: new MediaPreviewService(
       capabilities.ffmpegPath,
-      path.join(tmpdir(), "gruber-media-preview"),
+      process.env.GRUBER_MEDIA_CACHE_DIR ?? path.join(tmpdir(), "gruber-media-preview"),
+      capabilities.ffprobePath,
     ),
     playout: new PlayoutSupervisor(
       capabilities,

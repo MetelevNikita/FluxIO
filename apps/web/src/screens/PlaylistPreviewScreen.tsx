@@ -37,7 +37,7 @@ import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
-import { assetLanguageLabels } from "../audio-program";
+import { assetAudioLanes, assetLanguageLabels, type AudioTrackLane } from "../audio-program";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
 import { lottieTextValues } from "../effect-assignment";
 import { moveEffectLayerWindow, removeEffectLayerById } from "../effect-timeline-math";
@@ -1341,21 +1341,32 @@ export function PlaylistPreviewScreen({
           />
           {audioTracksEnabled ? (
             <div className="audio-track-timeline">
-              <div className="audio-track-lane original">
-                <span className="audio-track-lane-label">{`{${audioOriginalLanguage}}`} original</span>
-                <div className="audio-track-lane-bar" />
-              </div>
-              {audioProgramLanguages.map((language) => {
-                const present = assetLanguageLabels(selectedAsset).includes(language);
-                return (
-                  <div className={`audio-track-lane ${present ? "present" : "silent"}`} key={language}>
-                    <span className="audio-track-lane-label">
-                      {`{${language}}`} {present ? "" : "· silence"}
-                    </span>
-                    <div className="audio-track-lane-bar" />
-                  </div>
-                );
-              })}
+              {assetAudioLanes(
+                selectedAsset,
+                audioProgramLanguages,
+                audioOriginalLanguage,
+              ).map((lane) => (
+                <div
+                  className={`audio-track-lane ${lane.kind}`}
+                  key={lane.key}
+                  title={laneTooltip(lane, selectedAsset.durationSeconds)}
+                >
+                  {/* Заливка растёт строго от левого края превью вправо; хвост
+                      полосы — тишина, которой эфир добивает короткую дорожку. */}
+                  <div
+                    className="audio-track-lane-fill"
+                    style={{ width: `${(lane.fill * 100).toFixed(3)}%` }}
+                  />
+                  <span className="audio-track-lane-label">
+                    {`{${lane.label}}`}
+                    {lane.kind === "original" ? " original" : ""}
+                    {lane.kind === "silent" ? " · silence" : ""}
+                    {lane.kind === "partial"
+                      ? ` · short by ${lane.shortfallSeconds.toFixed(1)} s`
+                      : ""}
+                  </span>
+                </div>
+              ))}
             </div>
           ) : null}
           <div className="filmstrip-track">
@@ -1751,6 +1762,17 @@ function ageAssetMap(imagePaths: string[]): Map<string, string> {
     }
   }
   return result;
+}
+
+function laneTooltip(lane: AudioTrackLane, clipSeconds: number): string {
+  const clip = `clip ${clipSeconds.toFixed(1)} s`;
+  if (lane.kind === "silent") return `{${lane.label}}: no track for this item, silence (${clip})`;
+  if (lane.durationSeconds == null) return `{${lane.label}}: duration unknown (${clip})`;
+  const track = `track ${lane.durationSeconds.toFixed(1)} s`;
+  return lane.shortfallSeconds > 0
+    ? `{${lane.label}}: ${track}, ${clip} — last ` +
+      `${lane.shortfallSeconds.toFixed(1)} s go to air as silence`
+    : `{${lane.label}}: ${track}, ${clip}`;
 }
 
 function shortPath(value: string): string {

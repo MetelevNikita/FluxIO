@@ -1,6 +1,6 @@
 {
   "name": "@gruber/contracts",
-  "version": "6.0.22",
+  "version": "6.0.24",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

@@ -10,7 +10,10 @@ import {
   type AudioTrackMatch,
   type AudioTrackScan,
 } from "@gruber/contracts";
+import { probeAudioDurationSeconds } from "../ffmpeg/probe.js";
 import { languageLabel, resolveLanguageCode } from "./languages.js";
+
+const audioProbeConcurrency = 8;
 
 /** `{eng} Название ролика.m4a` → токен языка + базовое имя без расширения. */
 const languageTokenPattern = /^\{([^}]{1,32})\}\s*(.+)$/;
@@ -31,6 +34,7 @@ export class AudioTrackScanError extends Error {}
 export async function scanAudioTracks(
   directoryPath: string | null,
   mediaPaths: string[],
+  ffprobePath?: string,
 ): Promise<AudioTrackScan> {
   const candidates = new Map<string, AudioCandidate[]>();
 
@@ -55,6 +59,8 @@ export async function scanAudioTracks(
       else languageCounts.set(track.languageCode, { label: track.label, itemCount: 1 });
     }
   }
+
+  if (ffprobePath) await attachTrackDurations(items, ffprobePath);
 
   return audioTrackScanSchema.parse({
     items,
@@ -147,7 +153,44 @@ function matchTracks(
       label: candidate.label,
       filePath: candidate.filePath,
       streamIndex: 0,
+      durationSeconds: null,
     }));
+}
+
+/**
+ * Длительности дорожек: один ffprobe на файл, с потолком параллелизма — недельное
+ * расписание даёт сотни файлов, и неограниченный запуск отнял бы CPU у эфира.
+ * Ошибка ffprobe не роняет сканирование: дорожка остаётся с `durationSeconds: null`.
+ */
+async function attachTrackDurations(
+  items: AudioTrackMatch[],
+  ffprobePath: string,
+): Promise<void> {
+  const byPath = new Map<string, AudioTrack[]>();
+  for (const item of items) {
+    for (const track of item.tracks) {
+      const bucket = byPath.get(track.filePath);
+      if (bucket) bucket.push(track);
+      else byPath.set(track.filePath, [track]);
+    }
+  }
+
+  const filePaths = [...byPath.keys()];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < filePaths.length) {
+      const filePath = filePaths[cursor];
+      cursor += 1;
+      if (!filePath) continue;
+      const durationSeconds = await probeAudioDurationSeconds(filePath, ffprobePath)
+        .catch(() => null);
+      for (const track of byPath.get(filePath) ?? []) track.durationSeconds = durationSeconds;
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(audioProbeConcurrency, filePaths.length) }, worker),
+  );
 }
 
 /** Имена сравниваются без регистра и без разницы в пробелах. */

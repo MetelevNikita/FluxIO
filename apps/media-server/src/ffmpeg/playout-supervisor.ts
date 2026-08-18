@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
+import { once } from "node:events";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, type Writable } from "node:stream";
@@ -15,6 +16,7 @@ import {
   buildFfmpegClipAudioProducerCommand,
   buildFfmpegClipVideoProducerCommand,
   buildFfmpegProgramEncoderCommand,
+  clipAudioByteCount,
   clipAudioSource,
   programAudioTracks,
   type ClipAudioSource,
@@ -61,6 +63,8 @@ const consoleProgressIntervalSeconds = 5;
 const playlistPreparationConcurrency = 8;
 const clipProducerStartupTimeoutMs = 30_000;
 const minimumClipPipeBufferBytes = 1_048_576;
+const clipAudioSilenceChunkBytes = 262_144;
+const silenceChunk = Buffer.alloc(clipAudioSilenceChunkBytes);
 
 type CloseResult = { code: number | null; signal: NodeJS.Signals | null } | null;
 
@@ -70,8 +74,12 @@ interface ClipAudioRuntime {
   child: ChildProcessWithoutNullStreams;
   closeResult: CloseResult;
   ended: boolean;
+  /** Сколько байт сырого PCM дорожка обязана отдать за ролик. */
+  expectedBytes: number;
   label: string;
+  paddedBytes: number;
   ready: boolean;
+  writtenBytes: number;
 }
 
 interface ClipProducerRuntime {
@@ -1213,8 +1221,15 @@ export class PlayoutSupervisor {
       child,
       closeResult: null,
       ended: false,
+      expectedBytes: clipAudioByteCount(
+        item.durationSeconds,
+        request.audio.sampleRate,
+        request.audio.channels,
+      ),
       label,
+      paddedBytes: 0,
       ready: false,
+      writtenBytes: 0,
     };
 
     child.stdout.once("data", () => this.#handleClipAudioData(runtime, audio));
@@ -1222,7 +1237,15 @@ export class PlayoutSupervisor {
       audio.ended = true;
       this.#completeClipProducer(runtime);
     });
-    child.stdout.pipe(audio.bridge);
+    child.stdout.on("data", (chunk: Buffer) => {
+      audio.writtenBytes += chunk.length;
+    });
+    // Мост закрывает не pipe, а #padClipAudio: недостачу байт надо дописать
+    // тишиной до того, как дорожка закончится, иначе encoder ждёт отставший вход.
+    child.stdout.pipe(audio.bridge, { end: false });
+    child.stdout.once("end", () => {
+      void this.#padClipAudio(runtime, audio);
+    });
     this.#readClipProducerLogs(child, runtime.index, `audio ${label}`);
     child.once("error", (error) => this.#handleClipProducerError(child, runtime.index, error));
     child.once("close", (code, signal) => {
@@ -1231,6 +1254,39 @@ export class PlayoutSupervisor {
     });
 
     return audio;
+  }
+
+  /**
+   * Страховка поверх фильтра `apad`: если рендерер всё-таки отдал меньше байт,
+   * чем длится ролик (упал на середине, exotic-контейнер, срезанный хвост),
+   * недостача дописывается тишиной. Молчащий pipe останавливает мультиплексор
+   * целиком, поэтому дорожка обязана быть полной даже ценой тишины.
+   */
+  async #padClipAudio(runtime: ClipProducerRuntime, audio: ClipAudioRuntime): Promise<void> {
+    let remaining = clipAudioSilenceBytes(audio.expectedBytes, audio.writtenBytes);
+    if (remaining > 0) {
+      audio.paddedBytes = remaining;
+      const request = this.#request;
+      const seconds = request
+        ? remaining / (request.audio.sampleRate * request.audio.channels * 2)
+        : 0;
+      this.#appendEvent(
+        `Clip ${runtime.index + 1} audio ${audio.label} ended ` +
+          `${seconds.toFixed(2)} s early; padded with silence to keep the programme aligned`,
+      );
+    }
+    while (remaining > 0 && !audio.bridge.destroyed && !audio.bridge.writableEnded) {
+      const size = Math.min(remaining, clipAudioSilenceChunkBytes);
+      remaining -= size;
+      if (!audio.bridge.write(silenceChunk.subarray(0, size))) {
+        // Мост может быть уничтожен остановкой эфира — тогда ждать "drain" нечего.
+        await Promise.race([
+          once(audio.bridge, "drain"),
+          once(audio.bridge, "close"),
+        ]).catch(() => undefined);
+      }
+    }
+    if (!audio.bridge.destroyed && !audio.bridge.writableEnded) audio.bridge.end();
   }
 
   #readClipProducerLogs(
@@ -2166,6 +2222,14 @@ export function alignHotChangePlaylist<T extends { id: string }>(
     ...current.slice(0, activeIndex),
     ...replacement.slice(replacementActiveIndex),
   ];
+}
+
+/**
+ * Сколько байт тишины дописать в дорожку, чтобы она совпала по длине с роликом.
+ * Лишние байты обрезать уже нельзя — их забрал encoder, поэтому только недостача.
+ */
+export function clipAudioSilenceBytes(expectedBytes: number, writtenBytes: number): number {
+  return Math.max(0, expectedBytes - writtenBytes);
 }
 
 export function measurePcmS16leDbfs(chunk: Buffer): number | null {

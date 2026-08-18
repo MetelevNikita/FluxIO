@@ -70,6 +70,8 @@ export interface AudioTrackInfo {
   label: string;
   filePath: string;
   streamIndex: number;
+  /** Длительность файла дорожки; `null` — ffprobe её не определил. */
+  durationSeconds: number | null;
 }
 
 export interface AudioTrackLibrary {

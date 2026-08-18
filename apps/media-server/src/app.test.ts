@@ -18,6 +18,8 @@ import {
 import { buildApp } from "./app.js";
 import {
   buildFfmpegClipAudioProducerCommand,
+  clipAudioByteCount,
+  clipAudioSampleCount,
   buildFfmpegClipVideoProducerCommand,
   buildFfmpegCompositePreviewCommand,
   buildFfmpegCommand,
@@ -31,6 +33,7 @@ import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import {
   alignHotChangePlaylist,
+  clipAudioSilenceBytes,
   formatEncodingActivity,
   formatFrameProgressLog,
   estimateCommandLineCharacters,
@@ -95,7 +98,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.22");
+    assert.equal(health.version, "6.0.24");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -816,6 +819,51 @@ test("rolling playout keeps the weekly playlist out of the persistent encoder", 
   assert.doesNotMatch(encoderArgs, /\/media\/one\.mp4/);
   assert.match(encoderArgs, /-muxrate 12000000/);
   assert.equal(encoder.totalDurationSeconds, 168 * 60 * 60);
+});
+
+test("every audio track renderer emits exactly one clip of PCM regardless of file length", () => {
+  const request = baseRequest();
+  request.audio.sampleRate = 48_000;
+  request.audio.channels = 2;
+  const item = { ...preparedItems()[0]!, durationSeconds: 12.5 };
+  const samples = clipAudioSampleCount(item.durationSeconds, request.audio.sampleRate);
+
+  assert.equal(samples, 600_000);
+  assert.equal(clipAudioByteCount(item.durationSeconds, 48_000, 2), 2_400_000);
+
+  const dubbed = buildFfmpegClipAudioProducerCommand(request, item, {
+    filePath: "/media/{eng} one.m4a",
+    hasAudio: true,
+    languageCode: "eng",
+    label: "eng",
+  });
+  const silent = buildFfmpegClipAudioProducerCommand(request, item, {
+    filePath: null,
+    hasAudio: false,
+    languageCode: "spa",
+    label: "spain",
+  });
+
+  // Короткий файл перевода добивается тишиной, длинный режется по сэмплу: без
+  // этого молчащий pipe останавливает мультиплексор и эфир встаёт.
+  for (const command of [dubbed, silent]) {
+    assert.match(
+      command.filterGraph,
+      new RegExp(`apad=whole_len=${samples},atrim=end_sample=${samples}`),
+    );
+  }
+  assert.match(dubbed.args.join(" "), /-i \/media\/\{eng\} one\.m4a/);
+  assert.doesNotMatch(silent.args.join(" "), /-i /);
+});
+
+test("a renderer that stops early is topped up with silence, never truncated", () => {
+  const expected = clipAudioByteCount(4, 48_000, 2);
+
+  assert.equal(clipAudioSilenceBytes(expected, expected), 0);
+  assert.equal(clipAudioSilenceBytes(expected, 0), expected);
+  assert.equal(clipAudioSilenceBytes(expected, expected - 96_000), 96_000);
+  // Лишние байты encoder уже забрал — обрезать нечего.
+  assert.equal(clipAudioSilenceBytes(expected, expected + 96_000), 0);
 });
 
 test("composite clip preview renders the programme graph without opening the broadcast endpoint", () => {
@@ -1936,6 +1984,15 @@ test(
       mediaPreview.register(await realpath(clipOne), 4.4);
       const thumbnail = await mediaPreview.thumbnail(clipOne);
       assert.deepEqual([...thumbnail.subarray(0, 2)], [0xff, 0xd8]);
+      // Перезапуск приложения гасит media-service вместе с окном, и реестр
+      // роликов пуст. Восстановленная сессия обязана заново получить превью,
+      // а не набор битых картинок.
+      const restoredThumbnail = await restoredMediaPreview.thumbnail(clipOne);
+      assert.deepEqual([...restoredThumbnail.subarray(0, 2)], [0xff, 0xd8]);
+      await assert.rejects(
+        restoredMediaPreview.thumbnail(path.join(directory, "never-existed.mp4")),
+        /ENOENT|has not been analyzed/,
+      );
       const clipPreview = await mediaPreview.start(clipOne, 0);
       assert.match(clipPreview.manifestPath, /index\.m3u8$/);
       assert.match(
