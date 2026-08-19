@@ -16,6 +16,7 @@ test("the same FX can be assigned to one clip multiple times as independent laye
     id: "title",
     kind: "video",
     lottie: null,
+    broadcast: null,
     name: "Title",
     titleDirectoryPath: null,
     titlePaths: [],
@@ -43,6 +44,7 @@ test("the same Lottie source can be imported repeatedly as independent projects"
     height: 1080,
     id: "fx-source",
     kind: "video",
+    broadcast: null,
     lottie: {
       backgroundColor: "transparent",
       frameRate: 25,

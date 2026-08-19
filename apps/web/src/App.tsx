@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  graphicEffectAssetSchema,
   serviceHealthSchema,
+  type BroadcastEffectKind,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
   type MediaProbe,
@@ -35,6 +37,25 @@ import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
+import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
+import {
+  applyGraphicReplacements,
+  collectMissingGraphics,
+  dropMissingGraphics,
+  graphicPathsOf,
+  type MissingGraphic,
+} from "./missing-graphics";
+import {
+  applyBroadcastPlan,
+  planBroadcastEffect,
+  removeBroadcastEffect,
+  type BroadcastTargetClip,
+  type BroadcastTaskEntry,
+} from "./broadcast-effects";
+import {
+  broadcastEffectTitle,
+  type BroadcastTaskSummary,
+} from "./screens/BroadcastEffectInspector";
 import {
   appendLottieEffectInstances,
   assignEffectToAssets,
@@ -56,6 +77,9 @@ import {
   renderLottieEffect,
   scanMediaDirectory,
   scanAudioTracks,
+  readBroadcastTaskFile,
+  readTickerSourceFile,
+  verifyGraphicEffectPaths,
   scanGraphicEffectDirectory,
   serializeScheduleFile,
   saveWorkspaceSession as persistWorkspaceSession,
@@ -128,6 +152,25 @@ export function App() {
   const [subtitleLibrary, setSubtitleLibrary] = useState<SubtitleLibrary | null>(null);
   const [audioTrackLibrary, setAudioTrackLibrary] = useState<AudioTrackLibrary | null>(null);
   const [effectsBusy, setEffectsBusy] = useState(false);
+  // Записи файлов заданий держим в памяти: сам путь живёт в настройках эффекта
+  // и переживает перезапуск, а содержимое перечитывается по кнопке.
+  const [broadcastTaskEntries, setBroadcastTaskEntries] =
+    useState<Record<string, BroadcastTaskEntry[]>>({});
+  const [broadcastTaskSummaries, setBroadcastTaskSummaries] =
+    useState<Record<string, BroadcastTaskSummary>>({});
+  const [missingGraphics, setMissingGraphics] = useState<MissingGraphic[]>([]);
+  const [missingGraphicsResolved, setMissingGraphicsResolved] =
+    useState<Record<string, string>>({});
+
+  const playoutActive = Boolean(
+    playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
+  );
+  // Стабильная ссылка: во время эфира статус опрашивается каждые 750 мс, и
+  // заново собранный здесь массив перерисовывал бы всю вкладку Effects.
+  const effectTargetClips = useMemo(() => [
+    ...playlist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Current" as const })),
+    ...futurePlaylist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Future" as const })),
+  ], [playlist, futurePlaylist]);
   const [effectsMessage, setEffectsMessage] = useState<string | null>(null);
   const [scheduleActionMessage, setScheduleActionMessage] = useState<string | null>(null);
   const [savedWorkspaceSession, setSavedWorkspaceSession] = useState<SavedWorkspaceSession | null>(null);
@@ -490,6 +533,10 @@ export function App() {
     setSavedWorkspaceSession(session);
     setRecoveryCheckpoint(session.checkpoint?.interrupted ? session.checkpoint : null);
     void restoreLottieEffectCache(snapshot.effectLibrary);
+    void checkMissingGraphics(
+      [restoredCurrentPlaylist, restoredFuturePlaylist],
+      snapshot.effectLibrary,
+    );
     setScheduleActionMessage(
       session.checkpoint?.interrupted
         ? `Interrupted session restored at ${formatClock(session.checkpoint.outTimeSeconds)}.`
@@ -626,6 +673,10 @@ export function App() {
             );
             return {
               backgroundPath: element.backgroundPath,
+              blendMode: "alpha" as const,
+              lumaThreshold: 0.08,
+              sourceInSeconds: 0,
+              tier: 3 as const,
               effectId: libraryEffect?.id ?? `schedule-fx-${hashString(filePath || element.name)}`,
               endSeconds: Math.max(startSeconds + 0.01, endSeconds),
               filePath,
@@ -656,6 +707,7 @@ export function App() {
           titlePaths: layer.titlePath ? [layer.titlePath] : [],
           width: 0,
           lottie: null,
+          broadcast: null,
         } satisfies GraphicEffectAsset))
       );
       setAssets((current) => mergeAssets(current, scheduledAssets));
@@ -679,6 +731,12 @@ export function App() {
           `Schedule imported, but ${failed.length} of ${scheduledAssets.length} media files could not be analyzed.`,
         );
       }
+      // Чужое расписание почти всегда приносит пути с другой машины: сразу
+      // показываем, какой графики здесь нет, вместо отказа на Start.
+      void checkMissingGraphics(
+        [scheduledAssets],
+        mergeEffectAssets(effectLibrary, importedEffects),
+      );
     } catch (error) {
       setOperationError(errorMessage(error));
     } finally {
@@ -1024,6 +1082,10 @@ export function App() {
   function addEffectToProject(effectId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
     if (!effect) return;
+    if (effect.broadcast) {
+      void applyBroadcastEffect(effect, null);
+      return;
+    }
     const currentResult = assignEffectToAssets(playlist, effect);
     const futureResult = assignEffectToAssets(futurePlaylist, effect);
     setPlaylist(currentResult.items);
@@ -1038,6 +1100,10 @@ export function App() {
   function addEffectToClip(effectId: string, clipId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
     if (!effect) return;
+    if (effect.broadcast) {
+      void applyBroadcastEffect(effect, new Set([clipId]));
+      return;
+    }
     const targetIds = new Set([clipId]);
     const currentResult = assignEffectToAssets(playlist, effect, targetIds);
     const futureResult = assignEffectToAssets(futurePlaylist, effect, targetIds);
@@ -1052,19 +1118,305 @@ export function App() {
     );
   }
 
+  /* ------------------------------------------------------------------ *
+   * Эфирные эффекты второго уровня
+   * ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------ *
+   * Потерянная графика расписания
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Расписание хранит абсолютные пути, а не сами файлы. После перезапуска или
+   * переноса проекта на другую машину графика может исчезнуть — тогда эфир
+   * падает уже на старте. Проверяем сразу после загрузки и показываем список.
+   */
+  async function checkMissingGraphics(
+    playlists: MediaAsset[][],
+    library: GraphicEffectAsset[],
+  ) {
+    const paths = graphicPathsOf(playlists);
+    if (paths.length === 0) return;
+    try {
+      const missingPaths = new Set(await verifyGraphicEffectPaths(paths));
+      const missing = collectMissingGraphics(playlists, library, missingPaths);
+      if (missing.length === 0) return;
+      setMissingGraphics(missing);
+      setMissingGraphicsResolved({});
+    } catch (error) {
+      setOperationError(`Не удалось проверить графику расписания: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Оператор указал файл замены: анализируем его и подставляем во все ролики. */
+  async function locateMissingGraphic(filePath: string) {
+    const paths = await window.gruberDesktop?.selectEffectFiles();
+    const selected = paths?.[0];
+    if (!selected) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const [replacement] = await analyzeGraphicEffectPaths([selected]);
+      if (!replacement) throw new Error("Файл не удалось разобрать как эффект");
+      const map = new Map([[filePath, replacement]]);
+      setEffectLibrary((current) => mergeEffectAssets(current, [replacement]));
+      setPlaylist((current) => applyGraphicReplacements(current, map).items);
+      setFuturePlaylist((current) => applyGraphicReplacements(current, map).items);
+      setMissingGraphicsResolved((current) => ({ ...current, [filePath]: replacement.filePath }));
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /** Замены не нашлось — снимаем такие слои с роликов, чтобы эфир мог стартовать. */
+  function dropUnresolvedGraphics() {
+    const unresolved = new Set(
+      missingGraphics
+        .filter((item) => !missingGraphicsResolved[item.filePath])
+        .map((item) => item.filePath),
+    );
+    if (unresolved.size === 0) return;
+    setPlaylist((current) => dropMissingGraphics(current, unresolved));
+    setFuturePlaylist((current) => dropMissingGraphics(current, unresolved));
+    setMissingGraphics([]);
+    setMissingGraphicsResolved({});
+    setScheduleActionMessage(
+      `${unresolved.size} потерянных элемент(ов) графики сняты с роликов.`,
+    );
+  }
+
+  function createBroadcastEffect(kind: BroadcastEffectKind) {
+    const title = broadcastEffectTitle(kind);
+    const existing = effectLibrary.filter((effect) => effect.broadcast?.kind === kind).length;
+    const effect = graphicEffectAssetSchema.parse({
+      broadcast: { kind },
+      durationSeconds: 0,
+      filePath: `broadcast://${kind}`,
+      height: 0,
+      id: `fx2-${kind}-${window.crypto.randomUUID()}`,
+      kind: "video",
+      name: existing === 0 ? title : `${title} (${existing + 1})`,
+      width: 0,
+    });
+    setEffectLibrary((current) => [...current, effect]);
+    setEffectsMessage(
+      `${effect.name}: эффект второго уровня создан. Выберите пресет и настройки, ` +
+        "затем примените его к проекту или ролику.",
+    );
+  }
+
+  function changeBroadcastEffect(effect: GraphicEffectAsset) {
+    setEffectLibrary((current) => current.map((entry) =>
+      entry.id === effect.id ? effect : entry));
+  }
+
+  function updateBroadcastSettings(
+    effectId: string,
+    update: (effect: GraphicEffectAsset) => GraphicEffectAsset,
+  ) {
+    setEffectLibrary((current) => current.map((entry) =>
+      entry.id === effectId && entry.broadcast ? update(entry) : entry));
+  }
+
+  async function selectBroadcastTaskFile(effectId: string) {
+    const filePath = await window.gruberDesktop?.selectBroadcastTaskFile();
+    if (!filePath) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const content = await readBroadcastTaskFile(filePath);
+      setBroadcastTaskEntries((current) => ({ ...current, [effectId]: content.entries }));
+      setBroadcastTaskSummaries((current) => ({
+        ...current,
+        [effectId]: {
+          entryCount: content.entries.length,
+          filePath: content.filePath,
+          warnings: content.warnings,
+        },
+      }));
+      updateBroadcastSettings(effectId, (effect) => ({
+        ...effect,
+        broadcast: effect.broadcast && {
+          ...effect.broadcast,
+          settings: {
+            ...effect.broadcast.settings,
+            animationInOut: {
+              ...effect.broadcast.settings.animationInOut,
+              taskFilePath: content.filePath,
+            },
+            nextProgram: {
+              ...effect.broadcast.settings.nextProgram,
+              taskFilePath: content.filePath,
+            },
+          },
+        },
+      }));
+      setEffectsMessage(
+        `Файл задания прочитан: ${content.entries.length} записей` +
+          (content.warnings.length > 0 ? `, предупреждений — ${content.warnings.length}.` : "."),
+      );
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function selectTickerSourceFile(effectId: string) {
+    const filePath = await window.gruberDesktop?.selectTickerSourceFile();
+    if (!filePath) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const content = await readTickerSourceFile(filePath);
+      updateBroadcastSettings(effectId, (effect) => ({
+        ...effect,
+        broadcast: effect.broadcast && {
+          ...effect.broadcast,
+          settings: {
+            ...effect.broadcast.settings,
+            tickerCrawl: {
+              ...effect.broadcast.settings.tickerCrawl,
+              filePath: content.filePath,
+              items: content.items,
+              source: "file",
+            },
+          },
+        },
+      }));
+      setEffectsMessage(`Бегущая строка: загружено ${content.items.length} сообщений.`);
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function selectStingerFile(effectId: string) {
+    const filePath = await window.gruberDesktop?.selectStingerFile();
+    if (!filePath) return;
+    updateBroadcastSettings(effectId, (effect) => ({
+      ...effect,
+      broadcast: effect.broadcast && {
+        ...effect.broadcast,
+        settings: {
+          ...effect.broadcast.settings,
+          stingerTransition: { ...effect.broadcast.settings.stingerTransition, assetPath: filePath },
+        },
+      },
+    }));
+    setEffectsMessage("Файл перехода выбран. Проверьте Duration и Cut point по кадровой сетке.");
+  }
+
+  /**
+   * Считает план эффекта, заказывает нужные Lottie-рендеры и кладёт результат в
+   * оба плейлиста. Рендер идёт по одному разу на уникальный набор значений:
+   * недельная сетка иначе заказала бы сотни одинаковых файлов.
+   */
+  async function applyBroadcastEffect(
+    effect: GraphicEffectAsset,
+    targetIds: Set<string> | null,
+  ) {
+    const preset = effect.broadcast?.presetEffectId
+      ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
+      : null;
+    const taskEntries = broadcastTaskEntries[effect.id] ?? [];
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      // Пустое расписание пропускается целиком: «в Future нет роликов» — это не
+      // ошибка привязки, и в счётчике ошибок оператору она только мешает.
+      const plans = (["current", "future"] as const).flatMap((slot) => {
+        const assets = slot === "current" ? playlist : futurePlaylist;
+        if (assets.length === 0) return [];
+        return {
+          assets,
+          plan: planBroadcastEffect({
+            clips: assets.map(broadcastTargetClip),
+            effect,
+            frameRate: Number(settings.frameRate) || 25,
+            preset,
+            targetIds,
+            taskEntries,
+          }),
+          slot,
+        };
+      });
+      const errors = [...new Set(plans.flatMap((entry) => entry.plan.errors))];
+      const warnings = [...new Set(plans.flatMap((entry) => entry.plan.warnings))];
+      // Ошибка привязки в обоих расписаниях сразу — эффекту просто некуда лечь.
+      if (plans.every((entry) => entry.plan.layers.length === 0 &&
+        entry.plan.textOverlays.length === 0)) {
+        setOperationError(errors[0] ?? `${effect.name}: эффекту не к чему применяться.`);
+        return;
+      }
+      const renderedPathByKey = await renderBroadcastVariants(plans.flatMap((entry) =>
+        entry.plan.renders), preset);
+      let touched = 0;
+      for (const entry of plans) {
+        const applied = applyBroadcastPlan(entry.assets, entry.plan, renderedPathByKey);
+        touched += applied.touched;
+        if (entry.slot === "current") setPlaylist(applied.items);
+        else setFuturePlaylist(applied.items);
+      }
+      setEffectsMessage(
+        `${effect.name}: применён к ${touched} ролику(ам).` +
+          (warnings.length > 0 ? ` Предупреждений: ${warnings.length} — ${warnings[0]}` : "") +
+          (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
+      );
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function renderBroadcastVariants(
+    renders: { key: string; overrides: Record<string, string> }[],
+    preset: GraphicEffectAsset | null,
+  ): Promise<Map<string, string>> {
+    const rendered = new Map<string, string>();
+    if (!preset?.lottie) return rendered;
+    const unique = new Map(renders.map((render) => [render.key, render]));
+    for (const render of unique.values()) {
+      const variant = await renderLottieEffect({
+        ...preset,
+        lottie: {
+          ...preset.lottie,
+          properties: preset.lottie.properties.map((property) =>
+            render.overrides[property.id] != null
+              ? { ...property, overridden: true, value: render.overrides[property.id]! }
+              : property),
+        },
+      });
+      rendered.set(render.key, variant.filePath);
+    }
+    return rendered;
+  }
+
   function removeEffect(effectId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
     if (!effect) return;
     const assigned = [...playlist, ...futurePlaylist].some((asset) =>
-      asset.effects?.some((layer) => layer.effectId === effectId));
+      asset.effects?.some((layer) => layer.effectId === effectId) ||
+      asset.textOverlays?.some((overlay) => overlay.effectId === effectId));
     if (assigned && !window.confirm(`Remove ${effect.name} and every assignment from the playlists?`)) {
       return;
     }
     setEffectLibrary((current) => current.filter((entry) => entry.id !== effectId));
-    const removeAssignments = (items: MediaAsset[]) => items.map((asset) => ({
-      ...asset,
-      effects: asset.effects?.filter((layer) => layer.effectId !== effectId),
-    }));
+    setBroadcastTaskEntries((current) => {
+      const { [effectId]: removed, ...rest } = current;
+      return rest;
+    });
+    setBroadcastTaskSummaries((current) => {
+      const { [effectId]: removed, ...rest } = current;
+      return rest;
+    });
+    // Эффект второго уровня оставляет ещё надписи и звуковые вставки — их
+    // снимает removeBroadcastEffect, чтобы в плейлисте не остался сирота.
+    const removeAssignments = (items: MediaAsset[]) => removeBroadcastEffect(items, effectId);
     setPlaylist(removeAssignments);
     setFuturePlaylist(removeAssignments);
   }
@@ -1405,7 +1757,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "6.0.24",
+        connection.kind === "ready" ? connection.health.version : "7.0.1",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1611,10 +1963,7 @@ export function App() {
       {view === "effects" ? (
         <EffectsScreen
           busy={effectsBusy}
-          clips={[
-            ...playlist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Current" as const })),
-            ...futurePlaylist.map((asset) => ({ id: asset.id, name: asset.name, schedule: "Future" as const })),
-          ]}
+          clips={effectTargetClips}
           effects={effectLibrary}
           message={effectsMessage}
           onAddToClip={addEffectToClip}
@@ -1625,6 +1974,13 @@ export function App() {
           onSelectDirectory={window.gruberDesktop ? selectEffectDirectory : undefined}
           onSelectFiles={window.gruberDesktop ? selectEffectFiles : undefined}
           onSelectTitleDirectory={window.gruberDesktop ? selectEffectTitleDirectory : undefined}
+          broadcastTaskSummaries={broadcastTaskSummaries}
+          onChangeBroadcastEffect={changeBroadcastEffect}
+          onCreateBroadcastEffect={createBroadcastEffect}
+          onSelectBroadcastTaskFile={selectBroadcastTaskFile}
+          onSelectStingerFile={selectStingerFile}
+          onSelectTickerSourceFile={selectTickerSourceFile}
+          playoutActive={playoutActive}
         />
       ) : null}
 
@@ -1734,6 +2090,20 @@ export function App() {
           scheduleStartItemName={playlist.find(
             (asset) => asset.id === scheduleStartMarker?.assetId,
           )?.name ?? null}
+        />
+      ) : null}
+
+      {missingGraphics.length > 0 ? (
+        <MissingGraphicsDialog
+          busy={effectsBusy}
+          items={missingGraphics}
+          onClose={() => {
+            setMissingGraphics([]);
+            setMissingGraphicsResolved({});
+          }}
+          onDropAll={dropUnresolvedGraphics}
+          onLocate={(filePath) => void locateMissingGraphic(filePath)}
+          resolved={missingGraphicsResolved}
         />
       ) : null}
 
@@ -2102,6 +2472,8 @@ function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlis
       ? { ...asset.itemLogo, enabled: true }
       : null,
     effects: asset.effects ?? [],
+    textOverlays: asset.textOverlays ?? [],
+    audioOverlays: asset.audioOverlays ?? [],
     subtitles: asset.subtitles?.enabled && asset.subtitles.filePath
       ? { enabled: true, filePath: asset.subtitles.filePath }
       : null,
@@ -2195,6 +2567,15 @@ function buildStartRequestFromAsset(
   const remaining = request.playlist.slice(itemIndex);
   if (remaining.length === 0) throw new Error("No media remains after the selected start clip");
   return { ...request, playlist: remaining };
+}
+
+/** Ролик как цель эффекта второго уровня: длительность — эфирная, а не файла. */
+function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
+  return {
+    durationSeconds: Math.max(0.04, effectiveAssetDuration(asset)),
+    id: asset.id,
+    name: asset.name,
+  };
 }
 
 function effectiveAssetDuration(asset: MediaAsset): number {

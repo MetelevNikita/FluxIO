@@ -14,6 +14,9 @@ export const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
 export const SELECT_EFFECT_DIRECTORY_CHANNEL = "dialog:select-effect-directory";
 export const SELECT_EFFECT_FILES_CHANNEL = "dialog:select-effect-files";
 export const SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL = "dialog:select-effect-title-directory";
+export const SELECT_BROADCAST_TASK_FILE_CHANNEL = "dialog:select-broadcast-task-file";
+export const SELECT_TICKER_SOURCE_FILE_CHANNEL = "dialog:select-ticker-source-file";
+export const SELECT_STINGER_FILE_CHANNEL = "dialog:select-stinger-file";
 export const SELECT_SUBTITLE_DIRECTORY_CHANNEL = "dialog:select-subtitle-directory";
 export const SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL = "dialog:select-audio-track-directory";
 export const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
@@ -31,6 +34,9 @@ export type DesktopChannel =
   | typeof SELECT_EFFECT_DIRECTORY_CHANNEL
   | typeof SELECT_EFFECT_FILES_CHANNEL
   | typeof SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL
+  | typeof SELECT_BROADCAST_TASK_FILE_CHANNEL
+  | typeof SELECT_TICKER_SOURCE_FILE_CHANNEL
+  | typeof SELECT_STINGER_FILE_CHANNEL
   | typeof SELECT_SUBTITLE_DIRECTORY_CHANNEL
   | typeof SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL
   | typeof SAVE_SCHEDULE_FILE_CHANNEL

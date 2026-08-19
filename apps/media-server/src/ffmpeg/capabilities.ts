@@ -67,6 +67,7 @@ export class FfmpegCapabilitiesService {
         mpeg2: videoEncoders.includes("mpeg2video"),
         aac: audioEncoders.includes("aac") || audioEncoders.includes("aac_at"),
         burnInSubtitles: hasFilter(filters.stdout, "subtitles"),
+        dynamicText: hasFilter(filters.stdout, "drawtext"),
       },
     });
   }

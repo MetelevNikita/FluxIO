@@ -1,0 +1,642 @@
+import type {
+  BroadcastEffectKind,
+  BroadcastTextOverlay,
+  ClipAudioOverlay,
+  GraphicEffectAsset,
+  GraphicEffectLayer,
+  LottieEditableProperty,
+} from "@gruber/contracts";
+import type { MediaAsset } from "./types.js";
+
+/**
+ * Разрешение эфирных эффектов второго уровня в обычные слои плейлиста.
+ *
+ * Эффект второго уровня — это правило, а не картинка: он сам решает, к каким
+ * роликам применяется, в какой момент запускается и какой текст показывает.
+ * Здесь это правило превращается в набор FX-слоёв, текстовых и звуковых
+ * оверлеев, которые эфирный контур уже умеет отдавать. Функции чистые, поэтому
+ * поведение каждого эффекта проверяется тестом без запуска FFmpeg.
+ *
+ * Работа идёт в два шага: `planBroadcastEffect` считает, что и куда положить и
+ * какие Lottie-варианты нужно отрендерить, а `applyBroadcastPlan` подставляет
+ * готовые пути и возвращает новый плейлист.
+ */
+
+export interface BroadcastTargetClip {
+  id: string;
+  name: string;
+  durationSeconds: number;
+}
+
+export interface BroadcastTaskEntry {
+  name: string;
+  values: Record<string, string>;
+}
+
+/** Один Lottie-рендер: набор переопределений текста, общий для нескольких роликов. */
+export interface BroadcastRenderRequest {
+  key: string;
+  /** id редактируемых текстовых свойств Lottie → новое значение. */
+  overrides: Record<string, string>;
+}
+
+export interface PlannedEffectLayer {
+  assetId: string;
+  /** Какой рендер подставить в `filePath`; null — файл пресета берётся как есть. */
+  renderKey: string | null;
+  layer: GraphicEffectLayer;
+}
+
+export interface BroadcastEffectPlan {
+  layers: PlannedEffectLayer[];
+  textOverlays: { assetId: string; overlay: BroadcastTextOverlay }[];
+  audioOverlays: { assetId: string; overlay: ClipAudioOverlay }[];
+  renders: BroadcastRenderRequest[];
+  errors: string[];
+  warnings: string[];
+}
+
+export interface PlanBroadcastEffectInput {
+  effect: GraphicEffectAsset;
+  /** Пресет уровня 3 — Lottie или alpha-медиа, служащий эффекту оформлением. */
+  preset: GraphicEffectAsset | null;
+  clips: BroadcastTargetClip[];
+  /** null — «на весь проект»; иначе только выбранные ролики. */
+  targetIds: Set<string> | null;
+  taskEntries: BroadcastTaskEntry[];
+  frameRate: number;
+  createId?: () => string;
+}
+
+const minimumWindowSeconds = 0.04;
+
+export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastEffectPlan {
+  const definition = input.effect.broadcast;
+  const plan = emptyPlan();
+  if (!definition) {
+    plan.errors.push(`${input.effect.name} is not a second-level broadcast effect`);
+    return plan;
+  }
+  const context: PlanContext = {
+    ...input,
+    createId: input.createId ?? (() => globalThis.crypto.randomUUID()),
+    definition,
+    plan,
+    targets: input.clips.filter((clip) => !input.targetIds || input.targetIds.has(clip.id)),
+  };
+  if (context.targets.length === 0) {
+    plan.errors.push("No clips are selected for this effect");
+    return plan;
+  }
+  planners[definition.kind](context);
+  return plan;
+}
+
+interface PlanContext extends PlanBroadcastEffectInput {
+  createId: () => string;
+  definition: NonNullable<GraphicEffectAsset["broadcast"]>;
+  plan: BroadcastEffectPlan;
+  targets: BroadcastTargetClip[];
+}
+
+const planners: Record<BroadcastEffectKind, (context: PlanContext) => void> = {
+  "animation-in-out": planAnimationInOut,
+  "next-program": planNextProgram,
+  "ticker-crawl": planTickerCrawl,
+  "clock-countdown": planClockCountdown,
+  "stinger-transition": planStingerTransition,
+};
+
+/* -------------------------------------------------------------------------- *
+ * Animation in/out
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Пресет входной и/или выходной анимации, привязанный к конкретным роликам
+ * файлом задания. Ролик ищется по служебному ключу `name`: сравнение точное,
+ * без учёта окружающих пробелов. Ни одного совпадения или больше одного — это
+ * ошибка привязки, и эффект для такой записи не запускается.
+ */
+function planAnimationInOut(context: PlanContext): void {
+  const settings = context.definition.settings.animationInOut;
+  const { plan, preset } = context;
+  if (!preset) {
+    plan.errors.push("Animation in/out needs a Lottie or alpha preset");
+    return;
+  }
+  const fields = lottieTextFields(preset);
+  const bindings = context.taskEntries.length > 0
+    ? bindTaskEntries(context, fields)
+    : context.targets.map((clip) => ({ clip, overrides: {} as Record<string, string> }));
+
+  for (const { clip, overrides } of bindings) {
+    const renderKey = registerRender(context, overrides);
+    const windows: { label: string; startSeconds: number; endSeconds: number }[] = [];
+    if (settings.mode === "in" || settings.mode === "in-out") {
+      windows.push({
+        label: "IN",
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.startSeconds + settings.durationSeconds,
+      });
+    }
+    if (settings.mode === "out" || settings.mode === "in-out") {
+      const end = clip.durationSeconds - settings.endSeconds;
+      windows.push({
+        label: "OUT",
+        startSeconds: end - settings.durationSeconds,
+        endSeconds: end,
+      });
+    }
+    for (const window of windows) {
+      pushLayer(context, clip, {
+        endSeconds: window.endSeconds,
+        name: `${context.effect.name} ${window.label}`,
+        renderKey,
+        startSeconds: window.startSeconds,
+      });
+    }
+  }
+}
+
+/**
+ * Сопоставление записей задания с роликами и ключей задания с текстовыми полями
+ * Lottie. Лишний ключ не ломает применение — он лишь попадает в предупреждения,
+ * а отсутствующий оставляет полю значение по умолчанию из шаблона.
+ */
+function bindTaskEntries(
+  context: PlanContext,
+  fields: Map<string, LottieEditableProperty>,
+): { clip: BroadcastTargetClip; overrides: Record<string, string> }[] {
+  const bindings: { clip: BroadcastTargetClip; overrides: Record<string, string> }[] = [];
+  for (const entry of context.taskEntries) {
+    const matches = context.targets.filter((clip) => clip.name.trim() === entry.name.trim());
+    if (matches.length === 0) {
+      context.plan.errors.push(`"${entry.name}": no clip with this name is in the schedule`);
+      continue;
+    }
+    if (matches.length > 1) {
+      context.plan.errors.push(
+        `"${entry.name}": ${matches.length} clips share this name, the binding is ambiguous`,
+      );
+      continue;
+    }
+    const overrides: Record<string, string> = {};
+    for (const [key, value] of Object.entries(entry.values)) {
+      const field = fields.get(key);
+      if (!field) {
+        context.plan.warnings.push(
+          `"${entry.name}": key "${key}" has no matching Lottie text field and is ignored`,
+        );
+        continue;
+      }
+      overrides[field.id] = value;
+    }
+    bindings.push({ clip: matches[0]!, overrides });
+  }
+  return bindings;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Next program
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Плашка «Смотрите далее». Точка запуска отсчитывается от конца текущего ролика,
+ * а текст берётся из следующего элемента плейлиста — именно плейлиста, а не
+ * выбранных роликов, иначе на краю выделения подставился бы не тот материал.
+ */
+function planNextProgram(context: PlanContext): void {
+  const settings = context.definition.settings.nextProgram;
+  const titlesByName = new Map(
+    context.taskEntries.map((entry) => [entry.name.trim(), entry] as const),
+  );
+  const fields = context.preset ? lottieTextFields(context.preset) : new Map();
+
+  for (const clip of context.targets) {
+    const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
+    const next = position >= 0 ? context.clips[position + 1] : undefined;
+    const title = next
+      ? (settings.source === "task-file"
+          ? titlesByName.get(next.name.trim())?.values.next_title ?? next.name
+          : next.name)
+      : settings.fallbackTitle;
+    if (!title) {
+      context.plan.warnings.push(
+        `"${clip.name}" is the last clip and has no fallback title, so the promo is skipped`,
+      );
+      continue;
+    }
+    const startSeconds = clip.durationSeconds - settings.startOffsetSeconds;
+    const endSeconds = startSeconds + settings.durationSeconds;
+    if (context.preset) {
+      const overrides: Record<string, string> = {};
+      const titleField = fields.get(settings.titleKey);
+      const subtitleField = fields.get(settings.subtitleKey);
+      if (titleField) overrides[titleField.id] = title;
+      else {
+        context.plan.warnings.push(
+          `The preset has no text field "${settings.titleKey}", so the promo shows its template text`,
+        );
+      }
+      if (subtitleField && settings.subtitleText) overrides[subtitleField.id] = settings.subtitleText;
+      pushLayer(context, clip, {
+        endSeconds,
+        name: `${context.effect.name} → ${title}`,
+        renderKey: registerRender(context, overrides),
+        startSeconds,
+      });
+      continue;
+    }
+    // Без пресета плашка рисуется штатным drawtext: эффект остаётся рабочим,
+    // даже когда шаблон из After Effects ещё не готов.
+    pushTextOverlay(context, clip, {
+      content: settings.subtitleText ? `${title} — ${settings.subtitleText}` : title,
+      endSeconds,
+      mode: "static",
+      startSeconds,
+      style: settings.style,
+    });
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Ticker crawl
+ * -------------------------------------------------------------------------- */
+
+function planTickerCrawl(context: PlanContext): void {
+  const settings = context.definition.settings.tickerCrawl;
+  const content = joinTickerItems(settings.items, settings.separator);
+  if (!content) {
+    context.plan.errors.push("The ticker has no messages to show");
+    return;
+  }
+  for (const clip of context.targets) {
+    const startSeconds = settings.startSeconds;
+    const endSeconds = startSeconds + settings.durationSeconds;
+    // Подложка под строку — обычный слой из пресета, сам текст всегда рисует
+    // drawtext: только он держит постоянную скорость при любой длине сообщения.
+    if (context.preset) {
+      pushLayer(context, clip, {
+        endSeconds,
+        name: `${context.effect.name} plate`,
+        renderKey: null,
+        startSeconds,
+      });
+    }
+    pushTextOverlay(context, clip, {
+      content,
+      direction: settings.direction,
+      endSeconds,
+      mode: "ticker",
+      repeat: settings.repeat,
+      speedPixelsPerSecond: settings.speedPixelsPerSecond,
+      startSeconds,
+      style: settings.style,
+    });
+  }
+}
+
+/** Сообщения в одну строку. Разделитель ставится и в конце — круг замыкается им же. */
+export function joinTickerItems(items: readonly string[], separator: string): string {
+  const messages = items
+    .map((item) => item.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim())
+    .filter((item) => item.length > 0);
+  if (messages.length === 0) return "";
+  return messages.length === 1 ? messages[0] ?? "" : `${messages.join(separator)}${separator}`;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Clock / countdown
+ * -------------------------------------------------------------------------- */
+
+function planClockCountdown(context: PlanContext): void {
+  const settings = context.definition.settings.clockCountdown;
+  for (const clip of context.targets) {
+    const startSeconds = settings.startSeconds;
+    const endSeconds = startSeconds + settings.durationSeconds;
+    if (context.preset) {
+      pushLayer(context, clip, {
+        endSeconds,
+        name: `${context.effect.name} plate`,
+        renderKey: null,
+        startSeconds,
+      });
+    }
+    pushTextOverlay(context, clip, {
+      clockFormat: settings.format,
+      content: "",
+      countdownFromSeconds: settings.mode === "countdown" ? settings.countdownSeconds : 0,
+      endSeconds,
+      mode: settings.mode === "countdown" ? "countdown" : "clock",
+      startSeconds,
+      style: settings.style,
+      timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
+    });
+    if (settings.mode === "countdown" && settings.countdownSeconds > settings.durationSeconds) {
+      context.plan.warnings.push(
+        `"${clip.name}": the window is shorter than the countdown, so it disappears before zero`,
+      );
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Stinger transition
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Брендированный переход через стык роликов.
+ *
+ * Эфир катится независимыми рендерерами — по одному на ролик, — поэтому стык
+ * между A и B физически проходит по границе двух процессов, и один общий
+ * оверлей поверх обоих роликов невозможен. Переход режется по Cut point: кадры
+ * до него ложатся на хвост A, кадры после — на голову B из того же файла со
+ * смещением `sourceInSeconds`. Переключение источника остаётся штатным стыком
+ * плейлиста и происходит ровно там, где графика полностью закрывает кадр, а
+ * длительность расписания, PCR и SCTE-35 не меняются.
+ */
+function planStingerTransition(context: PlanContext): void {
+  const settings = context.definition.settings.stingerTransition;
+  const assetPath = settings.assetPath ?? context.preset?.filePath ?? null;
+  if (!assetPath) {
+    context.plan.errors.push("The stinger needs an alpha video or a preset");
+    return;
+  }
+  const duration = snapToFrameGrid(settings.durationSeconds, context.frameRate);
+  const cutPoint = snapToFrameGrid(settings.cutPointSeconds, context.frameRate);
+  if (duration !== settings.durationSeconds || cutPoint !== settings.cutPointSeconds) {
+    context.plan.warnings.push(
+      `Duration and cut point were snapped to the ${context.frameRate} fps grid: ` +
+        `${duration.toFixed(3)} s / ${cutPoint.toFixed(3)} s`,
+    );
+  }
+  if (cutPoint <= 0 || cutPoint >= duration) {
+    context.plan.errors.push("The cut point must sit strictly inside the transition");
+    return;
+  }
+
+  for (const clip of context.targets) {
+    const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
+    const next = position >= 0 ? context.clips[position + 1] : undefined;
+    if (!next) {
+      context.plan.warnings.push(
+        `"${clip.name}" is the last clip, so there is no cut for the stinger to cover`,
+      );
+      continue;
+    }
+    // Обе половины тоже ложатся на кадровую сетку: иначе разность двух
+    // округлённых величин даёт «хвост» вида 0.6799999999999999.
+    const headLength = snapToFrameGrid(duration - cutPoint, context.frameRate);
+    const tailSeconds = Math.min(cutPoint, clip.durationSeconds - minimumWindowSeconds);
+    const headSeconds = Math.min(headLength, next.durationSeconds - minimumWindowSeconds);
+    if (tailSeconds < cutPoint || headSeconds < headLength) {
+      context.plan.warnings.push(
+        `"${clip.name}" → "${next.name}": one of the clips is shorter than its half of the ` +
+          "transition, so the stinger was trimmed",
+      );
+    }
+
+    pushLayer(context, clip, {
+      assetPath,
+      endSeconds: clip.durationSeconds,
+      name: `${context.effect.name} → ${next.name}`,
+      renderKey: null,
+      sourceInSeconds: 0,
+      startSeconds: clip.durationSeconds - tailSeconds,
+    });
+    pushLayer(context, next, {
+      assetPath,
+      endSeconds: headSeconds,
+      name: `${context.effect.name} ← ${clip.name}`,
+      renderKey: null,
+      sourceInSeconds: cutPoint,
+      startSeconds: 0,
+    });
+
+    if (!settings.audioEnabled) continue;
+    context.plan.audioOverlays.push({
+      assetId: clip.id,
+      overlay: {
+        durationSeconds: tailSeconds,
+        effectId: context.effect.id,
+        filePath: assetPath,
+        gainDb: settings.audioLevelDb,
+        id: `sfx-${context.createId()}`,
+        sourceInSeconds: 0,
+        startSeconds: clip.durationSeconds - tailSeconds,
+      },
+    });
+    context.plan.audioOverlays.push({
+      assetId: next.id,
+      overlay: {
+        durationSeconds: headSeconds,
+        effectId: context.effect.id,
+        filePath: assetPath,
+        gainDb: settings.audioLevelDb,
+        id: `sfx-${context.createId()}`,
+        sourceInSeconds: cutPoint,
+        startSeconds: 0,
+      },
+    });
+  }
+}
+
+/** Ближайшая граница кадра. Переход обязан рваться ровно на кадре, а не между. */
+export function snapToFrameGrid(seconds: number, frameRate: number): number {
+  if (!Number.isFinite(frameRate) || frameRate <= 0) return seconds;
+  return Math.round(seconds * frameRate) / frameRate;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Общие помощники планирования
+ * -------------------------------------------------------------------------- */
+
+function pushLayer(
+  context: PlanContext,
+  clip: BroadcastTargetClip,
+  options: {
+    assetPath?: string;
+    endSeconds: number;
+    name: string;
+    renderKey: string | null;
+    sourceInSeconds?: number;
+    startSeconds: number;
+  },
+): void {
+  const settings = context.definition.settings.stingerTransition;
+  const filePath = options.assetPath ?? context.preset?.filePath ?? context.effect.filePath;
+  const startSeconds = clampStart(options.startSeconds, clip.durationSeconds);
+  const endSeconds = clampEnd(options.endSeconds, startSeconds, clip.durationSeconds);
+  if (endSeconds - startSeconds < minimumWindowSeconds) {
+    context.plan.warnings.push(
+      `"${clip.name}" is too short for ${options.name}, so the window was clipped to the roll`,
+    );
+  }
+  const isStinger = context.definition.kind === "stinger-transition";
+  context.plan.layers.push({
+    assetId: clip.id,
+    renderKey: options.renderKey,
+    layer: {
+      backgroundPath: filePath,
+      blendMode: isStinger ? settings.blendMode : "alpha",
+      effectId: context.effect.id,
+      endSeconds,
+      filePath,
+      id: `layer-${clip.id}-${context.effect.id}-${context.createId()}`,
+      kind: "video",
+      lumaThreshold: settings.lumaThreshold,
+      name: options.name,
+      sourceDurationSeconds: context.preset?.durationSeconds ?? context.effect.durationSeconds,
+      sourceInSeconds: options.sourceInSeconds ?? 0,
+      startSeconds,
+      tier: 2,
+      titlePath: null,
+      titlePaths: [],
+    },
+  });
+}
+
+function pushTextOverlay(
+  context: PlanContext,
+  clip: BroadcastTargetClip,
+  overlay: Pick<BroadcastTextOverlay, "content" | "mode" | "style"> &
+    Partial<BroadcastTextOverlay> & { endSeconds: number; startSeconds: number },
+): void {
+  const startSeconds = clampStart(overlay.startSeconds, clip.durationSeconds);
+  const endSeconds = clampEnd(overlay.endSeconds, startSeconds, clip.durationSeconds);
+  context.plan.textOverlays.push({
+    assetId: clip.id,
+    overlay: {
+      clockFormat: "HH:MM:SS",
+      countdownFromSeconds: 0,
+      direction: "left",
+      repeat: 0,
+      speedPixelsPerSecond: 120,
+      timezoneOffsetMinutes: 0,
+      ...overlay,
+      effectId: context.effect.id,
+      endSeconds,
+      id: `text-${clip.id}-${context.effect.id}-${context.createId()}`,
+      name: context.effect.name,
+      startSeconds,
+    },
+  });
+}
+
+/**
+ * Регистрирует Lottie-рендер и возвращает его ключ. Одинаковые наборы значений
+ * склеиваются: недельная сетка на сотни роликов иначе заказала бы сотни
+ * одинаковых рендеров.
+ */
+function registerRender(
+  context: PlanContext,
+  overrides: Record<string, string>,
+): string | null {
+  if (!context.preset?.lottie) return null;
+  if (Object.keys(overrides).length === 0) return null;
+  const key = JSON.stringify(
+    Object.fromEntries(Object.entries(overrides).sort(([left], [right]) =>
+      left.localeCompare(right))),
+  );
+  if (!context.plan.renders.some((render) => render.key === key)) {
+    context.plan.renders.push({ key, overrides });
+  }
+  return key;
+}
+
+/**
+ * Ключи редактируемых текстовых полей Lottie. Ключ — это имя текстового слоя из
+ * After Effects, а для Essential Graphics — идентификатор слота; именно они
+ * пишутся в файл задания. Сравнение точное и с учётом регистра.
+ */
+export function lottieTextFields(
+  preset: GraphicEffectAsset,
+): Map<string, LottieEditableProperty> {
+  const fields = new Map<string, LottieEditableProperty>();
+  for (const property of preset.lottie?.properties ?? []) {
+    if (property.type !== "text") continue;
+    const key = lottieTextFieldKey(property);
+    if (key && !fields.has(key)) fields.set(key, property);
+  }
+  return fields;
+}
+
+export function lottieTextFieldKey(property: LottieEditableProperty): string {
+  const segments = property.group.split("·").map((segment) => segment.trim());
+  const last = segments.at(-1) ?? "";
+  const slot = /^Slot\s+(.+)$/.exec(last);
+  return slot?.[1]?.trim() ?? last;
+}
+
+function clampStart(value: number, clipDuration: number): number {
+  return Math.min(Math.max(0, value), Math.max(0, clipDuration - minimumWindowSeconds));
+}
+
+function clampEnd(value: number, startSeconds: number, clipDuration: number): number {
+  return Math.min(Math.max(value, startSeconds + minimumWindowSeconds), clipDuration);
+}
+
+function emptyPlan(): BroadcastEffectPlan {
+  return { audioOverlays: [], errors: [], layers: [], renders: [], textOverlays: [], warnings: [] };
+}
+
+/* -------------------------------------------------------------------------- *
+ * Применение плана к плейлисту
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Кладёт рассчитанный план в плейлист. `renderedPathByKey` — готовые рендеры
+ * Lottie: их заказывает вызывающий код, потому что рендер идёт на сервере, а сам
+ * план обязан оставаться чистым.
+ */
+export function applyBroadcastPlan(
+  assets: readonly MediaAsset[],
+  plan: BroadcastEffectPlan,
+  renderedPathByKey: ReadonlyMap<string, string> = new Map(),
+): { items: MediaAsset[]; touched: number } {
+  const layersByAsset = groupBy(plan.layers, (entry) => entry.assetId);
+  const textByAsset = groupBy(plan.textOverlays, (entry) => entry.assetId);
+  const audioByAsset = groupBy(plan.audioOverlays, (entry) => entry.assetId);
+  let touched = 0;
+  const items = assets.map((asset) => {
+    const layers = layersByAsset.get(asset.id) ?? [];
+    const texts = textByAsset.get(asset.id) ?? [];
+    const audio = audioByAsset.get(asset.id) ?? [];
+    if (layers.length === 0 && texts.length === 0 && audio.length === 0) return asset;
+    touched += 1;
+    return {
+      ...asset,
+      effects: [
+        ...(asset.effects ?? []),
+        ...layers.map(({ layer, renderKey }) => {
+          const renderedPath = renderKey ? renderedPathByKey.get(renderKey) : undefined;
+          return renderedPath
+            ? { ...layer, backgroundPath: renderedPath, filePath: renderedPath }
+            : layer;
+        }),
+      ],
+      textOverlays: [...(asset.textOverlays ?? []), ...texts.map((entry) => entry.overlay)],
+      audioOverlays: [...(asset.audioOverlays ?? []), ...audio.map((entry) => entry.overlay)],
+    };
+  });
+  return { items, touched };
+}
+
+/** Снимает с плейлиста всё, что положил эффект второго уровня. */
+export function removeBroadcastEffect(
+  assets: readonly MediaAsset[],
+  effectId: string,
+): MediaAsset[] {
+  return assets.map((asset) => ({
+    ...asset,
+    effects: asset.effects?.filter((layer) => layer.effectId !== effectId),
+    textOverlays: asset.textOverlays?.filter((overlay) => overlay.effectId !== effectId),
+    audioOverlays: asset.audioOverlays?.filter((overlay) => overlay.effectId !== effectId),
+  }));
+}
+
+function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  return groups;
+}

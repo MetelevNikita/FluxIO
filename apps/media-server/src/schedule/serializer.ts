@@ -24,10 +24,14 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
       const lottieTitles = element.titlePaths
         .map((value, index) => `titlePath#${index + 1} {${value}} `)
         .join("");
+      // Пустой `titlePath {}` в файл не пишем: у Lottie-эффектов титры живут в
+      // нумерованных `titlePath#N`, а безымянная директива остаётся пустой
+      // всегда и только засоряет расписание.
+      const pairedTitle = element.titlePath ? `titlePath {${element.titlePath}} ` : "";
       lines.push(
         `insertGraphicElement_{${element.name}} ` +
           `backgroundPath {${element.backgroundPath ?? ""}} ` +
-          `titlePath {${element.titlePath ?? ""}} ` +
+          pairedTitle +
           lottieTitles +
           `duration {${formatScheduleTimecode(element.durationSeconds)}} ` +
           `startOn {${formatScheduleTimecode(element.startOnSeconds)}} ` +

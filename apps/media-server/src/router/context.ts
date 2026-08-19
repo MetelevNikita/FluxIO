@@ -6,6 +6,7 @@ import { DatabaseService } from "../database/database.js";
 import { FfmpegCapabilitiesService } from "../ffmpeg/capabilities.js";
 import { MediaPreviewService } from "../ffmpeg/media-preview.js";
 import { PlayoutSupervisor } from "../ffmpeg/playout-supervisor.js";
+import type { ApplicationLogger } from "../logging/logger.js";
 import { SystemMetricsSampler } from "../system-metrics.js";
 
 export const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
@@ -16,6 +17,7 @@ export interface RouteContext {
   effectCacheDirectory: string;
   mediaPreview: MediaPreviewService;
   playout: PlayoutSupervisor;
+  logger: ApplicationLogger;
   previewDirectory: string;
   startedAt: string;
   syncedSessions: Set<string>;

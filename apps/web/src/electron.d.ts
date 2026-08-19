@@ -25,6 +25,9 @@ declare global {
       } | null>;
       selectEffectFiles: () => Promise<string[]>;
       selectEffectDirectory: () => Promise<string | null>;
+      selectBroadcastTaskFile: () => Promise<string | null>;
+      selectTickerSourceFile: () => Promise<string | null>;
+      selectStingerFile: () => Promise<string | null>;
       selectEffectTitleDirectory: () => Promise<{
         directoryPath: string;
         filePaths: string[];

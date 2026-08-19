@@ -1,12 +1,12 @@
 {
   "name": "@gruber/web",
-  "version": "6.0.24",
+  "version": "7.0.1",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/audio-program.test.js dist-test/encoding-settings-profile.test.js dist-test/effect-assignment.test.js dist-test/effect-timeline-math.test.js dist-test/graphic-title-matching.test.js dist-test/lottie-properties.test.js dist-test/media-request-timeout.test.js dist-test/schedule-timeline.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/audio-program.test.js dist-test/broadcast-effects.test.js dist-test/missing-graphics.test.js dist-test/encoding-settings-profile.test.js dist-test/effect-assignment.test.js dist-test/effect-timeline-math.test.js dist-test/graphic-title-matching.test.js dist-test/lottie-properties.test.js dist-test/media-request-timeout.test.js dist-test/schedule-timeline.test.js",
     "dev": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1"
   },

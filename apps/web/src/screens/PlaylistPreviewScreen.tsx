@@ -507,6 +507,10 @@ export function PlaylistPreviewScreen({
       );
       const layer: GraphicEffectLayer = {
         backgroundPath: effect.filePath,
+        blendMode: "alpha",
+        lumaThreshold: 0.08,
+        sourceInSeconds: 0,
+        tier: 3,
         id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
         effectId: effect.id,
         name: effect.name,
@@ -724,7 +728,7 @@ export function PlaylistPreviewScreen({
             </label>
             <span className="audio-program-languages">
               {audioProgramLanguages.length > 0
-                ? audioProgramLanguages.map((language) => `{${language}}`).join(" ")
+                ? audioProgramLanguages.join(" · ")
                 : "No additional tracks found"}
             </span>
           </div>
@@ -944,7 +948,7 @@ export function PlaylistPreviewScreen({
                         key={language}
                         title={`Дополнительная звуковая дорожка: ${language}`}
                       >
-                        {`{${language}}`}
+                        {language}
                       </b>
                     ))}
                   </span>
@@ -1104,7 +1108,7 @@ export function PlaylistPreviewScreen({
                   <Layers3 size={11} />
                   <select
                     aria-label={`Add FX to ${asset.name}`}
-                    disabled={effectLibrary.length === 0}
+                    disabled={effectLibrary.every((effect) => Boolean(effect.broadcast))}
                     onChange={(event) => {
                       if (event.target.value) addEffectToItems(asset.id, event.target.value);
                       event.target.value = "";
@@ -1112,7 +1116,9 @@ export function PlaylistPreviewScreen({
                     value=""
                   >
                     <option value="">FX</option>
-                    {effectLibrary.map((effect) => (
+                    {/* Эффект второго уровня сам решает, куда и когда лечь,
+                        поэтому вручную одним слоем его не положить. */}
+                    {effectLibrary.filter((effect) => !effect.broadcast).map((effect) => (
                       <option key={effect.id} value={effect.id}>{effect.name}</option>
                     ))}
                   </select>
@@ -1125,7 +1131,7 @@ export function PlaylistPreviewScreen({
                         const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
                         return (
                           <span
-                            className={`fx-layer-chip ${titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}`}
+                            className={`fx-layer-chip ${layer.tier === 2 ? "tier2" : titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}`}
                             key={layer.id}
                             title={titleMissing
                               ? `No alpha title matched ${asset.name}`
@@ -1133,7 +1139,9 @@ export function PlaylistPreviewScreen({
                           >
                             <i>
                               {index + 1} · {shortEffectName(layer.name)}
-                              {titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
+                              {layer.tier === 2
+                                ? " · L2"
+                                : titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
                             </i>
                             <button
                               aria-label={`Remove ${layer.name} from ${asset.name}`}
@@ -1358,7 +1366,7 @@ export function PlaylistPreviewScreen({
                     style={{ width: `${(lane.fill * 100).toFixed(3)}%` }}
                   />
                   <span className="audio-track-lane-label">
-                    {`{${lane.label}}`}
+                    {lane.label}
                     {lane.kind === "original" ? " original" : ""}
                     {lane.kind === "silent" ? " · silence" : ""}
                     {lane.kind === "partial"
@@ -1613,9 +1621,15 @@ function EffectTimeline({
           const start = Math.min(duration - 0.04, Math.max(0, layer.startSeconds));
           const end = Math.min(duration, Math.max(start + 0.04, layer.endSeconds));
           return (
-            <div className="effect-track" key={layer.id}>
+            <div
+              className={`effect-track ${layer.tier === 2 ? "broadcast-track" : ""}`}
+              key={layer.id}
+            >
               <span title={layer.titlePath ?? layer.backgroundPath ?? layer.filePath}>
-                <b>FX {index + 1}</b>{shortEffectName(layer.name)} · {layer.titlePath ? "BG+TITLE" : "BG"}
+                <b>{layer.tier === 2 ? "L2" : `FX ${index + 1}`}</b>
+                {shortEffectName(layer.name)} · {layer.tier === 2
+                  ? (layer.sourceInSeconds > 0 ? "HEAD" : "BG")
+                  : layer.titlePath ? "BG+TITLE" : "BG"}
               </span>
               <div className="effect-track-rail">
                 <i
@@ -1626,9 +1640,10 @@ function EffectTimeline({
                   onPointerMove={moveLayer}
                   onPointerUp={finishLayerDrag}
                   style={{ left: `${start / duration * 100}%`, width: `${(end - start) / duration * 100}%` }}
-                  title="Drag to move the effect; use the edge handles to trim"
+                  title={`${formatTimecode(start, asset.fps)} – ${formatTimecode(end, asset.fps)}\n` +
+                    "Перетащите, чтобы сдвинуть; края — подрезка"}
                 >
-                  <em>{formatTimecode(start, asset.fps)}–{formatTimecode(end, asset.fps)}</em>
+                  <em>{formatLayerSeconds(end - start)}</em>
                 </i>
                 <input
                   aria-label={`FX ${index + 1} start`}
@@ -1658,6 +1673,32 @@ function EffectTimeline({
               <button aria-label={`Remove ${layer.name}`} onClick={() => onRemoveLayer(layer.id)} type="button">
                 <Trash2 size={11} />
               </button>
+            </div>
+          );
+        })}
+        {(asset.textOverlays ?? []).map((overlay) => {
+          const start = Math.min(duration - 0.04, Math.max(0, overlay.startSeconds));
+          const end = Math.min(duration, Math.max(start + 0.04, overlay.endSeconds));
+          return (
+            // Надпись рисует FFmpeg покадрово, поэтому её окно не двигают
+            // мышью: границы задаёт сам эффект на вкладке Effects.
+            <div className="effect-track broadcast-track" key={overlay.id}>
+              <span title={overlay.content || overlay.mode}>
+                <b>{overlay.mode.toUpperCase()}</b>{shortEffectName(overlay.name)}
+              </span>
+              <div className="effect-track-rail">
+                <i
+                  style={{
+                    cursor: "default",
+                    left: `${start / duration * 100}%`,
+                    width: `${(end - start) / duration * 100}%`,
+                  }}
+                  title={`${formatTimecode(start, asset.fps)} – ${formatTimecode(end, asset.fps)}`}
+                >
+                  <em>{formatLayerSeconds(end - start)}</em>
+                </i>
+              </div>
+              <span />
             </div>
           );
         })}
@@ -1780,6 +1821,16 @@ function shortPath(value: string): string {
   const parts = value.split(/[\\/]/).filter(Boolean);
   if (parts.length <= 2) return value;
   return `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * Подпись внутри блока на таймлайне — только длительность слоя. Полный тайм-код
+ * с обеих сторон не помещался в узкий блок и, упираясь в конец ролика, вылезал
+ * за панель горизонтальной прокруткой. Точные границы остались в подсказке.
+ */
+function formatLayerSeconds(seconds: number): string {
+  const value = Math.max(0, seconds);
+  return value >= 100 ? `${Math.round(value)} с` : `${value.toFixed(1)} с`;
 }
 
 function effectiveClipDuration(asset: MediaAsset): number {

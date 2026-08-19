@@ -4,7 +4,10 @@ import {
   ffmpegCapabilitiesSchema,
   graphicEffectAssetSchema,
   graphicEffectAssetListSchema,
+  graphicEffectVerificationSchema,
   broadcastConfigurationSummarySchema,
+  broadcastTaskFileContentSchema,
+  tickerSourceContentSchema,
   clipPreviewSessionSchema,
   mediaProbeSchema,
   networkInterfaceListSchema,
@@ -16,6 +19,8 @@ import {
   parsedScheduleSchema,
   serializedScheduleSchema,
   type BroadcastConfigurationSummary,
+  type BroadcastTaskFileContent,
+  type TickerSourceContent,
   type ClipPreviewSession,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
@@ -85,6 +90,18 @@ export async function scanGraphicEffectDirectory(
   ).items;
 }
 
+/** Какие из путей графики расписания уже не лежат на диске сервера. */
+export async function verifyGraphicEffectPaths(paths: string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  return graphicEffectVerificationSchema.parse(
+    await request("/api/effects/verify", {
+      body: JSON.stringify({ paths }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).missing;
+}
+
 export async function scanAudioTracks(
   directoryPath: string | null,
   mediaPaths: string[],
@@ -92,6 +109,27 @@ export async function scanAudioTracks(
   return audioTrackScanSchema.parse(
     await request("/api/audio-tracks/scan", {
       body: JSON.stringify({ directoryPath, mediaPaths }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+/** Файл задания эффекта второго уровня: читает и проверяет его media-service. */
+export async function readBroadcastTaskFile(filePath: string): Promise<BroadcastTaskFileContent> {
+  return broadcastTaskFileContentSchema.parse(
+    await request("/api/effects/broadcast/task", {
+      body: JSON.stringify({ filePath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+export async function readTickerSourceFile(filePath: string): Promise<TickerSourceContent> {
+  return tickerSourceContentSchema.parse(
+    await request("/api/effects/broadcast/ticker-source", {
+      body: JSON.stringify({ filePath }),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),

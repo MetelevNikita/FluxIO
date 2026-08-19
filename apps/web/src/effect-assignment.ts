@@ -51,8 +51,12 @@ export function assignEffectToAssets(
       );
       const layer: GraphicEffectLayer = {
         backgroundPath: effect.filePath,
+        blendMode: "alpha",
         effectId: effect.id,
         endSeconds,
+        lumaThreshold: 0.08,
+        sourceInSeconds: 0,
+        tier: 3,
         filePath: effect.filePath,
         id: createLayerId(asset.id, effect.id),
         kind: effect.kind,

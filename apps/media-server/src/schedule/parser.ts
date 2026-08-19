@@ -116,7 +116,7 @@ export function parseScheduleText(
         .filter((directive) => directive[1] != null)
         .sort((left, right) => Number(left[1]) - Number(right[1]))
         .map((directive) => directive[2] ?? "");
-      if (!backgroundPath && !titlePath) {
+      if (!backgroundPath && !titlePath && titlePaths.length === 0) {
         throw new ScheduleParseError(
           `Line ${entry.lineNumber}: insertGraphicElement requires backgroundPath or titlePath`,
         );

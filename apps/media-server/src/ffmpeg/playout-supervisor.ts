@@ -6,6 +6,7 @@ import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, type Writable } from "node:stream";
 import type {
+  ClipAudioOverlay,
   FfmpegCapabilities,
   GraphicEffectLayer,
   PlayoutStatus,
@@ -137,6 +138,12 @@ export class PlayoutSupervisor {
   #transportPreviewRestartTimer: NodeJS.Timeout | null = null;
   #request: StartPlayoutRequest | null = null;
   #items: PreparedPlayoutItem[] = [];
+  /**
+   * Момент, когда ролик `index` реально ушёл в эфир. От него считается эфирное
+   * время всех последующих роликов: их рендереры стартуют заранее, поэтому
+   * системные часы рендерера показали бы будущее.
+   */
+  #airEpochAnchor: { index: number; epochSeconds: number } | null = null;
   #commandArgs: string[] = [];
   #tsduckArgs: string[] = [];
   #subtitleArgs: string[] = [];
@@ -1146,7 +1153,7 @@ export class PlayoutSupervisor {
     if (!request || !item) throw new Error(`Clip ${index + 1} is not prepared`);
     const videoCommand = buildFfmpegClipVideoProducerCommand(
       request,
-      item,
+      { ...item, airEpochSeconds: this.#clipAirEpochSeconds(index) },
       this.previewDirectory,
     );
     const child = spawn(this.capabilities.ffmpegPath, videoCommand.args, {
@@ -1306,12 +1313,28 @@ export class PlayoutSupervisor {
     });
   }
 
+  /**
+   * Эфирное время первого кадра ролика: время выхода опорного ролика плюс сумма
+   * длительностей всех роликов между ними. Длительности точные, поэтому за
+   * недельную сетку часы не накапливают ошибку.
+   */
+  #clipAirEpochSeconds(index: number): number {
+    const anchor = this.#airEpochAnchor;
+    if (!anchor || index < anchor.index) return Date.now() / 1_000;
+    let epochSeconds = anchor.epochSeconds;
+    for (let step = anchor.index; step < index; step += 1) {
+      epochSeconds += this.#items[step]?.durationSeconds ?? 0;
+    }
+    return epochSeconds;
+  }
+
   #activateClipProducer(child: ChildProcessWithoutNullStreams, index: number): void {
     const encoder = this.#child;
     if (!encoder) throw new Error("Persistent encoder is not running");
     const runtime = this.#producerRuntimes.get(child);
     if (!runtime) throw new Error("FFmpeg raw media buffers are unavailable");
     this.#producerChild = child;
+    this.#airEpochAnchor = { epochSeconds: Date.now() / 1_000, index };
     this.#status.audioLevelDbfs = null;
     runtime.videoBridge.pipe(encoder.stdin, { end: false });
 
@@ -1953,12 +1976,40 @@ async function prepareItems(
         ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
         itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
         effects: item.effects,
+        textOverlays: item.textOverlays,
+        audioOverlays: await prepareAudioOverlays(item, probeCache, ffprobePath),
         subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
         audioTracks: item.audioTracks,
       };
     },
     (completed, total) => onProgress?.("media", completed, total),
   );
+}
+
+/**
+ * Звуковые вставки ролика (звук стингера). Файл без звуковой дорожки уронил бы
+ * рендерер дорожки, а вместе с ним и весь эфир: мультиплексор ждёт отставший
+ * вход. Поэтому такая вставка молча выбрасывается ещё до старта.
+ */
+async function prepareAudioOverlays(
+  item: StartPlayoutRequest["playlist"][number],
+  probeCache: Map<string, ReturnType<typeof probeMedia>>,
+  ffprobePath: string,
+): Promise<ClipAudioOverlay[] | undefined> {
+  const overlays = item.audioOverlays ?? [];
+  if (overlays.length === 0) return undefined;
+  const prepared: ClipAudioOverlay[] = [];
+  for (const overlay of overlays) {
+    let pendingProbe = probeCache.get(overlay.filePath);
+    if (!pendingProbe) {
+      pendingProbe = probeMedia(overlay.filePath, ffprobePath);
+      probeCache.set(overlay.filePath, pendingProbe);
+    }
+    const probe = await pendingProbe.catch(() => null);
+    if (!probe?.hasAudio) continue;
+    prepared.push({ ...overlay, filePath: probe.filePath });
+  }
+  return prepared.length > 0 ? prepared : undefined;
 }
 
 export async function mapWithConcurrency<T, R>(
@@ -2018,6 +2069,18 @@ function validateCapabilities(
       "This FFmpeg build has no 'subtitles' filter, so burn-in captions cannot be rendered. " +
         "Install a libass-enabled build (on macOS: brew install ffmpeg-full), " +
         "switch Subtitle output to DVB, or turn SRT off for the affected clips.",
+    );
+  }
+  // Фильтр drawtext живёт только в сборках с libfreetype. Без него бегущая
+  // строка, часы и отсчёт роняют граф тем же невнятным "No such filter".
+  if (
+    !capabilities.supports.dynamicText &&
+    request.playlist.some((item) => (item.textOverlays?.length ?? 0) > 0)
+  ) {
+    throw new PlayoutPreflightError(
+      "This FFmpeg build has no 'drawtext' filter, so the ticker, on-screen clock and " +
+        "countdown cannot be rendered. Install a libfreetype-enabled build " +
+        "(on macOS: brew install ffmpeg-full), or remove those effects from the playlist.",
     );
   }
   const ffmpegProtocol = usesTsdDuckTransport(request)

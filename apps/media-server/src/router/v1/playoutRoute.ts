@@ -29,6 +29,10 @@ const previewFilePattern =
 export async function playoutRoute(app: FastifyInstance, context: RouteContext) {
   app.get("/api/playout/status", async () => {
     const status = context.playout.getStatus();
+    // Опрос статуса — единственная точка, где состояние эфира видно целиком и
+    // регулярно. Из него набирается суточная статистика журнала: смена роликов,
+    // круги плейлиста, переход на будущее расписание, ошибки.
+    context.logger.observe(status);
     await syncFinishedSession(context, status);
     return status;
   });

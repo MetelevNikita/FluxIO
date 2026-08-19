@@ -17,6 +17,18 @@ import {
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
 import {
+  buildDailyReport,
+  emptyDailyStats,
+  formatLogLine,
+  logFileName,
+  observeStatus,
+} from "./logging/daily-log.js";
+import {
+  parseBroadcastTaskDocument,
+  parseTickerSourceDocument,
+} from "./effects/broadcast-task.js";
+import { buildTextOverlayFilter } from "./ffmpeg/text-overlay.js";
+import {
   buildFfmpegClipAudioProducerCommand,
   clipAudioByteCount,
   clipAudioSampleCount,
@@ -98,7 +110,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "6.0.24");
+    assert.equal(health.version, "7.0.1");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -665,7 +677,15 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
         declaredDurationSeconds: 10,
         filePath: "C:\\media\\ident.mp4",
         ageTitle: { durationSeconds: 10, enabled: false, text: "6+" },
-        graphicElements: [],
+        graphicElements: [{
+          backgroundPath: "C:\\FluxIO\\fx\\bug.png",
+          durationSeconds: 10,
+          endOnSeconds: 10,
+          name: "Channel Bug",
+          startOnSeconds: 0,
+          titlePath: null,
+          titlePaths: [],
+        }],
         logoPath: null,
         srtPath: null,
       },
@@ -680,6 +700,12 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
   assert.match(serialized.content, /clip 00:01:00\.25 \\\\utv2\\clips\\Trip \[16\+\]\.mp4/);
   assert.doesNotMatch(serialized.content, /insertAgeTitle \{6\+\}/);
   assert.match(serialized.content, /chop 00:00:10\.00 C:\\media\\ident\.mp4\r\n$/);
+  // Парного титра у эффекта нет — пустая директива в файл не попадает.
+  assert.match(
+    serialized.content,
+    /insertGraphicElement_\{Channel Bug\} backgroundPath \{C:\\FluxIO\\fx\\bug\.png\} duration \{00:00:10\.00\}/,
+  );
+  assert.doesNotMatch(serialized.content, /titlePath \{\}/);
   assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
 });
 
@@ -1125,6 +1151,10 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       id: "layer-one",
       effectId: "lower-third",
       name: "lower-third.mov",
+      sourceInSeconds: 0,
+      blendMode: "alpha" as const,
+      lumaThreshold: 0.08,
+      tier: 3 as const,
       backgroundPath: "/media/lower-third-bg.mov",
       filePath: "/media/lower-third-bg.mov",
       kind: "video",
@@ -1137,6 +1167,10 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       id: "layer-two",
       effectId: "frame",
       name: "frame.png",
+      sourceInSeconds: 0,
+      blendMode: "alpha" as const,
+      lumaThreshold: 0.08,
+      tier: 3 as const,
       filePath: "/media/frame.png",
       kind: "static",
       sourceDurationSeconds: 0,
@@ -2567,6 +2601,284 @@ test(
     }
   },
 );
+
+/* -------------------------------------------------------------------------- *
+ * Эфирные эффекты второго уровня
+ * -------------------------------------------------------------------------- */
+
+function textStyle() {
+  return {
+    boxColor: "#000000",
+    boxEnabled: true,
+    boxOpacity: 0.6,
+    boxPaddingPercent: 1,
+    color: "#FFFFFF",
+    fontFilePath: null,
+    fontSizePercent: 5,
+    xPercent: 4,
+    yPercent: 80,
+  };
+}
+
+function textOverlay(overrides: Record<string, unknown> = {}) {
+  return {
+    clockFormat: "HH:MM:SS" as const,
+    content: "",
+    countdownFromSeconds: 0,
+    direction: "left" as const,
+    effectId: "fx-2",
+    endSeconds: 30,
+    id: "text-1",
+    mode: "static" as const,
+    name: "Ticker",
+    repeat: 0,
+    speedPixelsPerSecond: 120,
+    startSeconds: 0,
+    style: textStyle(),
+    timezoneOffsetMinutes: 0,
+    ...overrides,
+  };
+}
+
+test("ticker drawtext keeps a constant speed and hides itself after the last loop", () => {
+  const frame = { airEpochSeconds: 1_700_000_000, height: 720, width: 1_280 };
+  const endless = buildTextOverlayFilter(
+    textOverlay({ content: "Срочные новости • ", mode: "ticker", startSeconds: 2 }),
+    frame,
+  );
+  // Позиция зависит от tw — ширины уже отрисованной надписи, поэтому длинный и
+  // короткий текст едут одинаково быстро, а круг замыкается за (w+tw)/speed.
+  assert.match(endless, /x='w-mod\(\(max\(0,t-2\)\*120\),\(w\+tw\)\)'/);
+  assert.match(endless, /fontsize=36/);
+  assert.match(endless, /enable='between\(t,2,30\)'/);
+
+  const twice = buildTextOverlayFilter(
+    textOverlay({ content: "Котировки", direction: "right", mode: "ticker", repeat: 2 }),
+    frame,
+  );
+  assert.match(twice, /if\(gte\(\(max\(0,t-0\)\*120\),2\*\(w\+tw\)\),0-tw-16,/);
+  assert.match(twice, /-tw\+mod\(/);
+});
+
+test("clock drawtext follows on-air time, not the renderer's own wall clock", () => {
+  const filter = buildTextOverlayFilter(
+    textOverlay({ mode: "clock", timezoneOffsetMinutes: 180 }),
+    { airEpochSeconds: 1_700_000_000, height: 1_080, width: 1_920 },
+  );
+  // gmtime со сдвигом пояса вместо localtime: результат одинаков в любой TZ
+  // сервера, а смещение равно эфирному времени первого кадра ролика.
+  assert.match(filter, /%\{pts\\:gmtime\\:1700010800\\:%H\}\\:%\{pts\\:gmtime\\:1700010800\\:%M\}/);
+  assert.doesNotMatch(filter, /localtime/);
+});
+
+test("countdown drawtext reaches zero without accumulating error", () => {
+  const filter = buildTextOverlayFilter(
+    textOverlay({
+      clockFormat: "MM:SS",
+      countdownFromSeconds: 90,
+      endSeconds: 120,
+      mode: "countdown",
+      startSeconds: 10,
+    }),
+    { airEpochSeconds: 0, height: 720, width: 1_280 },
+  );
+  assert.match(filter, /%\{eif\\:trunc\(mod\(max\(0,90-\(t-10\)\)\/60,60\)\)\\:d\\:2\}/);
+  assert.match(filter, /%\{eif\\:trunc\(mod\(max\(0,90-\(t-10\)\),60\)\)\\:d\\:2\}/);
+});
+
+test("static drawtext escapes an operator percent sign instead of expanding it", () => {
+  const filter = buildTextOverlayFilter(
+    textOverlay({ content: "Скидка 20% в 12:00" }),
+    { airEpochSeconds: 0, height: 720, width: 1_280 },
+  );
+  assert.match(filter, /text='Скидка 20\\% в 12\\:00'/);
+});
+
+test("stinger halves come from one file: the tail at zero, the head from the cut point", () => {
+  const request = baseRequest();
+  request.playlist[0] = {
+    ...request.playlist[0]!,
+    effects: [{
+      id: "stinger-head",
+      effectId: "fx-stinger",
+      name: "Stinger",
+      filePath: "/media/stinger.mov",
+      kind: "video",
+      sourceDurationSeconds: 1.2,
+      startSeconds: 0,
+      endSeconds: 0.68,
+      sourceInSeconds: 0.52,
+      blendMode: "luma" as const,
+      lumaThreshold: 0.1,
+      tier: 2 as const,
+      titlePaths: [],
+    }],
+  };
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, effects: request.playlist[0]!.effects }],
+    "/tmp/preview",
+  );
+  // Вторая половина перехода берётся из середины файла и вырезает чёрный фон.
+  assert.match(command.filterGraph, /trim=start=0\.52:duration=0\.68/);
+  assert.match(command.filterGraph, /lumakey=threshold=0\.1:tolerance=0\.05:softness=0\.02/);
+});
+
+test("stinger audio mixes into every track before the length tail, not after it", () => {
+  const request = baseRequest();
+  const item = {
+    ...preparedItems()[0]!,
+    audioOverlays: [{
+      id: "sfx-1",
+      effectId: "fx-stinger",
+      filePath: "/media/stinger.mov",
+      sourceInSeconds: 0.52,
+      startSeconds: 0,
+      durationSeconds: 0.68,
+      gainDb: -6,
+    }],
+  };
+  const command = buildFfmpegClipAudioProducerCommand(request, item);
+  const sampleCount = clipAudioSampleCount(item.durationSeconds, request.audio.sampleRate);
+
+  assert.deepEqual(command.args.slice(command.args.indexOf("-i")), [
+    "-i", "/media/one.mp4",
+    "-i", "/media/stinger.mov",
+    "-filter_complex", command.filterGraph,
+    "-map", "[aprogram]",
+    "-c:a", "pcm_s16le",
+    "-ar", String(request.audio.sampleRate),
+    "-ac", String(request.audio.channels),
+    "-f", "s16le",
+    "pipe:1",
+  ]);
+  assert.match(command.filterGraph, /\[1:a:0\]atrim=start=0\.52:duration=0\.68/);
+  assert.match(command.filterGraph, /volume=-6dB\[afx0\]/);
+  assert.match(command.filterGraph, /amix=inputs=2:duration=first:normalize=0/);
+  // Хвост, задающий длину дорожки, обязан остаться последним: мультиплексор
+  // встаёт, если один вход отдаёт другое число сэмплов.
+  const mixIndex = command.filterGraph.indexOf("amix=");
+  const padIndex = command.filterGraph.indexOf(`apad=whole_len=${sampleCount}`);
+  assert.ok(mixIndex > 0 && padIndex > mixIndex);
+  assert.match(command.filterGraph, new RegExp(`atrim=end_sample=${sampleCount}`));
+});
+
+test("a task file accepts one object and a whole schedule, and reports unusable keys", () => {
+  const single = parseBroadcastTaskDocument({
+    name: " Инзерские зубчатки ",
+    eng: "Inzer Cogs",
+    region: "Республика Башкортостан",
+  });
+  assert.deepEqual(single.entries, [{
+    name: "Инзерские зубчатки",
+    values: { eng: "Inzer Cogs", region: "Республика Башкортостан" },
+  }]);
+  assert.deepEqual(single.warnings, []);
+
+  const batch = parseBroadcastTaskDocument([
+    { name: "Первый", eng: "First" },
+    { name: "Первый", eng: "Again" },
+    { name: "Второй", duration: 12 },
+  ]);
+  assert.deepEqual(batch.entries.map((entry) => entry.name), ["Первый", "Второй"]);
+  assert.deepEqual(batch.entries[0]!.values, { eng: "Again" });
+  assert.equal(batch.entries[1]!.values.duration, undefined);
+  assert.match(batch.warnings.join("\n"), /"duration" is ignored because its value is not a string/);
+  assert.match(batch.warnings.join("\n"), /appears more than once/);
+
+  assert.throws(() => parseBroadcastTaskDocument([{ eng: "no name" }]), /must be one object/);
+});
+
+test("ticker source reads plain lines and both supported JSON shapes", () => {
+  assert.deepEqual(
+    parseTickerSourceDocument("first\n\n  second  \n", ".txt").items,
+    ["first", "second"],
+  );
+  assert.deepEqual(parseTickerSourceDocument('["one","two"]', ".json").items, ["one", "two"]);
+  assert.deepEqual(
+    parseTickerSourceDocument('{"items":["one",7]}', ".json"),
+    { items: ["one"], warnings: ["A non-string ticker message was skipped"] },
+  );
+  assert.throws(() => parseTickerSourceDocument('{"rows":[]}', ".json"), /must be an array/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Суточный журнал работы
+ * -------------------------------------------------------------------------- */
+
+function airStatus(overrides: Record<string, unknown> = {}) {
+  return playoutStatusSchema.parse({
+    state: "running",
+    sessionId: "session-1",
+    startedAt: "2026-08-19T09:00:00.000Z",
+    stoppedAt: null,
+    currentItemIndex: 0,
+    currentItemId: "clip-a",
+    currentItemName: "Инзерские зубчатки",
+    currentItemDurationSeconds: 120,
+    totalItems: 3,
+    outTimeSeconds: 30,
+    totalDurationSeconds: 360,
+    progressPercent: 8,
+    frame: 750,
+    fps: 25,
+    bitrateKbps: 4_000,
+    speed: 1,
+    endpointLabel: "udp://239.0.0.1:1234",
+    previewPath: null,
+    transportBitrateBps: 8_000_000,
+    error: null,
+    logs: [],
+    ...overrides,
+  });
+}
+
+test("log line carries the local date, time and level for every entry", () => {
+  const at = new Date(2026, 7, 19, 9, 5, 3, 42);
+  assert.equal(
+    formatLogLine(at, "error", "PLAYOUT", "Clip 2 renderer failed\n  broken pipe"),
+    "[2026-08-19 09:05:03.042] ERROR PLAYOUT   Clip 2 renderer failed broken pipe",
+  );
+  assert.equal(logFileName(at), "fluxio-2026-08-19.log");
+});
+
+test("daily stats follow the air from status snapshots, not from log text", () => {
+  const at = new Date(2026, 7, 19, 9, 0, 0);
+  const opened = observeStatus(emptyDailyStats("2026-08-19"), airStatus(), at);
+  assert.deepEqual(opened.entries.map((entry) => entry.category), ["AIR", "AIR"]);
+  assert.match(opened.entries[0]!.message, /Эфирная сессия session-1 начата: 3 ролик\(ов\)/);
+  assert.match(opened.entries[1]!.message, /В эфире 1\/3: "Инзерские зубчатки" \(00:02:00\)/);
+
+  // Тот же ролик повторно не считается — иначе закольцованный эфир врал бы.
+  const same = observeStatus(opened.stats, airStatus({ outTimeSeconds: 60 }), at);
+  assert.deepEqual(same.entries, []);
+  assert.deepEqual(same.stats.sessions[0]!.airedItemIds, ["clip-a"]);
+
+  const next = observeStatus(
+    same.stats,
+    airStatus({ currentItemId: "clip-b", currentItemIndex: 1, currentItemName: "Новости", outTimeSeconds: 130 }),
+    at,
+  );
+  assert.equal(next.stats.sessions[0]!.airedItemIds.length, 2);
+  assert.equal(next.stats.sessions[0]!.transportBitrateKbps, 8_000);
+
+  const failed = observeStatus(
+    next.stats,
+    airStatus({ state: "failed", error: "Clip 2 renderer failed", stoppedAt: "2026-08-19T09:10:00.000Z" }),
+    at,
+  );
+  assert.deepEqual(failed.stats.errors, ["Clip 2 renderer failed"]);
+  assert.equal(failed.stats.sessions[0]!.endState, "failed");
+  // Повторный снимок той же аварии второй записи не создаёт.
+  assert.deepEqual(observeStatus(failed.stats, airStatus({ state: "failed", error: "Clip 2 renderer failed" }), at).entries, []);
+
+  const report = buildDailyReport(failed.stats, at);
+  assert.match(report, /СУТОЧНЫЙ ОТЧЁТ ЗА 2026-08-19/);
+  assert.match(report, /Эфирных сессий:        1 \(аварийно завершено: 1\)/);
+  assert.match(report, /Роликов выдано:        2/);
+  assert.match(report, /udp:\/\/239\.0\.0\.1:1234 @ 8000 кбит\/с/);
+  assert.match(report, /ОШИБКА: Clip 2 renderer failed/);
+});
 
 function baseRequest(): StartPlayoutRequest {
   return {

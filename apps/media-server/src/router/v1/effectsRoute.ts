@@ -1,10 +1,15 @@
 import type { FastifyInstance } from "fastify";
+import { stat } from "node:fs/promises";
 
 //
 
 import {
   analyzeGraphicEffectsRequestSchema,
   graphicEffectAssetListSchema,
+  graphicEffectVerificationSchema,
+  readBroadcastTaskRequestSchema,
+  readTickerSourceRequestSchema,
+  verifyGraphicEffectsRequestSchema,
   graphicEffectAssetSchema,
   lottieSourceRequestSchema,
   renderLottieEffectRequestSchema,
@@ -14,6 +19,10 @@ import {
   analyzeGraphicEffectPaths,
   scanGraphicEffectDirectory,
 } from "../../effects/library.js";
+import {
+  readBroadcastTaskFile,
+  readTickerSourceFile,
+} from "../../effects/broadcast-task.js";
 import {
   lottieWasmBytes,
   readRenderableLottieDocument,
@@ -52,6 +61,43 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
     }
   });
 
+  // Графика расписания живёт на диске сервера, а не в базе: перед работой с
+  // восстановленным или импортированным расписанием интерфейс спрашивает, какие
+  // файлы пропали, чтобы предложить оператору замену.
+  app.post("/api/effects/verify", async (request, reply) => {
+    try {
+      const body = verifyGraphicEffectsRequestSchema.parse(request.body);
+      const missing: string[] = [];
+      for (const filePath of new Set(body.paths)) {
+        if (!(await isReadableFile(filePath))) missing.push(filePath);
+      }
+
+      return graphicEffectVerificationSchema.parse({ missing });
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  // Файлы данных эффектов второго уровня читает сервер: интерфейс знает только
+  // путь, выбранный в нативном диалоге, и не имеет доступа к файловой системе.
+  app.post("/api/effects/broadcast/task", async (request, reply) => {
+    try {
+      const body = readBroadcastTaskRequestSchema.parse(request.body);
+      return await readBroadcastTaskFile(body.filePath);
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  app.post("/api/effects/broadcast/ticker-source", async (request, reply) => {
+    try {
+      const body = readTickerSourceRequestSchema.parse(request.body);
+      return await readTickerSourceFile(body.filePath);
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
   app.get("/api/effects/lottie/wasm", async (_request, reply) => {
     return reply.type("application/wasm").send(await lottieWasmBytes());
   });
@@ -79,4 +125,12 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
       return badRequest(reply, error);
     }
   });
+}
+
+async function isReadableFile(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
 }

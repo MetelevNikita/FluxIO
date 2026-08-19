@@ -24,9 +24,13 @@ export function attachHlsVideo(
         if (!disposed) options.onPlaying();
       })
       .catch((error: unknown) => {
-        if (!disposed) {
-          options.onError(error instanceof Error ? error.message : "Video playback failed");
-        }
+        if (disposed) return;
+        // Браузер сам ставит на паузу фоновое видео без звука ради экономии
+        // энергии и отклоняет play() с AbortError. Это не отказ воспроизведения:
+        // как только вкладка снова активна, playing приходит штатно. Показывать
+        // оператору "The play() request was interrupted…" здесь нечего.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        options.onError(error instanceof Error ? error.message : "Video playback failed");
       });
   };
 

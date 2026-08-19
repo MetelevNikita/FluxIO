@@ -2,6 +2,8 @@ import path from "node:path";
 import type {
   AgeTitleOverlay,
   AudioTrack,
+  BroadcastTextOverlay,
+  ClipAudioOverlay,
   GraphicEffectLayer,
   ItemLogoOverlay,
   ProgramAudioTrack,
@@ -12,6 +14,7 @@ import type {
   VideoEncoding,
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings } from "@gruber/contracts";
+import { buildTextOverlayFilter } from "./text-overlay.js";
 import {
   ffmpegMpegTsMuxDelaySeconds,
   ffmpegMpegTsMuxPreloadSeconds,
@@ -28,8 +31,16 @@ export interface PreparedPlayoutItem {
   ageTitle?: AgeTitleOverlay;
   itemLogo?: ItemLogoOverlay;
   effects?: GraphicEffectLayer[];
+  textOverlays?: BroadcastTextOverlay[];
+  audioOverlays?: ClipAudioOverlay[];
   subtitles?: SubtitleOverlay;
   audioTracks?: AudioTrack[];
+  /**
+   * UNIX-время первого кадра ролика в эфире. Заполняет supervisor в момент
+   * запуска рендерера; нужно экранным часам, чтобы предзапущенный рендерер
+   * рисовал эфирное, а не своё системное время.
+   */
+  airEpochSeconds?: number;
 }
 
 /** Источник звука для одного элементарного потока конкретного ролика. */
@@ -175,13 +186,45 @@ export function buildFfmpegClipAudioProducerCommand(
   const sampleCount = clipAudioSampleCount(item.durationSeconds, sampleRate);
   const lengthFilter = `,apad=whole_len=${sampleCount},atrim=end_sample=${sampleCount},` +
     "asetpts=PTS-STARTPTS";
-  const filterGraph = `${sourceFilter}${loudnessFilter}${lengthFilter}[aprogram]`;
+  // Звуковые вставки (сейчас — стингер) подмешиваются ПОСЛЕ loudnorm и строго ДО
+  // хвоста: loudnorm не должен трогать авторский уровень перехода, а число
+  // сэмплов дорожки обязано остаться прежним. `normalize=0` не даёт amix
+  // приглушить основную дорожку, `duration=first` — удлинить её.
+  const overlays = (item.audioOverlays ?? []).filter(
+    (overlay) => overlay.durationSeconds > 0 && overlay.startSeconds < item.durationSeconds,
+  );
+  const baseInputCount = hasAudio && inputPath ? 1 : 0;
+  const overlayFilters = overlays.map((overlay, overlayIndex) => {
+    const duration = Math.min(overlay.durationSeconds, item.durationSeconds - overlay.startSeconds);
+    const delayMs = Math.round(overlay.startSeconds * 1_000);
+    return `[${baseInputCount + overlayIndex}:a:0]` +
+      `atrim=start=${decimal(overlay.sourceInSeconds)}:duration=${decimal(duration)},` +
+      "asetpts=PTS-STARTPTS," +
+      `aresample=${sampleRate}:async=1:first_pts=0,` +
+      `aformat=sample_fmts=fltp:sample_rates=${sampleRate}:channel_layouts=${channelLayout},` +
+      `volume=${decimal(overlay.gainDb)}dB` +
+      (delayMs > 0 ? `,adelay=${delayMs}:all=1` : "") +
+      `[afx${overlayIndex}]`;
+  });
+  const mixFilter = overlays.length > 0
+    ? `[abase]${overlays.map((_, mixIndex) => `[afx${mixIndex}]`).join("")}` +
+      `amix=inputs=${overlays.length + 1}:duration=first:normalize=0,` +
+      `aformat=sample_fmts=fltp:sample_rates=${sampleRate}:channel_layouts=${channelLayout}`
+    : "";
+  const filterGraph = overlays.length > 0
+    ? [
+        `${sourceFilter}${loudnessFilter}[abase]`,
+        ...overlayFilters,
+        `${mixFilter}${lengthFilter}[aprogram]`,
+      ].join(";")
+    : `${sourceFilter}${loudnessFilter}${lengthFilter}[aprogram]`;
   const args = [
     "-hide_banner",
     "-nostdin",
     "-y",
     "-loglevel", "warning",
     ...(hasAudio && inputPath ? ["-i", inputPath] : []),
+    ...overlays.flatMap((overlay) => ["-i", overlay.filePath]),
     "-filter_complex", filterGraph,
     "-map", "[aprogram]",
     "-c:a", "pcm_s16le",
@@ -496,10 +539,12 @@ function buildFilterGraph(
     const duration = decimal(item.durationSeconds);
     const burnSubtitles = request.subtitleOutput.mode === "burn-in" &&
       item.subtitles?.enabled && Boolean(item.subtitles.filePath);
+    const textOverlays = item.textOverlays ?? [];
     const requiresItemOverlay = Boolean(
       item.ageTitle?.enabled ||
       item.itemLogo?.enabled ||
       (item.effects?.length ?? 0) > 0 ||
+      textOverlays.length > 0 ||
       burnSubtitles,
     );
     const normalizedLabel = requiresItemOverlay ? `vbase${index}` : `v${index}`;
@@ -515,7 +560,9 @@ function buildFilterGraph(
 
     let itemVideoSource = normalizedLabel;
     if (item.ageTitle?.enabled) {
-      const ageLabel = item.itemLogo?.enabled || (item.effects?.length ?? 0) > 0
+      const ageLabel = item.itemLogo?.enabled ||
+        (item.effects?.length ?? 0) > 0 ||
+        textOverlays.length > 0
         ? `vage${index}`
         : `v${index}`;
       const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
@@ -559,7 +606,7 @@ function buildFilterGraph(
         Math.round(request.video.width * (item.itemLogo.widthPercent / 100)),
       );
       const [x, y] = logoPosition(item.itemLogo.position, item.itemLogo.margin);
-      const logoOutputLabel = (item.effects?.length ?? 0) > 0
+      const logoOutputLabel = (item.effects?.length ?? 0) > 0 || textOverlays.length > 0
         ? `vlogo${index}`
         : `v${index}`;
       filters.push(
@@ -587,18 +634,32 @@ function buildFilterGraph(
           : `${nextOverlayInput++}:v:0`;
         const effectLabel = `fxasset${index}_${effectIndex}_${sourceIndex}`;
         const isLastSource = sourceIndex === sources.length - 1;
-        const outputLabel = effectIndex === effects.length - 1 && isLastSource
+        const outputLabel = effectIndex === effects.length - 1 &&
+          isLastSource &&
+          textOverlays.length === 0
           ? `v${index}`
           : `vfx${index}_${effectIndex}_${sourceIndex}`;
+        // Стингер берёт вторую половину перехода из середины файла, поэтому
+        // `sourceInSeconds` может быть больше нуля; остаток файла ограничивает
+        // длину, которую вообще имеет смысл запрашивать.
+        const sourceIn = Math.max(0, effect.sourceInSeconds);
+        const remainingSource = effect.sourceDurationSeconds > 0
+          ? Math.max(0.04, effect.sourceDurationSeconds - sourceIn)
+          : effectDuration;
         const sourceDuration = source.role === "background"
-          ? Math.min(effectDuration, effect.sourceDurationSeconds || effectDuration)
+          ? Math.min(effectDuration, remainingSource)
           : effectDuration;
         const sourceTrim = source.kind === "video"
-          ? `trim=start=0:duration=${decimal(sourceDuration)},`
+          ? `trim=start=${decimal(sourceIn)}:duration=${decimal(sourceDuration)},`
           : `trim=duration=${decimal(effectDuration)},`;
+        // Переход без альфа-канала: чёрный фон вырезается по яркости уже после
+        // перевода в rgba, иначе прозрачности просто негде появиться.
+        const keyFilter = effect.blendMode === "luma"
+          ? `,lumakey=threshold=${decimal(effect.lumaThreshold)}:tolerance=0.05:softness=0.02`
+          : "";
         filters.push(
           `[${effectInput}]${sourceTrim}setpts=PTS-STARTPTS+${decimal(effectStart)}/TB,` +
-            `format=rgba,scale=${request.video.width}:${request.video.height}:` +
+            `format=rgba${keyFilter},scale=${request.video.width}:${request.video.height}:` +
             `force_original_aspect_ratio=decrease:flags=lanczos,` +
             `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2:color=black@0[${effectLabel}]`,
           `[${itemVideoSource}][${effectLabel}]overlay=x=0:y=0:eof_action=pass:format=auto:` +
@@ -606,6 +667,19 @@ function buildFilterGraph(
         );
         itemVideoSource = outputLabel;
       });
+    });
+    // Динамические надписи ложатся поверх всей остальной графики: бегущая
+    // строка и часы всегда должны оставаться читаемыми.
+    textOverlays.forEach((overlay, overlayIndex) => {
+      const outputLabel = `vtext${index}_${overlayIndex}`;
+      filters.push(
+        `[${itemVideoSource}]${buildTextOverlayFilter(overlay, {
+          airEpochSeconds: item.airEpochSeconds ?? Date.now() / 1_000,
+          height: request.video.height,
+          width: request.video.width,
+        })},format=yuv420p[${outputLabel}]`,
+      );
+      itemVideoSource = outputLabel;
     });
     if (itemVideoSource !== `v${index}`) {
       filters.push(`[${itemVideoSource}]null[v${index}]`);

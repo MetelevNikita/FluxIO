@@ -1,4 +1,8 @@
-import type { GraphicEffectLayer } from "@gruber/contracts";
+import type {
+  BroadcastTextOverlay,
+  ClipAudioOverlay,
+  GraphicEffectLayer,
+} from "@gruber/contracts";
 
 export type AppView = "import" | "effects" | "playlist" | "broadcast";
 
@@ -57,6 +61,10 @@ export interface MediaAsset {
     widthPercent: number;
   };
   effects?: GraphicEffectLayer[];
+  /** Динамические надписи эфирных эффектов второго уровня (строка, часы, отсчёт). */
+  textOverlays?: BroadcastTextOverlay[];
+  /** Звуковые вставки второго уровня — сейчас только звук стингера. */
+  audioOverlays?: ClipAudioOverlay[];
   subtitles?: {
     enabled: boolean;
     filePath: string | null;

@@ -8,6 +8,7 @@ import { DatabaseService } from "./database/database.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { PlayoutSupervisor } from "./ffmpeg/playout-supervisor.js";
+import { ApplicationLogger, resolveLogDirectory } from "./logging/logger.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
 import { type RouteContext } from "./router/context.js";
 import { audioRoute } from "./router/v1/audioRoute.js";
@@ -16,7 +17,7 @@ import { effectsRoute } from "./router/v1/effectsRoute.js";
 import { mediaRoute } from "./router/v1/mediaRoute.js";
 import { playoutRoute } from "./router/v1/playoutRoute.js";
 import { scheduleRoute } from "./router/v1/scheduleRoute.js";
-import { systemRoute } from "./router/v1/systemRoute.js";
+import { systemRoute, serviceVersion } from "./router/v1/systemRoute.js";
 import { workspaceRoute } from "./router/v1/workspaceRoute.js";
 import { WorkspaceCheckpoint } from "./workspace-checkpoint.js";
 
@@ -34,15 +35,21 @@ export function buildApp(options: FastifyServerOptions = {}) {
   });
 
   app.addHook("onReady", async () => {
-    if (!context.database) return;
+    context.logger.serviceStarted(serviceVersion);
+    if (!context.database) {
+      context.logger.log("warn", "SERVICE", "База данных не настроена: сервис работает в режиме degraded");
+      return;
+    }
 
     await context.database.connect();
     checkpoint.start();
+    context.logger.log("info", "SERVICE", "PostgreSQL подключена, восстановление сессии активно");
   });
 
   app.addHook("onClose", async () => {
     checkpoint.stop();
     await closeServices(context);
+    await context.logger.serviceStopping();
   });
 
   registerRoutes(app, context);
@@ -58,6 +65,15 @@ function createRouteContext(): RouteContext {
   const capabilities = new FfmpegCapabilitiesService();
   const previewDirectory = process.env.GRUBER_PREVIEW_DIR ??
     path.join(tmpdir(), "gruber-playout-preview");
+  const logger = new ApplicationLogger();
+  // Рабочего стола может не быть (systemd-установка) — тогда журнал уезжает в
+  // домашнюю папку. Проверка асинхронная, поэтому журнал стартует сразу, а путь
+  // уточняется первым же тиком.
+  void resolveLogDirectory().then((directory) => {
+    if (directory !== logger.directory) {
+      logger.log("info", "SERVICE", `Рабочего стола нет, журнал переведён в ${directory}`);
+    }
+  });
 
   return {
     capabilities,
@@ -69,10 +85,14 @@ function createRouteContext(): RouteContext {
       process.env.GRUBER_MEDIA_CACHE_DIR ?? path.join(tmpdir(), "gruber-media-preview"),
       capabilities.ffprobePath,
     ),
+    logger,
     playout: new PlayoutSupervisor(
       capabilities,
       previewDirectory,
-      (entry) => console.info(`[PLAYOUT] ${entry}`),
+      (entry) => {
+        console.info(`[PLAYOUT] ${entry}`);
+        logger.playoutEvent(entry);
+      },
     ),
     previewDirectory,
     startedAt: new Date().toISOString(),

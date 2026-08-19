@@ -1,4 +1,8 @@
-import type { GraphicEffectAsset, LottieEditableProperty } from "@gruber/contracts";
+import type {
+  BroadcastEffectKind,
+  GraphicEffectAsset,
+  LottieEditableProperty,
+} from "@gruber/contracts";
 import type { DotLottie as DotLottiePlayer } from "@lottiefiles/dotlottie-web";
 import {
   CheckCircle2,
@@ -7,6 +11,7 @@ import {
   FolderOpen,
   Image,
   Layers3,
+  Radio,
   Link2,
   Link2Off,
   LoaderCircle,
@@ -18,12 +23,18 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyLottiePropertyOverrides,
   updateLinkedScaleVector,
 } from "../lottie-properties";
 import { getLottieSource, lottieWasmUrl } from "../media-api";
+import {
+  BroadcastEffectInspector,
+  broadcastEffectCatalog,
+  broadcastEffectTitle,
+  type BroadcastTaskSummary,
+} from "./BroadcastEffectInspector";
 
 export interface EffectTargetClip {
   id: string;
@@ -44,6 +55,14 @@ interface EffectsScreenProps {
   onRenderLottie: (effect: GraphicEffectAsset) => Promise<GraphicEffectAsset>;
   onAddToEntireProject: (effectId: string) => void;
   onAddToClip: (effectId: string, clipId: string) => void;
+  broadcastTaskSummaries: Record<string, BroadcastTaskSummary>;
+  onCreateBroadcastEffect: (kind: BroadcastEffectKind) => void;
+  onChangeBroadcastEffect: (effect: GraphicEffectAsset) => void;
+  onSelectBroadcastTaskFile: (effectId: string) => Promise<void>;
+  onSelectTickerSourceFile: (effectId: string) => Promise<void>;
+  onSelectStingerFile: (effectId: string) => Promise<void>;
+  /** Идёт эфир: тяжёлый WASM-предпросмотр в это время не крутим. */
+  playoutActive: boolean;
 }
 
 export function EffectsScreen({
@@ -59,6 +78,13 @@ export function EffectsScreen({
   onRenderLottie,
   onAddToEntireProject,
   onAddToClip,
+  broadcastTaskSummaries,
+  onCreateBroadcastEffect,
+  onChangeBroadcastEffect,
+  onSelectBroadcastTaskFile,
+  onSelectTickerSourceFile,
+  onSelectStingerFile,
+  playoutActive,
 }: EffectsScreenProps) {
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
@@ -94,6 +120,18 @@ export function EffectsScreen({
     }
   }, [clips, targetClipId]);
 
+  // Пресетом эффекта второго уровня может быть только эффект уровня 3.
+  const presets = useMemo(
+    () => effects.filter((effect) => !effect.broadcast),
+    [effects],
+  );
+  const previewSource = useMemo(() => {
+    const source = previewEffect ?? draftEffect;
+    if (!source) return null;
+    if (!source.broadcast) return source;
+    return effects.find((candidate) => candidate.id === source.broadcast?.presetEffectId) ?? null;
+  }, [effects, draftEffect, previewEffect]);
+
   const selectEffect = (effect: GraphicEffectAsset) => {
     setSelectedEffectId(effect.id);
     setDraftEffect(effect);
@@ -101,7 +139,7 @@ export function EffectsScreen({
     setRenderNotice(null);
   };
 
-  const renderDraft = async () => {
+  const renderDraft = useCallback(async () => {
     if (!draftEffect?.lottie) return;
     try {
       const rendered = await onRenderLottie(draftEffect);
@@ -113,7 +151,9 @@ export function EffectsScreen({
     } catch {
       // The parent publishes the actionable render error in the global error panel.
     }
-  };
+  }, [draftEffect, onRenderLottie]);
+
+  const renderLottieDraft = useCallback(() => void renderDraft(), [renderDraft]);
 
   return (
     <main className="effects-screen">
@@ -133,6 +173,30 @@ export function EffectsScreen({
         </div>
       </section>
 
+      <section className="broadcast-catalog" aria-label="Broadcast effects">
+        <div className="broadcast-catalog-heading">
+          <span className="broadcast-tier-badge">Уровень 2</span>
+          <strong>Эфирные эффекты</strong>
+          <small>
+            Параметрические эффекты с собственным поведением. Уровень 3 —
+            импортированные Lottie-пресеты — служит им оформлением.
+          </small>
+        </div>
+        <div className="broadcast-catalog-actions">
+          {broadcastEffectCatalog.map((entry) => (
+            <button
+              disabled={busy}
+              key={entry.kind}
+              onClick={() => onCreateBroadcastEffect(entry.kind)}
+              title={entry.summary}
+              type="button"
+            >
+              <Radio size={13} /> {entry.title}
+            </button>
+          ))}
+        </div>
+      </section>
+
       {message ? <div className="effects-message">{message}</div> : null}
       {busy && effects.length === 0 ? (
         <div className="effects-empty"><LoaderCircle className="spin" size={24} /> Analyzing and rendering effects…</div>
@@ -147,19 +211,39 @@ export function EffectsScreen({
           <section className="effects-grid" aria-label="Project effects">
             {effects.map((effect) => (
               <article
-                className={`effect-card ${selectedEffect?.id === effect.id ? "selected" : ""}`}
+                className={`effect-card ${effect.broadcast ? "broadcast" : ""} ${selectedEffect?.id === effect.id ? "selected" : ""}`}
                 key={effect.id}
                 onClick={() => selectEffect(effect)}
               >
-                <div className={`effect-kind-icon ${effect.lottie ? "lottie" : effect.kind}`}>
-                  {effect.lottie ? <FileJson2 size={22} /> : effect.kind === "video" ? <FileVideo2 size={22} /> : <Image size={22} />}
+                <div className={`effect-kind-icon ${effect.broadcast ? "broadcast" : effect.lottie ? "lottie" : effect.kind}`}>
+                  {effect.broadcast
+                    ? <Radio size={22} />
+                    : effect.lottie
+                      ? <FileJson2 size={22} />
+                      : effect.kind === "video" ? <FileVideo2 size={22} /> : <Image size={22} />}
                 </div>
                 <div className="effect-card-summary">
                   <strong title={effect.name}>{effect.name}</strong>
-                  <span>{effect.lottie ? "LOTTIE" : effect.kind.toUpperCase()} · {effect.width}×{effect.height}</span>
-                  <small>{effect.kind === "video" ? formatDuration(effect.durationSeconds) : "Full clip · static"}</small>
+                  <span>
+                    {effect.broadcast
+                      ? `УРОВЕНЬ 2 · ${broadcastEffectTitle(effect.broadcast.kind)}`
+                      : `${effect.lottie ? "LOTTIE" : effect.kind.toUpperCase()} · ${effect.width}×${effect.height}`}
+                  </span>
+                  <small>
+                    {effect.broadcast
+                      ? (effect.broadcast.presetEffectId
+                          ? effects.find((candidate) => candidate.id === effect.broadcast?.presetEffectId)?.name ??
+                            "Пресет не найден"
+                          : "Без пресета")
+                      : effect.kind === "video" ? formatDuration(effect.durationSeconds) : "Full clip · static"}
+                  </small>
                 </div>
-                {!effect.lottie ? (
+                {effect.broadcast ? (
+                  <div className="effect-broadcast-summary">
+                    <span>Поведение</span>
+                    <strong>{broadcastEffectSummary(effect)}</strong>
+                  </div>
+                ) : !effect.lottie ? (
                   <div className="effect-title-source">
                     <span>Per-clip alpha titles</span>
                     <strong title={effect.titleDirectoryPath ?? undefined}>
@@ -209,21 +293,41 @@ export function EffectsScreen({
                   </button>
                 </div>
               ) : null}
-              <div className="effect-inspector-heading">
-                <div>
-                  <span className="eyebrow">Selected effect</span>
-                  <strong title={draftEffect.name}>{draftEffect.name}</strong>
+              {/* Шапка с предпросмотром прибита к панели: прокручивается только
+                  блок настроек ниже, начиная с Assignment. */}
+              <div className="effect-inspector-pinned">
+                <div className="effect-inspector-heading">
+                  <div>
+                    <span className="eyebrow">Selected effect</span>
+                    <strong title={draftEffect.name}>{draftEffect.name}</strong>
+                  </div>
+                  {busy ? <LoaderCircle className="spin" size={18} /> : null}
                 </div>
-                {busy ? <LoaderCircle className="spin" size={18} /> : null}
+
+                {previewSource?.lottie ? (
+                  <LottiePreview
+                    // Кнопка применения стоит рядом с картинкой, чтобы результат
+                    // правки был виден там же, где её запускают.
+                    onRender={draftEffect.lottie ? renderLottieDraft : undefined}
+                    playoutActive={playoutActive}
+                    renderDisabled={busy}
+                    effect={previewSource}
+                  />
+                ) : (
+                  <div className="effect-raster-preview">
+                    {draftEffect.broadcast
+                      ? <Radio size={36} />
+                      : draftEffect.kind === "static" ? <Image size={36} /> : <FileVideo2 size={36} />}
+                    <span>
+                      {draftEffect.broadcast
+                        ? "Выберите Lottie-пресет, чтобы увидеть предпросмотр графики."
+                        : "Existing alpha media uses the standard FX pipeline."}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              {draftEffect.lottie ? <LottiePreview effect={previewEffect ?? draftEffect} /> : (
-                <div className="effect-raster-preview">
-                  {draftEffect.kind === "static" ? <Image size={36} /> : <FileVideo2 size={36} />}
-                  <span>Existing alpha media uses the standard FX pipeline.</span>
-                </div>
-              )}
-
+              <div className="effect-inspector-scroll">
               <section className="effect-assignment-panel">
                 <strong>Assignment</strong>
                 <button disabled={clips.length === 0} onClick={() => onAddToEntireProject(draftEffect.id)} type="button">
@@ -237,17 +341,33 @@ export function EffectsScreen({
                     <Send size={13} /> Add to clip
                   </button>
                 </div>
-                <small>After assignment, set the exact IN/OUT range in Playlist → Timeline Trimming.</small>
+                <small>
+                  {draftEffect.broadcast
+                    ? "Эффект сам рассчитает окна показа и текст. Точную подгонку по кадрам делайте в Playlist → Timeline Trimming."
+                    : "After assignment, set the exact IN/OUT range in Playlist → Timeline Trimming."}
+                </small>
               </section>
 
-              {draftEffect.lottie ? (
-                <LottieProperties
-                  disabled={busy}
+              {draftEffect.broadcast ? (
+                <BroadcastEffectInspector
+                  busy={busy}
                   effect={draftEffect}
-                  onChange={setDraftEffect}
-                  onRender={() => void renderDraft()}
+                  onChange={(next) => {
+                    setDraftEffect(next);
+                    onChangeBroadcastEffect(next);
+                  }}
+                  onSelectStingerFile={() => void onSelectStingerFile(draftEffect.id)}
+                  onSelectTaskFile={() => void onSelectBroadcastTaskFile(draftEffect.id)}
+                  onSelectTickerSource={() => void onSelectTickerSourceFile(draftEffect.id)}
+                  presets={presets}
+                  taskSummary={broadcastTaskSummaries[draftEffect.id] ?? null}
                 />
               ) : null}
+
+              {draftEffect.lottie ? (
+                <LottieProperties effect={draftEffect} onChange={setDraftEffect} />
+              ) : null}
+              </div>
             </aside>
           ) : null}
         </div>
@@ -256,13 +376,23 @@ export function EffectsScreen({
   );
 }
 
-function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
+const LottiePreview = memo(function LottiePreview({
+  effect,
+  onRender,
+  playoutActive = false,
+  renderDisabled = false,
+}: {
+  effect: GraphicEffectAsset;
+  onRender?: () => void;
+  playoutActive?: boolean;
+  renderDisabled?: boolean;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<DotLottiePlayer | null>(null);
-  const playingRef = useRef(true);
+  const playingRef = useRef(!playoutActive);
   const [source, setSource] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [playing, setPlaying] = useState(true);
+  const [playing, setPlaying] = useState(!playoutActive);
   const [resolutionKey, setResolutionKey] = useState<PreviewResolutionKey>("1920x1080");
   const resolution = previewResolutions[resolutionKey];
 
@@ -288,7 +418,7 @@ function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
         animation = new DotLottie({
           canvas,
           data: applyLottiePropertyOverrides(source, effect.lottie!.properties),
-          autoplay: true,
+          autoplay: !playingRef.current ? false : true,
           backgroundColor: effect.lottie!.backgroundColor,
           layout: { fit: "contain", align: [0.5, 0.5] },
           loop: true,
@@ -331,6 +461,11 @@ function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
           {playing ? <Pause size={12} /> : <Play size={12} />}
           {playing ? "Stop animation" : "Start animation"}
         </button>
+        {onRender ? (
+          <button className="lottie-render-button" disabled={renderDisabled} onClick={onRender} type="button">
+            Render changes
+          </button>
+        ) : null}
       </div>
       <div
         className="lottie-preview"
@@ -345,7 +480,7 @@ function LottiePreview({ effect }: { effect: GraphicEffectAsset }) {
       </div>
     </div>
   );
-}
+});
 
 const previewResolutions = {
   "720x576": { height: 576, label: "SD · 720×576", width: 720 },
@@ -355,16 +490,12 @@ const previewResolutions = {
 
 type PreviewResolutionKey = keyof typeof previewResolutions;
 
-function LottieProperties({
-  disabled,
+const LottieProperties = memo(function LottieProperties({
   effect,
   onChange,
-  onRender,
 }: {
-  disabled: boolean;
   effect: GraphicEffectAsset;
   onChange: (effect: GraphicEffectAsset) => void;
-  onRender: () => void;
 }) {
   if (!effect.lottie) return null;
   const textProperties = effect.lottie.properties.filter((property) => property.type === "text");
@@ -405,7 +536,6 @@ function LottieProperties({
           <strong>Properties</strong>
           <span>{effect.lottie.properties.filter((property) => property.overridden).length} overrides</span>
         </div>
-        <button disabled={disabled} onClick={onRender} type="button">Render changes</button>
       </div>
       <div className="lottie-composition-properties">
         <label>
@@ -473,7 +603,7 @@ function LottieProperties({
       </div>
     </section>
   );
-}
+});
 
 function LottiePropertyRow({
   onChange,
@@ -602,6 +732,43 @@ function groupProperties(properties: LottieEditableProperty[]): Map<string, Lott
   const groups = new Map<string, LottieEditableProperty[]>();
   for (const property of properties) groups.set(property.group, [...(groups.get(property.group) ?? []), property]);
   return groups;
+}
+
+/** Одна строка про то, что эффект сделает — чтобы карточку можно было читать не открывая. */
+function broadcastEffectSummary(effect: GraphicEffectAsset): string {
+  const definition = effect.broadcast;
+  if (!definition) return "";
+  const settings = definition.settings;
+  if (definition.kind === "animation-in-out") {
+    const mode = settings.animationInOut.mode === "in-out"
+      ? "In + Out"
+      : settings.animationInOut.mode.toUpperCase();
+    return `${mode} · ${settings.animationInOut.durationSeconds} с` +
+      (settings.animationInOut.taskFilePath ? " · файл задания" : "");
+  }
+  if (definition.kind === "next-program") {
+    return `За ${settings.nextProgram.startOffsetSeconds} с до конца · ` +
+      `${settings.nextProgram.durationSeconds} с`;
+  }
+  if (definition.kind === "ticker-crawl") {
+    return `${settings.tickerCrawl.items.filter(Boolean).length} сообщений · ` +
+      `${settings.tickerCrawl.speedPixelsPerSecond} px/с` +
+      (settings.tickerCrawl.repeat > 0 ? ` · ${settings.tickerCrawl.repeat} круга` : " · непрерывно");
+  }
+  if (definition.kind === "clock-countdown") {
+    return settings.clockCountdown.mode === "clock"
+      ? `Часы · ${settings.clockCountdown.format} · UTC${formatOffset(settings.clockCountdown.timezoneOffsetMinutes)}`
+      : `Отсчёт ${settings.clockCountdown.countdownSeconds} с · ${settings.clockCountdown.format}`;
+  }
+  return `${settings.stingerTransition.durationSeconds} с · cut ` +
+    `${settings.stingerTransition.cutPointSeconds} с · ${settings.stingerTransition.blendMode}`;
+}
+
+function formatOffset(minutes: number): string {
+  const sign = minutes < 0 ? "-" : "+";
+  const absolute = Math.abs(minutes);
+  return `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:` +
+    `${String(absolute % 60).padStart(2, "0")}`;
 }
 
 function shortPath(value: string): string {

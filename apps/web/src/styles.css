@@ -15,6 +15,11 @@
   --muted-dark: #64748b;
   --accent: #f5d565;
   --accent-soft: rgba(245, 213, 101, 0.08);
+  /* Уровень 2 — параметрические эфирные эффекты. Намеренно синий, чтобы в
+     плейлисте его нельзя было спутать с жёлтым Lottie-оверлеем уровня 3. */
+  --tier2: #4d8dfd;
+  --tier2-soft: rgba(77, 141, 253, 0.12);
+  --tier2-border: rgba(77, 141, 253, 0.55);
   --danger: #ef4444;
   --warning: #f59e0b;
 }
@@ -848,16 +853,44 @@ p {
   max-height: calc(100vh - 190px);
   position: sticky;
   top: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /* Шапка с предпросмотром фиксированной высоты, настройки — вся оставшаяся
+     высота со своей прокруткой. */
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   margin-top: 16px;
   padding: 14px;
   background: var(--surface);
-  overflow-y: auto;
+  overflow: hidden;
 }
+
+.effect-inspector-pinned {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.effect-inspector-scroll {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.lottie-render-button {
+  border: 1px solid rgba(255, 211, 77, 0.45) !important;
+  color: #111 !important;
+  background: var(--accent) !important;
+  font-weight: 600;
+}
+
+.lottie-render-button:disabled { opacity: 0.45; }
 
 .effect-inspector-heading {
   min-width: 0;
@@ -2480,6 +2513,11 @@ p {
   top: 2px;
   height: 11px;
   min-width: 3px;
+  display: flex;
+  align-items: center;
+  /* Подпись обрезается самим блоком: у конца ролика она иначе вылезала за
+     таймлайн и включала горизонтальную прокрутку всей панели. */
+  overflow: hidden;
   border: 1px solid rgba(56, 189, 248, 0.65);
   border-radius: 2px;
   background: rgba(14, 165, 233, 0.28);
@@ -2491,14 +2529,17 @@ p {
 .effect-track-rail > i:active { cursor: grabbing; }
 
 .effect-track-rail > i em {
-  position: absolute;
-  left: 4px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 3px;
   color: #bae6fd;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 6px;
   font-style: normal;
   line-height: 9px;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .effect-range {
@@ -4257,3 +4298,393 @@ input[type="range"] {
 .audio-track-lane.silent .audio-track-lane-label {
   color: rgba(255, 255, 255, 0.42);
 }
+
+
+/* ========================================================================== *
+ * Эфирные эффекты второго уровня
+ * ========================================================================== */
+
+.broadcast-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--tier2-border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: var(--tier2);
+  background: var(--tier2-soft);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.broadcast-catalog {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  border: 1px solid var(--tier2-border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: var(--tier2-soft);
+}
+
+.broadcast-catalog-heading {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.broadcast-catalog-heading strong { color: var(--text); font-size: 11px; }
+.broadcast-catalog-heading small {
+  flex: 1 1 260px;
+  color: var(--muted-dark);
+  font-size: 8px;
+}
+
+.broadcast-catalog-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.broadcast-catalog-actions button {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--tier2-border);
+  border-radius: 4px;
+  padding: 0 9px;
+  color: var(--tier2);
+  background: #0f1520;
+  font-size: 9px;
+}
+
+.broadcast-catalog-actions button:hover:not(:disabled) {
+  color: #0b1220;
+  background: var(--tier2);
+}
+
+/* Карточка эффекта второго уровня в левой части экрана. */
+.effect-card.broadcast { border-color: var(--tier2-border); }
+.effect-card.broadcast:hover,
+.effect-card.broadcast.selected { border-color: var(--tier2); background: #101725; }
+.effect-card.broadcast.selected { box-shadow: inset 3px 0 0 var(--tier2); }
+.effect-kind-icon.broadcast { color: #0b1220; background: var(--tier2); }
+
+.effect-broadcast-summary {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+.effect-broadcast-summary > span { color: var(--muted-dark); font-size: 8px; }
+.effect-broadcast-summary > strong { color: var(--tier2); font-size: 9px; }
+
+.broadcast-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--tier2-border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #0d1119;
+}
+
+.broadcast-inspector-heading { display: flex; gap: 8px; align-items: center; }
+.broadcast-inspector-heading strong { color: var(--text); font-size: 11px; }
+
+.broadcast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.broadcast-field { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.broadcast-field-wide { grid-column: 1 / -1; }
+
+.broadcast-field > span {
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.broadcast-field > span > i { color: var(--muted-dark); font-size: 7px; font-style: normal; }
+
+.broadcast-field input,
+.broadcast-field select,
+.broadcast-field textarea {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 7px;
+  color: var(--text);
+  background: #12161b;
+  font-size: 9px;
+}
+
+.broadcast-field textarea {
+  height: auto;
+  padding: 6px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.broadcast-field input[type="color"] { padding: 2px; cursor: pointer; }
+
+.broadcast-field-checkbox {
+  flex-direction: row;
+  gap: 7px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.broadcast-field-checkbox input { width: 14px; height: 14px; }
+
+.broadcast-field input:focus-visible,
+.broadcast-field select:focus-visible,
+.broadcast-field textarea:focus-visible {
+  border-color: var(--tier2);
+  outline: none;
+}
+
+.broadcast-file-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: 5px;
+  padding: 8px;
+}
+
+.broadcast-file-field > span { color: var(--muted-dark); font-size: 8px; }
+.broadcast-file-field > strong {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--tier2);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.broadcast-file-field button {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 7px;
+  color: var(--muted);
+  background: #12161b;
+  font-size: 8px;
+}
+
+.broadcast-file-field button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--tier2-border);
+}
+
+.broadcast-warning {
+  flex: 1 1 100%;
+  color: var(--warning);
+  font-size: 8px;
+  font-style: normal;
+}
+
+.broadcast-note {
+  margin: 0;
+  border-left: 2px solid var(--tier2-border);
+  padding-left: 8px;
+  color: var(--muted-dark);
+  font-size: 8px;
+  line-height: 1.6;
+}
+
+.broadcast-style > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.broadcast-style[open] > summary { margin-bottom: 8px; }
+
+/* Плейлист: слои и надписи второго уровня. */
+.fx-layer-chip.tier2 {
+  border-color: var(--tier2-border);
+  color: #bfd6ff;
+  background: var(--tier2-soft);
+}
+
+.broadcast-track .effect-track-rail > i {
+  border-color: var(--tier2-border);
+  background: rgba(77, 141, 253, 0.26);
+}
+
+.broadcast-track .effect-track-rail > i em { color: #bfd6ff; }
+.broadcast-track > span b { color: var(--tier2); }
+
+/* ========================================================================== *
+ * Диалог потерянной графики
+ * ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 6, 8, 0.72);
+}
+
+.missing-graphics-dialog {
+  width: min(100%, 660px);
+  max-height: min(80vh, 620px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.missing-graphics-dialog > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border-bottom: 1px solid var(--border);
+  padding: 14px;
+}
+
+.missing-graphics-dialog > header > svg { color: var(--warning); margin-top: 2px; }
+.missing-graphics-dialog > header strong { display: block; font-size: 12px; }
+.missing-graphics-dialog > header span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.missing-graphics-dialog > header > button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  color: var(--muted-dark);
+  background: transparent;
+}
+
+.missing-graphics-dialog > header > button:hover { color: var(--text); background: var(--surface-hover); }
+
+.missing-graphics-dialog > ul {
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 14px;
+  list-style: none;
+}
+
+.missing-graphics-dialog li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 0;
+}
+
+.missing-graphics-dialog li:last-child { border-bottom: 0; }
+.missing-graphics-dialog li.resolved { opacity: 0.6; }
+
+.missing-graphics-dialog li strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.missing-graphics-dialog li small,
+.missing-graphics-dialog li em {
+  display: block;
+  overflow: hidden;
+  color: var(--muted-dark);
+  font-size: 8px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.missing-graphics-dialog li small { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.missing-graphics-dialog li em { color: var(--warning); margin-top: 2px; }
+
+.missing-graphics-dialog li button {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 0 9px;
+  color: var(--text);
+  background: #12161b;
+  font-size: 9px;
+}
+
+.missing-graphics-dialog li button:hover:not(:disabled) { border-color: var(--accent); }
+
+.missing-graphics-resolved {
+  color: #86efac;
+  font-size: 9px;
+}
+
+.missing-graphics-dialog > footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+}
+
+.missing-graphics-dialog > footer > span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.missing-graphics-dialog > footer button {
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 0 12px;
+  color: var(--text);
+  background: #12161b;
+  font-size: 9px;
+}
+
+.missing-graphics-dialog > footer button.primary {
+  border-color: rgba(255, 211, 77, 0.45);
+  color: #111;
+  background: var(--accent);
+}
+
+.missing-graphics-dialog > footer button:disabled { opacity: 0.4; }

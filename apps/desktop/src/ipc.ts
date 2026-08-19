@@ -7,7 +7,10 @@ import {
   SAVE_SCHEDULE_FILE_CHANNEL,
   SELECT_AGE_DIRECTORY_CHANNEL,
   SELECT_EFFECT_DIRECTORY_CHANNEL,
+  SELECT_BROADCAST_TASK_FILE_CHANNEL,
   SELECT_EFFECT_FILES_CHANNEL,
+  SELECT_STINGER_FILE_CHANNEL,
+  SELECT_TICKER_SOURCE_FILE_CHANNEL,
   SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL,
   SELECT_ENCODING_SETTINGS_FILE_CHANNEL,
   SELECT_LOGO_CHANNEL,
@@ -120,6 +123,23 @@ function registerEffectHandlers(): void {
 
   ipcMain.handle(SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL, async () =>
     selectFileDirectory("Select folder with per-clip alpha titles", titleExtensions));
+
+  // Файлы данных эффектов второго уровня. Их содержимое читает media-service —
+  // здесь выбирается только путь.
+  ipcMain.handle(SELECT_BROADCAST_TASK_FILE_CHANNEL, async () =>
+    selectFile("Select effect task file", [
+      { name: "FluxIO effect task", extensions: ["json"] },
+    ]));
+
+  ipcMain.handle(SELECT_TICKER_SOURCE_FILE_CHANNEL, async () =>
+    selectFile("Select ticker messages", [
+      { name: "Ticker messages", extensions: ["json", "txt"] },
+    ]));
+
+  ipcMain.handle(SELECT_STINGER_FILE_CHANNEL, async () =>
+    selectFile("Select stinger transition", [
+      { name: "Alpha transition", extensions: ["mov", "webm", "mp4", "m4v"] },
+    ]));
 }
 
 //

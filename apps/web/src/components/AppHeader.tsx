@@ -30,11 +30,11 @@ export function AppHeader({
   onNavigate,
   systemMetrics,
 }: AppHeaderProps) {
-  const [utcTime, setUtcTime] = useState(() => formatUtcTime(new Date()));
+  const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()));
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setUtcTime(formatUtcTime(new Date()));
+      setLocalTime(formatLocalTime(new Date()));
     }, 1_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -96,7 +96,7 @@ export function AppHeader({
           value={systemMetrics ? formatNetworkMbps(systemMetrics.networkMbps) : "—"}
         />
         <span className="metric-divider" aria-hidden="true" />
-        <time>{utcTime} UTC</time>
+        <time title={localTimeZoneName()}>{localTime}</time>
       </div>
     </header>
   );
@@ -123,9 +123,11 @@ function formatNetworkMbps(value: number): string {
   return `${value < 1 ? value.toFixed(2) : value.toFixed(1)} Mbps`;
 }
 
-function formatUtcTime(date: Date): string {
-  return date.toLocaleTimeString("en-GB", {
-    hour12: false,
-    timeZone: "UTC",
-  });
+/** Часы шапки идут по времени той машины, на которой запущено приложение. */
+function formatLocalTime(date: Date): string {
+  return date.toLocaleTimeString("en-GB", { hour12: false });
+}
+
+function localTimeZoneName(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "Местное время";
 }
