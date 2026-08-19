@@ -273,7 +273,7 @@ export const broadcastEffectKindSchema = z.enum([
 
 export const animationInOutModeSchema = z.enum(["in", "out", "in-out"]);
 export const tickerDirectionSchema = z.enum(["left", "right"]);
-export const tickerSourceSchema = z.enum(["manual", "file"]);
+export const tickerSourceSchema = z.enum(["manual", "file", "feed"]);
 export const clockModeSchema = z.enum(["clock", "countdown"]);
 export const clockFormatSchema = z.enum(["HH:MM:SS", "HH:MM", "MM:SS", "SS"]);
 export const nextProgramSourceSchema = z.enum(["playlist-name", "task-file"]);
@@ -283,6 +283,7 @@ export const stingerBlendModeSchema = z.enum(["alpha", "luma"]);
 /** Оформление текста, который рисует drawtext (бегущая строка, часы, отсчёт). */
 export const broadcastTextStyleSchema = z.object({
   fontFilePath: z.string().min(1).nullable().default(null),
+  fontFamily: z.string().max(256).default(""),
   /** Кегль в процентах от высоты кадра, чтобы SD/FHD/UHD выглядели одинаково. */
   fontSizePercent: z.number().positive().max(40).default(4.2),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
@@ -377,6 +378,8 @@ export const tickerCrawlSettingsSchema = z.object({
   source: tickerSourceSchema.default("manual"),
   items: z.array(z.string().max(2_000)).max(200).default([]),
   filePath: z.string().min(1).nullable().default(null),
+  /** Адрес RSS/Atom-ленты, откуда берутся заголовки. */
+  feedUrl: z.string().max(2_048).default(""),
   separator: z.string().max(32).default("   •   "),
   speedPixelsPerSecond: z.number().positive().max(4_000).default(120),
   direction: tickerDirectionSchema.default("left"),
@@ -629,6 +632,24 @@ export const analyzeGraphicEffectsRequestSchema = z.object({
 
 export const scanGraphicEffectsRequestSchema = z.object({
   directoryPath: z.string().min(1),
+});
+
+/** Системный шрифт для динамических надписей. */
+export const systemFontSchema = z.object({
+  family: z.string().min(1).max(256),
+  filePath: z.string().min(1),
+  /** Есть ли в шрифте кириллица: без неё бегущая строка выйдет прямоугольниками. */
+  cyrillic: z.boolean(),
+});
+
+export const systemFontListSchema = z.object({
+  items: z.array(systemFontSchema).max(400),
+});
+
+/** Новости бегущей строки из внешней ленты. */
+export const readTickerFeedRequestSchema = z.object({
+  url: z.string().url().max(2_048),
+  limit: z.number().int().min(1).max(200).default(30),
 });
 
 /** Проверка, что файлы графики из расписания ещё лежат на диске. */
@@ -1314,6 +1335,7 @@ export type BroadcastTextOverlayMode = z.infer<typeof broadcastTextOverlayModeSc
 export type ClipAudioOverlay = z.infer<typeof clipAudioOverlaySchema>;
 export type BroadcastTaskFileContent = z.infer<typeof broadcastTaskFileContentSchema>;
 export type GraphicEffectVerification = z.infer<typeof graphicEffectVerificationSchema>;
+export type SystemFont = z.infer<typeof systemFontSchema>;
 export type TickerSourceContent = z.infer<typeof tickerSourceContentSchema>;
 export type GraphicEffectAsset = z.infer<typeof graphicEffectAssetSchema>;
 export type GraphicEffectLayer = z.infer<typeof graphicEffectLayerSchema>;

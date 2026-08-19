@@ -25,8 +25,10 @@ import {
 } from "./logging/daily-log.js";
 import {
   parseBroadcastTaskDocument,
+  parseTickerFeed,
   parseTickerSourceDocument,
 } from "./effects/broadcast-task.js";
+import { readFontFamily, supportsCyrillic } from "./effects/system-fonts.js";
 import { buildTextOverlayFilter } from "./ffmpeg/text-overlay.js";
 import {
   buildFfmpegClipAudioProducerCommand,
@@ -110,7 +112,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.1");
+    assert.equal(health.version, "7.0.2");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -2613,6 +2615,7 @@ function textStyle() {
     boxOpacity: 0.6,
     boxPaddingPercent: 1,
     color: "#FFFFFF",
+    fontFamily: "",
     fontFilePath: null,
     fontSizePercent: 5,
     xPercent: 4,
@@ -2878,6 +2881,52 @@ test("daily stats follow the air from status snapshots, not from log text", () =
   assert.match(report, /Роликов выдано:        2/);
   assert.match(report, /udp:\/\/239\.0\.0\.1:1234 @ 8000 кбит\/с/);
   assert.match(report, /ОШИБКА: Clip 2 renderer failed/);
+});
+
+test("ticker feed takes headlines from RSS and Atom and unescapes their text", () => {
+  const rss = parseTickerFeed(`<rss><channel>
+    <title>Лента</title>
+    <item><title><![CDATA[Срочно: курс вырос]]></title></item>
+    <item><title>Пленум &amp; совет &#171;итоги&#187;</title></item>
+    <item><description>без заголовка</description></item>
+  </channel></rss>`, 30);
+  // Заголовок самой ленты не новость: берутся только заголовки записей.
+  assert.deepEqual(rss.items, ["Срочно: курс вырос", "Пленум & совет «итоги»"]);
+  assert.match(rss.warnings[0]!, /без заголовка пропущена/);
+
+  const atom = parseTickerFeed(
+    "<feed><entry><title>Первая</title></entry><entry><title>Вторая</title></entry></feed>",
+    1,
+  );
+  assert.deepEqual(atom.items, ["Первая"]);
+
+  assert.throws(() => parseTickerFeed("<html><body>not a feed</body></html>", 30), /no <item>/);
+});
+
+test("font scan reads the family name and detects Cyrillic coverage", async () => {
+  const candidates = [
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Geneva.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  ];
+  let checked = 0;
+  for (const candidate of candidates) {
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(candidate);
+    } catch {
+      continue;
+    }
+    checked += 1;
+    assert.equal(typeof supportsCyrillic(buffer), "boolean");
+    const family = readFontFamily(buffer);
+    assert.ok(family && family.length > 0, `${candidate} has no family name`);
+    assert.doesNotMatch(family, /\0/);
+  }
+  if (checked === 0) return; // На машине сборки системных шрифтов может не быть.
+  // Заведомо не шрифт разбирается без исключения и без ложного «есть кириллица».
+  assert.equal(supportsCyrillic(Buffer.from("not a font at all")), false);
+  assert.equal(readFontFamily(Buffer.from("not a font at all")), null);
 });
 
 function baseRequest(): StartPlayoutRequest {

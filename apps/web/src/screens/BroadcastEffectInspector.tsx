@@ -3,9 +3,10 @@ import type {
   BroadcastEffectSettings,
   BroadcastTextStyle,
   GraphicEffectAsset,
+  SystemFont,
 } from "@gruber/contracts";
-import { FileJson2, FileVideo2, FolderOpen, RotateCcw } from "lucide-react";
-import type { ReactNode } from "react";
+import { FileJson2, FileVideo2, FolderOpen, Rss, RotateCcw } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 
 /**
  * Настройки эфирного эффекта второго уровня. У каждого вида — своё поведение,
@@ -24,10 +25,12 @@ interface BroadcastEffectInspectorProps {
   effect: GraphicEffectAsset;
   presets: GraphicEffectAsset[];
   taskSummary: BroadcastTaskSummary | null;
+  fonts: SystemFont[];
   onChange: (effect: GraphicEffectAsset) => void;
   onSelectTaskFile: () => void;
   onSelectTickerSource: () => void;
   onSelectStingerFile: () => void;
+  onLoadTickerFeed: () => void;
 }
 
 export const broadcastEffectCatalog: {
@@ -71,10 +74,12 @@ export function BroadcastEffectInspector({
   effect,
   presets,
   taskSummary,
+  fonts,
   onChange,
   onSelectTaskFile,
   onSelectTickerSource,
   onSelectStingerFile,
+  onLoadTickerFeed,
 }: BroadcastEffectInspectorProps) {
   const definition = effect.broadcast;
   if (!definition) return null;
@@ -120,6 +125,8 @@ export function BroadcastEffectInspector({
         <span className="broadcast-tier-badge">Уровень 2</span>
         <strong>{broadcastEffectTitle(definition.kind)}</strong>
       </div>
+
+      <BroadcastEffectPreview effect={effect} presets={presets} />
 
       {definition.kind === "animation-in-out" ? (
         <>
@@ -248,6 +255,7 @@ export function BroadcastEffectInspector({
           {definition.presetEffectId ? null : (
             <TextStyleFields
               busy={busy}
+              fonts={fonts}
               onChange={(style) => updateSettings("nextProgram", { style })}
               style={settings.nextProgram.style}
             />
@@ -270,6 +278,7 @@ export function BroadcastEffectInspector({
               >
                 <option value="manual">Вручную</option>
                 <option value="file">Файл .json / .txt</option>
+                <option value="feed">RSS / Atom-лента</option>
               </select>
             </label>
             <NumberField
@@ -328,7 +337,32 @@ export function BroadcastEffectInspector({
               value={settings.tickerCrawl.separator}
             />
           </div>
-          {settings.tickerCrawl.source === "file" ? (
+          {settings.tickerCrawl.source === "feed" ? (
+            <div className="broadcast-file-field">
+              <span>Адрес ленты</span>
+              <input
+                className="broadcast-feed-url"
+                disabled={busy}
+                onChange={(event) => updateSettings("tickerCrawl", {
+                  feedUrl: event.target.value,
+                })}
+                placeholder="https://example.com/rss"
+                type="url"
+                value={settings.tickerCrawl.feedUrl}
+              />
+              <button
+                disabled={busy || !settings.tickerCrawl.feedUrl}
+                onClick={onLoadTickerFeed}
+                type="button"
+              >
+                <Rss size={12} /> Загрузить
+              </button>
+              <em className="broadcast-hint">
+                Загружено заголовков: {settings.tickerCrawl.items.length}.
+                Ленту качает media-service — нажмите «Загрузить» ещё раз, чтобы обновить новости.
+              </em>
+            </div>
+          ) : settings.tickerCrawl.source === "file" ? (
             <div className="broadcast-file-field">
               <span>Файл сообщений</span>
               <strong title={settings.tickerCrawl.filePath ?? undefined}>
@@ -355,6 +389,7 @@ export function BroadcastEffectInspector({
           )}
           <TextStyleFields
             busy={busy}
+            fonts={fonts}
             onChange={(style) => updateSettings("tickerCrawl", { style })}
             style={settings.tickerCrawl.style}
           />
@@ -436,6 +471,7 @@ export function BroadcastEffectInspector({
           </div>
           <TextStyleFields
             busy={busy}
+            fonts={fonts}
             onChange={(style) => updateSettings("clockCountdown", { style })}
             style={settings.clockCountdown.style}
           />
@@ -575,19 +611,272 @@ function TaskFileField({
   );
 }
 
+/**
+ * Предпросмотр эффекта.
+ *
+ * Кадр рисуется средствами браузера, а не FFmpeg, поэтому это приближение:
+ * шрифт, цвета, положение, скорость строки и ход часов совпадают с эфиром,
+ * а сглаживание и кернинг могут отличаться. Смысл в том, чтобы оператор увидел
+ * поведение эффекта — куда он встанет и как поедет — не запуская эфир.
+ */
+function BroadcastEffectPreview({
+  effect,
+  presets,
+}: {
+  effect: GraphicEffectAsset;
+  presets: GraphicEffectAsset[];
+}) {
+  const definition = effect.broadcast;
+  const [now, setNow] = useState(() => new Date());
+  const [elapsed, setElapsed] = useState(0);
+
+  const dynamic = definition?.kind === "clock-countdown";
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(new Date());
+      setElapsed((current) => (current + 0.25) % 3_600);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!definition) return null;
+  const settings = definition.settings;
+  const preset = presets.find((candidate) => candidate.id === definition.presetEffectId) ?? null;
+
+  const style = definition.kind === "ticker-crawl"
+    ? settings.tickerCrawl.style
+    : definition.kind === "clock-countdown"
+      ? settings.clockCountdown.style
+      : settings.nextProgram.style;
+
+  const textStyle = {
+    background: style.boxEnabled
+      ? `${style.boxColor}${Math.round(style.boxOpacity * 255).toString(16).padStart(2, "0")}`
+      : "transparent",
+    color: style.color,
+    fontFamily: style.fontFamily ? `"${style.fontFamily}", sans-serif` : "sans-serif",
+    fontSize: `${style.fontSizePercent}cqh`,
+    padding: `${style.boxPaddingPercent}cqh`,
+    top: `${style.yPercent}cqh`,
+  };
+
+  return (
+    <div className="broadcast-preview">
+      <div className="broadcast-preview-frame">
+        {definition.kind === "ticker-crawl" ? (
+          <div className="broadcast-preview-ticker" style={{ ...textStyle, left: 0 }}>
+            <span
+              style={{
+                // Один круг — это (ширина кадра + ширина надписи) / скорость.
+                // В кадре 1920 px ширина строки известна только браузеру, поэтому
+                // берём длительность из той же формулы по ширине превью.
+                animationDirection: settings.tickerCrawl.direction === "left"
+                  ? "normal"
+                  : "reverse",
+                animationDuration: `${Math.max(2, 1_920 / settings.tickerCrawl.speedPixelsPerSecond)}s`,
+                animationIterationCount: settings.tickerCrawl.repeat || "infinite",
+              }}
+            >
+              {joinPreviewTicker(settings.tickerCrawl.items, settings.tickerCrawl.separator) ||
+                "Сообщений пока нет"}
+            </span>
+          </div>
+        ) : null}
+
+        {definition.kind === "clock-countdown" ? (
+          <div
+            className="broadcast-preview-text"
+            style={{ ...textStyle, left: `${style.xPercent}cqw` }}
+          >
+            {settings.clockCountdown.mode === "clock"
+              ? formatPreviewClock(now, settings.clockCountdown.timezoneOffsetMinutes,
+                  settings.clockCountdown.format)
+              : formatPreviewCountdown(
+                  Math.max(0, settings.clockCountdown.countdownSeconds - elapsed),
+                  settings.clockCountdown.format,
+                )}
+          </div>
+        ) : null}
+
+        {definition.kind === "next-program" && !preset ? (
+          <div
+            className="broadcast-preview-text"
+            style={{ ...textStyle, left: `${style.xPercent}cqw` }}
+          >
+            {settings.nextProgram.subtitleText
+              ? `Следующий фильм — ${settings.nextProgram.subtitleText}`
+              : "Следующий фильм"}
+          </div>
+        ) : null}
+
+        {(definition.kind === "animation-in-out" ||
+          definition.kind === "next-program") && preset ? (
+          <div className="broadcast-preview-note">
+            Оформление берётся из пресета «{preset.name}» — он показан в окне предпросмотра выше.
+            Здесь видно только расписание показа.
+          </div>
+        ) : null}
+
+        {definition.kind === "stinger-transition" ? (
+          <StingerPreview
+            cutPointSeconds={settings.stingerTransition.cutPointSeconds}
+            durationSeconds={settings.stingerTransition.durationSeconds}
+          />
+        ) : null}
+      </div>
+
+      <p className="broadcast-preview-caption">
+        {previewCaption(definition.kind, settings, dynamic)}
+      </p>
+    </div>
+  );
+}
+
+/** Схема стыка: где кончается ролик A, где начинается B и где режется переход. */
+function StingerPreview({
+  cutPointSeconds,
+  durationSeconds,
+}: {
+  cutPointSeconds: number;
+  durationSeconds: number;
+}) {
+  const cutPercent = Math.min(95, Math.max(5, cutPointSeconds / durationSeconds * 100));
+  return (
+    <div className="stinger-preview">
+      <div className="stinger-preview-bar">
+        <span className="stinger-preview-a" style={{ width: `${cutPercent}%` }}>
+          хвост ролика A
+        </span>
+        <span className="stinger-preview-b" style={{ width: `${100 - cutPercent}%` }}>
+          голова ролика B
+        </span>
+        <i style={{ left: `${cutPercent}%` }} />
+      </div>
+      <div className="stinger-preview-legend">
+        <span>0 с</span>
+        <strong>Cut point {cutPointSeconds.toFixed(2)} с</strong>
+        <span>{durationSeconds.toFixed(2)} с</span>
+      </div>
+    </div>
+  );
+}
+
+function previewCaption(
+  kind: BroadcastEffectKind,
+  settings: BroadcastEffectSettings,
+  dynamic: boolean,
+): string {
+  if (kind === "ticker-crawl") {
+    return `Приближение: скорость ${settings.tickerCrawl.speedPixelsPerSecond} px/с в кадре ` +
+      "1920×1080. В эфире положение считает FFmpeg по реальной ширине надписи.";
+  }
+  if (kind === "clock-countdown") {
+    return dynamic
+      ? "Приближение. В эфире часы идут по эфирному времени ролика, а не по часам этой машины."
+      : "";
+  }
+  if (kind === "stinger-transition") {
+    return "Переключение источника происходит в Cut point — там, где графика полностью " +
+      "закрывает кадр.";
+  }
+  if (kind === "animation-in-out") {
+    const mode = settings.animationInOut.mode;
+    return `Режим ${mode === "in-out" ? "In + Out" : mode.toUpperCase()}, ` +
+      `по ${settings.animationInOut.durationSeconds} с.`;
+  }
+  return `Плашка выходит за ${settings.nextProgram.startOffsetSeconds} с до конца ролика ` +
+    `и держится ${settings.nextProgram.durationSeconds} с.`;
+}
+
+function joinPreviewTicker(items: readonly string[], separator: string): string {
+  const messages = items.map((item) => item.trim()).filter(Boolean);
+  return messages.length > 1 ? `${messages.join(separator)}${separator}` : messages[0] ?? "";
+}
+
+function formatPreviewClock(now: Date, offsetMinutes: number, format: string): string {
+  const shifted = new Date(now.getTime() + (offsetMinutes + now.getTimezoneOffset()) * 60_000);
+  const parts = [shifted.getHours(), shifted.getMinutes(), shifted.getSeconds()]
+    .map((value) => String(value).padStart(2, "0"));
+  return selectClockParts(parts, format);
+}
+
+function formatPreviewCountdown(remaining: number, format: string): string {
+  const total = Math.max(0, Math.floor(remaining));
+  const parts = [Math.floor(total / 3_600), Math.floor(total % 3_600 / 60), total % 60]
+    .map((value) => String(value).padStart(2, "0"));
+  return selectClockParts(parts, format);
+}
+
+function selectClockParts(parts: string[], format: string): string {
+  if (format === "HH:MM") return `${parts[0]}:${parts[1]}`;
+  if (format === "MM:SS") return `${parts[1]}:${parts[2]}`;
+  if (format === "SS") return parts[2] ?? "00";
+  return parts.join(":");
+}
+
 function TextStyleFields({
   busy,
+  fonts,
   style,
   onChange,
 }: {
   busy: boolean;
+  fonts: SystemFont[];
   style: BroadcastTextStyle;
   onChange: (style: BroadcastTextStyle) => void;
 }) {
+  const cyrillic = fonts.filter((font) => font.cyrillic);
+  const selected = fonts.find((font) => font.filePath === style.fontFilePath);
   return (
     <details className="broadcast-style" open={false}>
       <summary>Оформление надписи</summary>
       <div className="broadcast-grid">
+        <label className="broadcast-field broadcast-field-wide">
+          <span>
+            Шрифт
+            <i>
+              {cyrillic.length} из {fonts.length} системных шрифтов с кириллицей
+            </i>
+          </span>
+          <select
+            disabled={busy || fonts.length === 0}
+            onChange={(event) => {
+              const font = fonts.find((candidate) => candidate.filePath === event.target.value);
+              onChange({
+                ...style,
+                fontFamily: font?.family ?? "",
+                fontFilePath: font?.filePath ?? null,
+              });
+            }}
+            value={style.fontFilePath ?? ""}
+          >
+            <option value="">Шрифт FFmpeg по умолчанию</option>
+            {/* Шрифты без кириллицы отделены: выбрав такой, оператор получит в
+                эфире пустые прямоугольники вместо русского текста. */}
+            <optgroup label="С поддержкой кириллицы">
+              {cyrillic.map((font) => (
+                <option key={font.filePath} value={font.filePath}>{font.family}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Без кириллицы — только латиница">
+              {fonts.filter((font) => !font.cyrillic).map((font) => (
+                <option key={font.filePath} value={font.filePath}>{font.family}</option>
+              ))}
+            </optgroup>
+          </select>
+        </label>
+        {style.fontFilePath && selected && !selected.cyrillic ? (
+          <p className="broadcast-warning broadcast-field-wide">
+            В шрифте «{selected.family}» нет кириллицы: русский текст выйдет в эфир пустыми
+            прямоугольниками.
+          </p>
+        ) : null}
+        {fonts.length === 0 ? (
+          <p className="broadcast-hint broadcast-field-wide">
+            Шрифт по умолчанию берёт FFmpeg, и кириллицы в нём может не быть. Список системных
+            шрифтов подгружается с media-service.
+          </p>
+        ) : null}
         <NumberField
           disabled={busy}
           hint="% от высоты кадра"
@@ -621,7 +910,7 @@ function TextStyleFields({
           <span>Цвет текста</span>
           <input
             disabled={busy}
-            onChange={(event) => onChange({ ...style, color: event.target.value.toUpperCase() })}
+            onChange={(event) => onChange({ ...style, color: event.target.value })}
             type="color"
             value={style.color}
           />
@@ -641,8 +930,7 @@ function TextStyleFields({
               <span>Цвет подложки</span>
               <input
                 disabled={busy}
-                onChange={(event) =>
-                  onChange({ ...style, boxColor: event.target.value.toUpperCase() })}
+                onChange={(event) => onChange({ ...style, boxColor: event.target.value })}
                 type="color"
                 value={style.boxColor}
               />

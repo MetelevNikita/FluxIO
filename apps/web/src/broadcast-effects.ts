@@ -26,6 +26,8 @@ export interface BroadcastTargetClip {
   id: string;
   name: string;
   durationSeconds: number;
+  /** Тип строки расписания. Плашка «Смотрите далее» анонсирует только фильмы. */
+  scheduleType?: "movie" | "chop" | "clip" | null;
 }
 
 export interface BroadcastTaskEntry {
@@ -214,7 +216,9 @@ function planNextProgram(context: PlanContext): void {
 
   for (const clip of context.targets) {
     const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
-    const next = position >= 0 ? context.clips[position + 1] : undefined;
+    // Анонсируем следующий фильм, а не следующую строку расписания: между
+    // фильмами стоят отбивки и ролики, объявлять их незачем.
+    const next = position >= 0 ? nextMovieAfter(context.clips, position) : undefined;
     const title = next
       ? (settings.source === "task-file"
           ? titlesByName.get(next.name.trim())?.values.next_title ?? next.name
@@ -257,6 +261,24 @@ function planNextProgram(context: PlanContext): void {
       style: settings.style,
     });
   }
+}
+
+/**
+ * Ближайший фильм после позиции `position`. Если расписание не размечено по
+ * типам вовсе, берётся просто следующий элемент — иначе на ручном плейлисте
+ * эффект не сработал бы никогда.
+ */
+function nextMovieAfter(
+  clips: readonly BroadcastTargetClip[],
+  position: number,
+): BroadcastTargetClip | undefined {
+  const typed = clips.some((clip) => clip.scheduleType);
+  for (let index = position + 1; index < clips.length; index += 1) {
+    const candidate = clips[index];
+    if (!candidate) continue;
+    if (!typed || candidate.scheduleType === "movie") return candidate;
+  }
+  return undefined;
 }
 
 /* -------------------------------------------------------------------------- *
@@ -496,6 +518,18 @@ function pushLayer(
   });
 }
 
+/**
+ * Кириллица без выбранного шрифта — самая частая причина «пустых прямоугольников»
+ * в эфире: шрифт FFmpeg по умолчанию её может не содержать, и узнаётся это уже
+ * на выходе. Предупреждаем на этапе применения.
+ */
+function warnAboutCyrillicFont(context: PlanContext, style: { fontFilePath: string | null }, text: string): void {
+  if (style.fontFilePath || !/[А-Яа-яЁё]/.test(text)) return;
+  const warning = "В тексте есть кириллица, но шрифт не выбран. Шрифт FFmpeg по умолчанию " +
+    "может её не содержать — выберите системный шрифт с кириллицей в блоке «Оформление надписи».";
+  if (!context.plan.warnings.includes(warning)) context.plan.warnings.push(warning);
+}
+
 function pushTextOverlay(
   context: PlanContext,
   clip: BroadcastTargetClip,
@@ -504,6 +538,7 @@ function pushTextOverlay(
 ): void {
   const startSeconds = clampStart(overlay.startSeconds, clip.durationSeconds);
   const endSeconds = clampEnd(overlay.endSeconds, startSeconds, clip.durationSeconds);
+  warnAboutCyrillicFont(context, overlay.style, overlay.content);
   context.plan.textOverlays.push({
     assetId: clip.id,
     overlay: {

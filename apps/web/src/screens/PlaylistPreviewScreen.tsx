@@ -52,6 +52,7 @@ import type {
   Scte35MarkerKind,
 } from "../types";
 import type {
+  BroadcastTextOverlay,
   PlayoutStatus,
   ClipPreviewSession,
   ScheduleExportExtension,
@@ -553,6 +554,29 @@ export function PlaylistPreviewScreen({
   function removeEffectLayerFromItem(assetId: string, layerId: string): void {
     onUpdateItems([assetId], (asset) => ({
       effects: removeEffectLayerById(asset.effects ?? [], layerId),
+    }));
+  }
+
+  // Динамическая надпись — такой же слой ролика, как FX: её тоже нужно двигать
+  // и снимать прямо из плейлиста. Изменения уходят в эфир на лету через
+  // PUT /api/playout/playlist, как и остальная графика будущих роликов.
+  function updateTextOverlay(overlayId: string, patch: Partial<BroadcastTextOverlay>): void {
+    onUpdateItem(selectedAsset.id, {
+      textOverlays: (selectedAsset.textOverlays ?? []).map((overlay) =>
+        overlay.id === overlayId ? { ...overlay, ...patch } : overlay
+      ),
+    });
+  }
+
+  function removeTextOverlay(overlayId: string): void {
+    onUpdateItem(selectedAsset.id, {
+      textOverlays: removeEffectLayerById(selectedAsset.textOverlays ?? [], overlayId),
+    });
+  }
+
+  function removeTextOverlayFromItem(assetId: string, overlayId: string): void {
+    onUpdateItems([assetId], (asset) => ({
+      textOverlays: removeEffectLayerById(asset.textOverlays ?? [], overlayId),
     }));
   }
 
@@ -1123,6 +1147,25 @@ export function PlaylistPreviewScreen({
                     ))}
                   </select>
                 </label>
+                {(asset.textOverlays ?? []).length > 0 ? (
+                  <span className="fx-layer-chips" title="Динамические надписи ролика">
+                    {asset.textOverlays?.map((overlay) => (
+                      <span className="fx-layer-chip tier2" key={overlay.id} title={
+                        `${overlay.mode.toUpperCase()} · ${overlay.content || overlay.name}`
+                      }>
+                        <i>{shortEffectName(overlay.name)} · {overlay.mode.toUpperCase()}</i>
+                        <button
+                          aria-label={`Remove ${overlay.name} from ${asset.name}`}
+                          onClick={() => removeTextOverlayFromItem(asset.id, overlay.id)}
+                          title={`Снять «${overlay.name}» с этого ролика`}
+                          type="button"
+                        >
+                          <Trash2 size={9} />
+                        </button>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
                 {(asset.effects ?? []).length > 0 ? (
                   <span className="fx-layer-chips" title="FX order from lower to upper layer">
                     {asset.effects?.map((layer, index) => (
@@ -1345,7 +1388,9 @@ export function PlaylistPreviewScreen({
           <EffectTimeline
             asset={selectedAsset}
             onRemoveLayer={removeEffectLayer}
+            onRemoveTextOverlay={removeTextOverlay}
             onUpdateLayer={updateEffectLayer}
+            onUpdateTextOverlay={updateTextOverlay}
           />
           {audioTracksEnabled ? (
             <div className="audio-track-timeline">
@@ -1553,11 +1598,15 @@ export function PlaylistPreviewScreen({
 function EffectTimeline({
   asset,
   onRemoveLayer,
+  onRemoveTextOverlay,
   onUpdateLayer,
+  onUpdateTextOverlay,
 }: {
   asset: MediaAsset;
   onRemoveLayer: (layerId: string) => void;
+  onRemoveTextOverlay: (overlayId: string) => void;
   onUpdateLayer: (layerId: string, patch: Partial<GraphicEffectLayer>) => void;
+  onUpdateTextOverlay: (overlayId: string, patch: Partial<BroadcastTextOverlay>) => void;
 }) {
   const duration = Math.max(0.04, effectiveClipDuration(asset));
   const layers = asset.effects ?? [];
@@ -1595,12 +1644,16 @@ function EffectTimeline({
     if (!drag || drag.layerId !== event.currentTarget.dataset.layerId) return;
     const rawDelta = (event.clientX - drag.pointerX) / drag.railWidth * duration;
     const delta = Math.round(rawDelta / 0.04) * 0.04;
-    onUpdateLayer(drag.layerId, moveEffectLayerWindow({
+    const window = moveEffectLayerWindow({
       deltaSeconds: delta,
       durationSeconds: duration,
       endSeconds: drag.end,
       startSeconds: drag.start,
-    }));
+    });
+    // Одна и та же дорожка таскает и FX-слой, и динамическую надпись — они
+    // лежат в разных списках ролика, поэтому смотрим, кому принадлежит id.
+    if (layers.some((layer) => layer.id === drag.layerId)) onUpdateLayer(drag.layerId, window);
+    else onUpdateTextOverlay(drag.layerId, window);
   }
 
   function finishLayerDrag(event: ReactPointerEvent<HTMLElement>) {
@@ -1680,25 +1733,59 @@ function EffectTimeline({
           const start = Math.min(duration - 0.04, Math.max(0, overlay.startSeconds));
           const end = Math.min(duration, Math.max(start + 0.04, overlay.endSeconds));
           return (
-            // Надпись рисует FFmpeg покадрово, поэтому её окно не двигают
-            // мышью: границы задаёт сам эффект на вкладке Effects.
             <div className="effect-track broadcast-track" key={overlay.id}>
               <span title={overlay.content || overlay.mode}>
                 <b>{overlay.mode.toUpperCase()}</b>{shortEffectName(overlay.name)}
               </span>
               <div className="effect-track-rail">
                 <i
+                  aria-label={`Move ${overlay.name} on timeline`}
+                  data-layer-id={overlay.id}
+                  onPointerCancel={finishLayerDrag}
+                  onPointerDown={(event) => startLayerDrag(event, overlay.id, start, end)}
+                  onPointerMove={moveLayer}
+                  onPointerUp={finishLayerDrag}
                   style={{
-                    cursor: "default",
                     left: `${start / duration * 100}%`,
                     width: `${(end - start) / duration * 100}%`,
                   }}
-                  title={`${formatTimecode(start, asset.fps)} – ${formatTimecode(end, asset.fps)}`}
+                  title={`${formatTimecode(start, asset.fps)} – ${formatTimecode(end, asset.fps)}\n` +
+                    "Перетащите, чтобы сдвинуть; края — подрезка"}
                 >
                   <em>{formatLayerSeconds(end - start)}</em>
                 </i>
+                <input
+                  aria-label={`${overlay.name} start`}
+                  className="effect-range effect-range-start"
+                  max={duration}
+                  min={0}
+                  onChange={(event) => onUpdateTextOverlay(overlay.id, {
+                    startSeconds: Math.min(Number(event.target.value), end - 0.04),
+                  })}
+                  step={0.04}
+                  type="range"
+                  value={start}
+                />
+                <input
+                  aria-label={`${overlay.name} end`}
+                  className="effect-range effect-range-end"
+                  max={duration}
+                  min={0.04}
+                  onChange={(event) => onUpdateTextOverlay(overlay.id, {
+                    endSeconds: Math.max(Number(event.target.value), start + 0.04),
+                  })}
+                  step={0.04}
+                  type="range"
+                  value={end}
+                />
               </div>
-              <span />
+              <button
+                aria-label={`Remove ${overlay.name}`}
+                onClick={() => onRemoveTextOverlay(overlay.id)}
+                type="button"
+              >
+                <Trash2 size={11} />
+              </button>
             </div>
           );
         })}

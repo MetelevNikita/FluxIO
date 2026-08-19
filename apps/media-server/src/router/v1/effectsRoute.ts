@@ -8,7 +8,9 @@ import {
   graphicEffectAssetListSchema,
   graphicEffectVerificationSchema,
   readBroadcastTaskRequestSchema,
+  readTickerFeedRequestSchema,
   readTickerSourceRequestSchema,
+  systemFontListSchema,
   verifyGraphicEffectsRequestSchema,
   graphicEffectAssetSchema,
   lottieSourceRequestSchema,
@@ -21,8 +23,10 @@ import {
 } from "../../effects/library.js";
 import {
   readBroadcastTaskFile,
+  readTickerFeed,
   readTickerSourceFile,
 } from "../../effects/broadcast-task.js";
+import { scanSystemFonts } from "../../effects/system-fonts.js";
 import {
   lottieWasmBytes,
   readRenderableLottieDocument,
@@ -93,6 +97,25 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
     try {
       const body = readTickerSourceRequestSchema.parse(request.body);
       return await readTickerSourceFile(body.filePath);
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  app.post("/api/effects/broadcast/ticker-feed", async (request, reply) => {
+    try {
+      const body = readTickerFeedRequestSchema.parse(request.body);
+      return await readTickerFeed(body.url, body.limit);
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  // Список системных шрифтов с признаком кириллицы: drawtext рисует конкретным
+  // файлом, а шрифт без кириллицы выдаёт в эфир пустые прямоугольники.
+  app.get("/api/effects/fonts", async (_request, reply) => {
+    try {
+      return systemFontListSchema.parse({ items: await scanSystemFonts() });
     } catch (error) {
       return badRequest(reply, error);
     }

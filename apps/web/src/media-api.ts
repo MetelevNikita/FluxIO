@@ -8,6 +8,7 @@ import {
   broadcastConfigurationSummarySchema,
   broadcastTaskFileContentSchema,
   tickerSourceContentSchema,
+  systemFontListSchema,
   clipPreviewSessionSchema,
   mediaProbeSchema,
   networkInterfaceListSchema,
@@ -21,6 +22,7 @@ import {
   type BroadcastConfigurationSummary,
   type BroadcastTaskFileContent,
   type TickerSourceContent,
+  type SystemFont,
   type ClipPreviewSession,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
@@ -109,6 +111,25 @@ export async function scanAudioTracks(
   return audioTrackScanSchema.parse(
     await request("/api/audio-tracks/scan", {
       body: JSON.stringify({ directoryPath, mediaPaths }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+/** Системные шрифты машины, где работает media-service. */
+export async function listSystemFonts(): Promise<SystemFont[]> {
+  return systemFontListSchema.parse(await request("/api/effects/fonts")).items;
+}
+
+/** Заголовки новостной ленты. Качает сервер: у окна Electron строгий CSP. */
+export async function readTickerFeed(
+  url: string,
+  limit = 30,
+): Promise<TickerSourceContent> {
+  return tickerSourceContentSchema.parse(
+    await request("/api/effects/broadcast/ticker-feed", {
+      body: JSON.stringify({ limit, url }),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),

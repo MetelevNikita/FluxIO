@@ -16,6 +16,8 @@ import {
  */
 
 const maximumTaskBytes = 4 * 1024 * 1024;
+const maximumFeedBytes = 4 * 1024 * 1024;
+const feedTimeoutMs = 15_000;
 
 export async function readBroadcastTaskFile(filePath: string): Promise<BroadcastTaskFileContent> {
   const resolvedPath = await readableFile(filePath, [".json"]);
@@ -146,4 +148,91 @@ async function readableFile(filePath: string, extensions: string[]): Promise<str
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Заголовки новостной ленты для бегущей строки.
+ *
+ * Ленту качает сервер, а не интерфейс: у Electron-окна строгий CSP, и запрос к
+ * произвольному домену оттуда не уйдёт. Схема ограничена http/https, размер и
+ * время ответа урезаны — эфирная машина не должна вставать из-за чужого сайта.
+ */
+export async function readTickerFeed(url: string, limit: number): Promise<TickerSourceContent> {
+  const target = new URL(url);
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new Error("Ticker feed URL must use http or https");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), feedTimeoutMs);
+  let text: string;
+  try {
+    const response = await fetch(target, {
+      headers: { accept: "application/rss+xml, application/xml, text/xml, */*" },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Ticker feed responded with ${response.status} ${response.statusText}`);
+    }
+    const body = await response.arrayBuffer();
+    if (body.byteLength > maximumFeedBytes) {
+      throw new Error(`Ticker feed is larger than ${maximumFeedBytes} bytes`);
+    }
+    text = new TextDecoder("utf-8").decode(body);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Ticker feed did not answer within ${feedTimeoutMs / 1_000} seconds`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  return tickerSourceContentSchema.parse({
+    filePath: target.toString(),
+    ...parseTickerFeed(text, limit),
+  });
+}
+
+/**
+ * Заголовки из RSS 2.0 и Atom. Полноценный XML-разбор здесь не нужен и вреден:
+ * лента может быть какой угодно, а нам требуются только `title` внутри записей.
+ */
+export function parseTickerFeed(
+  xml: string,
+  limit: number,
+): { items: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const entries = [...xml.matchAll(/<(item|entry)\b[\s\S]*?<\/\1>/gi)].map((match) => match[0]);
+  if (entries.length === 0) {
+    throw new Error("The feed has no <item> or <entry> elements");
+  }
+  const items: string[] = [];
+  for (const entry of entries) {
+    const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(entry)?.[1];
+    const text = title ? decodeFeedText(title) : "";
+    if (!text) {
+      warnings.push("Запись ленты без заголовка пропущена");
+      continue;
+    }
+    items.push(text);
+    if (items.length >= limit) break;
+  }
+  if (items.length === 0) throw new Error("The feed has no usable headlines");
+  return { items, warnings };
+}
+
+function decodeFeedText(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }

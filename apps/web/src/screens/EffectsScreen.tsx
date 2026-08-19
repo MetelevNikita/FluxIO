@@ -2,6 +2,7 @@ import type {
   BroadcastEffectKind,
   GraphicEffectAsset,
   LottieEditableProperty,
+  SystemFont,
 } from "@gruber/contracts";
 import type { DotLottie as DotLottiePlayer } from "@lottiefiles/dotlottie-web";
 import {
@@ -28,7 +29,7 @@ import {
   applyLottiePropertyOverrides,
   updateLinkedScaleVector,
 } from "../lottie-properties";
-import { getLottieSource, lottieWasmUrl } from "../media-api";
+import { getLottieSource, listSystemFonts, lottieWasmUrl } from "../media-api";
 import {
   BroadcastEffectInspector,
   broadcastEffectCatalog,
@@ -61,11 +62,18 @@ interface EffectsScreenProps {
   onSelectBroadcastTaskFile: (effectId: string) => Promise<void>;
   onSelectTickerSourceFile: (effectId: string) => Promise<void>;
   onSelectStingerFile: (effectId: string) => Promise<void>;
+  onLoadTickerFeed: (effectId: string) => Promise<void>;
   /** Идёт эфир: тяжёлый WASM-предпросмотр в это время не крутим. */
   playoutActive: boolean;
 }
 
-export function EffectsScreen({
+/**
+ * Экран обёрнут в `memo`: опрос статуса эфира раз в секунду перерисовывает всё
+ * дерево приложения, и без этого вкладка перестраивалась под руками оператора.
+ * Все обработчики приходят стабильными (`useStableCallback` в App.tsx), поэтому
+ * сравнение пропсов реально срабатывает.
+ */
+export const EffectsScreen = memo(function EffectsScreen({
   effects,
   clips,
   busy,
@@ -84,8 +92,19 @@ export function EffectsScreen({
   onSelectBroadcastTaskFile,
   onSelectTickerSourceFile,
   onSelectStingerFile,
+  onLoadTickerFeed,
   playoutActive,
 }: EffectsScreenProps) {
+  // Системные шрифты запрашиваются один раз за сессию: список большой, а
+  // меняется он только при установке шрифтов в систему.
+  const [fonts, setFonts] = useState<SystemFont[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void listSystemFonts()
+      .then((items) => { if (!cancelled) setFonts(items); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
   const [previewEffect, setPreviewEffect] = useState<GraphicEffectAsset | null>(null);
@@ -356,6 +375,8 @@ export function EffectsScreen({
                     setDraftEffect(next);
                     onChangeBroadcastEffect(next);
                   }}
+                  fonts={fonts}
+                  onLoadTickerFeed={() => void onLoadTickerFeed(draftEffect.id)}
                   onSelectStingerFile={() => void onSelectStingerFile(draftEffect.id)}
                   onSelectTaskFile={() => void onSelectBroadcastTaskFile(draftEffect.id)}
                   onSelectTickerSource={() => void onSelectTickerSourceFile(draftEffect.id)}
@@ -374,7 +395,7 @@ export function EffectsScreen({
       )}
     </main>
   );
-}
+});
 
 const LottiePreview = memo(function LottiePreview({
   effect,
@@ -638,7 +659,9 @@ function PropertyInput({ property, onChange }: {
     return <input checked={Boolean(property.value)} onChange={(event) => onChange(event.target.checked)} type="checkbox" />;
   }
   if (property.type === "color") {
-    return <input onChange={(event) => onChange(event.target.value.toUpperCase())} type="color" value={String(property.value)} />;
+    // Значение пипетки браузер отдаёт строчными буквами: приводя его к верхнему
+    // регистру, мы расходились с DOM и поле переставало слушаться.
+    return <input onChange={(event) => onChange(event.target.value)} type="color" value={String(property.value).toLowerCase()} />;
   }
   if (property.type === "number") {
     return (

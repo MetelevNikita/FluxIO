@@ -38,6 +38,7 @@ import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
+import { useStableCallback } from "./stable-callback";
 import {
   applyGraphicReplacements,
   collectMissingGraphics,
@@ -78,6 +79,7 @@ import {
   scanMediaDirectory,
   scanAudioTracks,
   readBroadcastTaskFile,
+  readTickerFeed,
   readTickerSourceFile,
   verifyGraphicEffectPaths,
   scanGraphicEffectDirectory,
@@ -161,6 +163,28 @@ export function App() {
   const [missingGraphics, setMissingGraphics] = useState<MissingGraphic[]>([]);
   const [missingGraphicsResolved, setMissingGraphicsResolved] =
     useState<Record<string, string>>({});
+
+  const stableAddEffectToClip = useStableCallback((...args: [string, string]) =>
+    addEffectToClip(...args));
+  const stableAddEffectToProject = useStableCallback((id: string) => addEffectToProject(id));
+  const stableClearTitleDirectory = useStableCallback((id: string) => clearEffectTitleDirectory(id));
+  const stableRemoveEffect = useStableCallback((id: string) => removeEffect(id));
+  const stableRenderProjectLottie = useStableCallback((effect: GraphicEffectAsset) =>
+    renderProjectLottie(effect));
+  const stableSelectEffectDirectory = useStableCallback(() => selectEffectDirectory());
+  const stableSelectEffectFiles = useStableCallback(() => selectEffectFiles());
+  const stableSelectTitleDirectory = useStableCallback((id: string) =>
+    selectEffectTitleDirectory(id));
+  const stableChangeBroadcastEffect = useStableCallback((effect: GraphicEffectAsset) =>
+    changeBroadcastEffect(effect));
+  const stableCreateBroadcastEffect = useStableCallback((kind: BroadcastEffectKind) =>
+    createBroadcastEffect(kind));
+  const stableSelectBroadcastTaskFile = useStableCallback((id: string) =>
+    selectBroadcastTaskFile(id));
+  const stableSelectStingerFile = useStableCallback((id: string) => selectStingerFile(id));
+  const stableSelectTickerSourceFile = useStableCallback((id: string) =>
+    selectTickerSourceFile(id));
+  const stableLoadTickerFeed = useStableCallback((id: string) => loadTickerFeed(id));
 
   const playoutActive = Boolean(
     playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
@@ -1264,6 +1288,40 @@ export function App() {
     }
   }
 
+  /** Заголовки новостной ленты. Качает media-service: у окна Electron строгий CSP. */
+  async function loadTickerFeed(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    const url = effect?.broadcast?.settings.tickerCrawl.feedUrl;
+    if (!url) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const content = await readTickerFeed(url);
+      updateBroadcastSettings(effectId, (entry) => ({
+        ...entry,
+        broadcast: entry.broadcast && {
+          ...entry.broadcast,
+          settings: {
+            ...entry.broadcast.settings,
+            tickerCrawl: {
+              ...entry.broadcast.settings.tickerCrawl,
+              items: content.items,
+              source: "feed",
+            },
+          },
+        },
+      }));
+      setEffectsMessage(
+        `Лента прочитана: ${content.items.length} заголовков. ` +
+          "Примените эффект заново, чтобы новости ушли в эфир.",
+      );
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
   async function selectTickerSourceFile(effectId: string) {
     const filePath = await window.gruberDesktop?.selectTickerSourceFile();
     if (!filePath) return;
@@ -1757,7 +1815,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "7.0.1",
+        connection.kind === "ready" ? connection.health.version : "7.0.2",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1966,20 +2024,21 @@ export function App() {
           clips={effectTargetClips}
           effects={effectLibrary}
           message={effectsMessage}
-          onAddToClip={addEffectToClip}
-          onAddToEntireProject={addEffectToProject}
-          onClearTitleDirectory={clearEffectTitleDirectory}
-          onRemove={removeEffect}
-          onRenderLottie={renderProjectLottie}
-          onSelectDirectory={window.gruberDesktop ? selectEffectDirectory : undefined}
-          onSelectFiles={window.gruberDesktop ? selectEffectFiles : undefined}
-          onSelectTitleDirectory={window.gruberDesktop ? selectEffectTitleDirectory : undefined}
+          onAddToClip={stableAddEffectToClip}
+          onAddToEntireProject={stableAddEffectToProject}
+          onClearTitleDirectory={stableClearTitleDirectory}
+          onRemove={stableRemoveEffect}
+          onRenderLottie={stableRenderProjectLottie}
+          onSelectDirectory={window.gruberDesktop ? stableSelectEffectDirectory : undefined}
+          onSelectFiles={window.gruberDesktop ? stableSelectEffectFiles : undefined}
+          onSelectTitleDirectory={window.gruberDesktop ? stableSelectTitleDirectory : undefined}
           broadcastTaskSummaries={broadcastTaskSummaries}
-          onChangeBroadcastEffect={changeBroadcastEffect}
-          onCreateBroadcastEffect={createBroadcastEffect}
-          onSelectBroadcastTaskFile={selectBroadcastTaskFile}
-          onSelectStingerFile={selectStingerFile}
-          onSelectTickerSourceFile={selectTickerSourceFile}
+          onChangeBroadcastEffect={stableChangeBroadcastEffect}
+          onCreateBroadcastEffect={stableCreateBroadcastEffect}
+          onSelectBroadcastTaskFile={stableSelectBroadcastTaskFile}
+          onSelectStingerFile={stableSelectStingerFile}
+          onSelectTickerSourceFile={stableSelectTickerSourceFile}
+          onLoadTickerFeed={stableLoadTickerFeed}
           playoutActive={playoutActive}
         />
       ) : null}
@@ -2575,6 +2634,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
     durationSeconds: Math.max(0.04, effectiveAssetDuration(asset)),
     id: asset.id,
     name: asset.name,
+    scheduleType: asset.scheduleType ?? null,
   };
 }
 

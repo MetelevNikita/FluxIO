@@ -102,6 +102,7 @@ function broadcastEffect(
         tickerCrawl: {
           direction: "left",
           durationSeconds: 60,
+          feedUrl: "",
           filePath: null,
           items: [],
           repeat: 0,
@@ -134,6 +135,7 @@ function style() {
     boxOpacity: 0.62,
     boxPaddingPercent: 0.9,
     color: "#FFFFFF",
+    fontFamily: "",
     fontFilePath: null,
     fontSizePercent: 4.2,
     xPercent: 4,
@@ -233,6 +235,24 @@ test("next program reads the following playlist item and warns on the last clip"
   assert.match(result.warnings[0]!, /is the last clip and has no fallback title/);
 });
 
+test("next program announces the next movie and skips idents between films", () => {
+  const graded: BroadcastTargetClip[] = [
+    { durationSeconds: 100, id: "a", name: "Фильм А", scheduleType: "movie" },
+    { durationSeconds: 20, id: "b", name: "Отбивка", scheduleType: "chop" },
+    { durationSeconds: 30, id: "c", name: "Анонс", scheduleType: "clip" },
+    { durationSeconds: 90, id: "d", name: "Фильм Б", scheduleType: "movie" },
+  ];
+  const result = plan({
+    clips: graded,
+    effect: broadcastEffect("next-program", {}),
+    preset: preset([textProperty("Main composition · next_title", "prop-title")]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "Фильм Б" });
+});
+
 test("next program falls back to a drawtext plate when no preset is loaded", () => {
   const result = plan({
     effect: broadcastEffect("next-program", {}),
@@ -244,6 +264,33 @@ test("next program falls back to a drawtext plate when no preset is loaded", () 
   assert.equal(result.textOverlays.length, 1);
   assert.equal(result.textOverlays[0]!.overlay.mode, "static");
   assert.equal(result.textOverlays[0]!.overlay.content, "Вечерние новости");
+});
+
+test("Cyrillic without a chosen font is flagged before it reaches air", () => {
+  const result = plan({
+    effect: broadcastEffect("ticker-crawl", {
+      tickerCrawl: {
+        direction: "left", durationSeconds: 60, feedUrl: "", filePath: null,
+        items: ["Срочные новости"], repeat: 0, separator: " • ", source: "manual",
+        speedPixelsPerSecond: 120, startSeconds: 0, style: style(),
+      },
+    }),
+    targetIds: new Set(["a"]),
+  });
+  assert.match(result.warnings.join("\n"), /кириллица, но шрифт не выбран/);
+
+  const withFont = plan({
+    effect: broadcastEffect("ticker-crawl", {
+      tickerCrawl: {
+        direction: "left", durationSeconds: 60, feedUrl: "", filePath: null,
+        items: ["Срочные новости"], repeat: 0, separator: " • ", source: "manual",
+        speedPixelsPerSecond: 120, startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+      },
+    }),
+    targetIds: new Set(["a"]),
+  });
+  assert.deepEqual(withFont.warnings, []);
 });
 
 test("ticker joins messages and closes the loop with the separator", () => {

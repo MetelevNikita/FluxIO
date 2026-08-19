@@ -4688,3 +4688,126 @@ input[type="range"] {
 }
 
 .missing-graphics-dialog > footer button:disabled { opacity: 0.4; }
+
+/* ========================================================================== *
+ * Предпросмотр эфирного эффекта
+ * ========================================================================== */
+
+.broadcast-preview { display: flex; flex-direction: column; gap: 5px; }
+
+.broadcast-preview-frame {
+  position: relative;
+  container-type: size;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  /* Шахматка как в остальных превью: видно, что фон прозрачный. */
+  background:
+    repeating-conic-gradient(#15181c 0% 25%, #0d1013 0% 50%) 0 0 / 14px 14px;
+}
+
+.broadcast-preview-text,
+.broadcast-preview-ticker {
+  position: absolute;
+  border-radius: 2px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.broadcast-preview-ticker { width: 100%; overflow: hidden; }
+
+.broadcast-preview-ticker > span {
+  display: inline-block;
+  padding-left: 100%;
+  animation-name: broadcast-crawl;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes broadcast-crawl {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+
+.broadcast-preview-note {
+  position: absolute;
+  inset: auto 8px 8px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.6;
+}
+
+.broadcast-preview-caption {
+  margin: 0;
+  color: var(--muted-dark);
+  font-size: 8px;
+  line-height: 1.6;
+}
+
+.stinger-preview {
+  position: absolute;
+  inset: 50% 12px auto;
+  transform: translateY(-50%);
+}
+
+.stinger-preview-bar {
+  position: relative;
+  display: flex;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.stinger-preview-a,
+.stinger-preview-b {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.stinger-preview-a { background: rgba(245, 213, 101, 0.28); }
+.stinger-preview-b { background: rgba(77, 141, 253, 0.3); }
+
+.stinger-preview-bar > i {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--danger);
+}
+
+.stinger-preview-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: var(--muted-dark);
+  font-size: 7px;
+}
+
+.stinger-preview-legend strong { color: var(--danger); }
+
+.broadcast-feed-url {
+  flex: 1 1 220px;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 7px;
+  color: var(--text);
+  background: #12161b;
+  font-size: 9px;
+}
+
+.broadcast-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--muted-dark);
+  font-size: 8px;
+  font-style: normal;
+  line-height: 1.6;
+}
