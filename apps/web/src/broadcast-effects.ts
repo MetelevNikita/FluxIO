@@ -335,7 +335,14 @@ function planClockCountdown(context: PlanContext): void {
   const settings = context.definition.settings.clockCountdown;
   for (const clip of context.targets) {
     const startSeconds = settings.startSeconds;
-    const endSeconds = startSeconds + settings.durationSeconds;
+    // Отсчёт «до конца ролика» считается по хронометражу каждого ролика
+    // отдельно: одно и то же назначение на разных роликах даёт разное время.
+    const countdownSeconds = settings.countdownSource === "clip-remaining"
+      ? Math.max(1, clip.durationSeconds - startSeconds)
+      : settings.countdownSeconds;
+    const endSeconds = settings.countdownSource === "clip-remaining"
+      ? clip.durationSeconds
+      : startSeconds + settings.durationSeconds;
     if (context.preset) {
       pushLayer(context, clip, {
         endSeconds,
@@ -347,14 +354,18 @@ function planClockCountdown(context: PlanContext): void {
     pushTextOverlay(context, clip, {
       clockFormat: settings.format,
       content: "",
-      countdownFromSeconds: settings.mode === "countdown" ? settings.countdownSeconds : 0,
+      countdownFromSeconds: settings.mode === "countdown" ? countdownSeconds : 0,
       endSeconds,
       mode: settings.mode === "countdown" ? "countdown" : "clock",
       startSeconds,
       style: settings.style,
       timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
     });
-    if (settings.mode === "countdown" && settings.countdownSeconds > settings.durationSeconds) {
+    if (
+      settings.mode === "countdown" &&
+      settings.countdownSource === "fixed" &&
+      settings.countdownSeconds > settings.durationSeconds
+    ) {
       context.plan.warnings.push(
         `"${clip.name}": the window is shorter than the countdown, so it disappears before zero`,
       );

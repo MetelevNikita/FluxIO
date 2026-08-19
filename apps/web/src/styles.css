@@ -4811,3 +4811,61 @@ input[type="range"] {
   font-style: normal;
   line-height: 1.6;
 }
+
+.preset-fields {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 9px;
+  background: #0d1013;
+}
+
+.preset-fields > summary {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  cursor: pointer;
+  color: var(--tier2);
+  font-size: 9px;
+}
+
+.preset-fields table {
+  width: 100%;
+  margin-top: 7px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.preset-fields th {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+  color: var(--muted-dark);
+  font-size: 7px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.preset-fields td {
+  overflow: hidden;
+  padding: 3px 6px 3px 0;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-fields td code {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+}
+
+.preset-fields > p {
+  margin: 7px 0 0;
+  color: var(--muted-dark);
+  font-size: 8px;
+  line-height: 1.6;
+}
+
+.broadcast-field-invalid { border-color: var(--warning) !important; }

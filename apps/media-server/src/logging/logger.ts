@@ -79,6 +79,34 @@ export class ApplicationLogger {
     await this.#queue;
   }
 
+  /**
+   * Наблюдатель за задержкой цикла событий.
+   *
+   * Пока media-service занят одной длинной синхронной операцией — рендером
+   * Lottie, разбором большого расписания — он не отвечает ни на один запрос, и
+   * оператор видит это как «залипший» интерфейс. Понять причину по интерфейсу
+   * невозможно, поэтому каждая такая заминка пишется в журнал с длительностью:
+   * в следующий раз будет видно, что именно держало сервис.
+   */
+  watchEventLoop(thresholdMs = 500, sampleMs = 250): () => void {
+    let previous = Date.now();
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const lag = now - previous - sampleMs;
+      previous = now;
+      if (lag >= thresholdMs) {
+        this.log(
+          "warn",
+          "SERVICE",
+          `Сервис не отвечал ${(lag / 1_000).toFixed(2)} с — на это время интерфейс замирает`,
+          new Date(now),
+        );
+      }
+    }, sampleMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
   /** Смена суток: отчёт уходит в старый файл, статистика начинается заново. */
   #rollOver(at: Date): void {
     const date = localDateKey(at);

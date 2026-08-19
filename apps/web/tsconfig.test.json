@@ -11,6 +11,8 @@
   },
   "include": [
     "src/default-broadcast-settings.ts",
+    "src/clip-duration.ts",
+    "src/clip-duration.test.ts",
     "src/missing-graphics.ts",
     "src/missing-graphics.test.ts",
     "src/broadcast-effects.ts",

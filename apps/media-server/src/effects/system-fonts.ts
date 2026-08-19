@@ -54,13 +54,26 @@ export async function scanSystemFonts(
       const family = readFontFamily(buffer) ?? path.basename(filePath, path.extname(filePath));
       // Служебные шрифты системы начинаются с точки и оператору не нужны.
       if (!family || family.startsWith(".")) continue;
-      // Одно семейство обычно лежит несколькими начертаниями: оператору нужен
-      // один пункт списка, а не десять.
-      if (found.has(family)) continue;
+      // Одно семейство обычно лежит несколькими начертаниями. Оператору нужен
+      // один пункт списка — и это должно быть обычное начертание: без замены
+      // «Arial» означал бы файл Arial Bold Italic, просто первый по алфавиту.
+      const existing = found.get(family);
+      if (existing && styleRank(existing.filePath) <= styleRank(filePath)) continue;
       found.set(family, { cyrillic: supportsCyrillic(buffer), family, filePath });
     }
   }
   return [...found.values()].sort((left, right) => left.family.localeCompare(right.family));
+}
+
+const styleKeywords = [
+  "bold", "italic", "oblique", "light", "thin", "black", "heavy",
+  "medium", "semibold", "condensed", "narrow", "expanded",
+];
+
+/** Чем меньше, тем «обычнее» начертание. Обычное имя файла не несёт стилей. */
+function styleRank(filePath: string): number {
+  const name = path.basename(filePath).toLowerCase();
+  return styleKeywords.filter((keyword) => name.includes(keyword)).length;
 }
 
 async function collectFontFiles(directory: string): Promise<string[]> {
@@ -140,7 +153,7 @@ export function readFontFamily(buffer: Buffer): string | null {
     const start = storage + buffer.readUInt16BE(record + 10);
     if (start + length > buffer.length) continue;
     const value = platformId === 3 || platformId === 0
-      ? buffer.toString("utf16le", start, start + length).replace(/(.)(.)/g, "$2$1")
+      ? decodeUtf16BE(buffer, start, length)
       : buffer.toString("latin1", start, start + length);
     const family = value.replace(/\0/g, "").trim();
     if (!family) continue;
@@ -148,6 +161,19 @@ export function readFontFamily(buffer: Buffer): string | null {
     fallback ??= family;
   }
   return fallback;
+}
+
+/**
+ * Строка таблицы `name` записана в UTF-16 **big-endian**.
+ *
+ * Переставлять символы после декодирования нельзя: `toString("utf16le")` уже
+ * склеил байты попарно не в том порядке, и обмен символов местами даёт
+ * бессмыслицу — вместо «.New York» получалось «一⸀眀攀夀 爀漀欀». Менять порядок
+ * нужно у байтов и до декодирования.
+ */
+function decodeUtf16BE(buffer: Buffer, start: number, length: number): string {
+  if (length <= 0 || length % 2 !== 0) return "";
+  return Buffer.from(buffer.subarray(start, start + length)).swap16().toString("utf16le");
 }
 
 /** Есть ли в шрифте кириллица. Отсутствие «А» означает пустые прямоугольники в эфире. */

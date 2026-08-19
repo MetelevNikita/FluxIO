@@ -38,6 +38,7 @@ import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
+import { airDurationSeconds } from "./clip-duration";
 import { useStableCallback } from "./stable-callback";
 import {
   applyGraphicReplacements,
@@ -1815,7 +1816,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "7.0.2",
+        connection.kind === "ready" ? connection.health.version : "7.0.4",
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -2639,10 +2640,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 function effectiveAssetDuration(asset: MediaAsset): number {
-  return Math.max(
-    0,
-    Math.min(asset.declaredDurationSeconds ?? asset.durationSeconds, asset.durationSeconds),
-  );
+  return airDurationSeconds(asset);
 }
 
 function primitiveSettings(

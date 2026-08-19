@@ -19,6 +19,8 @@ type JsonObject = Record<string, unknown>;
 const maximumJsonBytes = 20 * 1024 * 1024;
 const maximumEmbeddedAssetBytes = 20 * 1024 * 1024;
 const maximumDurationSeconds = 60;
+/** Максимум, на который рендер вправе занять цикл событий, не отдавая его API. */
+const maximumBlockingMs = 16;
 const require = createRequire(import.meta.url);
 let wasmReady: Promise<void> | null = null;
 
@@ -243,6 +245,7 @@ async function renderLottieMovie(
       });
     });
     const frames = Math.max(1, Math.round(player.totalFrames));
+    let lastYieldAt = Date.now();
     for (let frame = 0; frame < frames; frame += 1) {
       player.setFrame(frame);
       const buffer = player.buffer;
@@ -250,9 +253,15 @@ async function renderLottieMovie(
         throw new Error(`Lottie renderer returned an invalid RGBA frame ${frame}`);
       }
       if (!ffmpeg.stdin.write(Buffer.from(buffer))) await once(ffmpeg.stdin, "drain");
-      // DotLottie frame rendering is CPU-heavy, especially for UHD projects.
-      // Yield regularly so health, status and workspace API calls stay responsive.
-      if (frame % 2 === 1) await yieldToEventLoop();
+      // Рендер кадра DotLottie — тяжёлая синхронная операция, особенно на UHD.
+      // Пока она идёт, сервис не отвечает ни на один запрос, и оператор видит
+      // это как замерший интерфейс. Уступаем цикл событий по времени, а не
+      // через каждые два кадра: длительность кадра зависит от проекта, и на
+      // тяжёлом шаблоне пара кадров успевала занять сотни миллисекунд.
+      if (Date.now() - lastYieldAt >= maximumBlockingMs) {
+        await yieldToEventLoop();
+        lastYieldAt = Date.now();
+      }
     }
     ffmpeg.stdin.end();
     await completed;

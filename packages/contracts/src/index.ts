@@ -275,6 +275,11 @@ export const animationInOutModeSchema = z.enum(["in", "out", "in-out"]);
 export const tickerDirectionSchema = z.enum(["left", "right"]);
 export const tickerSourceSchema = z.enum(["manual", "file", "feed"]);
 export const clockModeSchema = z.enum(["clock", "countdown"]);
+/**
+ * Откуда берётся длительность отсчёта: заданное число секунд или остаток
+ * хронометража того ролика, на котором эффект запущен.
+ */
+export const countdownSourceSchema = z.enum(["fixed", "clip-remaining"]);
 export const clockFormatSchema = z.enum(["HH:MM:SS", "HH:MM", "MM:SS", "SS"]);
 export const nextProgramSourceSchema = z.enum(["playlist-name", "task-file"]);
 /** `alpha` — у файла есть альфа-канал; `luma` — чёрный фон вырезается lumakey. */
@@ -393,7 +398,8 @@ export const clockCountdownSettingsSchema = z.object({
   mode: clockModeSchema.default("clock"),
   format: clockFormatSchema.default("HH:MM:SS"),
   timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0),
-  /** countdown: длительность отсчёта в секундах. */
+  countdownSource: countdownSourceSchema.default("fixed"),
+  /** countdown + fixed: длительность отсчёта в секундах. */
   countdownSeconds: z.number().positive().max(86_400).default(60),
   startSeconds: z.number().nonnegative().max(86_400).default(0),
   durationSeconds: z.number().positive().max(86_400).default(60),
@@ -1329,6 +1335,7 @@ export type TickerCrawlSettings = z.infer<typeof tickerCrawlSettingsSchema>;
 export type ClockCountdownSettings = z.infer<typeof clockCountdownSettingsSchema>;
 export type StingerTransitionSettings = z.infer<typeof stingerTransitionSettingsSchema>;
 export type StingerBlendMode = z.infer<typeof stingerBlendModeSchema>;
+export type CountdownSource = z.infer<typeof countdownSourceSchema>;
 export type BroadcastTextStyle = z.infer<typeof broadcastTextStyleSchema>;
 export type BroadcastTextOverlay = z.infer<typeof broadcastTextOverlaySchema>;
 export type BroadcastTextOverlayMode = z.infer<typeof broadcastTextOverlayModeSchema>;

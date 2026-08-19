@@ -32,6 +32,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { airDurationSeconds } from "../clip-duration";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
@@ -1921,10 +1922,7 @@ function formatLayerSeconds(seconds: number): string {
 }
 
 function effectiveClipDuration(asset: MediaAsset): number {
-  return Math.max(
-    0.04,
-    Math.min(asset.declaredDurationSeconds ?? asset.durationSeconds, asset.durationSeconds),
-  );
+  return Math.max(0.04, airDurationSeconds(asset));
 }
 
 function shortEffectName(value: string): string {

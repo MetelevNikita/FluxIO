@@ -941,7 +941,14 @@ function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 100);
+    // 100 мс — это 10 запросов в секунду к media-service, который во время
+    // эфира и так занят процессами FFmpeg. При любой долгой операции на сервере
+    // очередь этих запросов росла, а интерфейс переставал отвечать. 250 мс
+    // для индикатора уровня достаточно, а в скрытой вкладке опрос не нужен вовсе.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void refresh();
+    }, 250);
     return () => {
       cancelled = true;
       window.clearInterval(timer);

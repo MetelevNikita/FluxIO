@@ -72,6 +72,7 @@ function broadcastEffect(
         },
         clockCountdown: {
           countdownSeconds: 60,
+          countdownSource: "fixed",
           durationSeconds: 60,
           format: "HH:MM:SS",
           mode: "clock",
@@ -253,6 +254,25 @@ test("next program announces the next movie and skips idents between films", () 
   assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "Фильм Б" });
 });
 
+test("start offset counts from the end even when the clip came from a schedule", () => {
+  // Ролик длиной 3600 с: плашка за 30 с до конца должна встать на 3570, а не
+  // в начало. Раньше нулевая длительность неразобранного файла обнуляла окно.
+  const scheduled: BroadcastTargetClip[] = [
+    { durationSeconds: 3_600, id: "a", name: "Фильм А", scheduleType: "movie" },
+    { durationSeconds: 2_700, id: "b", name: "Фильм Б", scheduleType: "movie" },
+  ];
+  const result = plan({
+    clips: scheduled,
+    effect: broadcastEffect("next-program", {}),
+    preset: preset([textProperty("Main composition · next_title", "prop-title")]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.layers[0]!.layer.startSeconds, 3_570);
+  assert.equal(result.layers[0]!.layer.endSeconds, 3_577);
+});
+
 test("next program falls back to a drawtext plate when no preset is loaded", () => {
   const result = plan({
     effect: broadcastEffect("next-program", {}),
@@ -297,6 +317,36 @@ test("ticker joins messages and closes the loop with the separator", () => {
   assert.equal(joinTickerItems(["one"], " • "), "one");
   assert.equal(joinTickerItems(["one", "two"], " • "), "one • two • ");
   assert.equal(joinTickerItems([" ", ""], " • "), "");
+});
+
+test("countdown to the end of the clip is measured per clip, not per setting", () => {
+  const result = plan({
+    effect: broadcastEffect("clock-countdown", {
+      clockCountdown: {
+        countdownSeconds: 60,
+        countdownSource: "clip-remaining",
+        durationSeconds: 60,
+        format: "MM:SS",
+        mode: "countdown",
+        startSeconds: 10,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+        timezoneOffsetMinutes: 0,
+      },
+    }),
+    targetIds: null,
+  });
+
+  // Ролик A длится 100 с, ролик B — 80 с: отсчёт у каждого свой и приходит
+  // в ноль ровно на конце ролика, а не через фиксированные 60 с.
+  assert.deepEqual(
+    result.textOverlays.map((entry) => [
+      entry.assetId,
+      entry.overlay.countdownFromSeconds,
+      entry.overlay.startSeconds,
+      entry.overlay.endSeconds,
+    ]),
+    [["a", 90, 10, 100], ["b", 70, 10, 80]],
+  );
 });
 
 test("stinger splits across the cut and takes the second half from mid file", () => {

@@ -25,6 +25,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
   const app = Fastify(options);
   const context = createRouteContext();
   const checkpoint = new WorkspaceCheckpoint(context);
+  let stopEventLoopWatch: (() => void) | null = null;
 
   app.addHook("onRequest", async (request, reply) => {
     applyCorsHeaders(request.headers.origin, reply);
@@ -36,6 +37,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
 
   app.addHook("onReady", async () => {
     context.logger.serviceStarted(serviceVersion);
+    stopEventLoopWatch = context.logger.watchEventLoop();
     if (!context.database) {
       context.logger.log("warn", "SERVICE", "База данных не настроена: сервис работает в режиме degraded");
       return;
@@ -48,6 +50,7 @@ export function buildApp(options: FastifyServerOptions = {}) {
 
   app.addHook("onClose", async () => {
     checkpoint.stop();
+    stopEventLoopWatch?.();
     await closeServices(context);
     await context.logger.serviceStopping();
   });

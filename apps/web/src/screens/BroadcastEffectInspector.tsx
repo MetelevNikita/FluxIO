@@ -5,7 +5,8 @@ import type {
   GraphicEffectAsset,
   SystemFont,
 } from "@gruber/contracts";
-import { FileJson2, FileVideo2, FolderOpen, Rss, RotateCcw } from "lucide-react";
+import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw } from "lucide-react";
+import { lottieTextFields } from "../broadcast-effects";
 import { useEffect, useState, type ReactNode } from "react";
 
 /**
@@ -98,6 +99,9 @@ export function BroadcastEffectInspector({
     });
   };
 
+  const selectedPreset = presets.find((candidate) => candidate.id === definition.presetEffectId);
+  const presetKeys = selectedPreset ? [...lottieTextFields(selectedPreset).keys()] : [];
+
   const presetPicker = (label: string, optional: boolean) => (
     <label className="broadcast-field">
       <span>{label}</span>
@@ -127,6 +131,7 @@ export function BroadcastEffectInspector({
       </div>
 
       <BroadcastEffectPreview effect={effect} presets={presets} />
+      <PresetFieldsHint effect={effect} presets={presets} />
 
       {definition.kind === "animation-in-out" ? (
         <>
@@ -217,15 +222,19 @@ export function BroadcastEffectInspector({
                 <option value="task-file">Файл задания, ключ next_title</option>
               </select>
             </label>
-            <TextField
-              disabled={busy}
-              label="Ключ названия в Lottie"
+            <PresetKeyField
+              busy={busy}
+              hint="сюда уходит название следующего фильма"
+              keys={presetKeys}
+              label="Поле названия"
               onChange={(titleKey) => updateSettings("nextProgram", { titleKey })}
               value={settings.nextProgram.titleKey}
             />
-            <TextField
-              disabled={busy}
-              label="Ключ подзаголовка"
+            <PresetKeyField
+              busy={busy}
+              hint="необязательно"
+              keys={presetKeys}
+              label="Поле подзаголовка"
               onChange={(subtitleKey) => updateSettings("nextProgram", { subtitleKey })}
               value={settings.nextProgram.subtitleKey}
             />
@@ -441,34 +450,62 @@ export function BroadcastEffectInspector({
                 value={settings.clockCountdown.timezoneOffsetMinutes}
               />
             ) : (
-              <NumberField
-                disabled={busy}
-                hint="с какого значения идёт отсчёт"
-                label="Длительность отсчёта, с"
-                min={1}
-                onChange={(countdownSeconds) =>
-                  updateSettings("clockCountdown", { countdownSeconds })}
-                step={1}
-                value={settings.clockCountdown.countdownSeconds}
-              />
+              <>
+                <label className="broadcast-field">
+                  <span>Что отсчитываем</span>
+                  <select
+                    disabled={busy}
+                    onChange={(event) => updateSettings("clockCountdown", {
+                      countdownSource: event.target.value as "fixed" | "clip-remaining",
+                    })}
+                    value={settings.clockCountdown.countdownSource}
+                  >
+                    <option value="clip-remaining">До конца ролика</option>
+                    <option value="fixed">Заданное число секунд</option>
+                  </select>
+                </label>
+                {settings.clockCountdown.countdownSource === "fixed" ? (
+                  <NumberField
+                    disabled={busy}
+                    hint="с какого значения идёт отсчёт"
+                    label="Длительность отсчёта, с"
+                    min={1}
+                    onChange={(countdownSeconds) =>
+                      updateSettings("clockCountdown", { countdownSeconds })}
+                    step={1}
+                    value={settings.clockCountdown.countdownSeconds}
+                  />
+                ) : null}
+              </>
             )}
             <NumberField
               disabled={busy}
+              hint="от начала ролика"
               label="Start, с"
               min={0}
               onChange={(startSeconds) => updateSettings("clockCountdown", { startSeconds })}
               step={1}
               value={settings.clockCountdown.startSeconds}
             />
-            <NumberField
-              disabled={busy}
-              label="Duration, с"
-              min={0.04}
-              onChange={(durationSeconds) => updateSettings("clockCountdown", { durationSeconds })}
-              step={1}
-              value={settings.clockCountdown.durationSeconds}
-            />
+            {settings.clockCountdown.mode === "countdown" &&
+              settings.clockCountdown.countdownSource === "clip-remaining" ? null : (
+              <NumberField
+                disabled={busy}
+                label="Duration, с"
+                min={0.04}
+                onChange={(durationSeconds) => updateSettings("clockCountdown", { durationSeconds })}
+                step={1}
+                value={settings.clockCountdown.durationSeconds}
+              />
+            )}
           </div>
+          {settings.clockCountdown.mode === "countdown" &&
+            settings.clockCountdown.countdownSource === "clip-remaining" ? (
+            <p className="broadcast-hint">
+              Отсчёт считается по хронометражу каждого ролика отдельно и приходит в ноль ровно
+              на его конце, поэтому окно показа задаётся автоматически — от Start и до конца ролика.
+            </p>
+          ) : null}
           <TextStyleFields
             busy={busy}
             fonts={fonts}
@@ -571,6 +608,107 @@ export function BroadcastEffectInspector({
         </>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Какие текстовые поля есть у выбранного пресета.
+ *
+ * Ключ поля — это имя текстового слоя из After Effects, и угадать его нельзя.
+ * Раньше оператор набирал ключ руками, промахивался, и плашка молча выходила
+ * в эфир с шаблонным текстом. Теперь набор ключей виден прямо в инспекторе:
+ * их же надо писать в файл задания Animation in/out.
+ */
+function PresetFieldsHint({
+  effect,
+  presets,
+}: {
+  effect: GraphicEffectAsset;
+  presets: GraphicEffectAsset[];
+}) {
+  const definition = effect.broadcast;
+  const preset = presets.find((candidate) => candidate.id === definition?.presetEffectId);
+  if (!definition || !preset) return null;
+  if (!preset.lottie) {
+    return (
+      <p className="broadcast-hint">
+        Пресет «{preset.name}» — обычное alpha-медиа: текстовых полей в нём нет,
+        подставить в него ничего нельзя.
+      </p>
+    );
+  }
+  const fields = [...lottieTextFields(preset).entries()];
+  if (fields.length === 0) {
+    return (
+      <p className="broadcast-warning">
+        В пресете «{preset.name}» нет редактируемых текстовых слоёв. В After Effects заголовок
+        должен остаться Text Layer — если его перевели в кривые перед экспортом Bodymovin,
+        подставить текст уже невозможно.
+      </p>
+    );
+  }
+  return (
+    <details className="preset-fields" open>
+      <summary>
+        <KeyRound size={11} /> Поля пресета «{preset.name}» — {fields.length}
+      </summary>
+      <table>
+        <thead>
+          <tr><th>Ключ</th><th>Текст в шаблоне</th></tr>
+        </thead>
+        <tbody>
+          {fields.map(([key, property]) => (
+            <tr key={key}>
+              <td><code>{key}</code></td>
+              <td title={String(property.value)}>{String(property.value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p>
+        {definition.kind === "animation-in-out"
+          ? "Эти ключи пишутся в файл задания рядом с name. Сравнение точное и с учётом регистра."
+          : "Выберите ключ в полях выше — именно в него уйдёт подставляемый текст."}
+      </p>
+    </details>
+  );
+}
+
+/** Ключ поля выбирается из реального набора пресета, а не набирается руками. */
+function PresetKeyField({
+  busy,
+  hint,
+  keys,
+  label,
+  onChange,
+  value,
+}: {
+  busy: boolean;
+  hint?: string;
+  keys: string[];
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}): ReactNode {
+  // Пресета ещё нет — оставляем ручной ввод, иначе поле нечем заполнить.
+  if (keys.length === 0) {
+    return <TextField disabled={busy} hint={hint} label={label} onChange={onChange} value={value} />;
+  }
+  const missing = Boolean(value) && !keys.includes(value);
+  return (
+    <label className="broadcast-field">
+      <span>{label}{hint ? <i>{hint}</i> : null}</span>
+      <select
+        className={missing ? "broadcast-field-invalid" : ""}
+        disabled={busy}
+        onChange={(event) => onChange(event.target.value)}
+        value={missing ? "" : value}
+      >
+        <option value="">— не подставлять —</option>
+        {keys.map((key) => <option key={key} value={key}>{key}</option>)}
+        {missing ? <option value={value}>{value} — в пресете нет</option> : null}
+      </select>
+    </label>
   );
 }
 
