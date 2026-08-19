@@ -148,7 +148,12 @@ export function BroadcastEffectInspector({
         <button
           className="broadcast-save-button"
           disabled={busy || assignedClipCount === 0}
-          onClick={onApplyChanges}
+          onClick={() => {
+            if (window.confirm(
+              `Сохранить настройки «${effect.name}» и перенести их в ${assignedClipCount} ролик(ов)?\n\n` +
+                "Прежние слои этого эффекта будут заменены новыми.",
+            )) onApplyChanges();
+          }}
           title={assignedClipCount === 0
             ? "Эффект ещё не назначен ни одному ролику"
             : `Перенести настройки в ${assignedClipCount} ролик(ов)`}
@@ -425,6 +430,24 @@ export function BroadcastEffectInspector({
               />
             </label>
           )}
+          {definition.presetEffectId ? (
+            <div className="broadcast-grid">
+              <PresetKeyField
+                busy={busy}
+                hint="постоянная подпись на подложке"
+                keys={presetKeys}
+                label="Поле подписи в пресете"
+                onChange={(captionKey) => updateSettings("tickerCrawl", { captionKey })}
+                value={settings.tickerCrawl.captionKey}
+              />
+              <TextField
+                disabled={busy}
+                label="Текст подписи"
+                onChange={(captionText) => updateSettings("tickerCrawl", { captionText })}
+                value={settings.tickerCrawl.captionText}
+              />
+            </div>
+          ) : null}
           <TextStyleFields
             busy={busy}
             fonts={fonts}
@@ -534,6 +557,24 @@ export function BroadcastEffectInspector({
               Отсчёт считается по хронометражу каждого ролика отдельно и приходит в ноль ровно
               на его конце, поэтому окно показа задаётся автоматически — от Start и до конца ролика.
             </p>
+          ) : null}
+          {definition.presetEffectId ? (
+            <div className="broadcast-grid">
+              <PresetKeyField
+                busy={busy}
+                hint="постоянная подпись на подложке"
+                keys={presetKeys}
+                label="Поле подписи в пресете"
+                onChange={(captionKey) => updateSettings("clockCountdown", { captionKey })}
+                value={settings.clockCountdown.captionKey}
+              />
+              <TextField
+                disabled={busy}
+                label="Текст подписи"
+                onChange={(captionText) => updateSettings("clockCountdown", { captionText })}
+                value={settings.clockCountdown.captionText}
+              />
+            </div>
           ) : null}
           <TextStyleFields
             busy={busy}

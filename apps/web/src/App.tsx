@@ -2765,7 +2765,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.5";
+const applicationVersion = "7.0.6";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

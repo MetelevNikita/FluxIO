@@ -671,7 +671,12 @@ p {
 .effects-screen {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  /* Экран сам не прокручивается: прокручиваются колонки. Иначе панель настроек
+     уезжала нижним краем за видимую область, и элементы, попавшие в эту полосу,
+     переставали принимать клики — снаружи это выглядело как «залипший» селектор. */
+  overflow: hidden;
   padding: 24px;
   background: var(--background);
   color-scheme: dark;
@@ -802,15 +807,20 @@ p {
 .effect-remove-button:hover { color: var(--danger); background: var(--danger-soft); }
 
 .effects-workspace {
+  flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(420px, 0.9fr) minmax(420px, 1.1fr);
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .effects-workspace .effects-grid {
+  min-height: 0;
+  align-content: start;
   grid-template-columns: minmax(0, 1fr);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .effect-card {
@@ -850,9 +860,10 @@ p {
 
 .effect-inspector {
   min-width: 0;
-  max-height: calc(100vh - 190px);
-  position: sticky;
-  top: 0;
+  min-height: 0;
+  /* Высота задаётся колонкой, а не расчётом от 100vh: над панелью есть шапка,
+     каталог и предупреждение о версии, и любое магическое число здесь врёт. */
+  max-height: 100%;
   display: grid;
   /* Шапка с предпросмотром фиксированной высоты, настройки — вся оставшаяся
      высота со своей прокруткой. */
@@ -2347,12 +2358,35 @@ p {
   flex: 1 1 180px;
   grid-template-columns: repeat(2, minmax(76px, 1fr));
   align-items: start;
+  /* Высота строки фиксирована: чипы уходят в колонки, а не растягивают ролик. */
+  max-height: 48px;
+  gap: 2px 3px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .playlist-row.has-many-fx .fx-layer-chip {
   width: 100%;
   max-width: none;
 }
+
+/* Чем больше графики, тем больше колонок и мельче чип — высота та же. */
+.playlist-row.fx-density-medium .fx-layer-chips {
+  grid-template-columns: repeat(3, minmax(58px, 1fr));
+}
+
+.playlist-row.fx-density-medium .fx-layer-chip { height: 19px; }
+.playlist-row.fx-density-medium .fx-layer-chip > i { padding: 0 3px; font-size: 6.5px; }
+.playlist-row.fx-density-medium .fx-layer-chip > button { width: 15px; min-width: 15px; }
+
+.playlist-row.fx-density-high .fx-layer-chips {
+  grid-template-columns: repeat(4, minmax(46px, 1fr));
+}
+
+.playlist-row.fx-density-high .fx-layer-chip { height: 16px; }
+.playlist-row.fx-density-high .fx-layer-chip > i { padding: 0 2px; font-size: 6px; }
+.playlist-row.fx-density-high .fx-layer-chip > button { width: 13px; min-width: 13px; }
+.playlist-row.fx-density-high .fx-layer-chip > button svg { width: 7px; height: 7px; }
 
 .fx-layer-chip {
   max-width: 154px;

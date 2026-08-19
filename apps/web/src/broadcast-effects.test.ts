@@ -71,6 +71,8 @@ function broadcastEffect(
           taskFilePath: null,
         },
         clockCountdown: {
+          captionKey: "",
+          captionText: "",
           countdownSeconds: 60,
           countdownSource: "fixed",
           durationSeconds: 60,
@@ -107,6 +109,8 @@ function broadcastEffect(
           filePath: null,
           items: [],
           repeat: 0,
+          captionKey: "",
+          captionText: "",
           separator: " • ",
           source: "manual",
           speedPixelsPerSecond: 120,
@@ -317,6 +321,59 @@ test("ticker joins messages and closes the loop with the separator", () => {
   assert.equal(joinTickerItems(["one"], " • "), "one");
   assert.equal(joinTickerItems(["one", "two"], " • "), "one • two • ");
   assert.equal(joinTickerItems([" ", ""], " • "), "");
+});
+
+test("a caption is baked into the chosen preset field, the live value stays drawtext", () => {
+  const result = plan({
+    effect: broadcastEffect("clock-countdown", {
+      clockCountdown: {
+        captionKey: "eng",
+        captionText: "МОСКВА",
+        countdownSeconds: 60,
+        countdownSource: "fixed",
+        durationSeconds: 60,
+        format: "HH:MM",
+        mode: "clock",
+        startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+        timezoneOffsetMinutes: 0,
+      },
+    }),
+    preset: preset([textProperty("Main composition · eng", "prop-eng")]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  // Подпись уходит в поле пресета…
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-eng": "МОСКВА" });
+  assert.equal(result.layers[0]!.renderKey, result.renders[0]!.key);
+  // …а сами часы остаются динамической надписью: покадровое значение
+  // в запечённый Lottie не положить.
+  assert.equal(result.textOverlays[0]!.overlay.mode, "clock");
+});
+
+test("a caption pointing at a missing preset field is reported, not silently dropped", () => {
+  const result = plan({
+    effect: broadcastEffect("clock-countdown", {
+      clockCountdown: {
+        captionKey: "нет-такого",
+        captionText: "МОСКВА",
+        countdownSeconds: 60,
+        countdownSource: "fixed",
+        durationSeconds: 60,
+        format: "HH:MM",
+        mode: "clock",
+        startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+        timezoneOffsetMinutes: 0,
+      },
+    }),
+    preset: preset([textProperty("Main composition · eng", "prop-eng")]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.renders, []);
+  assert.match(result.warnings.join("\n"), /нет текстового поля "нет-такого"/);
 });
 
 test("countdown to the end of the clip is measured per clip, not per setting", () => {

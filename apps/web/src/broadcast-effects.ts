@@ -301,7 +301,7 @@ function planTickerCrawl(context: PlanContext): void {
       pushLayer(context, clip, {
         endSeconds,
         name: `${context.effect.name} plate`,
-        renderKey: null,
+        renderKey: presetCaptionRender(context, settings.captionKey, settings.captionText),
         startSeconds,
       });
     }
@@ -347,7 +347,7 @@ function planClockCountdown(context: PlanContext): void {
       pushLayer(context, clip, {
         endSeconds,
         name: `${context.effect.name} plate`,
-        renderKey: null,
+        renderKey: presetCaptionRender(context, settings.captionKey, settings.captionText),
         startSeconds,
       });
     }
@@ -567,6 +567,28 @@ function pushTextOverlay(
       startSeconds,
     },
   });
+}
+
+/**
+ * Постоянная подпись на подложке: текст уходит в выбранное текстовое поле
+ * пресета так же, как у Next program. Живое значение — бегущая строка, часы,
+ * отсчёт — по-прежнему рисует drawtext: оно меняется покадрово, и в
+ * запечённый Lottie его не положить.
+ */
+function presetCaptionRender(
+  context: PlanContext,
+  captionKey: string,
+  captionText: string,
+): string | null {
+  if (!captionKey || !captionText || !context.preset) return null;
+  const field = lottieTextFields(context.preset).get(captionKey);
+  if (!field) {
+    context.plan.warnings.push(
+      `В пресете нет текстового поля "${captionKey}" — подпись не подставлена`,
+    );
+    return null;
+  }
+  return registerRender(context, { [field.id]: captionText });
 }
 
 /**

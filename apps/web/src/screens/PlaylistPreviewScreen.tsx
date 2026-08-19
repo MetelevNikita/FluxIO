@@ -922,7 +922,7 @@ export function PlaylistPreviewScreen({
                 </div>
               ) : null}
             <div
-              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${(asset.effects?.length ?? 0) > 2 ? "has-many-fx" : ""} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               data-asset-id={asset.id}
               draggable
               onDragEnd={() => setDraggingIds([])}
@@ -1919,6 +1919,22 @@ function shortPath(value: string): string {
 function formatLayerSeconds(seconds: number): string {
   const value = Math.max(0, seconds);
   return value >= 100 ? `${Math.round(value)} с` : `${value.toFixed(1)} с`;
+}
+
+/**
+ * Плотность чипов графики в строке ролика.
+ *
+ * Число слоёв у ролика ничем не ограничено, а высота строки расти не должна:
+ * чипы уходят в колонки и уменьшаются по мере накопления, оставаясь в пределах
+ * той же высоты. Порог считается по всей графике ролика — FX-слои и
+ * динамические надписи делят одно и то же место.
+ */
+function fxDensityClass(asset: MediaAsset): string {
+  const total = (asset.effects?.length ?? 0) + (asset.textOverlays?.length ?? 0);
+  if (total > 8) return "has-many-fx fx-density-high";
+  if (total > 4) return "has-many-fx fx-density-medium";
+  if (total > 2) return "has-many-fx";
+  return "";
 }
 
 function effectiveClipDuration(asset: MediaAsset): number {

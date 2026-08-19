@@ -391,6 +391,9 @@ export const tickerCrawlSettingsSchema = z.object({
   repeat: z.number().int().nonnegative().max(999).default(0),
   startSeconds: z.number().nonnegative().max(86_400).default(0),
   durationSeconds: z.number().positive().max(86_400).default(60),
+  /** Ключ текстового поля пресета, куда подставляется постоянная подпись. */
+  captionKey: z.string().max(128).default(""),
+  captionText: z.string().max(512).default(""),
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
 });
 
@@ -403,6 +406,8 @@ export const clockCountdownSettingsSchema = z.object({
   countdownSeconds: z.number().positive().max(86_400).default(60),
   startSeconds: z.number().nonnegative().max(86_400).default(0),
   durationSeconds: z.number().positive().max(86_400).default(60),
+  captionKey: z.string().max(128).default(""),
+  captionText: z.string().max(512).default(""),
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
 });
 
