@@ -575,9 +575,15 @@ export function PlaylistPreviewScreen({
     });
   }
 
-  function removeTextOverlayFromItem(assetId: string, overlayId: string): void {
+  /**
+   * Эффект второго уровня лежит на ролике двумя сущностями — плашкой-файлом и
+   * живой надписью, — поэтому снимается целиком по своему id. Снять что-то одно
+   * значило бы оставить на ролике половину эффекта.
+   */
+  function removeBroadcastFromItem(assetId: string, effectId: string): void {
     onUpdateItems([assetId], (asset) => ({
-      textOverlays: removeEffectLayerById(asset.textOverlays ?? [], overlayId),
+      effects: (asset.effects ?? []).filter((layer) => layer.effectId !== effectId),
+      textOverlays: (asset.textOverlays ?? []).filter((overlay) => overlay.effectId !== effectId),
     }));
   }
 
@@ -1148,17 +1154,15 @@ export function PlaylistPreviewScreen({
                     ))}
                   </select>
                 </label>
-                {(asset.textOverlays ?? []).length > 0 ? (
-                  <span className="fx-layer-chips" title="Динамические надписи ролика">
-                    {asset.textOverlays?.map((overlay) => (
-                      <span className="fx-layer-chip tier2" key={overlay.id} title={
-                        `${overlay.mode.toUpperCase()} · ${overlay.content || overlay.name}`
-                      }>
-                        <i>{shortEffectName(overlay.name)} · {overlay.mode.toUpperCase()}</i>
+                {broadcastChips(asset).length > 0 ? (
+                  <span className="fx-layer-chips" title="Эфирные эффекты второго уровня">
+                    {broadcastChips(asset).map((chip) => (
+                      <span className="fx-layer-chip tier2" key={chip.effectId} title={chip.title}>
+                        <i>{shortEffectName(chip.name)} · {chip.badge}</i>
                         <button
-                          aria-label={`Remove ${overlay.name} from ${asset.name}`}
-                          onClick={() => removeTextOverlayFromItem(asset.id, overlay.id)}
-                          title={`Снять «${overlay.name}» с этого ролика`}
+                          aria-label={`Remove ${chip.name} from ${asset.name}`}
+                          onClick={() => removeBroadcastFromItem(asset.id, chip.effectId)}
+                          title={`Снять «${chip.name}» с этого ролика целиком`}
                           type="button"
                         >
                           <Trash2 size={9} />
@@ -1167,9 +1171,9 @@ export function PlaylistPreviewScreen({
                     ))}
                   </span>
                 ) : null}
-                {(asset.effects ?? []).length > 0 ? (
+                {(asset.effects ?? []).some((layer) => layer.tier !== 2) ? (
                   <span className="fx-layer-chips" title="FX order from lower to upper layer">
-                    {asset.effects?.map((layer, index) => (
+                    {asset.effects?.filter((layer) => layer.tier !== 2).map((layer, index) => (
                       (() => {
                         const definition = effectLibrary.find((effect) => effect.id === layer.effectId);
                         const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
@@ -1929,6 +1933,48 @@ function formatLayerSeconds(seconds: number): string {
  * той же высоты. Порог считается по всей графике ролика — FX-слои и
  * динамические надписи делят одно и то же место.
  */
+/**
+ * Чипы эфирных эффектов ролика: один эффект — один чип.
+ *
+ * На ролик эффект второго уровня кладёт до двух сущностей: плашку из пресета
+ * (готовый файл) и живое значение (рисуется покадрово). Показывать их двумя
+ * записями значило бы выдавать одно применение за два эффекта.
+ */
+function broadcastChips(asset: MediaAsset): {
+  effectId: string;
+  name: string;
+  badge: string;
+  title: string;
+}[] {
+  const groups = new Map<string, { name: string; plate: boolean; modes: string[] }>();
+  for (const layer of asset.effects ?? []) {
+    if (layer.tier !== 2) continue;
+    const group = groups.get(layer.effectId) ?? { modes: [], name: layer.name, plate: false };
+    group.plate = true;
+    groups.set(layer.effectId, group);
+  }
+  for (const overlay of asset.textOverlays ?? []) {
+    const group = groups.get(overlay.effectId) ?? { modes: [], name: overlay.name, plate: false };
+    group.name = overlay.name;
+    if (!group.modes.includes(overlay.mode)) group.modes.push(overlay.mode);
+    groups.set(overlay.effectId, group);
+  }
+  return [...groups.entries()].map(([effectId, group]) => {
+    const parts = [...group.modes.map((mode) => mode.toUpperCase())];
+    if (group.plate) parts.push("ПЛАШКА");
+    return {
+      badge: parts.join("+") || "L2",
+      effectId,
+      name: group.name,
+      title: group.plate && group.modes.length > 0
+        ? `${group.name}: плашка из пресета плюс живое значение`
+        : group.plate
+          ? `${group.name}: плашка из пресета`
+          : `${group.name}: живое значение`,
+    };
+  });
+}
+
 function fxDensityClass(asset: MediaAsset): string {
   const total = (asset.effects?.length ?? 0) + (asset.textOverlays?.length ?? 0);
   if (total > 8) return "has-many-fx fx-density-high";

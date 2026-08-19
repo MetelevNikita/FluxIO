@@ -22,15 +22,43 @@ export interface TextOverlayFrame {
   airEpochSeconds: number;
 }
 
+/**
+ * Полоса, внутри которой едет бегущая строка: строка рисуется на отдельном
+ * прозрачном холсте этого размера и накладывается на кадр, поэтому текст
+ * физически не может выйти за её края. `null` — полоса во весь кадр, отдельный
+ * холст не нужен.
+ */
+export function tickerRegion(
+  overlay: BroadcastTextOverlay,
+  frame: TextOverlayFrame,
+): { x: number; y: number; width: number; height: number } | null {
+  if (overlay.mode !== "ticker" || overlay.regionWidthPercent >= 100) return null;
+  const width = Math.max(16, Math.round(frame.width * overlay.regionWidthPercent / 100));
+  // Высота с запасом на выносные элементы букв.
+  const height = Math.max(8, Math.round(fontSize(overlay.style, frame.height) * 1.8));
+  return {
+    height,
+    width,
+    x: Math.round(frame.width * overlay.regionXPercent / 100),
+    y: Math.round(frame.height * overlay.style.yPercent / 100) - Math.round(height / 2),
+  };
+}
+
 /** Один аргумент фильтра `drawtext` без завершающей запятой. */
 export function buildTextOverlayFilter(
   overlay: BroadcastTextOverlay,
   frame: TextOverlayFrame,
+  /** Строка рисуется на своём холсте: координаты считаются от его левого верха. */
+  insideRegion = false,
 ): string {
   const options = [
     `text='${overlayText(overlay, frame)}'`,
     `x='${overlayX(overlay, frame)}'`,
-    `y=${Math.round(frame.height * overlay.style.yPercent / 100)}`,
+    // Y — это середина строки по высоте, а не её верх: так надпись попадает
+    // ровно на место текстового слоя Lottie, чья координата тоже даёт середину.
+    insideRegion
+      ? "y='(h-th)/2'"
+      : `y='${Math.round(frame.height * overlay.style.yPercent / 100)}-th/2'`,
     `fontsize=${fontSize(overlay.style, frame.height)}`,
     `fontcolor=${overlay.style.color}`,
     ...(overlay.style.fontFilePath
@@ -104,7 +132,12 @@ function clockParts(
  */
 function overlayX(overlay: BroadcastTextOverlay, frame: TextOverlayFrame): string {
   if (overlay.mode !== "ticker") {
-    return String(Math.round(frame.width * overlay.style.xPercent / 100));
+    // Выключка считается по реальной ширине надписи (`tw`), поэтому
+    // центрированный текст остаётся центрированным при любом значении.
+    const anchor = Math.round(frame.width * overlay.style.xPercent / 100);
+    if (overlay.style.align === "center") return `${anchor}-tw/2`;
+    if (overlay.style.align === "right") return `${anchor}-tw`;
+    return String(anchor);
   }
   const speed = decimal(overlay.speedPixelsPerSecond);
   const travelled = `(max(0,t-${decimal(overlay.startSeconds)})*${speed})`;

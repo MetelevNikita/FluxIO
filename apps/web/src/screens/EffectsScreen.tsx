@@ -69,6 +69,8 @@ interface EffectsScreenProps {
   onImportBroadcastPreset: (effectId: string) => Promise<void>;
   /** Сколько роликов несёт каждый эффект — по его id. */
   assignedClipCounts: Record<string, number>;
+  /** Перестановка эффекта в списке: порядок задаёт оператор. */
+  onReorder: (movedEffectId: string, beforeEffectId: string | null) => void;
   /** Идёт эфир: тяжёлый WASM-предпросмотр в это время не крутим. */
   playoutActive: boolean;
 }
@@ -102,8 +104,11 @@ export const EffectsScreen = memo(function EffectsScreen({
   onApplyBroadcastChanges,
   onImportBroadcastPreset,
   assignedClipCounts,
+  onReorder,
   playoutActive,
 }: EffectsScreenProps) {
+  const [draggedEffectId, setDraggedEffectId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   // Системные шрифты запрашиваются один раз за сессию: список большой, а
   // меняется он только при установке шрифтов в систему.
   const [fonts, setFonts] = useState<SystemFont[]>([]);
@@ -255,12 +260,53 @@ export const EffectsScreen = memo(function EffectsScreen({
         </div>
       ) : (
         <div className="effects-workspace">
-          <section className="effects-grid" aria-label="Project effects">
+          <section
+            className="effects-grid"
+            aria-label="Project effects"
+            onDragOver={(event) => { if (draggedEffectId) event.preventDefault(); }}
+            onDrop={(event) => {
+              // Сброс мимо карточки — перенос в конец списка.
+              if (event.target === event.currentTarget && draggedEffectId) {
+                event.preventDefault();
+                onReorder(draggedEffectId, null);
+              }
+              setDraggedEffectId(null);
+              setDropTargetId(null);
+            }}
+          >
             {effects.map((effect) => (
               <article
-                className={`effect-card ${effect.broadcast ? "broadcast" : ""} ${selectedEffect?.id === effect.id ? "selected" : ""}`}
+                className={`effect-card ${effect.broadcast ? "broadcast" : ""} ${selectedEffect?.id === effect.id ? "selected" : ""} ${draggedEffectId === effect.id ? "dragging" : ""} ${dropTargetId === effect.id ? "drop-target" : ""}`}
+                draggable
                 key={effect.id}
                 onClick={() => selectEffect(effect)}
+                onDragEnd={() => {
+                  setDraggedEffectId(null);
+                  setDropTargetId(null);
+                }}
+                onDragLeave={() => setDropTargetId((current) =>
+                  current === effect.id ? null : current)}
+                onDragOver={(event) => {
+                  if (!draggedEffectId || draggedEffectId === effect.id) return;
+                  // Без preventDefault браузер не считает элемент целью сброса.
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropTargetId(effect.id);
+                }}
+                onDragStart={(event) => {
+                  setDraggedEffectId(effect.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  // Safari игнорирует перетаскивание без полезной нагрузки.
+                  event.dataTransfer.setData("text/plain", effect.id);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (draggedEffectId && draggedEffectId !== effect.id) {
+                    onReorder(draggedEffectId, effect.id);
+                  }
+                  setDraggedEffectId(null);
+                  setDropTargetId(null);
+                }}
               >
                 <div className={`effect-kind-icon ${effect.broadcast ? "broadcast" : effect.lottie ? "lottie" : effect.kind}`}>
                   {effect.broadcast

@@ -9,7 +9,9 @@ import { DotLottie } from "@lottiefiles/dotlottie-web";
 import {
   graphicEffectAssetSchema,
   lottieEffectMetadataSchema,
+  lottieTextBoxSchema,
   type GraphicEffectAsset,
+  type LottieTextBox,
   type LottieEditableProperty,
   type LottieEffectMetadata,
 } from "@gruber/contracts";
@@ -122,7 +124,14 @@ export function inspectLottieDocument(
     throw new Error(`Lottie duration must be greater than 0 and no more than ${maximumDurationSeconds} seconds`);
   }
   const properties: LottieEditableProperty[] = [];
-  collectLayerProperties(document.layers, "/layers", "Main composition", properties, document.slots);
+  collectLayerProperties(
+    document.layers,
+    "/layers",
+    "Main composition",
+    properties,
+    document.slots,
+    document,
+  );
   if (Array.isArray(document.assets)) {
     document.assets.forEach((asset, index) => {
       if (!isObject(asset) || !Array.isArray(asset.layers)) return;
@@ -328,6 +337,8 @@ function collectLayerProperties(
   compositionName: string,
   target: LottieEditableProperty[],
   slots: unknown,
+  /** Корневой документ: из него берутся размер кадра и границы времени. */
+  composition: JsonObject | null = null,
 ): void {
   if (!Array.isArray(layers)) return;
   layers.forEach((layer, layerIndex) => {
@@ -356,7 +367,8 @@ function collectLayerProperties(
       collectTransformProperty(layer.ks.s, `${layerPath}/ks/s`, group, "Scale", "vector", target);
     }
     if (isObject(layer.t) && isObject(layer.t.d)) {
-      collectTextProperties(layer.t.d, layerPath, group, slots, target);
+      collectTextProperties(layer.t.d, layerPath, group, slots, target, () =>
+        composition ? readTextBox(composition, layers, layer, firstTextDocument(layer.t)) : null);
     }
     collectShapeProperties(layer.shapes, `${layerPath}/shapes`, group, target);
   });
@@ -368,6 +380,7 @@ function collectTextProperties(
   group: string,
   slots: unknown,
   target: LottieEditableProperty[],
+  textBox: () => LottieTextBox | null = () => null,
 ): void {
   const slotId = stringValue(textDocument.sid);
   if (slotId && isObject(slots)) {
@@ -377,9 +390,10 @@ function collectTextProperties(
       `/slots/${encodePointerSegment(slotId)}/p`,
       `${group} · Slot ${slotId}`,
       target,
+      textBox,
     )) return;
   }
-  collectTextKeyframes(textDocument, `${layerPath}/t/d`, group, target);
+  collectTextKeyframes(textDocument, `${layerPath}/t/d`, group, target, textBox);
 }
 
 function collectTextKeyframes(
@@ -387,6 +401,7 @@ function collectTextKeyframes(
   documentPath: string,
   group: string,
   target: LottieEditableProperty[],
+  textBox: () => LottieTextBox | null = () => null,
 ): boolean {
   if (!Array.isArray(textDocument.k)) return false;
   const textKeyframes = textDocument.k;
@@ -401,9 +416,142 @@ function collectTextKeyframes(
       type: "text",
       value: keyframe.s.t,
       animated: textKeyframes.length > 1,
+      textBox: textBox(),
     });
   });
   return found;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Геометрия текстового слоя
+ * -------------------------------------------------------------------------- */
+
+interface LayerTransform {
+  position: [number, number];
+  anchor: [number, number];
+  scale: [number, number];
+  rotationDegrees: number;
+}
+
+/**
+ * Где на кадре стоит текстовый слой и чем он нарисован.
+ *
+ * Нужно, чтобы живое значение эффекта — часы, отсчёт, бегущая строка — встало
+ * ровно на место слоя шаблона: Lottie рендерится один раз в файл, и меняющееся
+ * значение в него не запечь.
+ *
+ * Позиция считается на середине композиции: у слоя или его родителя анимация
+ * входа в первом кадре могла ещё не отыграть (масштаб 0 — и координата уехала
+ * бы в ноль). Ключевые кадры не интерполируются — берётся значение действующего
+ * кадра; для статичной плашки это то же самое, а для анимированной даёт
+ * положение «в покое».
+ */
+function readTextBox(
+  document: JsonObject,
+  layers: unknown[],
+  layer: JsonObject,
+  textDocument: JsonObject,
+): LottieTextBox | null {
+  const width = readPositiveInteger(document.w, "width");
+  const height = readPositiveInteger(document.h, "height");
+  const time = (readFiniteNumber(document.ip, "in point") +
+    readFiniteNumber(document.op, "out point")) / 2;
+
+  let x = 0;
+  let y = 0;
+  let scaleX = 1;
+  let scaleY = 1;
+  let current: JsonObject | null = layer;
+  const visited = new Set<unknown>();
+  // Позиция слоя задана в системе координат родителя, поэтому поднимаемся по
+  // цепочке до корня. `visited` страхует от циклической ссылки в битом файле.
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const transform = readTransform(current, time);
+    const anchorX = transform.anchor[0] * transform.scale[0];
+    const anchorY = transform.anchor[1] * transform.scale[1];
+    x = transform.position[0] + x * transform.scale[0] - anchorX;
+    y = transform.position[1] + y * transform.scale[1] - anchorY;
+    scaleX *= transform.scale[0];
+    scaleY *= transform.scale[1];
+    const parentIndex: unknown = current.parent;
+    const parent = typeof parentIndex === "number"
+      ? layers.find((candidate) => isObject(candidate) && candidate.ind === parentIndex)
+      : undefined;
+    current = isObject(parent) ? parent : null;
+  }
+
+  const fontSize = numberValue(textDocument.s) ?? 0;
+  if (fontSize <= 0) return null;
+  return lottieTextBoxSchema.parse({
+    align: justificationAlign(numberValue(textDocument.j) ?? 0),
+    color: fillColor(textDocument.fc),
+    fontSizePercent: Math.abs(fontSize * scaleY) / height * 100,
+    xPercent: x / width * 100,
+    yPercent: y / height * 100,
+  });
+}
+
+function readTransform(layer: JsonObject, time: number): LayerTransform {
+  const ks = isObject(layer.ks) ? layer.ks : {};
+  return {
+    anchor: readVector(ks.a, time, [0, 0]),
+    position: readVector(ks.p, time, [0, 0]),
+    rotationDegrees: readVector(ks.r ?? ks.rz, time, [0, 0])[0],
+    scale: readVector(ks.s, time, [100, 100]).map((value) => value / 100) as [number, number],
+  };
+}
+
+/** Первый текстовый документ слоя — из него берутся кегль, цвет и выключка. */
+function firstTextDocument(text: unknown): JsonObject {
+  if (!isObject(text) || !isObject(text.d) || !Array.isArray(text.d.k)) return {};
+  const first = text.d.k.find((keyframe) => isObject(keyframe) && isObject(keyframe.s));
+  return isObject(first) && isObject(first.s) ? first.s : {};
+}
+
+/** Значение свойства на момент `time`: статическое либо действующий ключевой кадр. */
+function readVector(
+  property: unknown,
+  time: number,
+  fallback: [number, number],
+): [number, number] {
+  if (!isObject(property)) return fallback;
+  const raw = property.k;
+  if (typeof raw === "number") return [raw, raw];
+  if (Array.isArray(raw) && raw.every((entry) => typeof entry === "number")) {
+    return [raw[0] ?? fallback[0], raw[1] ?? fallback[1]];
+  }
+  if (!Array.isArray(raw)) return fallback;
+  let value: number[] | null = null;
+  for (const keyframe of raw) {
+    if (!isObject(keyframe)) continue;
+    const keyTime = numberValue(keyframe.t) ?? 0;
+    const start = keyframe.s;
+    if (Array.isArray(start) && start.every((entry) => typeof entry === "number")) {
+      if (value === null || keyTime <= time) value = start as number[];
+    }
+    if (keyTime > time && value !== null) break;
+  }
+  return value ? [value[0] ?? fallback[0], value[1] ?? fallback[1]] : fallback;
+}
+
+function justificationAlign(justification: number): LottieTextBox["align"] {
+  if (justification === 1) return "right";
+  if (justification === 2) return "center";
+  return "left";
+}
+
+function fillColor(value: unknown): string {
+  if (!Array.isArray(value) || value.length < 3) return "#FFFFFF";
+  return `#${[0, 1, 2]
+    .map((index) => Math.round(Math.min(1, Math.max(0, Number(value[index]) || 0)) * 255)
+      .toString(16)
+      .padStart(2, "0"))
+    .join("")}`.toUpperCase();
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function collectShapeProperties(
@@ -475,7 +623,8 @@ function initialAnimatableValue(property: JsonObject): unknown {
 
 function pushProperty(
   target: LottieEditableProperty[],
-  input: Omit<LottieEditableProperty, "id" | "overridden">,
+  input: Omit<LottieEditableProperty, "id" | "overridden" | "textBox"> &
+    { textBox?: LottieTextBox | null },
 ): void {
   if (target.some((property) => property.path === input.path)) return;
   target.push({
@@ -483,6 +632,7 @@ function pushProperty(
     id: createHash("sha1").update(input.path).digest("hex").slice(0, 16),
     originalValue: structuredClone(input.value),
     overridden: false,
+    textBox: input.textBox ?? null,
   });
 }
 

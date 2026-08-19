@@ -56,6 +56,7 @@ test("the same Lottie source can be imported repeatedly as independent projects"
         id: "text-1",
         label: "Title",
         overridden: true,
+      textBox: null,
         path: "layers.0.t.d.k.0.s.t",
         type: "text",
         value: "News",

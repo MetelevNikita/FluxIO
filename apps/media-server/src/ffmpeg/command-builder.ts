@@ -14,7 +14,7 @@ import type {
   VideoEncoding,
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings } from "@gruber/contracts";
-import { buildTextOverlayFilter } from "./text-overlay.js";
+import { buildTextOverlayFilter, tickerRegion } from "./text-overlay.js";
 import {
   ffmpegMpegTsMuxDelaySeconds,
   ffmpegMpegTsMuxPreloadSeconds,
@@ -672,12 +672,31 @@ function buildFilterGraph(
     // строка и часы всегда должны оставаться читаемыми.
     textOverlays.forEach((overlay, overlayIndex) => {
       const outputLabel = `vtext${index}_${overlayIndex}`;
+      const frame = {
+        airEpochSeconds: item.airEpochSeconds ?? Date.now() / 1_000,
+        height: request.video.height,
+        width: request.video.width,
+      };
+      const region = tickerRegion(overlay, frame);
+      if (!region) {
+        filters.push(
+          `[${itemVideoSource}]${buildTextOverlayFilter(overlay, frame)},` +
+            `format=yuv420p[${outputLabel}]`,
+        );
+        itemVideoSource = outputLabel;
+        return;
+      }
+      // Строка ограничена полосой: рисуем её на отдельном прозрачном холсте
+      // нужного размера и накладываем. Обрезка получается настоящей — сам
+      // `drawtext` рисовать «до края и не дальше» не умеет.
+      const canvas = `vtickerbg${index}_${overlayIndex}`;
+      const painted = `vticker${index}_${overlayIndex}`;
       filters.push(
-        `[${itemVideoSource}]${buildTextOverlayFilter(overlay, {
-          airEpochSeconds: item.airEpochSeconds ?? Date.now() / 1_000,
-          height: request.video.height,
-          width: request.video.width,
-        })},format=yuv420p[${outputLabel}]`,
+        `color=c=black@0:s=${region.width}x${region.height}:` +
+          `r=${decimal(request.video.frameRate)}:d=${decimal(item.durationSeconds)}[${canvas}]`,
+        `[${canvas}]${buildTextOverlayFilter(overlay, frame, true)}[${painted}]`,
+        `[${itemVideoSource}][${painted}]overlay=x=${region.x}:y=${region.y}:` +
+          `eof_action=pass:format=auto,format=yuv420p[${outputLabel}]`,
       );
       itemVideoSource = outputLabel;
     });

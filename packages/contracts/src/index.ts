@@ -263,6 +263,8 @@ export const itemLogoOverlaySchema = logoOverlaySchema.extend({
  * поэтому эфирный контур ничего не знает про уровни.
  * ------------------------------------------------------------------------- */
 
+export const lottieTextAlignSchema = z.enum(["left", "center", "right"]);
+
 export const broadcastEffectKindSchema = z.enum([
   "animation-in-out",
   "next-program",
@@ -289,6 +291,8 @@ export const stingerBlendModeSchema = z.enum(["alpha", "luma"]);
 export const broadcastTextStyleSchema = z.object({
   fontFilePath: z.string().min(1).nullable().default(null),
   fontFamily: z.string().max(256).default(""),
+  /** Как `xPercent` относится к надписи: её левый край, центр или правый край. */
+  align: lottieTextAlignSchema.default("left"),
   /** Кегль в процентах от высоты кадра, чтобы SD/FHD/UHD выглядели одинаково. */
   fontSizePercent: z.number().positive().max(40).default(4.2),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
@@ -327,6 +331,14 @@ export const broadcastTextOverlaySchema = z.object({
   direction: tickerDirectionSchema.default("left"),
   /** ticker: 0 — крутить непрерывно всё окно эффекта. */
   repeat: z.number().int().nonnegative().max(999).default(0),
+  /**
+   * ticker: полоса, внутри которой едет строка, в процентах ширины кадра.
+   * По умолчанию — весь кадр. Когда строка привязана к текстовому полю плашки,
+   * полосу сужают по её ширине: иначе текст выезжает за плашку и идёт по всему
+   * экрану. Обрезка настоящая — строка рисуется на отдельном холсте.
+   */
+  regionXPercent: z.number().min(0).max(100).default(0),
+  regionWidthPercent: z.number().positive().max(100).default(100),
   clockFormat: clockFormatSchema.default("HH:MM:SS"),
   /** clock: сдвиг часового пояса относительно UTC. */
   timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0),
@@ -391,9 +403,18 @@ export const tickerCrawlSettingsSchema = z.object({
   repeat: z.number().int().nonnegative().max(999).default(0),
   startSeconds: z.number().nonnegative().max(86_400).default(0),
   durationSeconds: z.number().positive().max(86_400).default(60),
+  /** Полоса строки в процентах ширины кадра; по умолчанию — весь кадр. */
+  regionXPercent: z.number().min(0).max(100).default(0),
+  regionWidthPercent: z.number().positive().max(100).default(100),
   /** Ключ текстового поля пресета, куда подставляется постоянная подпись. */
   captionKey: z.string().max(128).default(""),
   captionText: z.string().max(512).default(""),
+  /**
+   * Текстовое поле пресета, на место которого встаёт живое значение эффекта.
+   * Поле шаблона при этом очищается: значение меняется покадрово и в
+   * отрендеренный один раз Lottie не запекается.
+   */
+  dynamicKey: z.string().max(128).default(""),
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
 });
 
@@ -408,6 +429,7 @@ export const clockCountdownSettingsSchema = z.object({
   durationSeconds: z.number().positive().max(86_400).default(60),
   captionKey: z.string().max(128).default(""),
   captionText: z.string().max(512).default(""),
+  dynamicKey: z.string().max(128).default(""),
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
 });
 
@@ -502,6 +524,26 @@ export const lottiePropertyValueSchema = z.union([
   z.array(z.number().finite()).min(2).max(4),
 ]);
 
+/**
+ * Где и чем нарисован текстовый слой Lottie.
+ *
+ * Нужно, чтобы живое значение эффекта — часы, отсчёт, бегущая строка — можно
+ * было положить на место этого слоя: сам Lottie рендерится один раз в файл, и
+ * меняющееся значение в него не запечь. Поэтому поле шаблона очищается, а
+ * `drawtext` встаёт на его место и наследует кегль, цвет и выключку.
+ *
+ * Величины в процентах от кадра композиции: пресет и эфир могут быть разного
+ * разрешения. Позиция считается на середине композиции — у слоя или его
+ * родителя анимация могла ещё не отыграть в первом кадре.
+ */
+export const lottieTextBoxSchema = z.object({
+  xPercent: z.number().finite(),
+  yPercent: z.number().finite(),
+  fontSizePercent: z.number().positive(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  align: lottieTextAlignSchema,
+});
+
 export const lottieEditablePropertySchema = z.object({
   id: z.string().min(1).max(128),
   path: z.string().startsWith("/").max(1_024),
@@ -514,6 +556,8 @@ export const lottieEditablePropertySchema = z.object({
   overridden: z.boolean().default(false),
   min: z.number().finite().optional(),
   max: z.number().finite().optional(),
+  /** Только у текстовых полей: положение и оформление слоя в композиции. */
+  textBox: lottieTextBoxSchema.nullable().default(null),
 });
 
 export const lottieEffectMetadataSchema = z.object({
@@ -1343,6 +1387,8 @@ export type StingerBlendMode = z.infer<typeof stingerBlendModeSchema>;
 export type CountdownSource = z.infer<typeof countdownSourceSchema>;
 export type BroadcastTextStyle = z.infer<typeof broadcastTextStyleSchema>;
 export type BroadcastTextOverlay = z.infer<typeof broadcastTextOverlaySchema>;
+export type LottieTextBox = z.infer<typeof lottieTextBoxSchema>;
+export type LottieTextAlign = z.infer<typeof lottieTextAlignSchema>;
 export type BroadcastTextOverlayMode = z.infer<typeof broadcastTextOverlayModeSchema>;
 export type ClipAudioOverlay = z.infer<typeof clipAudioOverlaySchema>;
 export type BroadcastTaskFileContent = z.infer<typeof broadcastTaskFileContentSchema>;

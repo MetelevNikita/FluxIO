@@ -379,6 +379,27 @@ export function BroadcastEffectInspector({
               onChange={(separator) => updateSettings("tickerCrawl", { separator })}
               value={settings.tickerCrawl.separator}
             />
+            <NumberField
+              disabled={busy}
+              hint="левый край полосы, % кадра"
+              label="Полоса: X"
+              max={100}
+              min={0}
+              onChange={(regionXPercent) => updateSettings("tickerCrawl", { regionXPercent })}
+              step={1}
+              value={settings.tickerCrawl.regionXPercent}
+            />
+            <NumberField
+              disabled={busy}
+              hint="100 — во весь кадр"
+              label="Полоса: ширина"
+              max={100}
+              min={1}
+              onChange={(regionWidthPercent) =>
+                updateSettings("tickerCrawl", { regionWidthPercent })}
+              step={1}
+              value={settings.tickerCrawl.regionWidthPercent}
+            />
           </div>
           {settings.tickerCrawl.source === "feed" ? (
             <div className="broadcast-file-field">
@@ -434,6 +455,14 @@ export function BroadcastEffectInspector({
             <div className="broadcast-grid">
               <PresetKeyField
                 busy={busy}
+                hint="сюда встанет бегущая строка"
+                keys={presetKeys}
+                label="Поле для значения"
+                onChange={(dynamicKey) => updateSettings("tickerCrawl", { dynamicKey })}
+                value={settings.tickerCrawl.dynamicKey}
+              />
+              <PresetKeyField
+                busy={busy}
                 hint="постоянная подпись на подложке"
                 keys={presetKeys}
                 label="Поле подписи в пресете"
@@ -446,6 +475,13 @@ export function BroadcastEffectInspector({
                 onChange={(captionText) => updateSettings("tickerCrawl", { captionText })}
                 value={settings.tickerCrawl.captionText}
               />
+              <p className="broadcast-hint broadcast-field-wide">
+                {settings.tickerCrawl.dynamicKey
+                  ? "Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, " +
+                    "цветом и выключкой. Бегущая строка едет внутри полосы: задайте её X и ширину " +
+                    "по размеру плашки, иначе текст поедет по всему кадру."
+                  : "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё."}
+              </p>
             </div>
           ) : null}
           <TextStyleFields
@@ -562,6 +598,14 @@ export function BroadcastEffectInspector({
             <div className="broadcast-grid">
               <PresetKeyField
                 busy={busy}
+                hint="сюда встанут часы или отсчёт"
+                keys={presetKeys}
+                label="Поле для значения"
+                onChange={(dynamicKey) => updateSettings("clockCountdown", { dynamicKey })}
+                value={settings.clockCountdown.dynamicKey}
+              />
+              <PresetKeyField
+                busy={busy}
                 hint="постоянная подпись на подложке"
                 keys={presetKeys}
                 label="Поле подписи в пресете"
@@ -574,6 +618,13 @@ export function BroadcastEffectInspector({
                 onChange={(captionText) => updateSettings("clockCountdown", { captionText })}
                 value={settings.clockCountdown.captionText}
               />
+              <p className="broadcast-hint broadcast-field-wide">
+                {settings.clockCountdown.dynamicKey
+                  ? "Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, " +
+                    "цветом и выключкой. Само значение рисует FFmpeg покадрово: в отрендеренный " +
+                    "один раз Lottie его не запечь."
+                  : "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё."}
+              </p>
             </div>
           ) : null}
           <TextStyleFields
@@ -889,8 +940,26 @@ function BroadcastEffectPreview({
   return (
     <div className="broadcast-preview">
       <div className="broadcast-preview-frame">
+        {definition.kind === "ticker-crawl" && settings.tickerCrawl.regionWidthPercent < 100 ? (
+          <div
+            className="broadcast-preview-region"
+            style={{
+              height: `${style.fontSizePercent * 1.8}cqh`,
+              left: `${settings.tickerCrawl.regionXPercent}cqw`,
+              top: `${style.yPercent - style.fontSizePercent * 0.9}cqh`,
+              width: `${settings.tickerCrawl.regionWidthPercent}cqw`,
+            }}
+          />
+        ) : null}
         {definition.kind === "ticker-crawl" ? (
-          <div className="broadcast-preview-ticker" style={{ ...textStyle, left: 0 }}>
+          <div
+            className="broadcast-preview-ticker"
+            style={{
+              ...textStyle,
+              left: `${settings.tickerCrawl.regionXPercent}cqw`,
+              width: `${settings.tickerCrawl.regionWidthPercent}cqw`,
+            }}
+          >
             <span
               style={{
                 // Один круг — это (ширина кадра + ширина надписи) / скорость.

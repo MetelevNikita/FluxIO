@@ -188,6 +188,8 @@ export function App() {
   const stableLoadTickerFeed = useStableCallback((id: string) => loadTickerFeed(id));
   const stableApplyBroadcastChanges = useStableCallback((id: string) => applyBroadcastChanges(id));
   const stableImportBroadcastPreset = useStableCallback((id: string) => importBroadcastPreset(id));
+  const stableReorderEffects = useStableCallback((moved: string, before: string | null) =>
+    reorderEffectLibrary(moved, before));
 
   const playoutActive = Boolean(
     playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
@@ -1256,6 +1258,20 @@ export function App() {
     );
   }
 
+  /** Перестановка эффекта в библиотеке: `beforeEffectId === null` — в конец списка. */
+  function reorderEffectLibrary(movedEffectId: string, beforeEffectId: string | null) {
+    setEffectLibrary((current) => {
+      const moved = current.find((entry) => entry.id === movedEffectId);
+      if (!moved || movedEffectId === beforeEffectId) return current;
+      const rest = current.filter((entry) => entry.id !== movedEffectId);
+      const target = beforeEffectId
+        ? rest.findIndex((entry) => entry.id === beforeEffectId)
+        : -1;
+      if (target < 0) return [...rest, moved];
+      return [...rest.slice(0, target), moved, ...rest.slice(target)];
+    });
+  }
+
   function changeBroadcastEffect(effect: GraphicEffectAsset) {
     setEffectLibrary((current) => current.map((entry) =>
       entry.id === effect.id ? effect : entry));
@@ -2164,6 +2180,7 @@ export function App() {
           onLoadTickerFeed={stableLoadTickerFeed}
           onApplyBroadcastChanges={stableApplyBroadcastChanges}
           onImportBroadcastPreset={stableImportBroadcastPreset}
+          onReorder={stableReorderEffects}
           assignedClipCounts={assignedClipCounts}
           playoutActive={playoutActive}
         />
@@ -2765,7 +2782,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.6";
+const applicationVersion = "7.0.10";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

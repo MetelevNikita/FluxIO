@@ -112,7 +112,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.6");
+    assert.equal(health.version, "7.0.10");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -2614,6 +2614,7 @@ function textStyle() {
     boxEnabled: true,
     boxOpacity: 0.6,
     boxPaddingPercent: 1,
+    align: "left" as const,
     color: "#FFFFFF",
     fontFamily: "",
     fontFilePath: null,
@@ -2634,6 +2635,8 @@ function textOverlay(overrides: Record<string, unknown> = {}) {
     id: "text-1",
     mode: "static" as const,
     name: "Ticker",
+    regionWidthPercent: 100,
+    regionXPercent: 0,
     repeat: 0,
     speedPixelsPerSecond: 120,
     startSeconds: 0,
@@ -2661,6 +2664,40 @@ test("ticker drawtext keeps a constant speed and hides itself after the last loo
   );
   assert.match(twice, /if\(gte\(\(max\(0,t-0\)\*120\),2\*\(w\+tw\)\),0-tw-16,/);
   assert.match(twice, /-tw\+mod\(/);
+});
+
+test("a ticker bound to a plate is clipped to its own canvas, not the whole frame", () => {
+  const request = baseRequest();
+  const overlay = textOverlay({
+    content: "TEST TEST TEST",
+    mode: "ticker",
+    regionWidthPercent: 40,
+    regionXPercent: 18,
+    style: { ...textStyle(), yPercent: 88 },
+  });
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
+    "/tmp/preview",
+  );
+
+  // Строка рисуется на своём прозрачном холсте шириной 40% кадра…
+  assert.match(command.filterGraph, /color=c=black@0:s=512x65:r=25:d=2\[vtickerbg0_0\]/);
+  // …внутри него координата считается от его же ширины…
+  assert.match(command.filterGraph, /\[vtickerbg0_0\]drawtext=.*x='w-mod/);
+  assert.match(command.filterGraph, /y='\(h-th\)\/2'/);
+  // …и холст накладывается на кадр ровно в заданную полосу.
+  assert.match(command.filterGraph, /\[vticker0_0\]overlay=x=230:y=601/);
+});
+
+test("a full-width ticker needs no separate canvas", () => {
+  const request = baseRequest();
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, textOverlays: [textOverlay({ content: "NEWS", mode: "ticker" })] }],
+    "/tmp/preview",
+  );
+  assert.doesNotMatch(command.filterGraph, /vtickerbg/);
 });
 
 test("clock drawtext follows on-air time, not the renderer's own wall clock", () => {

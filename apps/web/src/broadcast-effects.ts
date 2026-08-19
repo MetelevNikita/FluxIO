@@ -1,5 +1,6 @@
 import type {
   BroadcastEffectKind,
+  BroadcastTextStyle,
   BroadcastTextOverlay,
   ClipAudioOverlay,
   GraphicEffectAsset,
@@ -301,9 +302,23 @@ function planTickerCrawl(context: PlanContext): void {
       pushLayer(context, clip, {
         endSeconds,
         name: `${context.effect.name} plate`,
-        renderKey: presetCaptionRender(context, settings.captionKey, settings.captionText),
+        renderKey: presetCaptionRender(
+          context,
+          settings.captionKey,
+          settings.captionText,
+          settings.dynamicKey,
+        ),
         startSeconds,
       });
+    }
+    // Строка, привязанная к полю плашки, наследует её цвет — часто тёмный, —
+    // и без ограничения полосой едет по всему кадру: за пределами плашки текст
+    // почти не виден, и снаружи это выглядит как «строка не подставилась».
+    if (settings.dynamicKey && settings.regionWidthPercent >= 100) {
+      const warning = "Строка привязана к полю плашки, но полоса задана во весь кадр: " +
+        "текст поедет за пределы плашки и будет почти не виден. Задайте «Полоса: X» " +
+        "и «Полоса: ширина» по размеру плашки.";
+      if (!context.plan.warnings.includes(warning)) context.plan.warnings.push(warning);
     }
     pushTextOverlay(context, clip, {
       content,
@@ -311,9 +326,11 @@ function planTickerCrawl(context: PlanContext): void {
       endSeconds,
       mode: "ticker",
       repeat: settings.repeat,
+      regionWidthPercent: settings.regionWidthPercent,
+      regionXPercent: settings.regionXPercent,
       speedPixelsPerSecond: settings.speedPixelsPerSecond,
       startSeconds,
-      style: settings.style,
+      style: styleFromPreset(context, settings.dynamicKey, settings.style),
     });
   }
 }
@@ -347,7 +364,12 @@ function planClockCountdown(context: PlanContext): void {
       pushLayer(context, clip, {
         endSeconds,
         name: `${context.effect.name} plate`,
-        renderKey: presetCaptionRender(context, settings.captionKey, settings.captionText),
+        renderKey: presetCaptionRender(
+          context,
+          settings.captionKey,
+          settings.captionText,
+          settings.dynamicKey,
+        ),
         startSeconds,
       });
     }
@@ -358,7 +380,7 @@ function planClockCountdown(context: PlanContext): void {
       endSeconds,
       mode: settings.mode === "countdown" ? "countdown" : "clock",
       startSeconds,
-      style: settings.style,
+      style: styleFromPreset(context, settings.dynamicKey, settings.style),
       timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
     });
     if (
@@ -556,6 +578,8 @@ function pushTextOverlay(
       clockFormat: "HH:MM:SS",
       countdownFromSeconds: 0,
       direction: "left",
+      regionWidthPercent: 100,
+      regionXPercent: 0,
       repeat: 0,
       speedPixelsPerSecond: 120,
       timezoneOffsetMinutes: 0,
@@ -579,16 +603,59 @@ function presetCaptionRender(
   context: PlanContext,
   captionKey: string,
   captionText: string,
+  dynamicKey = "",
 ): string | null {
-  if (!captionKey || !captionText || !context.preset) return null;
-  const field = lottieTextFields(context.preset).get(captionKey);
-  if (!field) {
-    context.plan.warnings.push(
-      `В пресете нет текстового поля "${captionKey}" — подпись не подставлена`,
-    );
-    return null;
+  if (!context.preset) return null;
+  const fields = lottieTextFields(context.preset);
+  const overrides: Record<string, string> = {};
+
+  if (captionKey && captionText) {
+    const field = fields.get(captionKey);
+    if (field) overrides[field.id] = captionText;
+    else {
+      context.plan.warnings.push(
+        `В пресете нет текстового поля "${captionKey}" — подпись не подставлена`,
+      );
+    }
   }
-  return registerRender(context, { [field.id]: captionText });
+  // Поле под живое значение очищается: Lottie рендерится один раз, и меняющиеся
+  // часы или бегущая строка в него не запекаются. Шаблонный текст обязан
+  // исчезнуть, иначе он останется в кадре под живой надписью.
+  if (dynamicKey) {
+    const field = fields.get(dynamicKey);
+    if (field) overrides[field.id] = "";
+    else {
+      context.plan.warnings.push(
+        `В пресете нет текстового поля "${dynamicKey}" — значение эффекта не привязано`,
+      );
+    }
+  }
+  return Object.keys(overrides).length > 0 ? registerRender(context, overrides) : null;
+}
+
+/**
+ * Оформление надписи, снятое с текстового слоя пресета: положение, кегль, цвет
+ * и выключка. Живое значение встаёт ровно на место слоя шаблона и выглядит его
+ * частью, а не наклейкой поверх. Подложка при этом не нужна — её роль играет
+ * сама плашка.
+ */
+function styleFromPreset(
+  context: PlanContext,
+  dynamicKey: string,
+  style: BroadcastTextStyle,
+): BroadcastTextStyle {
+  if (!dynamicKey || !context.preset) return style;
+  const box = lottieTextFields(context.preset).get(dynamicKey)?.textBox;
+  if (!box) return style;
+  return {
+    ...style,
+    align: box.align,
+    boxEnabled: false,
+    color: box.color,
+    fontSizePercent: box.fontSizePercent,
+    xPercent: box.xPercent,
+    yPercent: box.yPercent,
+  };
 }
 
 /**

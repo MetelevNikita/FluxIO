@@ -16,11 +16,16 @@ import type { MediaAsset } from "./types.js";
 let nextId = 0;
 const createId = () => `id${(nextId += 1)}`;
 
-function textProperty(group: string, id: string): LottieEditableProperty {
+function textProperty(
+  group: string,
+  id: string,
+  textBox: LottieEditableProperty["textBox"] = null,
+): LottieEditableProperty {
   return {
     animated: false,
     group,
     id,
+    textBox,
     label: "Text",
     overridden: false,
     path: `/layers/0/t/d/k/0/s/t/${id}`,
@@ -73,6 +78,7 @@ function broadcastEffect(
         clockCountdown: {
           captionKey: "",
           captionText: "",
+          dynamicKey: "",
           countdownSeconds: 60,
           countdownSource: "fixed",
           durationSeconds: 60,
@@ -111,6 +117,7 @@ function broadcastEffect(
           repeat: 0,
           captionKey: "",
           captionText: "",
+          dynamicKey: "",
           separator: " • ",
           source: "manual",
           speedPixelsPerSecond: 120,
@@ -139,6 +146,7 @@ function style() {
     boxEnabled: true,
     boxOpacity: 0.62,
     boxPaddingPercent: 0.9,
+    align: "left" as const,
     color: "#FFFFFF",
     fontFamily: "",
     fontFilePath: null,
@@ -295,7 +303,8 @@ test("Cyrillic without a chosen font is flagged before it reaches air", () => {
     effect: broadcastEffect("ticker-crawl", {
       tickerCrawl: {
         direction: "left", durationSeconds: 60, feedUrl: "", filePath: null,
-        items: ["Срочные новости"], repeat: 0, separator: " • ", source: "manual",
+        items: ["Срочные новости"], regionWidthPercent: 100, regionXPercent: 0,
+        repeat: 0, separator: " • ", source: "manual",
         speedPixelsPerSecond: 120, startSeconds: 0, style: style(),
       },
     }),
@@ -307,7 +316,8 @@ test("Cyrillic without a chosen font is flagged before it reaches air", () => {
     effect: broadcastEffect("ticker-crawl", {
       tickerCrawl: {
         direction: "left", durationSeconds: 60, feedUrl: "", filePath: null,
-        items: ["Срочные новости"], repeat: 0, separator: " • ", source: "manual",
+        items: ["Срочные новости"], regionWidthPercent: 100, regionXPercent: 0,
+        repeat: 0, separator: " • ", source: "manual",
         speedPixelsPerSecond: 120, startSeconds: 0,
         style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
       },
@@ -369,6 +379,92 @@ test("a caption pointing at a missing preset field is reported, not silently dro
       },
     }),
     preset: preset([textProperty("Main composition · eng", "prop-eng")]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.renders, []);
+  assert.match(result.warnings.join("\n"), /нет текстового поля "нет-такого"/);
+});
+
+test("the live value takes the place of the chosen preset text layer", () => {
+  const box = {
+    align: "center" as const,
+    color: "#000000",
+    fontSizePercent: 6.11,
+    xPercent: 38.4,
+    yPercent: 87.9,
+  };
+  const result = plan({
+    effect: broadcastEffect("clock-countdown", {
+      clockCountdown: {
+        captionKey: "",
+        captionText: "",
+        countdownSeconds: 60,
+        countdownSource: "fixed",
+        durationSeconds: 60,
+        dynamicKey: "clock",
+        format: "HH:MM",
+        mode: "clock",
+        startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+        timezoneOffsetMinutes: 0,
+      },
+    }),
+    preset: preset([textProperty("Main composition · clock", "prop-clock", box)]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  // Поле шаблона очищается: иначе его текст остался бы под живой надписью.
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-clock": "" });
+  // Надпись наследует место и оформление слоя, подложка не нужна.
+  const overlay = result.textOverlays[0]!.overlay;
+  assert.equal(overlay.style.xPercent, 38.4);
+  assert.equal(overlay.style.yPercent, 87.9);
+  assert.equal(overlay.style.fontSizePercent, 6.11);
+  assert.equal(overlay.style.color, "#000000");
+  assert.equal(overlay.style.align, "center");
+  assert.equal(overlay.style.boxEnabled, false);
+  // Шрифт оператора не перетирается: в Lottie он может отсутствовать в системе.
+  assert.equal(overlay.style.fontFilePath, "/fonts/PTSans.ttf");
+});
+
+test("a ticker bound to a plate warns while its band still spans the whole frame", () => {
+  const bound = (regionWidthPercent: number) => plan({
+    effect: broadcastEffect("ticker-crawl", {
+      tickerCrawl: {
+        captionKey: "", captionText: "", direction: "left", durationSeconds: 60,
+        dynamicKey: "line", feedUrl: "", filePath: null, items: ["Новость"],
+        regionWidthPercent, regionXPercent: 18, repeat: 0, separator: " • ",
+        source: "manual", speedPixelsPerSecond: 120, startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+      },
+    }),
+    preset: preset([textProperty("Main composition · line", "prop-line", {
+      align: "center", color: "#000000", fontSizePercent: 6, xPercent: 38, yPercent: 88,
+    })]),
+    targetIds: new Set(["a"]),
+  });
+
+  // Во весь кадр строка уедет с плашки и станет почти не видна — предупреждаем.
+  assert.match(bound(100).warnings.join("\n"), /полоса задана во весь кадр/);
+  assert.deepEqual(bound(41).warnings, []);
+  assert.equal(bound(41).textOverlays[0]!.overlay.regionWidthPercent, 41);
+});
+
+test("binding to a preset field that does not exist is reported", () => {
+  const result = plan({
+    effect: broadcastEffect("ticker-crawl", {
+      tickerCrawl: {
+        captionKey: "", captionText: "", direction: "left", durationSeconds: 60,
+        dynamicKey: "нет-такого", feedUrl: "", filePath: null, items: ["Новость"],
+        regionWidthPercent: 100, regionXPercent: 0,
+        repeat: 0, separator: " • ", source: "manual", speedPixelsPerSecond: 120,
+        startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+      },
+    }),
+    preset: preset([textProperty("Main composition · line", "prop-line")]),
     targetIds: new Set(["a"]),
   });
 
