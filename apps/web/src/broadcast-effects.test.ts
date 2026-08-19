@@ -386,6 +386,29 @@ test("stinger splits across the cut and takes the second half from mid file", ()
   assert.equal(result.audioOverlays[1]!.overlay.sourceInSeconds, 0.52);
 });
 
+test("a stinger without its own file falls back to the Lottie preset", () => {
+  const result = plan({
+    effect: broadcastEffect("stinger-transition", {
+      stingerTransition: {
+        assetPath: null,
+        audioEnabled: false,
+        audioLevelDb: -6,
+        blendMode: "alpha",
+        cutPointSeconds: 0.52,
+        durationSeconds: 1.2,
+        lumaThreshold: 0.08,
+      },
+    }),
+    preset: preset(),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.layers.length, 2);
+  assert.equal(result.layers[0]!.layer.filePath, "/cache/preset.mov");
+  assert.equal(result.layers[1]!.layer.sourceInSeconds, 0.52);
+});
+
 test("stinger snaps to the frame grid and rejects a cut outside the transition", () => {
   assert.equal(snapToFrameGrid(0.51, 25), 0.52);
   const snapped = plan({

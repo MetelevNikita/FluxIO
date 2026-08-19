@@ -4698,7 +4698,9 @@ input[type="range"] {
 .broadcast-preview-frame {
   position: relative;
   container-type: size;
-  width: 100%;
+  /* Кадр намеренно небольшой: он показывает поведение эффекта, а не служит
+     мониторингом — место в инспекторе нужнее настройкам. */
+  width: min(100%, 300px);
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -4869,3 +4871,81 @@ input[type="range"] {
 }
 
 .broadcast-field-invalid { border-color: var(--warning) !important; }
+
+
+.broadcast-inspector-heading { justify-content: flex-start; }
+.broadcast-inspector-heading strong { margin-right: auto; }
+
+.broadcast-save-button {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(255, 211, 77, 0.45);
+  border-radius: 4px;
+  padding: 0 9px;
+  color: #111;
+  background: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.broadcast-save-button > i {
+  display: grid;
+  place-items: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  padding: 0 4px;
+  color: var(--accent);
+  background: #111;
+  font-size: 7px;
+  font-style: normal;
+}
+
+.broadcast-save-button:disabled { opacity: 0.4; }
+.broadcast-save-button:hover:not(:disabled) { filter: brightness(1.08); }
+
+.service-version-warning {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.service-version-warning > strong { color: var(--warning); font-size: 10px; }
+.service-version-warning > span {
+  flex: 1 1 320px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.broadcast-preset-picker > div {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.broadcast-preset-picker select { flex: 1 1 auto; min-width: 0; }
+
+.broadcast-preset-picker button {
+  flex: 0 0 auto;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 0 9px;
+  color: var(--text);
+  background: #12161b;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.broadcast-preset-picker button:hover:not(:disabled) { border-color: var(--tier2); color: var(--tier2); }
+.broadcast-preset-picker button:disabled { opacity: 0.4; }

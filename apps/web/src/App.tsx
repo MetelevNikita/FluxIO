@@ -186,10 +186,34 @@ export function App() {
   const stableSelectTickerSourceFile = useStableCallback((id: string) =>
     selectTickerSourceFile(id));
   const stableLoadTickerFeed = useStableCallback((id: string) => loadTickerFeed(id));
+  const stableApplyBroadcastChanges = useStableCallback((id: string) => applyBroadcastChanges(id));
+  const stableImportBroadcastPreset = useStableCallback((id: string) => importBroadcastPreset(id));
 
   const playoutActive = Boolean(
     playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
   );
+  /**
+   * Сколько роликов несёт каждый эффект. Именно значение, а не функция: экран
+   * эффектов обёрнут в `memo`, и стабильная функция не заставила бы его
+   * пересчитаться после назначения — кнопка Save осталась бы неактивной.
+   */
+  const staleServiceVersion = connection.kind === "ready" &&
+    connection.health.version !== applicationVersion
+    ? connection.health.version
+    : null;
+
+  const assignedClipCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const asset of [...playlist, ...futurePlaylist]) {
+      const ids = new Set([
+        ...(asset.effects ?? []).map((layer) => layer.effectId),
+        ...(asset.textOverlays ?? []).map((overlay) => overlay.effectId),
+      ]);
+      for (const id of ids) counts[id] = (counts[id] ?? 0) + 1;
+    }
+    return counts;
+  }, [playlist, futurePlaylist]);
+
   // Стабильная ссылка: во время эфира статус опрашивается каждые 750 мс, и
   // заново собранный здесь массив перерисовывал бы всю вкладку Effects.
   const effectTargetClips = useMemo(() => [
@@ -1289,6 +1313,85 @@ export function App() {
     }
   }
 
+  /**
+   * Перенос правок в уже назначенные ролики.
+   *
+   * Настройки эффекта правятся уже после того, как он разложен по плейлисту, и
+   * сами по себе разложенные слои не меняются. Пересобираем их ровно для тех
+   * роликов, которые эффект уже несут: область назначения при этом сохраняется,
+   * а прежние слои снимаются, чтобы не копились дубли.
+   */
+  async function applyBroadcastChanges(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect?.broadcast) return;
+    const assignedIds = new Set(
+      [...playlist, ...futurePlaylist]
+        .filter((asset) =>
+          asset.effects?.some((layer) => layer.effectId === effectId) ||
+          asset.textOverlays?.some((overlay) => overlay.effectId === effectId))
+        .map((asset) => asset.id),
+    );
+    if (assignedIds.size === 0) {
+      setEffectsMessage(`${effect.name}: эффект ещё не назначен ни одному ролику.`);
+      return;
+    }
+    // Стингер лежит парой: хвост на выбранном ролике и голова на следующем.
+    // Пересобирать надо от выбранных, иначе область назначения расползётся.
+    const targetIds = effect.broadcast.kind === "stinger-transition"
+      ? new Set([...assignedIds].filter((id) =>
+          [...playlist, ...futurePlaylist].some((asset) =>
+            asset.id === id &&
+            asset.effects?.some((layer) =>
+              layer.effectId === effectId && layer.sourceInSeconds === 0))))
+      : assignedIds;
+    // Снятие и повторную раскладку делаем одним проходом: состояние React
+    // обновляется асинхронно, и раскладка по ещё не очищенному плейлисту
+    // добавила бы вторую копию слоёв поверх старых.
+    await applyBroadcastEffect(effect, targetIds, {
+      base: {
+        current: removeBroadcastEffect(playlist, effectId),
+        future: removeBroadcastEffect(futurePlaylist, effectId),
+      },
+      silent: true,
+    });
+    setEffectsMessage(
+      `${effect.name}: настройки перенесены в ${assignedIds.size} ролик(ов).`,
+    );
+  }
+
+  /**
+   * Подгрузка Lottie прямо из настроек эффекта второго уровня: файл
+   * анализируется, попадает в библиотеку как эффект уровня 3 и сразу
+   * назначается пресетом — без похода в общий импорт и обратно.
+   */
+  async function importBroadcastPreset(effectId: string) {
+    const paths = await window.gruberDesktop?.selectEffectFiles();
+    const selected = paths?.[0];
+    if (!selected) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const [preset] = await analyzeGraphicEffectPaths([selected]);
+      if (!preset) throw new Error("Файл не удалось разобрать как эффект");
+      setEffectLibrary((current) => {
+        const merged = mergeEffectAssets(current, [preset]);
+        return merged.map((entry) => entry.id === effectId && entry.broadcast
+          ? { ...entry, broadcast: { ...entry.broadcast, presetEffectId: preset.id } }
+          : entry);
+      });
+      setEffectsMessage(
+        `${preset.name}: пресет подгружен и назначен эффекту.` +
+          (preset.lottie
+            ? ` Текстовых полей — ${preset.lottie.properties.filter((p) => p.type === "text").length}.`
+            : " Текстовых полей нет: это обычное alpha-медиа."),
+      );
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
   /** Заголовки новостной ленты. Качает media-service: у окна Electron строгий CSP. */
   async function loadTickerFeed(effectId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
@@ -1377,6 +1480,7 @@ export function App() {
   async function applyBroadcastEffect(
     effect: GraphicEffectAsset,
     targetIds: Set<string> | null,
+    options: { base?: { current: MediaAsset[]; future: MediaAsset[] }; silent?: boolean } = {},
   ) {
     const preset = effect.broadcast?.presetEffectId
       ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
@@ -1388,7 +1492,9 @@ export function App() {
       // Пустое расписание пропускается целиком: «в Future нет роликов» — это не
       // ошибка привязки, и в счётчике ошибок оператору она только мешает.
       const plans = (["current", "future"] as const).flatMap((slot) => {
-        const assets = slot === "current" ? playlist : futurePlaylist;
+        const assets = slot === "current"
+          ? options.base?.current ?? playlist
+          : options.base?.future ?? futurePlaylist;
         if (assets.length === 0) return [];
         return {
           assets,
@@ -1420,11 +1526,13 @@ export function App() {
         if (entry.slot === "current") setPlaylist(applied.items);
         else setFuturePlaylist(applied.items);
       }
-      setEffectsMessage(
-        `${effect.name}: применён к ${touched} ролику(ам).` +
-          (warnings.length > 0 ? ` Предупреждений: ${warnings.length} — ${warnings[0]}` : "") +
-          (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
-      );
+      if (!options.silent) {
+        setEffectsMessage(
+          `${effect.name}: применён к ${touched} ролику(ам).` +
+            (warnings.length > 0 ? ` Предупреждений: ${warnings.length} — ${warnings[0]}` : "") +
+            (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
+        );
+      }
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1816,7 +1924,7 @@ export function App() {
     try {
       const profile = createEncodingSettingsProfile(
         settings,
-        connection.kind === "ready" ? connection.health.version : "7.0.4",
+        connection.kind === "ready" ? connection.health.version : applicationVersion,
       );
       const content = serializeEncodingSettingsProfile(profile);
       const timestamp = profile.exportedAt.replace(/[:.]/g, "-");
@@ -1997,6 +2105,20 @@ export function App() {
         systemMetrics={systemMetrics}
       />
 
+      {/* Расхождение версий тихо ломает данные: старый media-service не знает
+          новых полей, и Zod срезает их при сохранении сессии — эфирные эффекты
+          второго уровня после перезапуска превращаются в пустые записи. */}
+      {staleServiceVersion ? (
+        <div className="service-version-warning" role="alert">
+          <strong>media-service версии {staleServiceVersion}</strong>
+          <span>
+            Интерфейс собран под {applicationVersion}. Старый сервис не знает часть полей и
+            вырезает их при сохранении сессии — настройки эфирных эффектов будут теряться.
+            Перезапустите media-service обновлённой сборкой.
+          </span>
+        </div>
+      ) : null}
+
       {view === "import" ? (
         <ImportAnalyzeScreen
           activeSchedule={activeSchedule}
@@ -2040,6 +2162,9 @@ export function App() {
           onSelectStingerFile={stableSelectStingerFile}
           onSelectTickerSourceFile={stableSelectTickerSourceFile}
           onLoadTickerFeed={stableLoadTickerFeed}
+          onApplyBroadcastChanges={stableApplyBroadcastChanges}
+          onImportBroadcastPreset={stableImportBroadcastPreset}
+          assignedClipCounts={assignedClipCounts}
           playoutActive={playoutActive}
         />
       ) : null}
@@ -2638,6 +2763,9 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
     scheduleType: asset.scheduleType ?? null,
   };
 }
+
+/** Версия интерфейса. Сверяется с версией media-service при подключении. */
+const applicationVersion = "7.0.5";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

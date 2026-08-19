@@ -63,6 +63,12 @@ interface EffectsScreenProps {
   onSelectTickerSourceFile: (effectId: string) => Promise<void>;
   onSelectStingerFile: (effectId: string) => Promise<void>;
   onLoadTickerFeed: (effectId: string) => Promise<void>;
+  /** Перенести правки в уже назначенные ролики. */
+  onApplyBroadcastChanges: (effectId: string) => Promise<void>;
+  /** Подгрузить Lottie и сразу назначить его пресетом этого эффекта. */
+  onImportBroadcastPreset: (effectId: string) => Promise<void>;
+  /** Сколько роликов несёт каждый эффект — по его id. */
+  assignedClipCounts: Record<string, number>;
   /** Идёт эфир: тяжёлый WASM-предпросмотр в это время не крутим. */
   playoutActive: boolean;
 }
@@ -93,6 +99,9 @@ export const EffectsScreen = memo(function EffectsScreen({
   onSelectTickerSourceFile,
   onSelectStingerFile,
   onLoadTickerFeed,
+  onApplyBroadcastChanges,
+  onImportBroadcastPreset,
+  assignedClipCounts,
   playoutActive,
 }: EffectsScreenProps) {
   // Системные шрифты запрашиваются один раз за сессию: список большой, а
@@ -173,6 +182,25 @@ export const EffectsScreen = memo(function EffectsScreen({
   }, [draftEffect, onRenderLottie]);
 
   const renderLottieDraft = useCallback(() => void renderDraft(), [renderDraft]);
+
+  /**
+   * Правка настроек эффекта второго уровня.
+   *
+   * В библиотеку она уходит с небольшой задержкой: без неё каждое нажатие
+   * клавиши перерисовывало всё дерево приложения, и ввод в текстовых полях
+   * ощутимо запаздывал. На экране сразу виден локальный черновик, поэтому
+   * задержка оператору не заметна.
+   */
+  const commitTimer = useRef<number | null>(null);
+  const changeBroadcastDraft = useCallback((next: GraphicEffectAsset) => {
+    setDraftEffect(next);
+    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+    commitTimer.current = window.setTimeout(() => onChangeBroadcastEffect(next), 300);
+  }, [onChangeBroadcastEffect]);
+
+  useEffect(() => () => {
+    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+  }, []);
 
   return (
     <main className="effects-screen">
@@ -369,12 +397,18 @@ export const EffectsScreen = memo(function EffectsScreen({
 
               {draftEffect.broadcast ? (
                 <BroadcastEffectInspector
+                  assignedClipCount={assignedClipCounts[draftEffect.id] ?? 0}
                   busy={busy}
                   effect={draftEffect}
-                  onChange={(next) => {
-                    setDraftEffect(next);
-                    onChangeBroadcastEffect(next);
+                  onApplyChanges={() => {
+                    // Черновик мог ещё не дойти до библиотеки — переносим его
+                    // немедленно, иначе Save применил бы прежние настройки.
+                    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+                    onChangeBroadcastEffect(draftEffect);
+                    void onApplyBroadcastChanges(draftEffect.id);
                   }}
+                  onChange={changeBroadcastDraft}
+                  onImportPreset={() => void onImportBroadcastPreset(draftEffect.id)}
                   fonts={fonts}
                   onLoadTickerFeed={() => void onLoadTickerFeed(draftEffect.id)}
                   onSelectStingerFile={() => void onSelectStingerFile(draftEffect.id)}

@@ -5,9 +5,9 @@ import type {
   GraphicEffectAsset,
   SystemFont,
 } from "@gruber/contracts";
-import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw } from "lucide-react";
+import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw, Save } from "lucide-react";
 import { lottieTextFields } from "../broadcast-effects";
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 
 /**
  * Настройки эфирного эффекта второго уровня. У каждого вида — своё поведение,
@@ -32,6 +32,9 @@ interface BroadcastEffectInspectorProps {
   onSelectTickerSource: () => void;
   onSelectStingerFile: () => void;
   onLoadTickerFeed: () => void;
+  onApplyChanges: () => void;
+  onImportPreset: () => void;
+  assignedClipCount: number;
 }
 
 export const broadcastEffectCatalog: {
@@ -81,6 +84,9 @@ export function BroadcastEffectInspector({
   onSelectTickerSource,
   onSelectStingerFile,
   onLoadTickerFeed,
+  onApplyChanges,
+  onImportPreset,
+  assignedClipCount,
 }: BroadcastEffectInspectorProps) {
   const definition = effect.broadcast;
   if (!definition) return null;
@@ -103,24 +109,33 @@ export function BroadcastEffectInspector({
   const presetKeys = selectedPreset ? [...lottieTextFields(selectedPreset).keys()] : [];
 
   const presetPicker = (label: string, optional: boolean) => (
-    <label className="broadcast-field">
+    <div className="broadcast-field broadcast-field-wide broadcast-preset-picker">
       <span>{label}</span>
-      <select
-        disabled={busy}
-        onChange={(event) => onChange({
-          ...effect,
-          broadcast: { ...definition, presetEffectId: event.target.value || null },
-        })}
-        value={definition.presetEffectId ?? ""}
-      >
-        {optional ? <option value="">Без пресета · штатная надпись</option> : null}
-        {presets.map((preset) => (
-          <option key={preset.id} value={preset.id}>
-            {preset.lottie ? "LOTTIE" : preset.kind.toUpperCase()} · {preset.name}
-          </option>
-        ))}
-      </select>
-    </label>
+      <div>
+        <select
+          aria-label={label}
+          disabled={busy}
+          onChange={(event) => onChange({
+            ...effect,
+            broadcast: { ...definition, presetEffectId: event.target.value || null },
+          })}
+          value={definition.presetEffectId ?? ""}
+        >
+          {optional ? <option value="">Без пресета · штатная надпись</option> : null}
+          {presets.length === 0 ? <option value="">Пресетов пока нет — подгрузите Lottie</option> : null}
+          {presets.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.lottie ? "LOTTIE" : preset.kind.toUpperCase()} · {preset.name}
+            </option>
+          ))}
+        </select>
+        {/* Подгрузка прямо отсюда: иначе ради пресета приходится уходить
+            в общий импорт и возвращаться обратно к настройкам эффекта. */}
+        <button disabled={busy} onClick={onImportPreset} type="button">
+          <FileJson2 size={12} /> Подгрузить Lottie
+        </button>
+      </div>
+    </div>
   );
 
   return (
@@ -128,6 +143,20 @@ export function BroadcastEffectInspector({
       <div className="broadcast-inspector-heading">
         <span className="broadcast-tier-badge">Уровень 2</span>
         <strong>{broadcastEffectTitle(definition.kind)}</strong>
+        {/* Настройки правятся после назначения, поэтому нужен явный перенос
+            изменений в уже размеченные ролики. */}
+        <button
+          className="broadcast-save-button"
+          disabled={busy || assignedClipCount === 0}
+          onClick={onApplyChanges}
+          title={assignedClipCount === 0
+            ? "Эффект ещё не назначен ни одному ролику"
+            : `Перенести настройки в ${assignedClipCount} ролик(ов)`}
+          type="button"
+        >
+          <Save size={12} /> Save
+          {assignedClipCount > 0 ? <i>{assignedClipCount}</i> : null}
+        </button>
       </div>
 
       <BroadcastEffectPreview effect={effect} presets={presets} />
@@ -517,6 +546,7 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "stinger-transition" ? (
         <>
+          {presetPicker("Lottie-пресет перехода", true)}
           <div className="broadcast-file-field">
             <span>Файл перехода с альфа-каналом</span>
             <strong title={settings.stingerTransition.assetPath ?? undefined}>
@@ -527,6 +557,23 @@ export function BroadcastEffectInspector({
             <button disabled={busy} onClick={onSelectStingerFile} type="button">
               <FileVideo2 size={12} /> {settings.stingerTransition.assetPath ? "Заменить" : "Выбрать"}
             </button>
+            {settings.stingerTransition.assetPath ? (
+              <button
+                disabled={busy}
+                onClick={() => updateSettings("stingerTransition", { assetPath: null })}
+                title="Снять файл и использовать пресет"
+                type="button"
+              >
+                <RotateCcw size={12} />
+              </button>
+            ) : null}
+            <em className="broadcast-hint">
+              {settings.stingerTransition.assetPath
+                ? "Переход берётся из файла. Снимите его, чтобы использовать Lottie-пресет."
+                : definition.presetEffectId
+                  ? "Файл не выбран — переход берётся из Lottie-пресета выше."
+                  : "Укажите файл или выберите Lottie-пресет: без источника переход не применится."}
+            </em>
           </div>
           <div className="broadcast-grid">
             <NumberField
@@ -952,7 +999,12 @@ function selectClockParts(parts: string[], format: string): string {
   return parts.join(":");
 }
 
-function TextStyleFields({
+/**
+ * Оформление надписи вынесено в `memo` из-за списка системных шрифтов: в нём
+ * несколько сотен `option`, и пересборка на каждое нажатие клавиши в соседнем
+ * поле заметно тормозила ввод.
+ */
+const TextStyleFields = memo(function TextStyleFields({
   busy,
   fonts,
   style,
@@ -1087,9 +1139,18 @@ function TextStyleFields({
       </div>
     </details>
   );
-}
+});
 
-function NumberField({
+/**
+ * Числовое поле с собственным черновиком.
+ *
+ * `input[type=number]` отдаёт пустую строку для любого незавершённого ввода:
+ * «1.», «-», «1e». Прямое `Number(value)` превращало это в ноль и возвращало
+ * поле назад — набрать дробное значение или стереть содержимое было невозможно,
+ * поле «залипало». Поэтому пока поле в фокусе, показывается ровно то, что
+ * набрал оператор, а наружу уходят только законченные числа.
+ */
+const NumberField = memo(function NumberField({
   disabled,
   hint,
   label,
@@ -1108,6 +1169,7 @@ function NumberField({
   step: number;
   value: number;
 }): ReactNode {
+  const [draft, setDraft] = useState<string | null>(null);
   return (
     <label className="broadcast-field">
       <span>{label}{hint ? <i>{hint}</i> : null}</span>
@@ -1115,19 +1177,23 @@ function NumberField({
         disabled={disabled}
         max={max}
         min={min}
+        onBlur={() => setDraft(null)}
         onChange={(event) => {
-          const next = Number(event.target.value);
+          const text = event.target.value;
+          setDraft(text);
+          if (text.trim() === "") return;
+          const next = Number(text);
           if (Number.isFinite(next)) onChange(next);
         }}
         step={step}
         type="number"
-        value={value}
+        value={draft ?? value}
       />
     </label>
   );
-}
+});
 
-function TextField({
+const TextField = memo(function TextField({
   disabled,
   hint,
   label,
@@ -1151,7 +1217,7 @@ function TextField({
       />
     </label>
   );
-}
+});
 
 function shortPath(value: string): string {
   const parts = value.replaceAll("\\", "/").split("/").filter(Boolean);
