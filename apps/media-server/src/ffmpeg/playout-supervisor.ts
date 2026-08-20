@@ -19,6 +19,7 @@ import {
   buildFfmpegProgramEncoderCommand,
   clipAudioByteCount,
   clipAudioSource,
+  isSupportedLogoPath,
   programAudioTracks,
   type ClipAudioSource,
   type FfmpegCommand,
@@ -2041,8 +2042,11 @@ async function resolveLogoOverlay<T extends { filePath: string }>(logo: T): Prom
   const resolvedPath = await realpath(logo.filePath);
   const logoStat = await stat(resolvedPath);
   if (!logoStat.isFile()) throw new PlayoutPreflightError("Logo path is not a file");
-  if (!new Set([".png", ".webp", ".jpg", ".jpeg"]).has(path.extname(resolvedPath).toLowerCase())) {
-    throw new PlayoutPreflightError("Logo must be PNG, WebP, JPEG or JPG");
+  if (!isSupportedLogoPath(resolvedPath)) {
+    throw new PlayoutPreflightError(
+      "Logo must be PNG, WebP, JPEG, GIF, MOV, MP4, M4V, WebM, MKV, AVI or MXF. " +
+        "Lottie JSON must be rendered to MOV before playout.",
+    );
   }
   return { ...logo, filePath: resolvedPath };
 }
@@ -2205,15 +2209,16 @@ function validateCapabilities(
         "switch Subtitle output to DVB, or turn SRT off for the affected clips.",
     );
   }
-  // Фильтр drawtext живёт только в сборках с libfreetype. Без него бегущая
-  // строка, часы и отсчёт роняют граф тем же невнятным "No such filter".
+  // Фильтр drawtext живёт только в сборках с libfreetype. Без него обычная
+  // динамическая плашка, бегущая строка, часы и отсчёт роняют граф тем же
+  // невнятным "No such filter".
   if (
     !capabilities.supports.dynamicText &&
     request.playlist.some((item) => (item.textOverlays?.length ?? 0) > 0)
   ) {
     throw new PlayoutPreflightError(
-      "This FFmpeg build has no 'drawtext' filter, so the ticker, on-screen clock and " +
-        "countdown cannot be rendered. Install a libfreetype-enabled build " +
+      "This FFmpeg build has no 'drawtext' filter, so dynamic titles, the ticker, " +
+        "on-screen clock and countdown cannot be rendered. Install a libfreetype-enabled build " +
         "(on macOS: brew install ffmpeg-full), or remove those effects from the playlist.",
     );
   }

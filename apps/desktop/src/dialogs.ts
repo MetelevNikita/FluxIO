@@ -55,14 +55,17 @@ export async function selectDirectory(title: string): Promise<string | null> {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 }
 
-/** Папка с картинками: логотипы канала и AGE-графика лежат одним уровнем. */
-export async function selectImageDirectory(title: string): Promise<DirectoryImages | null> {
+/** Папка графики одним уровнем; набор расширений зависит от LOGO или AGE. */
+export async function selectImageDirectory(
+  title: string,
+  extensions: ReadonlySet<string> = imageExtensions,
+): Promise<DirectoryImages | null> {
   const directoryPath = await selectDirectory(title);
   if (!directoryPath) return null;
 
   const entries = await readdir(directoryPath, { withFileTypes: true });
   const imagePaths = entries
-    .filter((entry) => entry.isFile() && isSupportedImage(entry.name))
+    .filter((entry) => entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase()))
     .map((entry) => path.join(directoryPath, entry.name))
     .sort((left, right) => left.localeCompare(right));
 
@@ -105,10 +108,6 @@ async function collectFiles(directory: string, extensions: Set<string>): Promise
   }
 
   return found;
-}
-
-function isSupportedImage(fileName: string): boolean {
-  return imageExtensions.has(path.extname(fileName).toLowerCase());
 }
 
 //

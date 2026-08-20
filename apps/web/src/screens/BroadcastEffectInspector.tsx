@@ -56,6 +56,11 @@ export const broadcastEffectCatalog: {
     title: "Animation in/out",
   },
   {
+    kind: "dynamic-title",
+    summary: "Lottie-плашка с произвольным текстом из интерфейса или файла задания",
+    title: "Dynamic title",
+  },
+  {
     kind: "next-program",
     summary: "Плашка «Смотрите далее» с названием следующего материала",
     title: "Next program",
@@ -242,6 +247,108 @@ export function BroadcastEffectInspector({
             onClear={() => updateSettings("animationInOut", { taskFilePath: null })}
             onSelect={onSelectTaskFile}
             summary={taskSummary}
+          />
+        </>
+      ) : null}
+
+      {definition.kind === "dynamic-title" ? (
+        <>
+          {presetPicker("Декор и подложка Lottie", true)}
+          <div className="broadcast-grid">
+            <label className="broadcast-field">
+              <span>Источник текста</span>
+              <select
+                disabled={busy}
+                onChange={(event) => updateSettings("dynamicTitle", {
+                  source: event.target.value as "manual" | "task-file",
+                })}
+                value={settings.dynamicTitle.source}
+              >
+                <option value="manual">Вручную</option>
+                <option value="task-file">Файл задания</option>
+              </select>
+            </label>
+            <TextField
+              disabled={busy}
+              hint={settings.dynamicTitle.source === "task-file"
+                ? "используется, если в файле нет значения"
+                : undefined}
+              label={settings.dynamicTitle.source === "task-file" ? "Резервный текст" : "Текст"}
+              onChange={(text) => updateSettings("dynamicTitle", { text })}
+              value={settings.dynamicTitle.text}
+            />
+            {settings.dynamicTitle.source === "task-file" ? (
+              <TextField
+                disabled={busy}
+                hint="ключ рядом с name в JSON"
+                label="Ключ значения"
+                onChange={(taskKey) => updateSettings("dynamicTitle", { taskKey })}
+                value={settings.dynamicTitle.taskKey}
+              />
+            ) : null}
+            <NumberField
+              disabled={busy}
+              hint="от начала ролика"
+              label="Start, с"
+              min={0}
+              onChange={(startSeconds) => updateSettings("dynamicTitle", { startSeconds })}
+              step={0.04}
+              value={settings.dynamicTitle.startSeconds}
+            />
+            <NumberField
+              disabled={busy}
+              label="Duration, с"
+              min={0.04}
+              onChange={(durationSeconds) => updateSettings("dynamicTitle", { durationSeconds })}
+              step={0.04}
+              value={settings.dynamicTitle.durationSeconds}
+            />
+          </div>
+          {settings.dynamicTitle.source === "task-file" ? (
+            <TaskFileField
+              busy={busy}
+              filePath={settings.dynamicTitle.taskFilePath}
+              onClear={() => updateSettings("dynamicTitle", { taskFilePath: null })}
+              onSelect={onSelectTaskFile}
+              summary={taskSummary}
+            />
+          ) : null}
+          {definition.presetEffectId ? (
+            <div className="broadcast-grid">
+              <PresetKeyField
+                busy={busy}
+                hint="этот Text Layer очищается; реальный текст рисует FFmpeg"
+                keys={presetKeys}
+                label="Поле для текста"
+                onChange={(dynamicKey) => updateSettings("dynamicTitle", { dynamicKey })}
+                value={settings.dynamicTitle.dynamicKey}
+              />
+              <PresetKeyField
+                busy={busy}
+                hint="необязательная постоянная подпись"
+                keys={presetKeys}
+                label="Поле подписи"
+                onChange={(captionKey) => updateSettings("dynamicTitle", { captionKey })}
+                value={settings.dynamicTitle.captionKey}
+              />
+              <TextField
+                disabled={busy}
+                label="Текст подписи"
+                onChange={(captionText) => updateSettings("dynamicTitle", { captionText })}
+                value={settings.dynamicTitle.captionText}
+              />
+              <p className="broadcast-hint broadcast-field-wide">
+                Назовите Shape Layer подложки в After Effects
+                <code>fit:&lt;имя текстового слоя&gt;</code> — при каждом значении её ширина
+                сохранит исходные внутренние отступы.
+              </p>
+            </div>
+          ) : null}
+          <TextStyleFields
+            busy={busy}
+            fonts={fonts}
+            onChange={(style) => updateSettings("dynamicTitle", { style })}
+            style={settings.dynamicTitle.style}
           />
         </>
       ) : null}
@@ -958,7 +1065,9 @@ function BroadcastEffectPreview({
     ? settings.tickerCrawl.style
     : definition.kind === "clock-countdown"
       ? settings.clockCountdown.style
-      : settings.nextProgram.style;
+      : definition.kind === "dynamic-title"
+        ? settings.dynamicTitle.style
+        : settings.nextProgram.style;
   // В превью графика показывается там же, где выйдет в эфир: сдвиг ложится и на
   // плашку, и на надпись — в FFmpeg они двигаются вместе.
   const style: BroadcastTextStyle = {
@@ -1086,6 +1195,18 @@ function BroadcastEffectPreview({
                   Math.max(0, settings.clockCountdown.countdownSeconds - elapsed),
                   settings.clockCountdown.format,
                 )}
+          </div>
+        ) : null}
+
+        {definition.kind === "dynamic-title" ? (
+          <div
+            className="broadcast-preview-text"
+            style={{ ...textStyle, left: `${style.xPercent}cqw` }}
+          >
+            {settings.dynamicTitle.text ||
+              (settings.dynamicTitle.source === "task-file"
+                ? `Значение из ключа «${settings.dynamicTitle.taskKey}»`
+                : "Введите текст")}
           </div>
         ) : null}
 
@@ -1225,6 +1346,12 @@ function previewCaption(
     return dynamic
       ? "Приближение. В эфире часы идут по эфирному времени ролика, а не по часам этой машины."
       : "";
+  }
+  if (kind === "dynamic-title") {
+    const source = settings.dynamicTitle.source === "task-file"
+      ? `ключ «${settings.dynamicTitle.taskKey}» файла задания`
+      : "текст из настроек";
+    return `Гибридная плашка: Lottie рисует декор, FFmpeg — ${source}.`;
   }
   if (kind === "stinger-transition") {
     return "Переключение источника происходит в Cut point — там, где графика полностью " +

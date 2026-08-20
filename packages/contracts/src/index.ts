@@ -280,6 +280,7 @@ export const lottieTextAlignSchema = z.enum(["left", "center", "right"]);
 
 export const broadcastEffectKindSchema = z.enum([
   "animation-in-out",
+  "dynamic-title",
   "next-program",
   "ticker-crawl",
   "clock-countdown",
@@ -389,6 +390,24 @@ export const animationInOutSettingsSchema = z.object({
   taskFilePath: z.string().min(1).nullable().default(null),
 });
 
+export const dynamicTitleSettingsSchema = z.object({
+  /** Вручную заданная строка или значение из записи файла задания для ролика. */
+  source: z.enum(["manual", "task-file"]).default("manual"),
+  /** Текст надписи; для файла задания служит резервным значением. */
+  text: z.string().max(2_000).default(""),
+  /** Ключ значения в записи файла задания, сопоставленной с роликом по `name`. */
+  taskKey: z.string().min(1).max(128).default("text"),
+  taskFilePath: z.string().min(1).nullable().default(null),
+  startSeconds: z.number().nonnegative().max(86_400).default(0),
+  durationSeconds: z.number().positive().max(86_400).default(5),
+  /** Постоянная подпись, которую можно оставить внутри Lottie-пресета. */
+  captionKey: z.string().max(128).default(""),
+  captionText: z.string().max(512).default(""),
+  /** Text Layer пресета, который очищается и заменяется живым drawtext. */
+  dynamicKey: z.string().max(128).default(""),
+  style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
+});
+
 export const nextProgramSettingsSchema = z.object({
   /** За сколько секунд до конца ролика показать плашку. */
   startOffsetSeconds: z.number().positive().max(3_600).default(30),
@@ -467,6 +486,7 @@ export const stingerTransitionSettingsSchema = z.object({
 
 export const broadcastEffectSettingsSchema = z.object({
   animationInOut: animationInOutSettingsSchema.default(() => animationInOutSettingsSchema.parse({})),
+  dynamicTitle: dynamicTitleSettingsSchema.default(() => dynamicTitleSettingsSchema.parse({})),
   nextProgram: nextProgramSettingsSchema.default(() => nextProgramSettingsSchema.parse({})),
   tickerCrawl: tickerCrawlSettingsSchema.default(() => tickerCrawlSettingsSchema.parse({})),
   clockCountdown: clockCountdownSettingsSchema.default(() => clockCountdownSettingsSchema.parse({})),
@@ -1430,6 +1450,7 @@ export type BroadcastEffectDefinition = z.infer<typeof broadcastEffectDefinition
 export type BroadcastEffectSettings = z.infer<typeof broadcastEffectSettingsSchema>;
 export type AnimationInOutSettings = z.infer<typeof animationInOutSettingsSchema>;
 export type AnimationInOutMode = z.infer<typeof animationInOutModeSchema>;
+export type DynamicTitleSettings = z.infer<typeof dynamicTitleSettingsSchema>;
 export type EffectPlacement = z.infer<typeof effectPlacementSchema>;
 export type LottieFitSample = z.infer<typeof lottieFitSampleSchema>;
 export type NextProgramSettings = z.infer<typeof nextProgramSettingsSchema>;

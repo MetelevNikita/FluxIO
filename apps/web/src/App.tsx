@@ -719,7 +719,15 @@ export function App() {
     setOperationError(null);
     try {
       const parsed = await parseScheduleFile(schedulePath);
-      const probesByPath = await probeSchedulePaths(parsed);
+      const lottieLogoPaths = [...new Set(parsed.items
+        .map((item) => item.logoPath)
+        .filter((filePath): filePath is string => Boolean(filePath?.toLowerCase().endsWith(".json"))))];
+      const [probesByPath, renderedLogoEntries] = await Promise.all([
+        probeSchedulePaths(parsed),
+        Promise.all(lottieLogoPaths.map(async (filePath) =>
+          [filePath, await renderLogoFile(filePath)] as const)),
+      ]);
+      const renderedLogoPaths = new Map(renderedLogoEntries);
       const ageAssets = mapAgeAssetPaths(ageLibrary?.imagePaths ?? []);
       const scheduledAssets = parsed.items.map((item, index) => {
         const probe = probesByPath.get(item.filePath);
@@ -727,7 +735,10 @@ export function App() {
           ? probeToAsset(probe)
           : { ...pendingAssetFromPath(item.filePath), status: "error" as const, progress: undefined };
         const ageText = item.ageTitle ?? ageRatingFromFileName(base.name);
-        const logoPath = (item.logoPath ?? scheduleLogoPath) || undefined;
+        const logoSourcePath = (item.logoPath ?? scheduleLogoPath) || undefined;
+        const logoPath = logoSourcePath
+          ? (renderedLogoPaths.get(logoSourcePath) ?? logoSourcePath)
+          : undefined;
         return {
           ...base,
           id: `schedule-${slot}-${hashString(parsed.sourceFilePath)}-${index}`,
@@ -1362,6 +1373,10 @@ export function App() {
               ...effect.broadcast.settings.animationInOut,
               taskFilePath: content.filePath,
             },
+            dynamicTitle: {
+              ...effect.broadcast.settings.dynamicTitle,
+              taskFilePath: content.filePath,
+            },
             nextProgram: {
               ...effect.broadcast.settings.nextProgram,
               taskFilePath: content.filePath,
@@ -1817,14 +1832,17 @@ export function App() {
   async function selectScheduleLogoFile() {
     const filePath = await window.gruberDesktop?.selectLogoFile();
     if (!filePath) return;
+    await prepareScheduleLogo(filePath, filePath);
+  }
+
+  /** Lottie JSON сначала превращается в alpha-MOV; остальные форматы идут в FFmpeg напрямую. */
+  async function prepareScheduleLogo(filePath: string, source: string) {
     // FFmpeg не читает Lottie: проект печётся в файл с альфой тем же путём,
     // которым готовятся эфирные пресеты, и в эфир идёт уже он.
     if (filePath.toLowerCase().endsWith(".json")) {
       setMediaBusy(true);
       try {
-        const [rendered] = await analyzeGraphicEffectPaths([filePath]);
-        if (!rendered) throw new Error("Lottie logo could not be rendered");
-        applyScheduleLogo(rendered.filePath, filePath);
+        applyScheduleLogo(await renderLogoFile(filePath), source);
       } catch (error) {
         setOperationError(errorMessage(error));
       } finally {
@@ -1832,7 +1850,14 @@ export function App() {
       }
       return;
     }
-    applyScheduleLogo(filePath, filePath);
+    applyScheduleLogo(filePath, source);
+  }
+
+  async function renderLogoFile(filePath: string): Promise<string> {
+    if (!filePath.toLowerCase().endsWith(".json")) return filePath;
+    const [rendered] = await analyzeGraphicEffectPaths([filePath]);
+    if (!rendered) throw new Error("Lottie logo could not be rendered");
+    return rendered.filePath;
   }
 
   async function selectScheduleLogoDirectory() {
@@ -1840,10 +1865,12 @@ export function App() {
     if (!selection) return;
     const logoPath = preferredLogoPath(selection.imagePaths);
     if (!logoPath) {
-      setOperationError("The selected logo folder contains no PNG, WebP or JPEG images.");
+      setOperationError(
+        "The selected logo folder contains no supported image, animation or Lottie file.",
+      );
       return;
     }
-    applyScheduleLogo(logoPath, selection.directoryPath);
+    await prepareScheduleLogo(logoPath, selection.directoryPath);
   }
 
   function applyScheduleLogo(filePath: string, source: string) {
@@ -2855,7 +2882,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.10";
+const applicationVersion = "7.0.12";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);
@@ -3086,7 +3113,7 @@ function clampNumber(value: number, minimum: number, maximum: number): number {
 function preferredLogoPath(imagePaths: string[]): string | null {
   return imagePaths.find((imagePath) => {
     const fileName = imagePath.split(/[\\/]/).at(-1) ?? imagePath;
-    return /^(?:logo|channel|brand)(?:[-_. ].*)?\.(?:png|webp|jpe?g)$/i.test(fileName);
+    return /^(?:logo|channel|brand)(?:[-_. ].*)?\.(?:png|webp|jpe?g|mov|mp4|m4v|webm|mkv|avi|mxf|gif|json)$/i.test(fileName);
   }) ?? imagePaths[0] ?? null;
 }
 

@@ -38,6 +38,7 @@ import {
   buildFfmpegCompositePreviewCommand,
   buildFfmpegCommand,
   buildFfmpegProgramEncoderCommand,
+  isSupportedLogoPath,
   logoFilterChain,
   logoInputArgs,
   logoSourceKind,
@@ -120,7 +121,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.10");
+    assert.equal(health.version, "7.0.12");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -903,6 +904,11 @@ test("a renderer that stops early is topped up with silence, never truncated", (
 });
 
 test("an animated channel logo loops by input, a still one by a held frame", () => {
+  assert.equal(isSupportedLogoPath("/brand/bug.mov"), true);
+  assert.equal(isSupportedLogoPath("/brand/bug.gif"), true);
+  assert.equal(isSupportedLogoPath("/brand/bug.webp"), true);
+  // JSON не должен попасть в FFmpeg: UI сначала печатает Lottie в alpha-MOV.
+  assert.equal(isSupportedLogoPath("/brand/bug.json"), false);
   assert.equal(logoSourceKind("/brand/bug.png"), "image");
   assert.equal(logoSourceKind("/brand/bug.GIF"), "gif");
   assert.equal(logoSourceKind("/brand/bug.mov"), "video");

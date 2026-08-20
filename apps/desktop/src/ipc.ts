@@ -39,6 +39,10 @@ const videoExtensions = [
 const effectExtensions = ["json", "png", "webp", "mov", "mp4", "m4v", "webm"];
 const titleExtensions = new Set([".png", ".webp", ".mov", ".mp4", ".m4v", ".webm"]);
 const subtitleExtensions = new Set([".srt"]);
+const logoExtensions = new Set([
+  ".png", ".webp", ".jpg", ".jpeg", ".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi",
+  ".mxf", ".gif", ".json",
+]);
 const audioTrackExtensions = new Set([
   ".aac", ".ac3", ".eac3", ".flac", ".m4a", ".mka", ".mp2", ".mp3",
   ".oga", ".ogg", ".opus", ".wav", ".wma",
@@ -72,10 +76,16 @@ function registerMediaHandlers(): void {
       // интерфейс сначала печёт в файл — FFmpeg JSON не читает.
       {
         name: "Logo images and animations",
-        extensions: ["png", "webp", "jpg", "jpeg", "mov", "webm", "mp4", "gif", "json"],
+        extensions: [
+          "png", "webp", "jpg", "jpeg", "mov", "webm", "mp4", "m4v", "mkv", "avi", "mxf",
+          "gif", "json",
+        ],
       },
       { name: "Logo images", extensions: ["png", "webp", "jpg", "jpeg"] },
-      { name: "Animated logos", extensions: ["mov", "webm", "mp4", "gif", "json"] },
+      {
+        name: "Animated logos",
+        extensions: ["mov", "webm", "mp4", "m4v", "mkv", "avi", "mxf", "gif", "json"],
+      },
     ]));
 }
 
@@ -90,7 +100,7 @@ function registerScheduleHandlers(): void {
     ]));
 
   ipcMain.handle(SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL, async () =>
-    selectImageDirectory("Select folder with channel logos"));
+    selectImageDirectory("Select folder with channel logos", logoExtensions));
 
   ipcMain.handle(SELECT_AGE_DIRECTORY_CHANNEL, async () =>
     selectImageDirectory("Select folder with AGE graphics"));

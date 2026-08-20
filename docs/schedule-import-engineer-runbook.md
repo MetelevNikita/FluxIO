@@ -102,8 +102,11 @@ insertLogoTitle {C:\FluxIO\branding\channel.png}movie 00:10:00.00 C:\media\movie
   **Channel logo** в Playlist и применяются к Current/Future без двойного
   наложения после сборки плейлиста.
 
-Поддерживаемые изображения LOGO: PNG, WebP, JPEG/JPG. Для альфа-канала следует
-использовать PNG или WebP. AGE принимает только полноэкранные PNG/WebP с alpha.
+Поддерживаемые LOGO: PNG, WebP, JPEG/JPG, GIF, MOV, MP4/M4V, WebM, MKV, AVI и
+MXF. Lottie JSON при выборе в интерфейсе или в `insertLogoTitle` автоматически
+рендерится в alpha-MOV.
+Для прозрачной анимации рекомендуется MOV с alpha или WebM с alpha. AGE
+принимает только полноэкранные PNG/WebP с alpha.
 
 ## 6. FX-слои и SRT-субтитры в файле расписания
 
@@ -244,7 +247,7 @@ SCTE-35 markers в расписание не экспортируются: дл�
 - `invalid timecode` — минуты/секунды больше 59 или неверный формат;
 - `media files could not be analyzed` — путь недоступен media-server;
 - `Logo path must be absolute` — относительный путь LOGO;
-- `Logo must be PNG, WebP, JPEG or JPG` — неподдерживаемое изображение;
+- `Logo must be PNG, WebP, JPEG, GIF, MOV…` — неподдерживаемый формат;
 - ошибка FFmpeg `No such filter: drawtext` — установленная сборка FFmpeg не
   содержит фильтр drawtext; нужна полная сборка FFmpeg с поддержкой текста.
 - `selected AGE folder contains no matched graphics` — имена файлов не содержат

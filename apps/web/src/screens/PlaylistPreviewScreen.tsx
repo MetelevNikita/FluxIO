@@ -680,7 +680,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             {/* Анимированный логотип (mov, webm, gif, Lottie) либо крутится до
                 конца ролика, либо играет один раз и остаётся последним кадром.
                 У картинки кнопка ничего не меняет, поэтому и не показывается. */}
-            {animatedLogo(scheduleLogoSource) ? (
+            {animatedLogo(scheduleLogoPath) ? (
               <button
                 aria-pressed={logoSettings.logoLoop}
                 className={`logo-loop-toggle${logoSettings.logoLoop ? " on" : ""}`}

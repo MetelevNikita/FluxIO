@@ -849,6 +849,12 @@ function broadcastEffectSummary(effect: GraphicEffectAsset): string {
     return `${mode} · ${settings.animationInOut.durationSeconds} с` +
       (settings.animationInOut.taskFilePath ? " · файл задания" : "");
   }
+  if (definition.kind === "dynamic-title") {
+    const source = settings.dynamicTitle.source === "task-file"
+      ? `файл · ${settings.dynamicTitle.taskKey}`
+      : (settings.dynamicTitle.text || "текст не задан");
+    return `${source} · ${settings.dynamicTitle.durationSeconds} с`;
+  }
   if (definition.kind === "next-program") {
     return `За ${settings.nextProgram.startOffsetSeconds} с до конца · ` +
       `${settings.nextProgram.durationSeconds} с`;

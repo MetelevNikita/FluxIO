@@ -91,6 +91,18 @@ function broadcastEffect(
           style: style(),
           timezoneOffsetMinutes: 0,
         },
+        dynamicTitle: {
+          captionKey: "",
+          captionText: "",
+          durationSeconds: 5,
+          dynamicKey: "",
+          source: "manual",
+          startSeconds: 0,
+          style: style(),
+          taskFilePath: null,
+          taskKey: "text",
+          text: "",
+        },
         nextProgram: {
           durationSeconds: 7,
           fallbackTitle: "",
@@ -180,6 +192,60 @@ function plan(overrides: Partial<PlanBroadcastEffectInput>) {
 test("lottie text field key uses the layer name and the Essential Graphics slot id", () => {
   assert.equal(lottieTextFieldKey(textProperty("Main composition · eng", "p1")), "eng");
   assert.equal(lottieTextFieldKey(textProperty("Main composition · Title · Slot rus", "p2")), "rus");
+});
+
+test("dynamic title keeps text in drawtext and resizes the Lottie plate from a fit sample", () => {
+  const field = textProperty("Main composition · value", "prop-value", {
+    align: "left",
+    color: "#F5D565",
+    fontSizePercent: 5,
+    xPercent: 12,
+    yPercent: 80,
+  });
+  const result = plan({
+    effect: broadcastEffect("dynamic-title", {
+      dynamicTitle: {
+        ...broadcastEffect("dynamic-title", {}).broadcast!.settings.dynamicTitle,
+        dynamicKey: "value",
+        text: "Система готова",
+      },
+    }),
+    preset: preset([field]),
+  });
+
+  assert.equal(result.layers.length, 2);
+  assert.equal(result.textOverlays.length, 2);
+  assert.equal(result.textOverlays[0]?.overlay.mode, "static");
+  assert.equal(result.textOverlays[0]?.overlay.content, "Система готова");
+  assert.equal(result.textOverlays[0]?.overlay.style.boxEnabled, false);
+  assert.equal(result.textOverlays[0]?.overlay.style.color, "#F5D565");
+  assert.equal(result.renders[0]?.overrides["prop-value"], "");
+  assert.deepEqual(result.renders[0]?.fitSamples["prop-value"], {
+    fontFilePath: null,
+    fontSizePercent: 5,
+    text: "Система готова",
+  });
+});
+
+test("dynamic title reads a per-clip value from the task file and falls back to manual text", () => {
+  const result = plan({
+    effect: broadcastEffect("dynamic-title", {
+      dynamicTitle: {
+        ...broadcastEffect("dynamic-title", {}).broadcast!.settings.dynamicTitle,
+        source: "task-file",
+        taskKey: "status",
+        text: "Нет данных",
+      },
+    }),
+    preset: null,
+    taskEntries: [{ name: clips[0]!.name, values: { status: "В эфире" } }],
+  });
+
+  assert.deepEqual(
+    result.textOverlays.map((entry) => entry.overlay.content),
+    ["В эфире", "Нет данных"],
+  );
+  assert.ok(result.warnings.some((warning) => warning.includes("резервный текст")));
 });
 
 test("animation in/out binds a task entry to exactly one clip and maps its keys", () => {

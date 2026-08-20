@@ -111,11 +111,83 @@ interface PlanContext extends PlanBroadcastEffectInput {
 
 const planners: Record<BroadcastEffectKind, (context: PlanContext) => void> = {
   "animation-in-out": planAnimationInOut,
+  "dynamic-title": planDynamicTitle,
   "next-program": planNextProgram,
   "ticker-crawl": planTickerCrawl,
   "clock-countdown": planClockCountdown,
   "stinger-transition": planStingerTransition,
 };
+
+/* -------------------------------------------------------------------------- *
+ * Dynamic title
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Универсальная гибридная плашка: Lottie отвечает за декор, а строку рисует
+ * FFmpeg. Поэтому значение можно менять для каждого ролика без повторной
+ * сборки проекта After Effects, а слой `fit:<имя поля>` садится по её ширине.
+ */
+function planDynamicTitle(context: PlanContext): void {
+  const settings = context.definition.settings.dynamicTitle;
+  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
+  const style = styleFromPreset(context, dynamicField, settings.style);
+
+  for (const clip of context.targets) {
+    const content = resolveDynamicTitleContent(context, clip);
+    if (!content) {
+      context.plan.warnings.push(`"${clip.name}": текст динамической плашки пуст — эффект пропущен`);
+      continue;
+    }
+    const startSeconds = settings.startSeconds;
+    const endSeconds = startSeconds + settings.durationSeconds;
+    if (context.preset) {
+      pushLayer(context, clip, {
+        endSeconds,
+        name: `${context.effect.name} plate`,
+        renderKey: presetCaptionRender(
+          context,
+          settings.captionKey,
+          settings.captionText,
+          dynamicField,
+          {
+            text: content,
+            fontFilePath: style.fontFilePath,
+            fontSizePercent: style.fontSizePercent,
+          },
+        ),
+        startSeconds,
+      });
+    }
+    pushTextOverlay(context, clip, {
+      content,
+      endSeconds,
+      mode: "static",
+      startSeconds,
+      style,
+    });
+  }
+}
+
+function resolveDynamicTitleContent(
+  context: PlanContext,
+  clip: BroadcastTargetClip,
+): string {
+  const settings = context.definition.settings.dynamicTitle;
+  if (settings.source === "manual") return settings.text.trim();
+  const matches = context.taskEntries.filter((entry) => entry.name.trim() === clip.name.trim());
+  if (matches.length > 1) {
+    context.plan.warnings.push(
+      `"${clip.name}": в файле задания несколько записей с таким name — взята первая`,
+    );
+  }
+  const value = matches[0]?.values[settings.taskKey]?.trim() ?? "";
+  if (!value && settings.text.trim()) {
+    context.plan.warnings.push(
+      `"${clip.name}": ключ "${settings.taskKey}" не найден — использован резервный текст`,
+    );
+  }
+  return value || settings.text.trim();
+}
 
 /* -------------------------------------------------------------------------- *
  * Animation in/out

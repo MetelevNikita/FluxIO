@@ -1,6 +1,6 @@
 {
   "name": "@gruber/media-server",
-  "version": "7.0.10",
+  "version": "7.0.12",
   "private": true,
   "type": "module",
   "scripts": {

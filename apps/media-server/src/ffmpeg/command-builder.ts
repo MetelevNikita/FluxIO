@@ -695,7 +695,7 @@ function buildFilterGraph(
         itemVideoSource = outputLabel;
       });
     });
-    // Динамические надписи ложатся поверх всей остальной графики: бегущая
+    // Надписи ложатся поверх всей остальной графики: Dynamic title, бегущая
     // строка и часы всегда должны оставаться читаемыми.
     textOverlays.forEach((overlay, overlayIndex) => {
       const outputLabel = `vtext${index}_${overlayIndex}`;
@@ -803,7 +803,14 @@ function buildFilterGraph(
  * Логотип канала: картинка или анимация
  * -------------------------------------------------------------------------- */
 
+const logoImageExtensions = new Set([".png", ".webp", ".jpg", ".jpeg"]);
 const animatedLogoExtensions = new Set([".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mxf"]);
+
+/** Форматы, которые FFmpeg получает напрямую; Lottie до этой точки уже отрендерен в MOV. */
+export function isSupportedLogoPath(filePath: string): boolean {
+  const extension = path.extname(filePath).toLowerCase();
+  return logoImageExtensions.has(extension) || extension === ".gif" || animatedLogoExtensions.has(extension);
+}
 
 export type LogoSourceKind = "image" | "gif" | "video";
 
