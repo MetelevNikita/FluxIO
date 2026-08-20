@@ -45,7 +45,11 @@ import {
   createGstreamerCapabilities,
   type GstreamerCapabilities,
 } from "../subtitles/gstreamer.js";
-import { buildDvbSubtitleProject } from "../subtitles/srt-project.js";
+import {
+  buildDvbSubtitleProject,
+  buildSubtitleTimeline,
+  type SrtCue,
+} from "../subtitles/srt-project.js";
 import {
   dvbSubtitleClockToleranceMs,
   dvbSubtitlePreRollMs,
@@ -63,6 +67,7 @@ const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
 const playlistPreparationConcurrency = 8;
 const clipProducerStartupTimeoutMs = 30_000;
+const maximumSubtitleRestartAttempts = 3;
 const minimumClipPipeBufferBytes = 1_048_576;
 const clipAudioSilenceChunkBytes = 262_144;
 const silenceChunk = Buffer.alloc(clipAudioSilenceChunkBytes);
@@ -150,6 +155,13 @@ export class PlayoutSupervisor {
   #transportPreviewArgs: string[] = [];
   #subtitleFirstCueStartSeconds: number | null = null;
   #subtitlePreRollMs = 0;
+  /** Реплики на программной шкале: из них пересобирается файл при рестарте. */
+  #subtitleProgramCues: SrtCue[] = [];
+  #subtitleInputPort: number | null = null;
+  #subtitleRestartAttempts = 0;
+  #subtitleRestartTimer: NodeJS.Timeout | null = null;
+  #subtitleResumeCount = 0;
+  #gstreamerVersionReported = false;
   #firstSubtitlePtsMs: number | null = null;
   #subtitleClockReport: "aligned" | "mismatch" | null = null;
   #cues: PlannedScte35Cue[] = [];
@@ -603,6 +615,11 @@ export class PlayoutSupervisor {
     this.#transportPreviewRestartAttempts = 0;
     this.#subtitleFirstCueStartSeconds = null;
     this.#subtitlePreRollMs = 0;
+    this.#subtitleProgramCues = [];
+    this.#subtitleInputPort = null;
+    this.#subtitleRestartAttempts = 0;
+    this.#subtitleResumeCount = 0;
+    this.#gstreamerVersionReported = false;
     this.#firstSubtitlePtsMs = null;
     this.#subtitleClockReport = null;
   }
@@ -647,6 +664,12 @@ export class PlayoutSupervisor {
     this.#status.subtitles.sourceItems = project.sourceItems;
     this.#subtitleFirstCueStartSeconds = project.firstCueStartSeconds;
     this.#subtitlePreRollMs = Math.round(project.preRollSeconds * 1_000);
+    this.#subtitleProgramCues = project.cues;
+    if (project.sanitizedCues > 0) {
+      this.#appendEvent(
+        `Subtitle markup cleaned up in ${project.sanitizedCues} cue(s) before handing them to GStreamer`,
+      );
+    }
 
     if (project.cueCount === 0) {
       this.#status.subtitles.state = "completed";
@@ -662,6 +685,7 @@ export class PlayoutSupervisor {
     );
     const pmtPatchFilePath = path.join(this.previewDirectory, "dvb-subtitles-pmt.xml");
     const subtitleInputPort = await reserveUdpPort();
+    this.#subtitleInputPort = subtitleInputPort;
 
     await writeFile(subtitleInputPath, project.content, "utf8");
     await writeFile(pmtPatchFilePath, buildDvbSubtitlePmtPatch(request), "utf8");
@@ -1622,6 +1646,10 @@ export class PlayoutSupervisor {
 
   async #spawnDvbSubtitles(): Promise<void> {
     if (this.#subtitleArgs.length === 0) return;
+    if (this.#subtitleRestartTimer) {
+      clearTimeout(this.#subtitleRestartTimer);
+      this.#subtitleRestartTimer = null;
+    }
     const child = spawn(this.gstreamerCapabilities.launchPath, this.#subtitleArgs, {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -1644,6 +1672,9 @@ export class PlayoutSupervisor {
     await waitForSpawn(child);
     if (this.#subtitleChild !== child) throw new Error("DVB subtitle encoder exited during startup");
     this.#status.subtitles.state = "running";
+    // Причина прошлого падения уже в журнале; держать её в статусе живой ветки
+    // незачем — оператор увидел бы красную строку у работающих субтитров.
+    this.#status.subtitles.error = null;
     this.#appendEvent(
       `DVB subtitle encoder started with PID ${child.pid ?? "unknown"}; ` +
         `${this.#status.subtitles.plannedCues} cue(s) on TS PID ${this.#request?.subtitleOutput.pid}, ` +
@@ -1651,6 +1682,20 @@ export class PlayoutSupervisor {
         `PES pre-roll ${this.#subtitlePreRollMs} ms, ` +
         `operator PTS offset ${this.#request?.subtitleOutput.ptsOffsetMs ?? 0} ms`,
     );
+    void this.#reportGstreamerVersion();
+  }
+
+  /**
+   * Версия GStreamer в журнале: разбор падения субтитровой ветки начинается
+   * именно с неё. Пишется один раз за сессию и в фоне — `gst-launch-1.0
+   * --version` на первом запуске может строить реестр плагинов минутами, а
+   * старт эфира ждать этого не должен.
+   */
+  async #reportGstreamerVersion(): Promise<void> {
+    if (this.#gstreamerVersionReported) return;
+    this.#gstreamerVersionReported = true;
+    const version = await this.gstreamerCapabilities.readVersion().catch(() => null);
+    if (version) this.#appendEvent(`DVB subtitle encoder runtime: ${version}`);
   }
 
   #handleDvbSubtitleClose(
@@ -1669,26 +1714,111 @@ export class PlayoutSupervisor {
       this.#appendEvent("DVB subtitle cue stream completed");
       return;
     }
-    const error = `DVB subtitle encoder exited with ${code ?? signal ?? "unknown"}`;
-    this.#status.subtitles.state = "failed";
-    this.#status.subtitles.error = error;
-    this.#status.state = "failed";
-    this.#status.error = error;
-    this.#status.stoppedAt = new Date().toISOString();
-    this.#appendEvent(error);
-    this.#child?.kill("SIGTERM");
-    this.#terminateTsdDuck();
+    this.#scheduleSubtitleRestart(`exited with ${code ?? signal ?? "unknown"}`);
   }
 
   #handleDvbSubtitleError(child: ChildProcessWithoutNullStreams, error: Error): void {
     if (this.#expectedSubtitleStops.has(child)) return;
-    this.#status.subtitles.state = "failed";
-    this.#status.subtitles.error = error.message;
-    this.#status.state = "failed";
-    this.#status.error = error.message;
-    this.#appendEvent(`DVB subtitle process error: ${error.message}`);
-    this.#child?.kill("SIGTERM");
-    this.#terminateTsdDuck();
+    if (this.#subtitleChild === child) this.#subtitleChild = null;
+    this.#scheduleSubtitleRestart(`process error: ${error.message}`);
+  }
+
+  /**
+   * Субтитры больше не снимают эфир.
+   *
+   * Раньше любой ненулевой выход GStreamer помечал сессию `failed` и убивал
+   * encoder вместе с TSDuck: падение вспомогательной ветки уносило всю выдачу.
+   * Subtitle PID объявлен в PMT на старте транспортной сессии и никуда не
+   * девается, а `-P merge` просто ждёт данных на своём UDP-входе, поэтому
+   * ветку можно поднять заново прямо на ходу. Попытки считаются за сессию:
+   * реплика, роняющая GStreamer, не должна крутить перезапуск бесконечно.
+   */
+  #scheduleSubtitleRestart(reason: string): void {
+    if (this.#subtitleArgs.length === 0) return;
+    const playoutActive = ["starting", "running"].includes(this.#status.state);
+    if (!playoutActive) {
+      this.#status.subtitles.state = "failed";
+      this.#status.subtitles.error = reason;
+      this.#appendEvent(`DVB subtitle encoder ${reason}`);
+      return;
+    }
+    if (this.#subtitleRestartAttempts >= maximumSubtitleRestartAttempts) {
+      this.#status.subtitles.state = "failed";
+      this.#status.subtitles.error = reason;
+      this.#appendEvent(
+        `DVB subtitles unavailable after ${maximumSubtitleRestartAttempts} retries (${reason}); ` +
+          "playout continues without the subtitle stream",
+      );
+      return;
+    }
+    this.#subtitleRestartAttempts += 1;
+    const attempt = this.#subtitleRestartAttempts;
+    this.#status.subtitles.state = "starting";
+    this.#status.subtitles.error = reason;
+    this.#appendEvent(
+      `DVB subtitle encoder ${reason}; retry ${attempt}/${maximumSubtitleRestartAttempts}`,
+    );
+    this.#subtitleRestartTimer = setTimeout(() => {
+      this.#subtitleRestartTimer = null;
+      void this.#resumeDvbSubtitles().catch((error: unknown) => {
+        this.#scheduleSubtitleRestart(
+          error instanceof Error ? error.message : "restart failed",
+        );
+      });
+    }, attempt * 750);
+    this.#subtitleRestartTimer.unref();
+  }
+
+  /**
+   * Поднимает субтитры с текущего момента эфира.
+   *
+   * `filesrc ! subparse` всегда читает файл с начала, поэтому перезапуск с
+   * исходным файлом выдал бы в эфир реплики с нулевой минуты. Файл собирается
+   * заново из оставшихся реплик, а `ts-offset` у `dvbsubenc` получает прибавку
+   * на пройденное время — PTS остаются на программной шкале. Реплика, на
+   * которой GStreamer упал, при этом остаётся позади и второй раз не
+   * проигрывается.
+   */
+  async #resumeDvbSubtitles(): Promise<void> {
+    const request = this.#request;
+    const inputPort = this.#subtitleInputPort;
+    if (!request || request.subtitleOutput.mode !== "dvb" || inputPort === null) return;
+    // Пока таймер ждал, эфир мог остановиться — лишний процесс не поднимаем.
+    if (!["starting", "running"].includes(this.#status.state)) return;
+
+    const resumeAtSeconds = this.#status.outTimeSeconds;
+    const timeline = buildSubtitleTimeline(
+      this.#subtitleProgramCues,
+      resumeAtSeconds,
+      dvbSubtitlePreRollMs / 1_000,
+    );
+    if (timeline.cueCount === 0) {
+      this.#status.subtitles.state = "completed";
+      this.#appendEvent(
+        `DVB subtitle encoder not restarted at ${formatClock(resumeAtSeconds)}: no cues left`,
+      );
+      return;
+    }
+
+    this.#subtitleResumeCount += 1;
+    const inputPath = path.join(
+      this.previewDirectory,
+      `dvb-subtitles-loop-${this.#status.loopCount}-resume-${this.#subtitleResumeCount}.srt`,
+    );
+    await writeFile(inputPath, timeline.content, "utf8");
+    this.#subtitlePreRollMs = Math.round(timeline.preRollSeconds * 1_000);
+    this.#subtitleArgs = buildGstreamerDvbSubtitleCommand({
+      inputPath,
+      outputPort: inputPort,
+      preRollMs: this.#subtitlePreRollMs,
+      timelineOffsetMs: Math.round(resumeAtSeconds * 1_000),
+      request,
+    });
+    this.#appendEvent(
+      `Resuming DVB subtitles at ${formatClock(resumeAtSeconds)} with ` +
+        `${timeline.cueCount} cue(s) left`,
+    );
+    await this.#spawnDvbSubtitles();
   }
 
   #handleTsdDuckClose(
@@ -1746,6 +1876,10 @@ export class PlayoutSupervisor {
   }
 
   #terminateDvbSubtitles(): void {
+    if (this.#subtitleRestartTimer) {
+      clearTimeout(this.#subtitleRestartTimer);
+      this.#subtitleRestartTimer = null;
+    }
     const child = this.#subtitleChild;
     if (!child) return;
     this.#subtitleChild = null;

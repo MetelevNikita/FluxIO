@@ -55,6 +55,10 @@ export function assignEffectToAssets(
         effectId: effect.id,
         endSeconds,
         lumaThreshold: 0.08,
+        // Эффект уровня 3 ложится туда, куда его поставил дизайнер; сдвиг
+        // задаётся эффектом второго уровня.
+        offsetXPercent: 0,
+        offsetYPercent: 0,
         sourceInSeconds: 0,
         tier: 3,
         filePath: effect.filePath,

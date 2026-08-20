@@ -38,6 +38,10 @@ import {
   buildFfmpegCompositePreviewCommand,
   buildFfmpegCommand,
   buildFfmpegProgramEncoderCommand,
+  logoFilterChain,
+  logoInputArgs,
+  logoSourceKind,
+  type PreparedPlayoutItem,
 } from "./ffmpeg/command-builder.js";
 import {
   buildTransportPreviewCommand,
@@ -87,10 +91,14 @@ import {
   pcrInsertionThresholdMs,
 } from "./tsduck/command-builder.js";
 import { buildGstreamerDvbSubtitleCommand } from "./subtitles/gstreamer.js";
+import { measureTextWidth, readFontMetrics } from "./effects/font-metrics.js";
+import { fitRectangleToText } from "./effects/lottie.js";
 import {
   buildDvbSubtitleProject,
+  buildSubtitleTimeline,
   decodeSubtitleBuffer,
   parseSrt,
+  sanitizeCueText,
 } from "./subtitles/srt-project.js";
 import {
   evaluateDvbSubtitleClock,
@@ -894,6 +902,91 @@ test("a renderer that stops early is topped up with silence, never truncated", (
   assert.equal(clipAudioSilenceBytes(expected, expected + 96_000), 0);
 });
 
+test("an animated channel logo loops by input, a still one by a held frame", () => {
+  assert.equal(logoSourceKind("/brand/bug.png"), "image");
+  assert.equal(logoSourceKind("/brand/bug.GIF"), "gif");
+  assert.equal(logoSourceKind("/brand/bug.mov"), "video");
+  // Отрендеренный Lottie приходит сюда уже файлом, а не проектом.
+  assert.equal(logoSourceKind("/cache/bug-lottie.mov"), "video");
+
+  // Картинка разворачивается в бесконечный поток одним кадром.
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.png", loop: true }, 25),
+    ["-loop", "1", "-framerate", "25", "-i", "/brand/bug.png"],
+  );
+  // У анимации повторяется сам файл: gif — своим циклом, остальные — потоком.
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.mov", loop: true }, 25),
+    ["-stream_loop", "-1", "-i", "/brand/bug.mov"],
+  );
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.gif", loop: true }, 25),
+    ["-ignore_loop", "0", "-i", "/brand/bug.gif"],
+  );
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.mov", loop: false }, 25),
+    ["-i", "/brand/bug.mov"],
+  );
+});
+
+test("a logo that plays once still outlives the clip, or overlay would cut the programme", () => {
+  const still = logoFilterChain({ filePath: "/brand/bug.png", loop: true, opacity: 0.8 }, 240, 25);
+  assert.equal(still, "format=rgba,colorchannelmixer=aa=0.8,scale=240:-1");
+
+  const looping = logoFilterChain({ filePath: "/brand/bug.mov", loop: true, opacity: 1 }, 240, 25);
+  assert.match(looping, /^fps=25,format=rgba/);
+  assert.doesNotMatch(looping, /tpad/);
+
+  // `overlay` собран с shortest=1: закончившаяся анимация обрезала бы эфир,
+  // поэтому однократный показ держится последним кадром.
+  const once = logoFilterChain({ filePath: "/brand/bug.mov", loop: false, opacity: 1 }, 240, 25);
+  assert.match(once, /tpad=stop=-1:stop_mode=clone$/);
+});
+
+test("an animated channel logo reaches FFmpeg as a looped input", () => {
+  const request = baseRequest();
+  request.logo = {
+    filePath: "/brand/bug.mov",
+    loop: true,
+    margin: 16,
+    opacity: 0.9,
+    position: "top-right",
+    widthPercent: 12,
+  };
+  const command = buildFfmpegCommand(request, preparedItems(), "/tmp/preview");
+  assert.match(command.args.join(" "), /-stream_loop -1 -i \/brand\/bug\.mov/);
+  assert.match(command.filterGraph, /fps=25,format=rgba,colorchannelmixer=aa=0\.9/);
+});
+
+test("an effect layer is composited where the operator moved it", () => {
+  const request = baseRequest();
+  const [item] = preparedItems();
+  const moved: PreparedPlayoutItem = {
+    ...item!,
+    effects: [{
+      backgroundPath: "/fx/plate.mov",
+      blendMode: "alpha",
+      effectId: "fx-plate",
+      endSeconds: 6,
+      filePath: "/fx/plate.mov",
+      id: "layer-1",
+      kind: "video",
+      lumaThreshold: 0.08,
+      name: "Plate",
+      // −10 % ширины и +5 % высоты кадра 1280×720.
+      offsetXPercent: -10,
+      offsetYPercent: 5,
+      sourceDurationSeconds: 6,
+      sourceInSeconds: 0,
+      startSeconds: 1,
+      tier: 2,
+      titlePaths: [],
+    }],
+  };
+  const command = buildFfmpegCommand(request, [moved], "/tmp/preview");
+  assert.match(command.filterGraph, /overlay=x=-128:y=36:/);
+});
+
 test("composite clip preview renders the programme graph without opening the broadcast endpoint", () => {
   const request = baseRequest();
   const item = preparedItems()[0]!;
@@ -905,6 +998,18 @@ test("composite clip preview renders the programme graph without opening the bro
   assert.match(rendered, /-hls_start_number_source generic/);
   assert.match(rendered, /segment-%06d\.ts/);
   assert.doesNotMatch(rendered, /udp:\/\//);
+
+  // Предпросмотр копится целиком: плеер должен уметь отмотать назад по уже
+  // посчитанному куску, а не упираться в живое окно из шести сегментов.
+  assert.match(rendered, /-hls_list_size 0/);
+  assert.match(rendered, /-hls_playlist_type event/);
+  assert.doesNotMatch(rendered, /delete_segments|omit_endlist/);
+  assert.doesNotMatch(rendered, /-hls_delete_threshold/);
+
+  // Монтаж считается в кадре предпросмотра, а не в эфирном: на UHD это вчетверо
+  // меньше работы при той же картинке.
+  assert.match(command.filterGraph, /scale=960:540/);
+  assert.doesNotMatch(command.filterGraph, /scale=1280:720/);
 });
 
 test("a 168-hour playlist keeps FFmpeg inputs out of the Windows command line", () => {
@@ -1047,6 +1152,7 @@ test("FFmpeg command burns logo before program and preview split", () => {
     ...baseRequest(),
     logo: {
       filePath: "/media/logo.png",
+      loop: true,
       position: "top-right",
       widthPercent: 12,
       margin: 24,
@@ -1093,6 +1199,7 @@ test("FFmpeg scales a full-frame AGE canvas to output and applies logo before co
       itemLogo: {
         enabled: true,
         filePath: "/media/item-logo.png",
+        loop: true,
         position: "top-right",
         widthPercent: 12,
         margin: 24,
@@ -1128,6 +1235,7 @@ test("FFmpeg scales a full-frame AGE canvas to output and applies logo before co
       itemLogo: {
         enabled: true,
         filePath: "/media/item-logo.png",
+        loop: true,
         position: "top-right",
         widthPercent: 12,
         margin: 24,
@@ -1156,6 +1264,8 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       sourceInSeconds: 0,
       blendMode: "alpha" as const,
       lumaThreshold: 0.08,
+      offsetXPercent: 0,
+      offsetYPercent: 0,
       tier: 3 as const,
       backgroundPath: "/media/lower-third-bg.mov",
       filePath: "/media/lower-third-bg.mov",
@@ -1172,6 +1282,8 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       sourceInSeconds: 0,
       blendMode: "alpha" as const,
       lumaThreshold: 0.08,
+      offsetXPercent: 0,
+      offsetYPercent: 0,
       tier: 3 as const,
       filePath: "/media/frame.png",
       kind: "static",
@@ -1365,6 +1477,202 @@ test("DVB subtitle pre-roll is clamped to preserve an early first cue PTS", asyn
     }], 2);
     assert.equal(project.preRollSeconds, 1);
     assert.match(project.content, /00:00:00,000 --> 00:00:02,000/);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+/**
+ * Минимальный TTF: только те таблицы, которые читает `readFontMetrics`. Класть
+ * в репозиторий настоящий шрифт незачем — проверяются ширины, а не глифы.
+ * Глифы: 0 — .notdef (500), 1 — «A» (600), 2 — «B» (300), при em в 1000 единиц.
+ */
+function buildTestFont(): Buffer {
+  const advances = [500, 600, 300];
+  const head = Buffer.alloc(54);
+  head.writeUInt16BE(1_000, 18);
+  const hhea = Buffer.alloc(36);
+  hhea.writeUInt16BE(advances.length, 34);
+  const maxp = Buffer.alloc(6);
+  maxp.writeUInt16BE(advances.length, 4);
+  const hmtx = Buffer.alloc(advances.length * 4);
+  advances.forEach((advance, index) => hmtx.writeUInt16BE(advance, index * 4));
+
+  const groups = [
+    { start: 0x41, end: 0x41, glyph: 1 },
+    { start: 0x42, end: 0x42, glyph: 2 },
+  ];
+  const subtable = Buffer.alloc(16 + groups.length * 12);
+  subtable.writeUInt16BE(12, 0);
+  subtable.writeUInt32BE(subtable.length, 4);
+  subtable.writeUInt32BE(groups.length, 12);
+  groups.forEach((group, index) => {
+    const at = 16 + index * 12;
+    subtable.writeUInt32BE(group.start, at);
+    subtable.writeUInt32BE(group.end, at + 4);
+    subtable.writeUInt32BE(group.glyph, at + 8);
+  });
+  const cmap = Buffer.concat([Buffer.alloc(12), subtable]);
+  cmap.writeUInt16BE(1, 2);
+  cmap.writeUInt16BE(3, 4);
+  cmap.writeUInt16BE(10, 6);
+  cmap.writeUInt32BE(12, 8);
+
+  const tables: [string, Buffer][] = [
+    ["cmap", cmap], ["head", head], ["hhea", hhea], ["hmtx", hmtx], ["maxp", maxp],
+  ];
+  const header = Buffer.alloc(12 + tables.length * 16);
+  header.writeUInt32BE(0x00010000, 0);
+  header.writeUInt16BE(tables.length, 4);
+  let offset = header.length;
+  tables.forEach(([tag, data], index) => {
+    const record = 12 + index * 16;
+    header.write(tag, record, "latin1");
+    header.writeUInt32BE(offset, record + 8);
+    header.writeUInt32BE(data.length, record + 12);
+    offset += data.length;
+  });
+  return Buffer.concat([header, ...tables.map(([, data]) => data)]);
+}
+
+test("Font metrics measure a line by the glyph widths of the font itself", () => {
+  const metrics = readFontMetrics(buildTestFont());
+  assert.ok(metrics, "минимальный шрифт должен разбираться");
+  assert.equal(metrics.unitsPerEm, 1_000);
+  assert.equal(metrics.capHeight, 700, "без OS/2 берётся 0.7 em");
+  assert.equal(measureTextWidth(metrics, "AB", 100), 90);
+  // Многострочный текст меряется по самой длинной строке: плашка обязана
+  // вместить её целиком.
+  assert.equal(measureTextWidth(metrics, "A\nAB", 100), 90);
+  // Трекинг Lottie — тысячные доли em между символами.
+  assert.equal(measureTextWidth(metrics, "AB", 100, 100), 100);
+  // Символа нет в шрифте — берётся ширина .notdef, а не ноль.
+  assert.equal(measureTextWidth(metrics, "Я", 100), 50);
+});
+
+test("A plate grows to the side its text is set from", () => {
+  const rectangle = () => ({ s: { a: 0, k: [300, 100] }, p: { a: 0, k: [0, 0] } });
+
+  const leftAligned = rectangle();
+  assert.equal(fitRectangleToText(leftAligned, 80, 0), true);
+  assert.deepEqual(leftAligned.s.k, [380, 100]);
+  // Левый край остался на месте: центр уехал на половину прибавки вправо.
+  assert.deepEqual(leftAligned.p.k, [40, 0]);
+
+  const rightAligned = rectangle();
+  fitRectangleToText(rightAligned, 80, 1);
+  assert.deepEqual(rightAligned.p.k, [-40, 0]);
+
+  const centered = rectangle();
+  fitRectangleToText(centered, 80, 2);
+  assert.deepEqual(centered.s.k, [380, 100]);
+  assert.deepEqual(centered.p.k, [0, 0]);
+
+  // Текст стал короче — плашка сжимается, но не в ноль.
+  const shrunk = rectangle();
+  fitRectangleToText(shrunk, -500, 0);
+  assert.deepEqual(shrunk.s.k, [1, 100]);
+
+  const animated = { s: { a: 1, k: [] }, p: { a: 0, k: [0, 0] } };
+  assert.equal(fitRectangleToText(animated, 80, 0), false, "анимированный размер не трогаем");
+});
+
+test("Subtitle cue text drops what subparse leaves visible and keeps what it escapes itself", () => {
+  // subparse отдаёт pango-markup и сам превращает & в &amp;, поэтому экранировать
+  // здесь нельзя — в эфир ушло бы «&amp;». А ASS-разметку он пропускает как текст.
+  assert.equal(sanitizeCueText("{\\an8}Заголовок"), "Заголовок");
+  assert.equal(sanitizeCueText("{\\pos(100,200)}Смещение"), "Смещение");
+  assert.equal(sanitizeCueText("Rock & Roll, 5 < 7"), "Rock & Roll, 5 < 7");
+  assert.equal(sanitizeCueText("\u001B[31mЦвет\u0000"), "[31mЦвет");
+  assert.equal(sanitizeCueText("  Первая   строка \n\n  Вторая  \n"), "Первая строка\nВторая");
+});
+
+test("Subtitle cue text keeps ordinary markup and caps runaway cues", () => {
+  assert.equal(sanitizeCueText("<i>Курсив</i>"), "<i>Курсив</i>");
+  const nested = `${"<i>".repeat(50)}Глубоко${"</i>".repeat(50)}`;
+  assert.equal(sanitizeCueText(nested), "Глубоко");
+  const truncated = sanitizeCueText("А".repeat(900));
+  assert.equal(truncated.length, 500);
+  assert.ok(truncated.endsWith("…"));
+  const trimmedTag = sanitizeCueText(`${"Б".repeat(497)}<i>хвост</i>`);
+  assert.ok(!/<[^>]*$/.test(trimmedTag), "обрез не должен оставлять недописанный тег");
+  const manyLines = sanitizeCueText(
+    Array.from({ length: 12 }, (_, index) => `Строка ${index}`).join("\n"),
+  );
+  assert.equal(manyLines.split("\n").length, 6);
+});
+
+test("Subtitle timeline resumes mid-programme instead of replaying cues from zero", () => {
+  const cues = [
+    { startSeconds: 10, endSeconds: 12, text: "Прошлая" },
+    { startSeconds: 100, endSeconds: 104, text: "На экране" },
+    { startSeconds: 200, endSeconds: 203, text: "Будущая" },
+  ];
+
+  const onScreen = buildSubtitleTimeline(cues, 102, 2);
+  assert.equal(onScreen.cueCount, 2);
+  // Реплика уже идёт — запаса на pre-roll нет, PES уходит немедленно.
+  assert.equal(onScreen.preRollSeconds, 0);
+  assert.deepEqual(
+    parseSrt(onScreen.content).map((cue) => [cue.startSeconds, cue.endSeconds, cue.text]),
+    [[0, 2, "На экране"], [98, 101, "Будущая"]],
+  );
+
+  const betweenCues = buildSubtitleTimeline(cues, 50, 2);
+  assert.equal(betweenCues.cueCount, 2);
+  assert.equal(betweenCues.preRollSeconds, 2);
+  assert.match(betweenCues.content, /00:00:48,000 --> 00:00:52,000/);
+
+  assert.equal(buildSubtitleTimeline(cues, 500, 2).cueCount, 0);
+});
+
+test("Restarted DVB subtitle command shifts PTS back onto the programme timeline", () => {
+  const request = baseRequest();
+  request.subtitleOutput = {
+    ...defaultSubtitleOutput,
+    mode: "dvb",
+    pid: 288,
+    language: "rus",
+  };
+  const args = buildGstreamerDvbSubtitleCommand({
+    inputPath: "/tmp/dvb-subtitles-loop-0-resume-1.srt",
+    outputPort: 31_000,
+    preRollMs: 2_000,
+    timelineOffsetMs: 1_322_000,
+    request,
+  });
+  assert.ok(args.includes(`ts-offset=${(2_000 + 1_322_000) * 1_000_000}`));
+});
+
+test("DVB subtitle project cleans operator markup and keeps cues for a restart", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-subtitle-sanitize-"));
+  const subtitle = path.join(directory, "programme.srt");
+  try {
+    await writeFile(subtitle, [
+      "1",
+      "00:00:05,000 --> 00:00:08,000",
+      "{\\an8}Верхняя строка",
+      "",
+      "2",
+      "00:00:09,000 --> 00:00:11,000",
+      "Обычная реплика",
+    ].join("\n"), "utf8");
+    const project = await buildDvbSubtitleProject([{
+      durationSeconds: 20,
+      filePath: "/media/program.mp4",
+      hasAudio: true,
+      id: "program",
+      name: "program.mp4",
+      subtitles: { enabled: true, filePath: subtitle },
+      trimInSeconds: 0,
+    }], 2);
+    assert.equal(project.sanitizedCues, 1);
+    assert.equal(project.cueCount, 2);
+    assert.deepEqual(
+      project.cues.map((cue) => cue.text),
+      ["Верхняя строка", "Обычная реплика"],
+    );
+    assert.doesNotMatch(project.content, /an8/);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -2086,6 +2394,7 @@ test(
       };
       request.logo = {
         filePath: logo,
+        loop: true,
         position: "top-right",
         widthPercent: 15,
         margin: 16,
@@ -2119,6 +2428,7 @@ test(
               itemLogo: {
                 enabled: true as const,
                 filePath: logo,
+                loop: true,
                 margin: 20,
                 opacity: 0.9,
                 position: "bottom-right" as const,
@@ -2750,6 +3060,8 @@ test("stinger halves come from one file: the tail at zero, the head from the cut
       sourceInSeconds: 0.52,
       blendMode: "luma" as const,
       lumaThreshold: 0.1,
+      offsetXPercent: 0,
+      offsetYPercent: 0,
       tier: 2 as const,
       titlePaths: [],
     }],

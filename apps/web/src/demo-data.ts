@@ -26,6 +26,7 @@ export const initialAssets: MediaAsset[] = [
     ageTitle: { durationSeconds: 10, enabled: true, text: "16+" },
     itemLogo: {
       enabled: true,
+      loop: true,
       filePath: "/MEDIA/BRANDING/channel.png",
       margin: 24,
       opacity: 1,
@@ -79,6 +80,7 @@ export const initialAssets: MediaAsset[] = [
     declaredDurationSeconds: 1_120,
     itemLogo: {
       enabled: true,
+      loop: true,
       filePath: "/MEDIA/BRANDING/channel.png",
       margin: 24,
       opacity: 1,

@@ -13,7 +13,23 @@ export interface DvbSubtitleProject {
   sourceItems: number;
   firstCueStartSeconds: number | null;
   preRollSeconds: number;
+  /** Реплики на программной шкале — из них пересобирается файл при рестарте. */
+  cues: SrtCue[];
+  /** Сколько реплик пришлось почистить: в журнал, чтобы оператор знал о правке. */
+  sanitizedCues: number;
 }
+
+export interface SubtitleTimeline {
+  content: string;
+  cueCount: number;
+  firstCueStartSeconds: number | null;
+  preRollSeconds: number;
+}
+
+/** Разметки больше, чем в живой реплике: дальше её проще снять целиком. */
+const maximumCueTags = 8;
+const maximumCueLines = 6;
+const maximumCueCharacters = 500;
 
 export function parseSrt(content: string): SrtCue[] {
   const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
@@ -66,26 +82,107 @@ export async function buildDvbSubtitleProject(
         .filter((cue) => cue.endSeconds > cue.startSeconds);
     }));
   }
-  const programCues = cueGroups.flat();
   const sourceItems = cueGroups.filter((cues) => cues.length > 0).length;
-  const firstCueStartSeconds = programCues[0]?.startSeconds ?? null;
+  let sanitizedCues = 0;
+  const programCues: SrtCue[] = [];
+  for (const cue of cueGroups.flat()) {
+    const text = sanitizeCueText(cue.text);
+    if (text !== cue.text) sanitizedCues += 1;
+    if (!text) continue;
+    programCues.push({ ...cue, text });
+  }
+  const timeline = buildSubtitleTimeline(programCues, 0, preRollSeconds);
+  return {
+    content: timeline.content,
+    cueCount: timeline.cueCount,
+    sourceItems,
+    firstCueStartSeconds: timeline.firstCueStartSeconds,
+    preRollSeconds: timeline.preRollSeconds,
+    cues: programCues,
+    sanitizedCues,
+  };
+}
 
+/**
+ * Файл субтитров для отрезка эфира, начиная с `fromSeconds` программной шкалы.
+ *
+ * `fromSeconds = 0` — обычный старт. Ненулевое значение нужно после падения
+ * GStreamer: цепочка `filesrc ! subparse` всегда стартует с начала файла, и
+ * перезапуск с исходным файлом отдал бы в эфир субтитры с нулевой минуты.
+ * Реплики, которые уже прошли, отбрасываются, остальные пересчитываются
+ * относительно точки перезапуска; сдвиг обратно в программное время делает
+ * `ts-offset` у `dvbsubenc`.
+ */
+export function buildSubtitleTimeline(
+  cues: SrtCue[],
+  fromSeconds = 0,
+  preRollSeconds = 0,
+): SubtitleTimeline {
+  const remaining: SrtCue[] = [];
+  for (const cue of cues) {
+    if (cue.endSeconds <= fromSeconds) continue;
+    const startSeconds = Math.max(0, cue.startSeconds - fromSeconds);
+    const endSeconds = cue.endSeconds - fromSeconds;
+    if (endSeconds <= startSeconds) continue;
+    remaining.push({ startSeconds, endSeconds, text: cue.text });
+  }
+  const firstCueStartSeconds = remaining[0]?.startSeconds ?? null;
+  // Pre-roll не может увести первую реплику в минус: PES выходит раньше ровно
+  // настолько, насколько есть запас до неё.
   const effectivePreRollSeconds = Math.min(
     Math.max(0, preRollSeconds),
     firstCueStartSeconds ?? 0,
   );
-  const transmittedCues = programCues.map((cue) => ({
+  const transmittedCues = remaining.map((cue) => ({
     ...cue,
     endSeconds: cue.endSeconds - effectivePreRollSeconds,
     startSeconds: cue.startSeconds - effectivePreRollSeconds,
   }));
   return {
     content: serializeSrt(transmittedCues),
-    cueCount: programCues.length,
-    sourceItems,
+    cueCount: remaining.length,
     firstCueStartSeconds,
     preRollSeconds: effectivePreRollSeconds,
   };
+}
+
+/**
+ * Текст реплики в том виде, в каком его безопасно отдать в
+ * `filesrc ! subparse ! textrender`.
+ *
+ * `subparse` объявляет выход как `text/x-raw, format=pango-markup` и сам
+ * экранирует `&` и одиночные `<`, поэтому экранировать их здесь нельзя —
+ * получится `&amp;amp;` на экране (проверено на GStreamer 1.28). А вот блоки
+ * ASS-разметки (`{\an8}`, `{\pos(...)}`) он оставляет как есть, и они выходят
+ * в эфир видимым текстом. Управляющие символы и неправдоподобно длинные или
+ * плотно размеченные реплики срезаются здесь же: цена ошибки — падение
+ * GStreamer, а вместе с ним и субтитрового PID.
+ */
+export function sanitizeCueText(text: string): string {
+  const withoutOverrides = text.replace(/\{\s*\\[^}]*\}/g, "");
+  const withoutControls = withoutOverrides.replace(
+    /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g,
+    "",
+  );
+  const tagCount = (withoutControls.match(/<\/?[a-zA-Z][^>]*>/g) ?? []).length;
+  const withoutExcessMarkup = tagCount > maximumCueTags
+    ? withoutControls.replace(/<\/?[a-zA-Z][^>]*>/g, "")
+    : withoutControls;
+  const lines = withoutExcessMarkup
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, maximumCueLines);
+  const joined = lines.join("\n");
+  return joined.length > maximumCueCharacters ? truncateCue(joined) : joined;
+}
+
+/** Обрез длинной реплики: не оставляем оборванный `<i` — разметка должна быть целой. */
+function truncateCue(text: string): string {
+  const cut = text.slice(0, maximumCueCharacters - 1);
+  const openedTag = cut.lastIndexOf("<");
+  const safe = openedTag > cut.lastIndexOf(">") ? cut.slice(0, openedTag) : cut;
+  return `${safe.trimEnd()}…`;
 }
 
 export function decodeSubtitleBuffer(buffer: Uint8Array): string {

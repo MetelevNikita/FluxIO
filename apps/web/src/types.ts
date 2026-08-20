@@ -55,6 +55,8 @@ export interface MediaAsset {
   itemLogo?: {
     enabled: boolean;
     filePath: string;
+    /** Анимированный логотип: крутить по кругу или замереть на последнем кадре. */
+    loop: boolean;
     margin: number;
     opacity: number;
     position: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
@@ -177,6 +179,8 @@ export interface BroadcastSettings {
   ageTitleDurationSeconds: number;
   logoEnabled: boolean;
   logoPath: string;
+  /** Крутить анимированный логотип по кругу; у картинки значения не имеет. */
+  logoLoop: boolean;
   logoPosition: string;
   logoWidthPercent: number;
   logoMargin: number;

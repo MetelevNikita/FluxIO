@@ -109,6 +109,8 @@ export const portableEncodingSettingsSchema = z.object({
   ageTitleDurationSeconds: z.number().int().min(10).max(60).default(10),
   logoEnabled: z.boolean(),
   logoPath: profileTextSchema,
+  /** Анимированный логотип: старые профили его не знают, поэтому со значением. */
+  logoLoop: z.boolean().default(true),
   logoPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center"]),
   logoWidthPercent: z.number().min(1).max(50),
   logoMargin: z.number().int().min(0).max(500),
@@ -236,6 +238,17 @@ export const logoOverlaySchema = z.object({
   widthPercent: z.number().min(1).max(50),
   margin: z.number().int().min(0).max(500),
   opacity: z.number().min(0.05).max(1),
+  /**
+   * Анимированный логотип (mov, webm, gif, отрендеренный Lottie): повторять до
+   * конца ролика или проиграть один раз и остаться последним кадром. У
+   * неподвижной картинки значения не имеет.
+   */
+  loop: z.boolean().default(true),
+}).refine((logo) => !logo.filePath.toLowerCase().endsWith(".json"), {
+  // FFmpeg не читает Lottie: интерфейс печёт проект в файл при выборе, и в
+  // запросе должен оказаться уже он. Иначе эфир падал бы на «Invalid data».
+  message: "A Lottie logo must be rendered to a file before it goes on air",
+  path: ["filePath"],
 });
 
 export const ageTitleOverlaySchema = z.object({
@@ -467,10 +480,24 @@ export const broadcastEffectSettingsSchema = z.object({
  * Lottie-эффектами. `presetEffectId` — ссылка на Lottie/alpha-пресет уровня 3,
  * который служит этому эффекту оформлением.
  */
+/**
+ * Сдвиг графики эффекта относительно того места, куда её поставил дизайнер.
+ *
+ * У Lottie положение плашки обычно висит на анимированном слое, и в After
+ * Effects его руками не подвинешь — а поправить в эфире надо. Сдвиг считается в
+ * процентах кадра, поэтому одна и та же настройка одинаково ложится на SD, FHD
+ * и UHD. Ноль — «как в пресете».
+ */
+export const effectPlacementSchema = z.object({
+  offsetXPercent: z.number().min(-100).max(100).default(0),
+  offsetYPercent: z.number().min(-100).max(100).default(0),
+});
+
 export const broadcastEffectDefinitionSchema = z.object({
   kind: broadcastEffectKindSchema,
   presetEffectId: z.string().min(1).nullable().default(null),
   settings: broadcastEffectSettingsSchema.default(() => broadcastEffectSettingsSchema.parse({})),
+  placement: effectPlacementSchema.default(() => effectPlacementSchema.parse({})),
 });
 
 /** Одна запись файла задания: служебное `name` плюс произвольные текстовые ключи. */
@@ -544,6 +571,21 @@ export const lottieTextBoxSchema = z.object({
   align: lottieTextAlignSchema,
 });
 
+/**
+ * Текст, по которому подгоняется плашка с меткой `fit:` в имени слоя.
+ *
+ * Нужен там, где само текстовое поле пресета очищается: часы и отсчёт рисует
+ * `drawtext` покадрово, в Lottie их не запечь, и мерить в документе нечего.
+ * Шрифт и кегль берутся те же, которыми надпись реально выйдет в эфир, иначе
+ * плашка сядет по чужой ширине.
+ */
+export const lottieFitSampleSchema = z.object({
+  text: z.string().max(512),
+  fontFilePath: z.string().min(1).nullable().default(null),
+  /** Кегль в процентах высоты кадра; null — кегль текстового слоя пресета. */
+  fontSizePercent: z.number().positive().max(40).nullable().default(null),
+});
+
 export const lottieEditablePropertySchema = z.object({
   id: z.string().min(1).max(128),
   path: z.string().startsWith("/").max(1_024),
@@ -558,6 +600,8 @@ export const lottieEditablePropertySchema = z.object({
   max: z.number().finite().optional(),
   /** Только у текстовых полей: положение и оформление слоя в композиции. */
   textBox: lottieTextBoxSchema.nullable().default(null),
+  /** Чем мерить плашку, когда само поле уходит в эфир пустым. */
+  fitSample: lottieFitSampleSchema.nullable().default(null),
 });
 
 export const lottieEffectMetadataSchema = z.object({
@@ -603,6 +647,13 @@ export const graphicEffectLayerSchema = z.object({
   /** `luma` вырезает чёрный фон у переходов без альфа-канала. */
   blendMode: stingerBlendModeSchema.default("alpha"),
   lumaThreshold: z.number().min(0).max(1).default(0.08),
+  /**
+   * Сдвиг слоя по кадру в процентах его ширины и высоты. Слой рисуется во весь
+   * кадр, поэтому сдвиг двигает всю графику разом — и вместе с ней надпись
+   * эффекта, которой планировщик поправил координаты на те же проценты.
+   */
+  offsetXPercent: z.number().min(-100).max(100).default(0),
+  offsetYPercent: z.number().min(-100).max(100).default(0),
   /** Каким уровнем эффектов слой создан — только для подсветки в интерфейсе. */
   tier: z.union([z.literal(2), z.literal(3)]).default(3),
   backgroundPath: z.string().min(1).nullable().optional(),
@@ -1379,6 +1430,8 @@ export type BroadcastEffectDefinition = z.infer<typeof broadcastEffectDefinition
 export type BroadcastEffectSettings = z.infer<typeof broadcastEffectSettingsSchema>;
 export type AnimationInOutSettings = z.infer<typeof animationInOutSettingsSchema>;
 export type AnimationInOutMode = z.infer<typeof animationInOutModeSchema>;
+export type EffectPlacement = z.infer<typeof effectPlacementSchema>;
+export type LottieFitSample = z.infer<typeof lottieFitSampleSchema>;
 export type NextProgramSettings = z.infer<typeof nextProgramSettingsSchema>;
 export type TickerCrawlSettings = z.infer<typeof tickerCrawlSettingsSchema>;
 export type ClockCountdownSettings = z.infer<typeof clockCountdownSettingsSchema>;

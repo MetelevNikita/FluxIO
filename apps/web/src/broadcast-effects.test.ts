@@ -23,6 +23,7 @@ function textProperty(
 ): LottieEditableProperty {
   return {
     animated: false,
+    fitSample: null,
     group,
     id,
     textBox,
@@ -62,10 +63,12 @@ function preset(properties: LottieEditableProperty[] = []): GraphicEffectAsset {
 function broadcastEffect(
   kind: GraphicEffectAsset["broadcast"] extends null ? never : string,
   settings: Record<string, unknown>,
+  placement = { offsetXPercent: 0, offsetYPercent: 0 },
 ): GraphicEffectAsset {
   return {
     broadcast: {
       kind: kind as never,
+      placement,
       presetEffectId: "preset-1",
       settings: {
         animationInOut: {
@@ -382,8 +385,104 @@ test("a caption pointing at a missing preset field is reported, not silently dro
     targetIds: new Set(["a"]),
   });
 
-  assert.deepEqual(result.renders, []);
   assert.match(result.warnings.join("\n"), /нет текстового поля "нет-такого"/);
+  // Поле под живое значение не выбрано, но в пресете оно одно — берём его:
+  // иначе шаблонный текст остался бы в кадре вторым слоем под часами.
+  assert.equal(result.renders.length, 1);
+  assert.equal(result.renders[0]!.overrides["prop-eng"], "");
+  assert.match(result.warnings.join("\n"), /взято единственное поле/);
+});
+
+test("moving an effect shifts its plate and its live text by the same amount", () => {
+  const clockSettings = {
+    clockCountdown: {
+      captionKey: "",
+      captionText: "",
+      countdownSeconds: 60,
+      countdownSource: "fixed",
+      durationSeconds: 60,
+      dynamicKey: "clock",
+      format: "HH:MM:SS",
+      mode: "clock",
+      startSeconds: 0,
+      style: { ...style(), xPercent: 40, yPercent: 80 },
+      timezoneOffsetMinutes: 0,
+    },
+  };
+  const moved = plan({
+    effect: broadcastEffect("clock-countdown", clockSettings, {
+      offsetXPercent: -12.5,
+      offsetYPercent: 6,
+    }),
+    preset: preset([textProperty("Main composition · clock", "prop-clock")]),
+    targetIds: new Set(["a"]),
+  });
+
+  // Слой рисуется во весь кадр, поэтому «подвинуть плашку» — это сдвинуть слой.
+  assert.equal(moved.layers[0]?.layer.offsetXPercent, -12.5);
+  assert.equal(moved.layers[0]?.layer.offsetYPercent, 6);
+  // Надпись рисует отдельный drawtext, и она обязана уехать ровно туда же.
+  assert.equal(moved.textOverlays[0]?.overlay.style.xPercent, 27.5);
+  assert.equal(moved.textOverlays[0]?.overlay.style.yPercent, 86);
+
+  const still = plan({
+    effect: broadcastEffect("clock-countdown", clockSettings),
+    preset: preset([textProperty("Main composition · clock", "prop-clock")]),
+    targetIds: new Set(["a"]),
+  });
+  assert.equal(still.layers[0]?.layer.offsetXPercent, 0);
+  assert.equal(still.textOverlays[0]?.overlay.style.xPercent, 40);
+});
+
+test("a stinger stays where it is: moving it would open a gap at the cut", () => {
+  const moved = plan({
+    effect: broadcastEffect("stinger-transition", {}, {
+      offsetXPercent: 20,
+      offsetYPercent: 20,
+    }),
+    targetIds: new Set(["a", "b"]),
+  });
+  for (const entry of moved.layers) {
+    assert.equal(entry.layer.offsetXPercent, 0);
+    assert.equal(entry.layer.offsetYPercent, 0);
+  }
+});
+
+test("a clock over a preset never leaves the template text under the live value", () => {
+  const clock = (dynamicKey: string, fields: string[]) => plan({
+    effect: broadcastEffect("clock-countdown", {
+      clockCountdown: {
+        captionKey: "",
+        captionText: "",
+        countdownSeconds: 60,
+        countdownSource: "fixed",
+        durationSeconds: 60,
+        dynamicKey,
+        format: "HH:MM:SS",
+        mode: "clock",
+        startSeconds: 0,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+        timezoneOffsetMinutes: 0,
+      },
+    }),
+    preset: preset(fields.map((field) => textProperty(`Main composition · ${field}`, `prop-${field}`))),
+    targetIds: new Set(["a"]),
+  });
+
+  const chosen = clock("clock", ["clock", "caption"]);
+  assert.equal(chosen.renders[0]?.overrides["prop-clock"], "");
+  // Плашке `fit:` отдаётся самое широкое значение формата тем же шрифтом и
+  // кеглем, которыми выйдет живая надпись: в документе мерить нечего.
+  assert.deepEqual(chosen.renders[0]?.fitSamples["prop-clock"], {
+    text: "00:00:00",
+    fontFilePath: "/fonts/PTSans.ttf",
+    fontSizePercent: chosen.textOverlays[0]?.overlay.style.fontSizePercent,
+  });
+
+  // Полей несколько, выбор не сделан — угадывать нельзя, но и молчать тоже.
+  const ambiguous = clock("", ["clock", "caption"]);
+  assert.deepEqual(ambiguous.renders, []);
+  assert.match(ambiguous.warnings.join("\n"), /шаблонный текст пресета останется в кадре/);
 });
 
 test("the live value takes the place of the chosen preset text layer", () => {

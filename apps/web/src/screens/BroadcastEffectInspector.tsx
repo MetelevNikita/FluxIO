@@ -2,12 +2,20 @@ import type {
   BroadcastEffectKind,
   BroadcastEffectSettings,
   BroadcastTextStyle,
+  EffectPlacement,
   GraphicEffectAsset,
   SystemFont,
 } from "@gruber/contracts";
 import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw, Save } from "lucide-react";
 import { lottieTextFields } from "../broadcast-effects";
-import { memo, useEffect, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 
 /**
  * Настройки эфирного эффекта второго уровня. У каждого вида — своё поведение,
@@ -105,6 +113,10 @@ export function BroadcastEffectInspector({
     });
   };
 
+  const updatePlacement = (placement: EffectPlacement) => {
+    onChange({ ...effect, broadcast: { ...definition, placement } });
+  };
+
   const selectedPreset = presets.find((candidate) => candidate.id === definition.presetEffectId);
   const presetKeys = selectedPreset ? [...lottieTextFields(selectedPreset).keys()] : [];
 
@@ -164,7 +176,19 @@ export function BroadcastEffectInspector({
         </button>
       </div>
 
-      <BroadcastEffectPreview effect={effect} presets={presets} />
+      <BroadcastEffectPreview
+        disabled={busy || definition.kind === "stinger-transition"}
+        effect={effect}
+        onPlacementChange={updatePlacement}
+        presets={presets}
+      />
+      {definition.kind === "stinger-transition" ? null : (
+        <PlacementFields
+          disabled={busy}
+          onChange={updatePlacement}
+          placement={definition.placement}
+        />
+      )}
       <PresetFieldsHint effect={effect} presets={presets} />
 
       {definition.kind === "animation-in-out" ? (
@@ -897,13 +921,22 @@ function TaskFileField({
  * поведение эффекта — куда он встанет и как поедет — не запуская эфир.
  */
 function BroadcastEffectPreview({
+  disabled,
   effect,
+  onPlacementChange,
   presets,
 }: {
+  disabled: boolean;
   effect: GraphicEffectAsset;
+  onPlacementChange: (placement: EffectPlacement) => void;
   presets: GraphicEffectAsset[];
 }) {
   const definition = effect.broadcast;
+  const frame = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ x: number; y: number; placement: EffectPlacement } | null>(null);
+  // Пока идёт протяжка, значение живёт локально: запись в библиотеку на каждое
+  // движение мыши перерисовывала бы весь инспектор вместе с селектором шрифтов.
+  const [draft, setDraft] = useState<EffectPlacement | null>(null);
   const [now, setNow] = useState(() => new Date());
   const [elapsed, setElapsed] = useState(0);
 
@@ -919,12 +952,52 @@ function BroadcastEffectPreview({
   if (!definition) return null;
   const settings = definition.settings;
   const preset = presets.find((candidate) => candidate.id === definition.presetEffectId) ?? null;
+  const placement = draft ?? definition.placement;
 
-  const style = definition.kind === "ticker-crawl"
+  const baseStyle = definition.kind === "ticker-crawl"
     ? settings.tickerCrawl.style
     : definition.kind === "clock-countdown"
       ? settings.clockCountdown.style
       : settings.nextProgram.style;
+  // В превью графика показывается там же, где выйдет в эфир: сдвиг ложится и на
+  // плашку, и на надпись — в FFmpeg они двигаются вместе.
+  const style: BroadcastTextStyle = {
+    ...baseStyle,
+    xPercent: clampPlacement(baseStyle.xPercent + placement.offsetXPercent, 0, 100),
+    yPercent: clampPlacement(baseStyle.yPercent + placement.offsetYPercent, 0, 100),
+  };
+
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    // Захват указателя нужен, чтобы протяжка не срывалась за краем кадра. Он
+    // недоступен для событий без настоящего указателя, и это не повод падать.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Указателя нет — тянем без захвата.
+    }
+    drag.current = { placement, x: event.clientX, y: event.clientY };
+    setDraft(placement);
+  };
+  const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const origin = drag.current;
+    const box = frame.current?.getBoundingClientRect();
+    if (!origin || !box || box.width === 0 || box.height === 0) return;
+    setDraft({
+      offsetXPercent: clampPlacement(
+        origin.placement.offsetXPercent + ((event.clientX - origin.x) / box.width) * 100,
+      ),
+      offsetYPercent: clampPlacement(
+        origin.placement.offsetYPercent + ((event.clientY - origin.y) / box.height) * 100,
+      ),
+    });
+  };
+  const endDrag = () => {
+    const next = draft;
+    drag.current = null;
+    setDraft(null);
+    if (next) onPlacementChange(next);
+  };
 
   const textStyle = {
     background: style.boxEnabled
@@ -939,7 +1012,30 @@ function BroadcastEffectPreview({
 
   return (
     <div className="broadcast-preview">
-      <div className="broadcast-preview-frame">
+      <div
+        className={`broadcast-preview-frame${disabled ? "" : " draggable"}`}
+        onPointerCancel={endDrag}
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        ref={frame}
+      >
+        {/* Плашка пресета в превью не рисуется — её кадр знает только рендерер,
+            поэтому положение показывает метка. Тянуть можно за любое место
+            кадра: попадать курсором в саму метку неудобно. */}
+        {disabled ? null : (
+          <div
+            className="broadcast-preview-anchor"
+            style={{ left: `${style.xPercent}cqw`, top: `${style.yPercent}cqh` }}
+          >
+            <i />
+            <span>
+              {placement.offsetXPercent === 0 && placement.offsetYPercent === 0
+                ? "как в пресете"
+                : `${formatOffset(placement.offsetXPercent)} / ${formatOffset(placement.offsetYPercent)}`}
+            </span>
+          </div>
+        )}
         {definition.kind === "ticker-crawl" && settings.tickerCrawl.regionWidthPercent < 100 ? (
           <div
             className="broadcast-preview-region"
@@ -1023,6 +1119,66 @@ function BroadcastEffectPreview({
       <p className="broadcast-preview-caption">
         {previewCaption(definition.kind, settings, dynamic)}
       </p>
+    </div>
+  );
+}
+
+function clampPlacement(value: number, min = -100, max = 100): number {
+  return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+}
+
+function formatOffset(value: number): string {
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+/**
+ * Сдвиг графики эффекта по кадру.
+ *
+ * У Lottie положение плашки обычно висит на анимированном слое, и поправить его
+ * в After Effects ради одного канала — отдельная работа. Здесь то же самое
+ * делается двумя числами или протяжкой в окне предпросмотра; в эфире вместе с
+ * плашкой едет и надпись эффекта.
+ */
+function PlacementFields({
+  disabled,
+  onChange,
+  placement,
+}: {
+  disabled: boolean;
+  onChange: (placement: EffectPlacement) => void;
+  placement: EffectPlacement;
+}): ReactNode {
+  return (
+    <div className="broadcast-grid broadcast-placement">
+      <NumberField
+        disabled={disabled}
+        hint="% ширины кадра"
+        label="Сдвиг X"
+        max={100}
+        min={-100}
+        onChange={(offsetXPercent) => onChange({ ...placement, offsetXPercent })}
+        step={0.5}
+        value={placement.offsetXPercent}
+      />
+      <NumberField
+        disabled={disabled}
+        hint="% высоты кадра"
+        label="Сдвиг Y"
+        max={100}
+        min={-100}
+        onChange={(offsetYPercent) => onChange({ ...placement, offsetYPercent })}
+        step={0.5}
+        value={placement.offsetYPercent}
+      />
+      <button
+        className="broadcast-placement-reset"
+        disabled={disabled ||
+          (placement.offsetXPercent === 0 && placement.offsetYPercent === 0)}
+        onClick={() => onChange({ offsetXPercent: 0, offsetYPercent: 0 })}
+        type="button"
+      >
+        <RotateCcw size={12} /> Как в пресете
+      </button>
     </div>
   );
 }

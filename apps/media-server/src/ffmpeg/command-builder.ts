@@ -306,12 +306,40 @@ export function buildFfmpegProgramEncoderCommand(
   return { ...base, args, filterGraph, totalDurationSeconds };
 }
 
+/** Ширина, в которой считается предпросмотр ролика. */
+export const compositePreviewWidth = 960;
+
+/**
+ * Кадр предпросмотра меньше эфирного.
+ *
+ * Вся графика ставится по процентам кадра — FX-слои растягиваются на кадр,
+ * `drawtext` считает кегль и координаты от его высоты, — поэтому в уменьшенном
+ * кадре картинка та же, а фильтров вчетверо меньше. Раньше весь монтаж
+ * считался в эфирном разрешении (на UHD — вчетверо тяжелее), и только потом
+ * ужимался до 960 ради плеера: оператор видел это как «плей грузит процессор».
+ */
+function previewSizedRequest(request: StartPlayoutRequest): StartPlayoutRequest {
+  const width = Math.min(request.video.width, compositePreviewWidth);
+  if (width >= request.video.width) return request;
+  const height = Math.max(
+    2,
+    Math.round((request.video.height * width) / request.video.width / 2) * 2,
+  );
+  return { ...request, video: { ...request.video, width, height } };
+}
+
+/** Значение аргумента FFmpeg, если он вообще есть в команде. */
+function replaceArgument(args: string[], name: string, value: string): void {
+  const index = args.indexOf(name);
+  if (index >= 0) args[index + 1] = value;
+}
+
 export function buildFfmpegCompositePreviewCommand(
   request: StartPlayoutRequest,
   item: PreparedPlayoutItem,
   previewDirectory: string,
 ): FfmpegCommand {
-  const base = buildFfmpegCommand(request, [item], previewDirectory);
+  const base = buildFfmpegCommand(previewSizedRequest(request), [item], previewDirectory);
   const firstMap = base.args.indexOf("-map");
   const previewMap = base.args.findIndex(
     (value, index) => value === "-map" && base.args[index + 1] === "[vpreview]",
@@ -321,12 +349,17 @@ export function buildFfmpegCompositePreviewCommand(
   const filterGraph = `${base.filterGraph};[vprogram]nullsink;[aprogram]anullsink`;
   const filterIndex = args.indexOf("-filter_complex");
   if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
-  const startNumberSource = args.indexOf("-hls_start_number_source");
-  if (startNumberSource >= 0) args[startNumberSource + 1] = "generic";
-  const segmentFilename = args.indexOf("-hls_segment_filename");
-  if (segmentFilename >= 0) {
-    args[segmentFilename + 1] = path.join(previewDirectory, "segment-%06d.ts");
-  }
+  replaceArgument(args, "-hls_start_number_source", "generic");
+  replaceArgument(args, "-hls_segment_filename", path.join(previewDirectory, "segment-%06d.ts"));
+  // Эфирный предпросмотр — «живое окно»: старые сегменты удаляются, и назад
+  // мотать физически нечего. Предпросмотр ролика, наоборот, копится целиком,
+  // поэтому плеер перематывает по уже посчитанному куску без перезапуска
+  // FFmpeg. `event` — та же растущая плейлиста, только объявленная явно.
+  replaceArgument(args, "-hls_list_size", "0");
+  replaceArgument(args, "-hls_flags", "independent_segments+append_list+temp_file");
+  const deleteThreshold = args.indexOf("-hls_delete_threshold");
+  if (deleteThreshold >= 0) args.splice(deleteThreshold, 2);
+  args.splice(args.length - 1, 0, "-hls_playlist_type", "event");
   return {
     ...base,
     args,
@@ -371,14 +404,7 @@ export function buildFfmpegCommand(
         );
       }
       if (item.itemLogo?.enabled) {
-        args.push(
-          "-loop",
-          "1",
-          "-framerate",
-          decimal(request.video.frameRate),
-          "-i",
-          item.itemLogo.filePath,
-        );
+        args.push(...logoInputArgs(item.itemLogo, request.video.frameRate));
       }
       for (const effect of item.effects ?? []) {
         for (const source of graphicEffectSources(effect)) {
@@ -398,14 +424,7 @@ export function buildFfmpegCommand(
       }
     }
     if (request.logo) {
-      args.push(
-        "-loop",
-        "1",
-        "-framerate",
-        decimal(request.video.frameRate),
-        "-i",
-        request.logo.filePath,
-      );
+      args.push(...logoInputArgs(request.logo, request.video.frameRate));
     }
   }
 
@@ -599,6 +618,7 @@ function buildFilterGraph(
             item.itemLogo.filePath,
             `itemlogoinput${index}`,
             item.durationSeconds,
+            item.itemLogo.loop && logoSourceKind(item.itemLogo.filePath) !== "image",
           )
         : `${nextOverlayInput++}:v:0`;
       const logoWidth = Math.max(
@@ -610,8 +630,9 @@ function buildFilterGraph(
         ? `vlogo${index}`
         : `v${index}`;
       filters.push(
-        `[${logoInput}]format=rgba,` +
-          `colorchannelmixer=aa=${decimal(item.itemLogo.opacity)},scale=${logoWidth}:-1[itemlogo${index}]`,
+        `[${logoInput}]` +
+          `${logoFilterChain(item.itemLogo, logoWidth, request.video.frameRate)}` +
+          `[itemlogo${index}]`,
         `[${itemVideoSource}][itemlogo${index}]overlay=x=${x}:y=${y}:` +
           `shortest=1:eof_action=pass:format=auto,format=yuv420p[${logoOutputLabel}]`,
       );
@@ -657,12 +678,18 @@ function buildFilterGraph(
         const keyFilter = effect.blendMode === "luma"
           ? `,lumakey=threshold=${decimal(effect.lumaThreshold)}:tolerance=0.05:softness=0.02`
           : "";
+        // Слой рисуется во весь кадр, поэтому «подвинуть плашку» — это сдвинуть
+        // сам слой: в Lottie её положение обычно висит на анимированном слое, и
+        // в After Effects руками его не поправишь.
+        const offsetX = Math.round((request.video.width * effect.offsetXPercent) / 100);
+        const offsetY = Math.round((request.video.height * effect.offsetYPercent) / 100);
         filters.push(
           `[${effectInput}]${sourceTrim}setpts=PTS-STARTPTS+${decimal(effectStart)}/TB,` +
             `format=rgba${keyFilter},scale=${request.video.width}:${request.video.height}:` +
             `force_original_aspect_ratio=decrease:flags=lanczos,` +
             `pad=${request.video.width}:${request.video.height}:(ow-iw)/2:(oh-ih)/2:color=black@0[${effectLabel}]`,
-          `[${itemVideoSource}][${effectLabel}]overlay=x=0:y=0:eof_action=pass:format=auto:` +
+          `[${itemVideoSource}][${effectLabel}]overlay=x=${offsetX}:y=${offsetY}:` +
+            `eof_action=pass:format=auto:` +
             `enable='between(t,${decimal(effectStart)},${decimal(effectEnd)})',format=yuv420p[${outputLabel}]`,
         );
         itemVideoSource = outputLabel;
@@ -739,6 +766,7 @@ function buildFilterGraph(
           request.logo.filePath,
           "globallogoinput",
           items.reduce((total, item) => total + item.durationSeconds, 0),
+          request.logo.loop && logoSourceKind(request.logo.filePath) !== "image",
         )
       : `${nextOverlayInput}:v:0`;
     const logoWidth = Math.max(
@@ -747,8 +775,7 @@ function buildFilterGraph(
     );
     const [x, y] = logoPosition(request.logo.position, request.logo.margin);
     filters.push(
-      `[${logoInput}]format=rgba,colorchannelmixer=aa=${decimal(request.logo.opacity)},` +
-        `scale=${logoWidth}:-1[logo]`,
+      `[${logoInput}]${logoFilterChain(request.logo, logoWidth, request.video.frameRate)}[logo]`,
       `[vconcat][logo]overlay=x=${x}:y=${y}:shortest=1:format=auto[vbranded]`,
     );
     videoSource = "vbranded";
@@ -772,15 +799,76 @@ function buildFilterGraph(
   return filters.join(";");
 }
 
+/* -------------------------------------------------------------------------- *
+ * Логотип канала: картинка или анимация
+ * -------------------------------------------------------------------------- */
+
+const animatedLogoExtensions = new Set([".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mxf"]);
+
+export type LogoSourceKind = "image" | "gif" | "video";
+
+export function logoSourceKind(filePath: string): LogoSourceKind {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".gif") return "gif";
+  return animatedLogoExtensions.has(extension) ? "video" : "image";
+}
+
+/**
+ * Аргументы входа под логотип.
+ *
+ * Неподвижная картинка разворачивается в бесконечный поток одним кадром
+ * (`-loop 1`), у анимации повторять надо сам файл: gif умеет это своим
+ * внутренним циклом, остальные форматы — `-stream_loop`. Без повтора вход
+ * кончается вместе с анимацией, и дальше логотип держит `tpad` в графе.
+ */
+export function logoInputArgs(
+  logo: { filePath: string; loop: boolean },
+  frameRate: number,
+): string[] {
+  const kind = logoSourceKind(logo.filePath);
+  if (kind === "image") {
+    return ["-loop", "1", "-framerate", decimal(frameRate), "-i", logo.filePath];
+  }
+  if (!logo.loop) return ["-i", logo.filePath];
+  return kind === "gif"
+    ? ["-ignore_loop", "0", "-i", logo.filePath]
+    : ["-stream_loop", "-1", "-i", logo.filePath];
+}
+
+/**
+ * Цепочка фильтров логотипа.
+ *
+ * `overlay` собран с `shortest=1`, поэтому вход логотипа обязан быть длиннее
+ * ролика: иначе закончившаяся анимация обрежет сам эфир. Однократный показ
+ * держится последним кадром (`tpad`), зацикленный повторяется входом.
+ */
+export function logoFilterChain(
+  logo: { filePath: string; loop: boolean; opacity: number },
+  widthPixels: number,
+  frameRate: number,
+): string {
+  const animated = logoSourceKind(logo.filePath) !== "image";
+  return [
+    ...(animated ? [`fps=${decimal(frameRate)}`] : []),
+    "format=rgba",
+    `colorchannelmixer=aa=${decimal(logo.opacity)}`,
+    `scale=${widthPixels}:-1`,
+    ...(animated && !logo.loop ? ["tpad=stop=-1:stop_mode=clone"] : []),
+  ].join(",");
+}
+
 function addMovieVideoSource(
   filters: string[],
   filePath: string,
   label: string,
   repeatDurationSeconds: number | null,
+  /** Бесконечный повтор самого файла — для зацикленной анимации. */
+  loop = false,
 ): string {
   const sourceLabel = repeatDurationSeconds === null ? label : `${label}raw`;
   filters.push(
-    `movie=filename='${escapeFilterPath(filePath)}':streams=v[${sourceLabel}]`,
+    `movie=filename='${escapeFilterPath(filePath)}':streams=v${loop ? ":loop=0" : ""}` +
+      `[${sourceLabel}]`,
   );
   if (repeatDurationSeconds !== null) {
     filters.push(

@@ -6,6 +6,12 @@ export interface GstreamerDvbSubtitleCommandOptions {
   inputPath: string;
   outputPort: number;
   preRollMs?: number;
+  /**
+   * Сдвиг файла субтитров относительно начала эфира. Ненулевой только при
+   * перезапуске ветки посреди эфира: файл начинается с текущего момента, а PTS
+   * обязаны остаться на программной шкале.
+   */
+  timelineOffsetMs?: number;
   request: StartPlayoutRequest;
 }
 
@@ -13,6 +19,8 @@ export interface GstreamerCapabilities {
   launchPath: string;
   inspectPath: string;
   assertDvbSubtitlesAvailable(): Promise<void>;
+  /** Версия GStreamer для журнала: разбор падений начинается именно с неё. */
+  readVersion(): Promise<string | null>;
 }
 
 export function createGstreamerCapabilities(
@@ -29,6 +37,12 @@ export function createGstreamerCapabilities(
         );
       });
     },
+    async readVersion() {
+      // Версия — справочная величина, поэтому любая осечка гасится: из-за неё
+      // эфир вставать не должен.
+      const output = await captureWithTimeout(launchPath, ["--version"], 15_000).catch(() => "");
+      return output.split(/\r?\n/)[0]?.trim() || null;
+    },
   };
 }
 
@@ -36,6 +50,7 @@ export function buildGstreamerDvbSubtitleCommand({
   inputPath,
   outputPort,
   preRollMs = 0,
+  timelineOffsetMs = 0,
   request,
 }: GstreamerDvbSubtitleCommandOptions): string[] {
   const subtitles = request.subtitleOutput;
@@ -71,7 +86,7 @@ export function buildGstreamerDvbSubtitleCommand({
     "!",
     "dvbsubenc",
     `max-colours=${subtitles.maxColours}`,
-    `ts-offset=${(subtitles.ptsOffsetMs + preRollMs) * 1_000_000}`,
+    `ts-offset=${(subtitles.ptsOffsetMs + preRollMs + timelineOffsetMs) * 1_000_000}`,
     "!",
     "queue",
     "!",
@@ -114,6 +129,27 @@ function runWithTimeout(command: string, args: string[], timeoutMs: number): Pro
     child.once("close", (code) => {
       clearTimeout(timeout);
       if (code === 0) resolve();
+      else reject(new Error(`probe exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function captureWithTimeout(command: string, args: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    const chunks: Buffer[] = [];
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`probe timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
       else reject(new Error(`probe exited with code ${code ?? "unknown"}`));
     });
   });

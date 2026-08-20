@@ -16,7 +16,7 @@ import {
   Upload,
   Video,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import type {
   FfmpegCapabilities,
   NetworkInterfaceInfo,
@@ -25,6 +25,7 @@ import type {
   WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
+import { usePlayoutStatus } from "../playout-status";
 import { getPlayoutAudioLevel } from "../media-api";
 import { mediaApiUrl, mediaPath } from "../runtime";
 import type { BroadcastSettings } from "../types";
@@ -37,7 +38,12 @@ interface BroadcastSettingsScreenProps {
   onStop: () => void;
   operationError: string | null;
   playlistLength: number;
-  playoutStatus: PlayoutStatus | null;
+  /**
+   * Только состояние сессии. Целый снимок статуса сюда не приходит: он меняется
+   * раз в секунду и ломал бы `memo` этого экрана. Живые числа берёт из контекста
+   * монитор кодирования — перерисовывается он один.
+   */
+  playoutState: PlayoutStatus["state"] | null;
   recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
   scheduleStartMarker: ScheduleStartMarker | null;
   scheduleStartItemName: string | null;
@@ -55,7 +61,12 @@ type SettingsUpdater = <Key extends keyof BroadcastSettings>(
   value: BroadcastSettings[Key],
 ) => void;
 
-export function BroadcastSettingsScreen({
+/**
+ * Экран обёрнут в `memo`: без этого форма настроек перерисовывалась четыре раза
+ * в секунду на опросе статуса, и ввод в полях «залипал». Любой новый проп
+ * обязан быть стабильным — иначе memo молча перестаёт работать.
+ */
+export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   capabilities,
   networkInterfaces,
   onStart,
@@ -63,7 +74,7 @@ export function BroadcastSettingsScreen({
   onStop,
   operationError,
   playlistLength,
-  playoutStatus,
+  playoutState,
   recoveryCheckpoint,
   scheduleStartMarker,
   scheduleStartItemName,
@@ -83,8 +94,8 @@ export function BroadcastSettingsScreen({
     onSettingsChange({ ...settings, [key]: value });
   }
 
-  const active = playoutStatus
-    ? ["starting", "running", "stopping"].includes(playoutStatus.state)
+  const active = playoutState
+    ? ["starting", "running", "stopping"].includes(playoutState)
     : false;
   const incompatibleScte35Output =
     settings.scte35PlanningEnabled && settings.protocol.startsWith("RTMP");
@@ -113,13 +124,13 @@ export function BroadcastSettingsScreen({
             >
               <Repeat2 size={15} /> Repeat
             </button>
-            <span className={`playout-state state-${playoutStatus?.state ?? "idle"}`}>
-              {playoutStatus?.state ?? "idle"}
+            <span className={`playout-state state-${playoutState ?? "idle"}`}>
+              {playoutState ?? "idle"}
             </span>
             {active ? (
               <button
                 className="danger-button"
-                disabled={playoutStatus?.state === "stopping"}
+                disabled={playoutState === "stopping"}
                 onClick={onStop}
                 type="button"
               >
@@ -707,10 +718,10 @@ export function BroadcastSettingsScreen({
         </SettingsCard>
       </section>
 
-      <EncodingMonitor status={playoutStatus} />
+      <EncodingMonitor />
     </main>
   );
-}
+});
 
 function UdpFields({
   networkInterfaces,
@@ -898,7 +909,9 @@ function SrtFields({
   );
 }
 
-function EncodingMonitor({ status }: { status: PlayoutStatus | null }) {
+function EncodingMonitor() {
+  // Единственный узел экрана, которому нужен живой статус целиком.
+  const status = usePlayoutStatus();
   const [liveAudioLevelDbfs, setLiveAudioLevelDbfs] = useState<number | null>(null);
   const active = status
     ? ["starting", "running", "stopping"].includes(status.state)

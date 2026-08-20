@@ -6,8 +6,10 @@ import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { DotLottie } from "@lottiefiles/dotlottie-web";
+import { measureTextWidth, readFontMetrics, type FontMetrics } from "./font-metrics.js";
 import {
   graphicEffectAssetSchema,
+  type LottieFitSample,
   lottieEffectMetadataSchema,
   lottieTextBoxSchema,
   type GraphicEffectAsset,
@@ -58,9 +60,13 @@ export async function rerenderLottieEffect(
   const requestedById = new Map(effect.lottie.properties.map((property) => [property.id, property]));
   const properties = original.properties.map((property) => {
     const requested = requestedById.get(property.id);
-    return requested?.overridden
-      ? { ...property, value: requested.value, overridden: true }
-      : property;
+    if (!requested) return property;
+    // Образец для плашки приходит и у неизменённого поля: часы уходят в эфир
+    // пустым текстом, а мерить подложку всё равно надо.
+    const withSample = { ...property, fitSample: requested.fitSample ?? null };
+    return requested.overridden
+      ? { ...withSample, value: requested.value, overridden: true }
+      : withSample;
   });
   const metadata = lottieEffectMetadataSchema.parse({
     ...original,
@@ -68,6 +74,10 @@ export async function rerenderLottieEffect(
     properties,
   });
   const renderedDocument = applyLottieProperties(document, metadata.properties);
+  metadata.warnings = [
+    ...metadata.warnings,
+    ...(await fitPlatesToText(renderedDocument, document, metadata.properties)),
+  ].slice(0, 100);
   const filePath = await renderLottieMovie(
     renderedDocument,
     metadata,
@@ -166,6 +176,206 @@ export function inspectLottieDocument(
     properties,
     warnings,
   });
+}
+
+/**
+ * Плашка, которая обязана сесть по тексту.
+ *
+ * В Lottie нет раскладки: ширина прямоугольника — обычное число в файле, и
+ * подставленный оператором текст её не двигает. Поэтому слой-подложку помечают
+ * в After Effects именем `fit:<имя текстового слоя>` — тогда перед рендером
+ * прямоугольник пересчитывается под реальный текст.
+ *
+ * Отступы не задаются отдельно: они берутся из самого шаблона как разница между
+ * нарисованной шириной плашки и шириной шаблонного текста. Что нарисовал
+ * дизайнер, то и сохраняется.
+ *
+ * Растёт плашка в ту сторону, куда выключен текст: у левой выключки правый край
+ * уезжает вправо, у правой — левый влево, у центральной обе стороны поровну.
+ */
+export async function fitPlatesToText(
+  rendered: JsonObject,
+  template: JsonObject,
+  properties: LottieEditableProperty[],
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const samples = collectFitSamples(rendered, properties);
+  const fonts = new FontCache(rendered);
+  const renderedLayers = Array.isArray(rendered.layers) ? rendered.layers : [];
+  const templateLayers = Array.isArray(template.layers) ? template.layers : [];
+  const height = readPositiveInteger(rendered.h, "height");
+
+  for (const layer of renderedLayers) {
+    if (!isObject(layer)) continue;
+    const target = fitTargetName(layer);
+    if (!target) continue;
+    const textLayer = renderedLayers.find(
+      (candidate) => isObject(candidate) && stringValue(candidate.nm) === target,
+    );
+    const templateLayer = templateLayers.find(
+      (candidate) => isObject(candidate) && stringValue(candidate.nm) === target,
+    );
+    if (!isObject(textLayer) || !isObject(templateLayer)) {
+      warnings.push(`Plate "${stringValue(layer.nm)}" points at a missing text layer "${target}"`);
+      continue;
+    }
+    const current = firstTextDocument(textLayer.t);
+    const original = firstTextDocument(templateLayer.t);
+    if (!current || !original) {
+      warnings.push(`Layer "${target}" is not a text layer, so its plate was left as designed`);
+      continue;
+    }
+    const rectangle = findRectangle(layer.shapes);
+    if (!rectangle) {
+      warnings.push(`Plate "${stringValue(layer.nm)}" has no rectangle to resize`);
+      continue;
+    }
+
+    const sample = samples.get(target) ?? null;
+    const templateFont = await fonts.forTextDocument(original);
+    const sampleFont = sample?.fontFilePath
+      ? await fonts.forFile(sample.fontFilePath)
+      : templateFont;
+    if (!templateFont || !sampleFont) {
+      warnings.push(
+        `The font of "${target}" is neither embedded nor selected, so its plate was left as designed`,
+      );
+      continue;
+    }
+
+    const templateSize = numberValue(original.s) ?? 0;
+    const sampleSize = sample?.fontSizePercent != null
+      ? (sample.fontSizePercent / 100) * height
+      : templateSize;
+    if (templateSize <= 0 || sampleSize <= 0) continue;
+
+    const templateWidth = measureTextWidth(
+      templateFont,
+      stringValue(original.t),
+      templateSize,
+      numberValue(original.tr) ?? 0,
+    );
+    const text = sample ? sample.text : stringValue(current.t);
+    const currentWidth = measureTextWidth(
+      sampleFont,
+      text,
+      sampleSize,
+      numberValue(current.tr) ?? 0,
+    );
+    const delta = currentWidth - templateWidth;
+    if (Math.abs(delta) < 0.5) continue;
+    const resized = fitRectangleToText(rectangle, delta, numberValue(current.j) ?? 0);
+    if (!resized) {
+      warnings.push(
+        `Plate "${stringValue(layer.nm)}" has an animated size, so it was left as designed`,
+      );
+    }
+  }
+  return warnings;
+}
+
+/** `fit:<имя текстового слоя>` в имени слоя; регистр и пробелы не важны. */
+function fitTargetName(layer: JsonObject): string | null {
+  const name = stringValue(layer.nm).trim();
+  if (!name.toLowerCase().startsWith("fit:")) return null;
+  const target = name.slice(4).trim();
+  return target.length > 0 ? target : null;
+}
+
+function collectFitSamples(
+  document: JsonObject,
+  properties: LottieEditableProperty[],
+): Map<string, LottieFitSample> {
+  const layers = Array.isArray(document.layers) ? document.layers : [];
+  const samples = new Map<string, LottieFitSample>();
+  for (const property of properties) {
+    if (property.type !== "text" || !property.fitSample) continue;
+    const segments = decodePointer(property.path);
+    if (segments[0] !== "layers") continue;
+    const layer = layers[Number(segments[1])];
+    if (!isObject(layer)) continue;
+    const name = stringValue(layer.nm).trim();
+    if (name) samples.set(name, property.fitSample);
+  }
+  return samples;
+}
+
+/** Первый прямоугольник слоя, как бы глубоко он ни лежал в группах. */
+function findRectangle(shapes: unknown): JsonObject | null {
+  if (!Array.isArray(shapes)) return null;
+  for (const shape of shapes) {
+    if (!isObject(shape)) continue;
+    if (shape.ty === "rc") return shape;
+    const nested = findRectangle(shape.it);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/** Ширина прямоугольника плюс `delta`; false — размер анимирован, трогать нельзя. */
+export function fitRectangleToText(rectangle: JsonObject, delta: number, justification: number): boolean {
+  const size = isObject(rectangle.s) ? rectangle.s : null;
+  if (!size || size.a === 1 || !Array.isArray(size.k)) return false;
+  const width = Number(size.k[0]);
+  const heightValue = Number(size.k[1]);
+  if (!Number.isFinite(width) || !Number.isFinite(heightValue)) return false;
+  size.k = [Math.max(1, width + delta), heightValue];
+
+  // Центр прямоугольника уезжает на половину прибавки, поэтому неподвижным
+  // остаётся тот край, от которого набирается текст.
+  const shift = justification === 2 ? 0 : justification === 1 ? -delta / 2 : delta / 2;
+  const position = isObject(rectangle.p) ? rectangle.p : null;
+  if (shift !== 0 && position && position.a !== 1 && Array.isArray(position.k)) {
+    const x = Number(position.k[0]);
+    const y = Number(position.k[1]);
+    if (Number.isFinite(x) && Number.isFinite(y)) position.k = [x + shift, y];
+  }
+  return true;
+}
+
+/** Шрифты документа: встроенные в `fonts.list` и выбранные оператором файлы. */
+class FontCache {
+  readonly #document: JsonObject;
+  readonly #byName = new Map<string, FontMetrics | null>();
+  readonly #byFile = new Map<string, FontMetrics | null>();
+
+  constructor(document: JsonObject) {
+    this.#document = document;
+  }
+
+  async forFile(filePath: string): Promise<FontMetrics | null> {
+    const cached = this.#byFile.get(filePath);
+    if (cached !== undefined) return cached;
+    const metrics = await readFile(filePath)
+      .then((bytes) => readFontMetrics(bytes))
+      .catch(() => null);
+    this.#byFile.set(filePath, metrics);
+    return metrics;
+  }
+
+  async forTextDocument(textDocument: JsonObject): Promise<FontMetrics | null> {
+    const name = stringValue(textDocument.f);
+    if (!name) return null;
+    const cached = this.#byName.get(name);
+    if (cached !== undefined) return cached;
+    const metrics = this.#embedded(name);
+    this.#byName.set(name, metrics);
+    return metrics;
+  }
+
+  /** Шрифт, вшитый в проект как `data:`; путь на диске отдаётся отдельным методом. */
+  #embedded(name: string): FontMetrics | null {
+    const fonts = isObject(this.#document.fonts) ? this.#document.fonts : null;
+    const list = fonts && Array.isArray(fonts.list) ? fonts.list : [];
+    for (const entry of list) {
+      if (!isObject(entry) || stringValue(entry.fName) !== name) continue;
+      const source = stringValue(entry.fPath);
+      const comma = source.indexOf(",");
+      if (!source.startsWith("data:") || comma < 0) return null;
+      return readFontMetrics(Buffer.from(source.slice(comma + 1), "base64"));
+    }
+    return null;
+  }
 }
 
 export function applyLottieProperties(
@@ -623,7 +833,7 @@ function initialAnimatableValue(property: JsonObject): unknown {
 
 function pushProperty(
   target: LottieEditableProperty[],
-  input: Omit<LottieEditableProperty, "id" | "overridden" | "textBox"> &
+  input: Omit<LottieEditableProperty, "id" | "overridden" | "textBox" | "fitSample"> &
     { textBox?: LottieTextBox | null },
 ): void {
   if (target.some((property) => property.path === input.path)) return;
@@ -633,6 +843,9 @@ function pushProperty(
     originalValue: structuredClone(input.value),
     overridden: false,
     textBox: input.textBox ?? null,
+    // Образец для подгонки плашки приходит от интерфейса вместе с рендером,
+    // при разборе документа его ещё нет.
+    fitSample: null,
   });
 }
 

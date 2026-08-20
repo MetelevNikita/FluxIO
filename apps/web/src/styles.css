@@ -4729,6 +4729,73 @@ input[type="range"] {
 
 .broadcast-preview { display: flex; flex-direction: column; gap: 5px; }
 
+/* Сдвиг графики эффекта: кадр тянется мышкой, метка показывает точку выхода. */
+/* Повтор анимированного логотипа: горит, когда анимация крутится по кругу. */
+.logo-loop-toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.broadcast-preview-frame.draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.broadcast-preview-frame.draggable:active {
+  cursor: grabbing;
+}
+
+.broadcast-preview-anchor {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.broadcast-preview-anchor i {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 45%);
+}
+
+.broadcast-preview-anchor span {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgb(0 0 0 / 55%);
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+.broadcast-placement {
+  align-items: end;
+}
+
+.broadcast-placement-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.broadcast-placement-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .broadcast-preview-frame {
   position: relative;
   container-type: size;

@@ -4,8 +4,10 @@ import type {
   BroadcastTextOverlay,
   ClipAudioOverlay,
   GraphicEffectAsset,
+  EffectPlacement,
   GraphicEffectLayer,
   LottieEditableProperty,
+  LottieFitSample,
 } from "@gruber/contracts";
 import type { MediaAsset } from "./types.js";
 
@@ -41,6 +43,11 @@ export interface BroadcastRenderRequest {
   key: string;
   /** id редактируемых текстовых свойств Lottie → новое значение. */
   overrides: Record<string, string>;
+  /**
+   * Чем мерить плашку `fit:` у полей, которые уходят в эфир пустыми. Часы и
+   * отсчёт рисует drawtext покадрово, в документе мерить нечего.
+   */
+  fitSamples: Record<string, LottieFitSample>;
 }
 
 export interface PlannedEffectLayer {
@@ -293,6 +300,9 @@ function planTickerCrawl(context: PlanContext): void {
     context.plan.errors.push("The ticker has no messages to show");
     return;
   }
+  // Поле разрешается один раз на эффект: иначе предупреждение о нём повторилось
+  // бы столько раз, сколько роликов в расписании.
+  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
   for (const clip of context.targets) {
     const startSeconds = settings.startSeconds;
     const endSeconds = startSeconds + settings.durationSeconds;
@@ -306,7 +316,7 @@ function planTickerCrawl(context: PlanContext): void {
           context,
           settings.captionKey,
           settings.captionText,
-          settings.dynamicKey,
+          dynamicField,
         ),
         startSeconds,
       });
@@ -330,7 +340,7 @@ function planTickerCrawl(context: PlanContext): void {
       regionXPercent: settings.regionXPercent,
       speedPixelsPerSecond: settings.speedPixelsPerSecond,
       startSeconds,
-      style: styleFromPreset(context, settings.dynamicKey, settings.style),
+      style: styleFromPreset(context, dynamicField, settings.style),
     });
   }
 }
@@ -350,6 +360,15 @@ export function joinTickerItems(items: readonly string[], separator: string): st
 
 function planClockCountdown(context: PlanContext): void {
   const settings = context.definition.settings.clockCountdown;
+  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
+  const style = styleFromPreset(context, dynamicField, settings.style);
+  // Часы и отсчёт меняются покадрово, поэтому в документе мерить нечего: плашке
+  // отдаётся самое широкое значение формата тем же шрифтом и кеглем.
+  const fitSample: LottieFitSample = {
+    text: clockSample(settings.format),
+    fontFilePath: style.fontFilePath,
+    fontSizePercent: style.fontSizePercent,
+  };
   for (const clip of context.targets) {
     const startSeconds = settings.startSeconds;
     // Отсчёт «до конца ролика» считается по хронометражу каждого ролика
@@ -368,7 +387,8 @@ function planClockCountdown(context: PlanContext): void {
           context,
           settings.captionKey,
           settings.captionText,
-          settings.dynamicKey,
+          dynamicField,
+          fitSample,
         ),
         startSeconds,
       });
@@ -380,7 +400,7 @@ function planClockCountdown(context: PlanContext): void {
       endSeconds,
       mode: settings.mode === "countdown" ? "countdown" : "clock",
       startSeconds,
-      style: styleFromPreset(context, settings.dynamicKey, settings.style),
+      style,
       timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
     });
     if (
@@ -393,6 +413,13 @@ function planClockCountdown(context: PlanContext): void {
       );
     }
   }
+}
+
+/** Самое широкое значение формата: по нему и садится плашка. */
+function clockSample(format: string): string {
+  if (format === "HH:MM" || format === "MM:SS") return "00:00";
+  if (format === "SS") return "00";
+  return "00:00:00";
 }
 
 /* -------------------------------------------------------------------------- *
@@ -541,6 +568,10 @@ function pushLayer(
       kind: "video",
       lumaThreshold: settings.lumaThreshold,
       name: options.name,
+      // Стингер закрывает кадр целиком — двигать его нельзя, иначе на стыке
+      // откроется полоса исходного кадра.
+      offsetXPercent: isStinger ? 0 : context.definition.placement.offsetXPercent,
+      offsetYPercent: isStinger ? 0 : context.definition.placement.offsetYPercent,
       sourceDurationSeconds: context.preset?.durationSeconds ?? context.effect.durationSeconds,
       sourceInSeconds: options.sourceInSeconds ?? 0,
       startSeconds,
@@ -572,6 +603,8 @@ function pushTextOverlay(
   const startSeconds = clampStart(overlay.startSeconds, clip.durationSeconds);
   const endSeconds = clampEnd(overlay.endSeconds, startSeconds, clip.durationSeconds);
   warnAboutCyrillicFont(context, overlay.style, overlay.content);
+  const placement = context.definition.placement;
+  const shifted = placeOverlay(overlay, placement);
   context.plan.textOverlays.push({
     assetId: clip.id,
     overlay: {
@@ -583,7 +616,7 @@ function pushTextOverlay(
       repeat: 0,
       speedPixelsPerSecond: 120,
       timezoneOffsetMinutes: 0,
-      ...overlay,
+      ...shifted,
       effectId: context.effect.id,
       endSeconds,
       id: `text-${clip.id}-${context.effect.id}-${context.createId()}`,
@@ -591,6 +624,36 @@ function pushTextOverlay(
       startSeconds,
     },
   });
+}
+
+/**
+ * Тот же сдвиг, что у графики эффекта, но для надписи.
+ *
+ * Плашка и живое значение обязаны ехать вместе: слой двигает `overlay` в
+ * FFmpeg, а надпись рисуется отдельным `drawtext` по своим процентам кадра.
+ * Полоса бегущей строки сдвигается вместе с ней, иначе текст поедет мимо
+ * плашки.
+ */
+function placeOverlay<T extends Pick<BroadcastTextOverlay, "style"> & Partial<BroadcastTextOverlay>>(
+  overlay: T,
+  placement: EffectPlacement,
+): T {
+  if (placement.offsetXPercent === 0 && placement.offsetYPercent === 0) return overlay;
+  const shifted: T = {
+    ...overlay,
+    style: {
+      ...overlay.style,
+      xPercent: clampPercent(overlay.style.xPercent + placement.offsetXPercent),
+      yPercent: clampPercent(overlay.style.yPercent + placement.offsetYPercent),
+    },
+  };
+  return overlay.regionXPercent == null
+    ? shifted
+    : { ...shifted, regionXPercent: clampPercent(overlay.regionXPercent + placement.offsetXPercent) };
+}
+
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, Math.round(value * 100) / 100));
 }
 
 /**
@@ -603,11 +666,13 @@ function presetCaptionRender(
   context: PlanContext,
   captionKey: string,
   captionText: string,
-  dynamicKey = "",
+  dynamicField: LottieEditableProperty | null = null,
+  fitSample: LottieFitSample | null = null,
 ): string | null {
   if (!context.preset) return null;
   const fields = lottieTextFields(context.preset);
   const overrides: Record<string, string> = {};
+  const fitSamples: Record<string, LottieFitSample> = {};
 
   if (captionKey && captionText) {
     const field = fields.get(captionKey);
@@ -621,16 +686,52 @@ function presetCaptionRender(
   // Поле под живое значение очищается: Lottie рендерится один раз, и меняющиеся
   // часы или бегущая строка в него не запекаются. Шаблонный текст обязан
   // исчезнуть, иначе он останется в кадре под живой надписью.
+  if (dynamicField) {
+    overrides[dynamicField.id] = "";
+    // Плашке с меткой `fit:` мерить в документе будет нечего, поэтому ширину
+    // задаёт образец: тот же шрифт и кегль, которыми выйдет живая надпись.
+    if (fitSample) fitSamples[dynamicField.id] = fitSample;
+  }
+  return Object.keys(overrides).length > 0 ? registerRender(context, overrides, fitSamples) : null;
+}
+
+/**
+ * Текстовое поле пресета, на место которого встаёт живое значение эффекта.
+ *
+ * Ключ выбирает оператор, но пустой ключ — не «ничего не делать»: шаблонный
+ * текст остался бы в кадре и читался бы вторым слоем под живой надписью. Когда
+ * поле в пресете одно, выбирать не из чего — оно и берётся; когда их несколько,
+ * молча угадывать нельзя, и остаётся предупредить.
+ */
+function resolveDynamicField(
+  context: PlanContext,
+  dynamicKey: string,
+  captionKey: string,
+): LottieEditableProperty | null {
+  if (!context.preset) return null;
+  const fields = lottieTextFields(context.preset);
   if (dynamicKey) {
     const field = fields.get(dynamicKey);
-    if (field) overrides[field.id] = "";
-    else {
-      context.plan.warnings.push(
-        `В пресете нет текстового поля "${dynamicKey}" — значение эффекта не привязано`,
-      );
-    }
+    if (field) return field;
+    context.plan.warnings.push(
+      `В пресете нет текстового поля "${dynamicKey}" — значение эффекта не привязано`,
+    );
+    return null;
   }
-  return Object.keys(overrides).length > 0 ? registerRender(context, overrides) : null;
+  const candidates = [...fields].filter(([key]) => key !== captionKey);
+  const single = candidates.length === 1 ? candidates[0] : null;
+  if (single) {
+    context.plan.warnings.push(
+      `Поле под живое значение не выбрано — взято единственное поле пресета "${single[0]}"`,
+    );
+    return single[1];
+  }
+  if (candidates.length > 1) {
+    context.plan.warnings.push(
+      "Поле под живое значение не выбрано: шаблонный текст пресета останется в кадре под надписью",
+    );
+  }
+  return null;
 }
 
 /**
@@ -641,11 +742,11 @@ function presetCaptionRender(
  */
 function styleFromPreset(
   context: PlanContext,
-  dynamicKey: string,
+  dynamicField: LottieEditableProperty | null,
   style: BroadcastTextStyle,
 ): BroadcastTextStyle {
-  if (!dynamicKey || !context.preset) return style;
-  const box = lottieTextFields(context.preset).get(dynamicKey)?.textBox;
+  if (!dynamicField || !context.preset) return style;
+  const box = dynamicField.textBox;
   if (!box) return style;
   return {
     ...style,
@@ -666,15 +767,19 @@ function styleFromPreset(
 function registerRender(
   context: PlanContext,
   overrides: Record<string, string>,
+  fitSamples: Record<string, LottieFitSample> = {},
 ): string | null {
   if (!context.preset?.lottie) return null;
   if (Object.keys(overrides).length === 0) return null;
-  const key = JSON.stringify(
+  // Образец входит в ключ: под разную ширину нужен разный рендер плашки.
+  const key = JSON.stringify([
     Object.fromEntries(Object.entries(overrides).sort(([left], [right]) =>
       left.localeCompare(right))),
-  );
+    Object.fromEntries(Object.entries(fitSamples).sort(([left], [right]) =>
+      left.localeCompare(right))),
+  ]);
   if (!context.plan.renders.some((render) => render.key === key)) {
-    context.plan.renders.push({ key, overrides });
+    context.plan.renders.push({ key, overrides, fitSamples });
   }
   return key;
 }

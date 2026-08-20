@@ -68,7 +68,14 @@ function registerMediaHandlers(): void {
 
   ipcMain.handle(SELECT_LOGO_CHANNEL, async () =>
     selectFile("Select output logo", [
+      // Анимированный логотип: mov/webm с альфой, gif и Lottie-проект. Lottie
+      // интерфейс сначала печёт в файл — FFmpeg JSON не читает.
+      {
+        name: "Logo images and animations",
+        extensions: ["png", "webp", "jpg", "jpeg", "mov", "webm", "mp4", "gif", "json"],
+      },
       { name: "Logo images", extensions: ["png", "webp", "jpg", "jpeg"] },
+      { name: "Animated logos", extensions: ["mov", "webm", "mp4", "gif", "json"] },
     ]));
 }
 

@@ -20,6 +20,7 @@ import {
   type WorkspaceSessionSaveRequest,
 } from "@gruber/contracts";
 import { AppHeader } from "./components/AppHeader";
+import { PlayoutStatusProvider } from "./playout-status";
 import { GlobalStatusBar } from "./components/GlobalStatusBar";
 import {
   additionalPlaylistAssets,
@@ -51,6 +52,7 @@ import {
   applyBroadcastPlan,
   planBroadcastEffect,
   removeBroadcastEffect,
+  type BroadcastRenderRequest,
   type BroadcastTargetClip,
   type BroadcastTaskEntry,
 } from "./broadcast-effects";
@@ -190,6 +192,50 @@ export function App() {
   const stableImportBroadcastPreset = useStableCallback((id: string) => importBroadcastPreset(id));
   const stableReorderEffects = useStableCallback((moved: string, before: string | null) =>
     reorderEffectLibrary(moved, before));
+
+  // Экран плейлиста тоже обёрнут в `memo`: статус эфира опрашивается раз в
+  // секунду, и обычные обработчики роняли бы его в перерисовку вместе со всем
+  // списком роликов — оператор видит это как залипание кнопок.
+  const stableAddFilesToActiveSchedule = useStableCallback(addFilesToActiveSchedule);
+  const stableAddNativeFilesToActiveSchedule = useStableCallback(addNativeFilesToActiveSchedule);
+  const stableAddScte35Marker = useStableCallback(addScte35Marker);
+  const stableMovePlaylistItems = useStableCallback(movePlaylistItems);
+  const stableUpdateBulkAge = useStableCallback(updateBulkAge);
+  const stableUpdateBulkLogo = useStableCallback(updateBulkLogo);
+  const stableRemovePlaylistItem = useStableCallback(removePlaylistItem);
+  const stableRemoveScte35Marker = useStableCallback(removeScte35Marker);
+  const stableOpenPlaylistSchedule = useStableCallback(openPlaylistSchedule);
+  const stableSaveActiveSchedule = useStableCallback(saveActiveSchedule);
+  const stableSaveSessionList = useStableCallback(saveSessionList);
+  const stableCreateNewPlaylist = useStableCallback(createNewPlaylist);
+  const stableSelectAgeDirectory = useStableCallback(selectAgeDirectory);
+  const stableSelectScheduleLogoDirectory = useStableCallback(selectScheduleLogoDirectory);
+  const stableSelectScheduleLogoFile = useStableCallback(selectScheduleLogoFile);
+  const stableUpdatePlaylistItem = useStableCallback(updatePlaylistItem);
+  const stableUpdatePlaylistItems = useStableCallback(updatePlaylistItems);
+  const stableSelectSubtitleDirectory = useStableCallback(selectSubtitleDirectory);
+  const stableSelectAudioTrackDirectory = useStableCallback(selectAudioTrackDirectory);
+  const stableUpdateAgeDuration = useStableCallback(updateAgeDuration);
+  const stableUpdateScheduleLogoSettings = useStableCallback(updateScheduleLogoSettings);
+  const stableClearStartMarker = useStableCallback(clearStartMarker);
+  const stableStartFromPlaylistItem = useStableCallback(startFromPlaylistItem);
+  const stableStartCompositePreview = useStableCallback(startCompositePreview);
+  // Массив, собранный прямо в JSX, менял бы идентичность на каждом опросе и
+  // тянул бы за собой весь экран плейлиста.
+  const audioProgramLanguages = useMemo(
+    () => (audioTrackLibrary?.languages ?? []).map((language) => language.label),
+    [audioTrackLibrary],
+  );
+  const stableStartPlayout = useStableCallback(() =>
+    void startPlayout(recoveryCheckpoint ? "resume" : "default"));
+  const stableStartPlayoutFromBeginning = useStableCallback(() => void startPlayout("beginning"));
+  const stableStopPlayout = useStableCallback(() => void stopPlayout());
+  const stableImportEncodingSettings = useStableCallback(importEncodingSettingsProfile);
+  const stableSaveEncodingSettings = useStableCallback(saveEncodingSettingsProfile);
+  const stableAudioTrackSettingsChange = useStableCallback(
+    (patch: Partial<BroadcastSettings>) => setSettings((current) => ({ ...current, ...patch })),
+  );
+
 
   const playoutActive = Boolean(
     playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
@@ -702,6 +748,7 @@ export function App() {
             ? {
                 enabled: true,
                 filePath: logoPath,
+                loop: settings.logoLoop,
                 margin: settings.logoMargin,
                 opacity: settings.logoOpacity,
                 position: normalizeLogoPosition(settings.logoPosition),
@@ -726,6 +773,10 @@ export function App() {
               backgroundPath: element.backgroundPath,
               blendMode: "alpha" as const,
               lumaThreshold: 0.08,
+              // Импортированное расписание не несёт сдвига: графика ложится
+              // туда, куда её поставил дизайнер.
+              offsetXPercent: 0,
+              offsetYPercent: 0,
               sourceInSeconds: 0,
               tier: 3 as const,
               effectId: libraryEffect?.id ?? `schedule-fx-${hashString(filePath || element.name)}`,
@@ -1557,7 +1608,7 @@ export function App() {
   }
 
   async function renderBroadcastVariants(
-    renders: { key: string; overrides: Record<string, string> }[],
+    renders: BroadcastRenderRequest[],
     preset: GraphicEffectAsset | null,
   ): Promise<Map<string, string>> {
     const rendered = new Map<string, string>();
@@ -1568,10 +1619,15 @@ export function App() {
         ...preset,
         lottie: {
           ...preset.lottie,
-          properties: preset.lottie.properties.map((property) =>
-            render.overrides[property.id] != null
-              ? { ...property, overridden: true, value: render.overrides[property.id]! }
-              : property),
+          properties: preset.lottie.properties.map((property) => {
+            const value = render.overrides[property.id];
+            // Образец приходит и к пустому полю: плашка `fit:` меряется по нему.
+            const fitSample = render.fitSamples[property.id] ?? null;
+            if (value == null && !fitSample) return property;
+            return value == null
+              ? { ...property, fitSample }
+              : { ...property, fitSample, overridden: true, value };
+          }),
         },
       });
       rendered.set(render.key, variant.filePath);
@@ -1722,6 +1778,7 @@ export function App() {
         itemLogo: {
           enabled: true,
           filePath,
+          loop: asset.itemLogo?.loop ?? settings.logoLoop,
           margin: asset.itemLogo?.margin ?? settings.logoMargin,
           opacity: asset.itemLogo?.opacity ?? settings.logoOpacity,
           position: asset.itemLogo?.position ?? normalizeLogoPosition(settings.logoPosition),
@@ -1759,7 +1816,23 @@ export function App() {
 
   async function selectScheduleLogoFile() {
     const filePath = await window.gruberDesktop?.selectLogoFile();
-    if (filePath) applyScheduleLogo(filePath, filePath);
+    if (!filePath) return;
+    // FFmpeg не читает Lottie: проект печётся в файл с альфой тем же путём,
+    // которым готовятся эфирные пресеты, и в эфир идёт уже он.
+    if (filePath.toLowerCase().endsWith(".json")) {
+      setMediaBusy(true);
+      try {
+        const [rendered] = await analyzeGraphicEffectPaths([filePath]);
+        if (!rendered) throw new Error("Lottie logo could not be rendered");
+        applyScheduleLogo(rendered.filePath, filePath);
+      } catch (error) {
+        setOperationError(errorMessage(error));
+      } finally {
+        setMediaBusy(false);
+      }
+      return;
+    }
+    applyScheduleLogo(filePath, filePath);
   }
 
   async function selectScheduleLogoDirectory() {
@@ -1787,6 +1860,7 @@ export function App() {
       itemLogo: {
         enabled: asset.itemLogo?.enabled ?? true,
         filePath,
+        loop: asset.itemLogo?.loop ?? settings.logoLoop,
         margin: asset.itemLogo?.margin ?? settings.logoMargin,
         opacity: asset.itemLogo?.opacity ?? settings.logoOpacity,
         position: asset.itemLogo?.position ?? normalizeLogoPosition(settings.logoPosition),
@@ -1812,10 +1886,11 @@ export function App() {
   function updateScheduleLogoSettings(
     patch: Partial<Pick<
       BroadcastSettings,
-      "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+      "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity" | "logoLoop"
     >>,
   ) {
     const next = {
+      logoLoop: patch.logoLoop ?? settings.logoLoop,
       logoPosition: patch.logoPosition ?? settings.logoPosition,
       logoWidthPercent: clampNumber(
         patch.logoWidthPercent ?? settings.logoWidthPercent,
@@ -1831,6 +1906,7 @@ export function App() {
           ...asset,
           itemLogo: {
             ...asset.itemLogo,
+            loop: next.logoLoop,
             margin: next.logoMargin,
             opacity: next.logoOpacity,
             position: normalizeLogoPosition(next.logoPosition),
@@ -2113,6 +2189,7 @@ export function App() {
   }
 
   return (
+    <PlayoutStatusProvider status={playoutStatus}>
     <div className="console-shell">
       <AppHeader
         activeView={view}
@@ -2141,7 +2218,7 @@ export function App() {
           assets={visiblePlaylist}
           currentCount={playlist.length}
           futureCount={futurePlaylist.length}
-          onAddFiles={addFilesToActiveSchedule}
+          onAddFiles={stableAddFilesToActiveSchedule}
           busy={mediaBusy}
           onClear={clearActiveImport}
           onScheduleChange={setScheduleTab}
@@ -2195,40 +2272,33 @@ export function App() {
             currentCount={playlist.length}
             futureCount={futurePlaylist.length}
             scheduleMetadata={activeSchedule === "current" ? currentScheduleMetadata : futureScheduleMetadata}
-            onAddFiles={addFilesToActiveSchedule}
-            onAddNativeFiles={window.gruberDesktop ? addNativeFilesToActiveSchedule : undefined}
-            onAddScte35Marker={addScte35Marker}
-            onMoveItems={movePlaylistItems}
-            onBulkAgeChange={updateBulkAge}
-            onBulkLogoChange={updateBulkLogo}
-            onRemoveItem={removePlaylistItem}
-            onRemoveScte35Marker={removeScte35Marker}
+            onAddFiles={stableAddFilesToActiveSchedule}
+            onAddNativeFiles={window.gruberDesktop ? stableAddNativeFilesToActiveSchedule : undefined}
+            onAddScte35Marker={stableAddScte35Marker}
+            onMoveItems={stableMovePlaylistItems}
+            onBulkAgeChange={stableUpdateBulkAge}
+            onBulkLogoChange={stableUpdateBulkLogo}
+            onRemoveItem={stableRemovePlaylistItem}
+            onRemoveScte35Marker={stableRemoveScte35Marker}
             onSelectAsset={setSelectedAssetId}
-            onScheduleChange={openPlaylistSchedule}
-            onSaveSchedule={saveActiveSchedule}
-            onSaveSessionList={saveSessionList}
-            onNewPlaylist={createNewPlaylist}
-            onSelectAgeDirectory={window.gruberDesktop ? selectAgeDirectory : undefined}
-            onSelectScheduleLogoDirectory={window.gruberDesktop
-              ? selectScheduleLogoDirectory
-              : undefined}
-            onSelectScheduleLogoFile={window.gruberDesktop
-              ? selectScheduleLogoFile
-              : undefined}
-            onUpdateItem={updatePlaylistItem}
-            onUpdateItems={updatePlaylistItems}
+            onScheduleChange={stableOpenPlaylistSchedule}
+            onSaveSchedule={stableSaveActiveSchedule}
+            onSaveSessionList={stableSaveSessionList}
+            onNewPlaylist={stableCreateNewPlaylist}
+            onSelectAgeDirectory={window.gruberDesktop ? stableSelectAgeDirectory : undefined}
+            onSelectScheduleLogoDirectory={window.gruberDesktop ? stableSelectScheduleLogoDirectory : undefined}
+            onSelectScheduleLogoFile={window.gruberDesktop ? stableSelectScheduleLogoFile : undefined}
+            onUpdateItem={stableUpdatePlaylistItem}
+            onUpdateItems={stableUpdatePlaylistItems}
             effectLibrary={effectLibrary}
             subtitleLibrary={subtitleLibrary}
-            onSelectSubtitleDirectory={window.gruberDesktop ? selectSubtitleDirectory : undefined}
+            onSelectSubtitleDirectory={window.gruberDesktop ? stableSelectSubtitleDirectory : undefined}
             audioTracksEnabled={settings.audioTracksEnabled}
             audioTrackDirectory={settings.audioTrackDirectory}
             audioOriginalLanguage={settings.audioOriginalLanguage}
-            audioProgramLanguages={(audioTrackLibrary?.languages ?? []).map((l) => l.label)}
-            onSelectAudioTrackDirectory={
-              window.gruberDesktop ? selectAudioTrackDirectory : undefined
-            }
-            onAudioTrackSettingsChange={(patch) =>
-              setSettings((current) => ({ ...current, ...patch }))}
+            audioProgramLanguages={audioProgramLanguages}
+            onSelectAudioTrackDirectory={window.gruberDesktop ? stableSelectAudioTrackDirectory : undefined}
+            onAudioTrackSettingsChange={stableAudioTrackSettingsChange}
             ageDurationSeconds={settings.ageTitleDurationSeconds}
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
@@ -2239,8 +2309,10 @@ export function App() {
             recoveryCheckpoint={recoveryCheckpoint}
             recoveryAssetId={recoverySelection?.asset.id ?? null}
             scheduleStartMarker={scheduleStartMarker}
-            playoutActive={Boolean(playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state))}
-            playoutStatus={playoutStatus}
+            playoutActive={playoutActive}
+            onAirItemId={playoutStatus?.currentItemId ?? null}
+            onAirElapsedSeconds={Math.round(playoutStatus?.currentItemElapsedSeconds ?? 0)}
+            onAirProgressPercent={Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}
             initialPreviewTimeSeconds={
               recoverySelection?.asset.id === selectedAsset.id
                 ? recoverySelection.itemOffsetSeconds
@@ -2250,11 +2322,11 @@ export function App() {
             scheduleLogoPath={scheduleLogoPath}
             logoSettings={settings}
             scte35Defaults={settings}
-            onAgeDurationChange={updateAgeDuration}
-            onLogoSettingsChange={updateScheduleLogoSettings}
-            onClearStartMarker={clearStartMarker}
-            onStartFromItem={startFromPlaylistItem}
-            onStartCompositePreview={startCompositePreview}
+            onAgeDurationChange={stableUpdateAgeDuration}
+            onLogoSettingsChange={stableUpdateScheduleLogoSettings}
+            onClearStartMarker={stableClearStartMarker}
+            onStartFromItem={stableStartFromPlaylistItem}
+            onStartCompositePreview={stableStartCompositePreview}
           />
         ) : (
           <EmptyPlaylist
@@ -2273,21 +2345,21 @@ export function App() {
           networkInterfaces={networkInterfaces}
           capabilities={capabilities}
           onSettingsChange={setSettings}
-          onStart={() => void startPlayout(recoveryCheckpoint ? "resume" : "default")}
-          onStartFresh={() => void startPlayout("beginning")}
-          onStop={() => void stopPlayout()}
+          onStart={stableStartPlayout}
+          onStartFresh={stableStartPlayoutFromBeginning}
+          onStop={stableStopPlayout}
           operationError={operationError}
           playlistLength={playlist.length}
           scte35MarkerCount={playlist.reduce(
             (total, asset) => total + (asset.scte35Markers?.length ?? 0),
             0,
           )}
-          playoutStatus={playoutStatus}
+          playoutState={playoutStatus?.state ?? null}
           recoveryCheckpoint={recoveryCheckpoint}
           settingsProfileBusy={settingsProfileBusy}
           settingsProfileMessage={settingsProfileMessage}
-          onImportSettings={importEncodingSettingsProfile}
-          onSaveSettings={saveEncodingSettingsProfile}
+          onImportSettings={stableImportEncodingSettings}
+          onSaveSettings={stableSaveEncodingSettings}
           scheduleStartMarker={scheduleStartMarker}
           scheduleStartItemName={playlist.find(
             (asset) => asset.id === scheduleStartMarker?.assetId,
@@ -2315,6 +2387,7 @@ export function App() {
         status={playoutStatus}
       />
     </div>
+    </PlayoutStatusProvider>
   );
 }
 
@@ -3022,7 +3095,7 @@ function assignChannelLogo(
   filePath: string,
   settings: Pick<
     BroadcastSettings,
-    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity" | "logoLoop"
   >,
 ): MediaAsset[] {
   return playlist.map((asset) => ({
@@ -3030,6 +3103,7 @@ function assignChannelLogo(
     itemLogo: {
       enabled: asset.itemLogo?.enabled ?? true,
       filePath,
+      loop: settings.logoLoop,
       margin: settings.logoMargin,
       opacity: settings.logoOpacity,
       position: normalizeLogoPosition(settings.logoPosition),

@@ -18,6 +18,8 @@ function layer(overrides: Partial<GraphicEffectLayer> = {}): GraphicEffectLayer 
     filePath: "/fx/lower.mov",
     id: `layer-${Math.random()}`,
     kind: "video",
+    offsetXPercent: 0,
+    offsetYPercent: 0,
     lumaThreshold: 0.08,
     name: "lower",
     sourceDurationSeconds: 5,

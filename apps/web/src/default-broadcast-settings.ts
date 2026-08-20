@@ -69,6 +69,7 @@ export const initialBroadcastSettings: BroadcastSettings = {
   ageTitleDurationSeconds: 10,
   logoEnabled: false,
   logoPath: "",
+  logoLoop: true,
   logoPosition: "top-right",
   logoWidthPercent: 15,
   logoMargin: 32,

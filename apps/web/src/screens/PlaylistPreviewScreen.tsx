@@ -26,6 +26,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -54,7 +55,6 @@ import type {
 } from "../types";
 import type {
   BroadcastTextOverlay,
-  PlayoutStatus,
   ClipPreviewSession,
   ScheduleExportExtension,
   ScheduleStartMarker,
@@ -76,7 +76,7 @@ interface PlaylistPreviewScreenProps {
   scheduleLogoPath: string;
   logoSettings: Pick<
     BroadcastSettings,
-    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity" | "logoLoop"
   >;
   audioTracksEnabled: boolean;
   audioTrackDirectory: string;
@@ -95,7 +95,15 @@ interface PlaylistPreviewScreenProps {
   recoveryCheckpoint: WorkspaceSessionCheckpoint | null;
   scheduleStartMarker: ScheduleStartMarker | null;
   playoutActive: boolean;
-  playoutStatus: PlayoutStatus | null;
+  /**
+   * Что сейчас в эфире — россыпью простых значений, а не снимком статуса.
+   * Статус опрашивается раз в секунду и приходит новым объектом, поэтому
+   * `memo` на нём не работал бы вовсе: экран перерисовывался бы секунда за
+   * секундой вместе со всем списком роликов.
+   */
+  onAirItemId: string | null;
+  onAirElapsedSeconds: number;
+  onAirProgressPercent: number;
   recoveryAssetId: string | null;
   initialPreviewTimeSeconds: number | null;
   onAddFiles: (files: File[]) => void;
@@ -107,7 +115,7 @@ interface PlaylistPreviewScreenProps {
   onAgeDurationChange: (durationSeconds: number) => void;
   onLogoSettingsChange: (patch: Partial<Pick<
     BroadcastSettings,
-    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity"
+    "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity" | "logoLoop"
   >>) => void;
   onRemoveItem: (assetId: string) => void;
   onRemoveScte35Marker: (assetId: string, markerId: string) => void;
@@ -135,7 +143,13 @@ interface PlaylistPreviewScreenProps {
 
 const AGE_RATINGS = ["0+", "6+", "12+", "16+", "18+"] as const;
 
-export function PlaylistPreviewScreen({
+/**
+ * Экран обёрнут в `memo`: статус эфира опрашивается раз в секунду, и без этого
+ * весь список роликов перерисовывался бы секунда за секундой — у оператора
+ * «залипают» кнопки и поля ввода. Любой новый проп обязан быть стабильным,
+ * иначе memo молча перестаёт работать.
+ */
+export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   playlist,
   selectedAsset,
   activeSchedule,
@@ -161,7 +175,9 @@ export function PlaylistPreviewScreen({
   recoveryCheckpoint,
   scheduleStartMarker,
   playoutActive,
-  playoutStatus,
+  onAirItemId,
+  onAirElapsedSeconds,
+  onAirProgressPercent,
   recoveryAssetId,
   initialPreviewTimeSeconds,
   onAddFiles,
@@ -313,6 +329,20 @@ export function PlaylistPreviewScreen({
       ? mediaPath("program-preview.png")
       : selectedAsset.preview;
   const realMediaPreview = selectedAsset.status === "analyzed" && selectedAsset.id !== "production";
+
+  // Кадр под курсором перемотки. Пока плеер стоит, на экране висел постер, и
+  // перемотка выглядела мёртвой: картинка не двигалась. Позиция берётся с
+  // задержкой — при протяжке ползунка иначе полетела бы сотня запросов подряд.
+  const [scrubSeconds, setScrubSeconds] = useState<number | null>(null);
+  useEffect(() => {
+    if (playing || !realMediaPreview) {
+      setScrubSeconds(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setScrubSeconds(currentTime), 120);
+    return () => window.clearTimeout(timer);
+  }, [currentTime, playing, realMediaPreview]);
+
   const scte35Markers = selectedAsset.scte35Markers ?? [];
   const playlistDuration = playlist.reduce(
     (total, asset) => total + (asset.declaredDurationSeconds ?? asset.durationSeconds),
@@ -329,12 +359,7 @@ export function PlaylistPreviewScreen({
     () => buildScheduleTimeline(playlist, scheduleMetadata, activeSchedule),
     [activeSchedule, playlist, scheduleMetadata],
   );
-  const playoutRunning = Boolean(
-    playoutStatus && ["starting", "running", "stopping"].includes(playoutStatus.state),
-  );
-  const onAirAssetId = activeSchedule === "current" && playoutRunning
-    ? playoutStatus?.currentItemId ?? null
-    : null;
+  const onAirAssetId = activeSchedule === "current" && playoutActive ? onAirItemId : null;
   const stoppedHereAssetId = activeSchedule === "current" ? recoveryAssetId : null;
   const collapsedCount = playlist.reduce(
     (count, asset) => count + (collapsedIds.has(asset.id) ? 1 : 0),
@@ -413,6 +438,26 @@ export function PlaylistPreviewScreen({
       const startAt = currentTime >= selectedAsset.durationSeconds ? 0 : currentTime;
       await startPreview(startAt);
     }
+  }
+
+  /**
+   * Перемотка.
+   *
+   * Предпросмотр копится целиком, поэтому назад и на уже посчитанный участок
+   * плеер прыгает сам — перезапускать FFmpeg ради этого незачем. Перезапуск
+   * остаётся только там, где нужного куска ещё не существует: рендер идёт в
+   * реальном времени и вперёд забежать не может.
+   */
+  function seekPreview(target: number): void {
+    if (!playing) return;
+    const video = videoRef.current;
+    const relative = target - previewOffset;
+    if (video && previewUrl && relative >= 0 && isBuffered(video, relative)) {
+      video.currentTime = relative;
+      void video.play().catch(() => undefined);
+      return;
+    }
+    void startPreview(target);
   }
 
   function updatePreviewTime(relativeSeconds: number): void {
@@ -511,6 +556,9 @@ export function PlaylistPreviewScreen({
         backgroundPath: effect.filePath,
         blendMode: "alpha",
         lumaThreshold: 0.08,
+        // Сдвиг задаётся эффектом второго уровня; уровень 3 ложится как есть.
+        offsetXPercent: 0,
+        offsetYPercent: 0,
         sourceInSeconds: 0,
         tier: 3,
         id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
@@ -629,6 +677,23 @@ export function PlaylistPreviewScreen({
             <button disabled={!onSelectScheduleLogoDirectory || scheduleBusy} onClick={() => void onSelectScheduleLogoDirectory?.()} type="button">
               <FolderOpen size={13} /> Folder
             </button>
+            {/* Анимированный логотип (mov, webm, gif, Lottie) либо крутится до
+                конца ролика, либо играет один раз и остаётся последним кадром.
+                У картинки кнопка ничего не меняет, поэтому и не показывается. */}
+            {animatedLogo(scheduleLogoSource) ? (
+              <button
+                aria-pressed={logoSettings.logoLoop}
+                className={`logo-loop-toggle${logoSettings.logoLoop ? " on" : ""}`}
+                disabled={scheduleBusy}
+                onClick={() => onLogoSettingsChange({ logoLoop: !logoSettings.logoLoop })}
+                title={logoSettings.logoLoop
+                  ? "Анимация повторяется до конца ролика"
+                  : "Анимация играет один раз и замирает на последнем кадре"}
+                type="button"
+              >
+                <Repeat2 size={13} /> Loop
+              </button>
+            ) : null}
           </div>
           <div className="logo-appearance-controls">
             <label>
@@ -916,7 +981,7 @@ export function PlaylistPreviewScreen({
             const onAirRemainingSeconds = onAir
               ? Math.max(
                   0,
-                  effectiveClipDuration(asset) - (playoutStatus?.currentItemElapsedSeconds ?? 0),
+                  effectiveClipDuration(asset) - onAirElapsedSeconds,
                 )
               : null;
             return (
@@ -1048,7 +1113,7 @@ export function PlaylistPreviewScreen({
                 <div className="playlist-item-metadata">
                 {onAir ? (
                   <span className="playlist-on-air-chip" title="This clip is currently being sent to air">
-                    <RadioTower size={12} /> ON AIR · {Math.round(playoutStatus?.currentItemProgressPercent ?? 0)}%
+                    <RadioTower size={12} /> ON AIR · {onAirProgressPercent}%
                   </span>
                 ) : null}
                 {stoppedHere ? (
@@ -1221,7 +1286,7 @@ export function PlaylistPreviewScreen({
               ) : null}
               {onAir ? (
                 <span className="playlist-on-air-progress" aria-hidden="true">
-                  <i style={{ width: `${playoutStatus?.currentItemProgressPercent ?? 0}%` }} />
+                  <i style={{ width: `${onAirProgressPercent}%` }} />
                 </span>
               ) : null}
             </div>
@@ -1263,7 +1328,12 @@ export function PlaylistPreviewScreen({
               ref={videoRef}
             />
           ) : (
-            <img alt={`Preview for ${selectedAsset.name}`} src={previewSource} />
+            <img
+              alt={`Preview for ${selectedAsset.name}`}
+              src={scrubSeconds != null && scrubSeconds > 0
+                ? mediaThumbnailUrl(selectedAsset.filePath, scrubSeconds)
+                : previewSource}
+            />
           )}
           <div className="preview-hud preview-hud-top">
             <span className="decoding-status">
@@ -1304,16 +1374,14 @@ export function PlaylistPreviewScreen({
               max={Math.max(selectedAsset.durationSeconds, 1)}
               min={0}
               onChange={(event) => setCurrentTime(Number(event.target.value))}
-              onKeyUp={() => {
-                if (playing) void startPreview(currentTime);
-              }}
+              onKeyUp={() => seekPreview(currentTime)}
               onPointerDown={() => {
                 seeking.current = true;
                 videoRef.current?.pause();
               }}
               onPointerUp={() => {
                 seeking.current = false;
-                if (playing) void startPreview(currentTime);
+                seekPreview(currentTime);
               }}
               type="range"
               value={currentTime}
@@ -1598,7 +1666,7 @@ export function PlaylistPreviewScreen({
       </section>
     </main>
   );
-}
+});
 
 function EffectTimeline({
   asset,
@@ -2002,4 +2070,20 @@ function findMatchingEffectTitle(
 ): string | null {
   if (!effect.titleDirectoryPath) return null;
   return matchingNamedAssetPath(mediaName, effect.titlePaths);
+}
+
+/** Есть ли уже посчитанный кусок в этой точке: перемотка по нему проходит без перезапуска. */
+function isBuffered(video: HTMLVideoElement, seconds: number): boolean {
+  const margin = 0.25;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (seconds >= start - margin && seconds <= end - margin) return true;
+  }
+  return false;
+}
+
+/** Анимированный ли логотип: у картинки повтор ничего не меняет. */
+function animatedLogo(filePath: string): boolean {
+  return /\.(mov|mp4|m4v|webm|mkv|gif|json)$/i.test(filePath.trim());
 }
