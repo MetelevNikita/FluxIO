@@ -313,8 +313,15 @@ test("next program reads the following playlist item and warns on the last clip"
   assert.equal(result.layers[0]!.assetId, "a");
   assert.equal(result.layers[0]!.layer.startSeconds, 70);
   assert.equal(result.layers[0]!.layer.endSeconds, 77);
-  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "Вечерние новости" });
-  assert.match(result.warnings[0]!, /is the last clip and has no fallback title/);
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "" });
+  assert.deepEqual(result.renders[0]!.fitSamples["prop-title"], {
+    fontFilePath: null,
+    fontSizePercent: 4.2,
+    text: "Вечерние новости",
+  });
+  assert.equal(result.textOverlays[0]!.overlay.content, "Вечерние новости");
+  assert.ok(result.warnings.some((warning) =>
+    /is the last clip and has no fallback title/.test(warning)));
 });
 
 test("next program announces the next movie and skips idents between films", () => {
@@ -332,7 +339,44 @@ test("next program announces the next movie and skips idents between films", () 
   });
 
   assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "Фильм Б" });
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "" });
+  assert.equal(result.renders[0]!.fitSamples["prop-title"]?.text, "Фильм Б");
+  assert.equal(result.textOverlays[0]!.overlay.content, "Фильм Б");
+});
+
+test("next program keeps the title in drawtext and inherits its Lottie text field geometry", () => {
+  const box = {
+    align: "center" as const,
+    color: "#F5D565",
+    fontSizePercent: 5.4,
+    xPercent: 48,
+    yPercent: 82,
+  };
+  const result = plan({
+    effect: broadcastEffect("next-program", {
+      nextProgram: {
+        ...broadcastEffect("next-program", {}).broadcast!.settings.nextProgram,
+        style: { ...style(), fontFamily: "PT Sans", fontFilePath: "/fonts/PTSans.ttf" },
+      },
+    }),
+    preset: preset([textProperty("Main composition · next_title", "prop-title", box)]),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.renders[0]!.overrides, { "prop-title": "" });
+  assert.deepEqual(result.renders[0]!.fitSamples["prop-title"], {
+    fontFilePath: "/fonts/PTSans.ttf",
+    fontSizePercent: 5.4,
+    text: "Вечерние новости",
+  });
+  const overlay = result.textOverlays[0]!.overlay;
+  assert.equal(overlay.content, "Вечерние новости");
+  assert.equal(overlay.style.align, "center");
+  assert.equal(overlay.style.boxEnabled, false);
+  assert.equal(overlay.style.color, "#F5D565");
+  assert.equal(overlay.style.fontSizePercent, 5.4);
+  assert.equal(overlay.style.xPercent, 48);
+  assert.equal(overlay.style.yPercent, 82);
 });
 
 test("start offset counts from the end even when the clip came from a schedule", () => {

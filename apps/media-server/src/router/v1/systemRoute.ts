@@ -11,7 +11,7 @@ import {
 import { listNetworkInterfaces } from "../../network-interfaces.js";
 import { errorMessage, type RouteContext } from "../context.js";
 
-export const serviceVersion = "7.0.12";
+export const serviceVersion = "7.0.13";
 
 const streamingStates = ["starting", "running", "stopping"];
 

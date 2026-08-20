@@ -292,7 +292,8 @@ function planNextProgram(context: PlanContext): void {
   const titlesByName = new Map(
     context.taskEntries.map((entry) => [entry.name.trim(), entry] as const),
   );
-  const fields = context.preset ? lottieTextFields(context.preset) : new Map();
+  const dynamicField = resolveDynamicField(context, settings.titleKey, settings.subtitleKey);
+  const style = styleFromPreset(context, dynamicField, settings.style);
 
   for (const clip of context.targets) {
     const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
@@ -313,33 +314,43 @@ function planNextProgram(context: PlanContext): void {
     const startSeconds = clip.durationSeconds - settings.startOffsetSeconds;
     const endSeconds = startSeconds + settings.durationSeconds;
     if (context.preset) {
-      const overrides: Record<string, string> = {};
-      const titleField = fields.get(settings.titleKey);
-      const subtitleField = fields.get(settings.subtitleKey);
-      if (titleField) overrides[titleField.id] = title;
-      else {
-        context.plan.warnings.push(
-          `The preset has no text field "${settings.titleKey}", so the promo shows its template text`,
-        );
-      }
-      if (subtitleField && settings.subtitleText) overrides[subtitleField.id] = settings.subtitleText;
       pushLayer(context, clip, {
         endSeconds,
         name: `${context.effect.name} → ${title}`,
-        renderKey: registerRender(context, overrides),
+        renderKey: presetCaptionRender(
+          context,
+          settings.subtitleKey,
+          settings.subtitleText,
+          dynamicField,
+          {
+            text: title,
+            fontFilePath: style.fontFilePath,
+            fontSizePercent: style.fontSizePercent,
+          },
+        ),
         startSeconds,
       });
-      continue;
+      // Название следующего фильма остаётся настоящей надписью FFmpeg. Lottie
+      // хранит только анимированный декор и подложку, ширина которой считается
+      // по fitSample для конкретного следующего материала.
+      pushTextOverlay(context, clip, {
+        content: title,
+        endSeconds,
+        mode: "static",
+        startSeconds,
+        style,
+      });
+    } else {
+      // Без пресета плашка рисуется штатным drawtext: эффект остаётся рабочим,
+      // даже когда шаблон из After Effects ещё не готов.
+      pushTextOverlay(context, clip, {
+        content: settings.subtitleText ? `${title} — ${settings.subtitleText}` : title,
+        endSeconds,
+        mode: "static",
+        startSeconds,
+        style,
+      });
     }
-    // Без пресета плашка рисуется штатным drawtext: эффект остаётся рабочим,
-    // даже когда шаблон из After Effects ещё не готов.
-    pushTextOverlay(context, clip, {
-      content: settings.subtitleText ? `${title} — ${settings.subtitleText}` : title,
-      endSeconds,
-      mode: "static",
-      startSeconds,
-      style: settings.style,
-    });
   }
 }
 

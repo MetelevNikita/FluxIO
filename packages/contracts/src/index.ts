@@ -413,8 +413,9 @@ export const nextProgramSettingsSchema = z.object({
   startOffsetSeconds: z.number().positive().max(3_600).default(30),
   durationSeconds: z.number().positive().max(60).default(7),
   source: nextProgramSourceSchema.default("playlist-name"),
-  /** Ключи Lottie-полей, куда уходят название и подзаголовок следующего события. */
+  /** Text Layer, который очищается и заменяется живым названием через drawtext. */
   titleKey: z.string().min(1).max(128).default("next_title"),
+  /** Необязательное поле постоянной подписи, запекаемой внутрь Lottie. */
   subtitleKey: z.string().min(1).max(128).default("next_subtitle"),
   subtitleText: z.string().max(512).default(""),
   /** Текст на случай, когда следующего элемента нет; пустой — эффект пропускается. */

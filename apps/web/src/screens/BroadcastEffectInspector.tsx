@@ -389,7 +389,7 @@ export function BroadcastEffectInspector({
             </label>
             <PresetKeyField
               busy={busy}
-              hint="сюда уходит название следующего фильма"
+              hint="поле очищается; название рисует FFmpeg"
               keys={presetKeys}
               label="Поле названия"
               onChange={(titleKey) => updateSettings("nextProgram", { titleKey })}
@@ -416,6 +416,14 @@ export function BroadcastEffectInspector({
               onChange={(fallbackTitle) => updateSettings("nextProgram", { fallbackTitle })}
               value={settings.nextProgram.fallbackTitle}
             />
+            {definition.presetEffectId ? (
+              <p className="broadcast-hint broadcast-field-wide">
+                Назовите Shape Layer подложки в After Effects
+                <code>fit:&lt;имя поля названия&gt;</code>. FluxIO очистит шаблонный текст,
+                нарисует реальное название через FFmpeg и пересчитает ширину подложки,
+                сохранив исходные отступы.
+              </p>
+            ) : null}
           </div>
           {settings.nextProgram.source === "task-file" ? (
             <TaskFileField
@@ -426,14 +434,12 @@ export function BroadcastEffectInspector({
               summary={taskSummary}
             />
           ) : null}
-          {definition.presetEffectId ? null : (
-            <TextStyleFields
-              busy={busy}
-              fonts={fonts}
-              onChange={(style) => updateSettings("nextProgram", { style })}
-              style={settings.nextProgram.style}
-            />
-          )}
+          <TextStyleFields
+            busy={busy}
+            fonts={fonts}
+            onChange={(style) => updateSettings("nextProgram", { style })}
+            style={settings.nextProgram.style}
+          />
         </>
       ) : null}
 
@@ -753,7 +759,8 @@ export function BroadcastEffectInspector({
                 {settings.clockCountdown.dynamicKey
                   ? "Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, " +
                     "цветом и выключкой. Само значение рисует FFmpeg покадрово: в отрендеренный " +
-                    "один раз Lottie его не запечь."
+                    "один раз Lottie его не запечь. Для резиновой подложки назовите Shape Layer " +
+                    `fit:${settings.clockCountdown.dynamicKey}.`
                   : "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё."}
               </p>
             </div>
@@ -1210,7 +1217,7 @@ function BroadcastEffectPreview({
           </div>
         ) : null}
 
-        {definition.kind === "next-program" && !preset ? (
+        {definition.kind === "next-program" ? (
           <div
             className="broadcast-preview-text"
             style={{ ...textStyle, left: `${style.xPercent}cqw` }}
@@ -1221,11 +1228,17 @@ function BroadcastEffectPreview({
           </div>
         ) : null}
 
-        {(definition.kind === "animation-in-out" ||
-          definition.kind === "next-program") && preset ? (
+        {definition.kind === "animation-in-out" && preset ? (
           <div className="broadcast-preview-note">
             Оформление берётся из пресета «{preset.name}» — он показан в окне предпросмотра выше.
             Здесь видно только расписание показа.
+          </div>
+        ) : null}
+
+        {definition.kind === "next-program" && preset ? (
+          <div className="broadcast-preview-note">
+            Пресет «{preset.name}» рисует декор и адаптивную подложку; название выше — живая
+            надпись FFmpeg на месте выбранного текстового слоя.
           </div>
         ) : null}
 
