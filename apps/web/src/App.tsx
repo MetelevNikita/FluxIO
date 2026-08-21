@@ -3,6 +3,7 @@ import {
   graphicEffectAssetSchema,
   serviceHealthSchema,
   type BroadcastEffectKind,
+  type BroadcastTaskFileContent,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
   type MediaProbe,
@@ -26,6 +27,11 @@ import {
   additionalPlaylistAssets,
   initialAssets,
 } from "./demo-data";
+import {
+  demoBroadcastEffectId,
+  demoBroadcastTaskContent,
+  demoGraphicEffects,
+} from "./graphics-demo-data";
 import { initialBroadcastSettings } from "./default-broadcast-settings";
 import {
   applyEncodingSettingsProfile,
@@ -50,11 +56,11 @@ import {
 } from "./missing-graphics";
 import {
   applyBroadcastPlan,
+  mapBroadcastTaskRecords,
   planBroadcastEffect,
   removeBroadcastEffect,
   type BroadcastRenderRequest,
   type BroadcastTargetClip,
-  type BroadcastTaskEntry,
 } from "./broadcast-effects";
 import {
   broadcastEffectTitle,
@@ -153,16 +159,31 @@ export function App() {
   const [scheduleLogoPath, setScheduleLogoPath] = useState("");
   const [scheduleLogoSource, setScheduleLogoSource] = useState("");
   const [ageLibrary, setAgeLibrary] = useState<ScheduleOverlayLibrary | null>(null);
-  const [effectLibrary, setEffectLibrary] = useState<GraphicEffectAsset[]>([]);
+  const [effectLibrary, setEffectLibrary] = useState<GraphicEffectAsset[]>(() =>
+    demoDataEnabled ? demoGraphicEffects : []);
   const [subtitleLibrary, setSubtitleLibrary] = useState<SubtitleLibrary | null>(null);
   const [audioTrackLibrary, setAudioTrackLibrary] = useState<AudioTrackLibrary | null>(null);
   const [effectsBusy, setEffectsBusy] = useState(false);
   // Записи файлов заданий держим в памяти: сам путь живёт в настройках эффекта
   // и переживает перезапуск, а содержимое перечитывается по кнопке.
-  const [broadcastTaskEntries, setBroadcastTaskEntries] =
-    useState<Record<string, BroadcastTaskEntry[]>>({});
+  const [broadcastTaskContents, setBroadcastTaskContents] =
+    useState<Record<string, BroadcastTaskFileContent>>(() => {
+      const initial: Record<string, BroadcastTaskFileContent> = {};
+      if (demoDataEnabled) initial[demoBroadcastEffectId] = demoBroadcastTaskContent;
+      return initial;
+    });
   const [broadcastTaskSummaries, setBroadcastTaskSummaries] =
-    useState<Record<string, BroadcastTaskSummary>>({});
+    useState<Record<string, BroadcastTaskSummary>>(() => {
+      const initial: Record<string, BroadcastTaskSummary> = {};
+      if (demoDataEnabled) initial[demoBroadcastEffectId] = {
+        entryCount: demoBroadcastTaskContent.records.length,
+        fields: demoBroadcastTaskContent.fields,
+        filePath: demoBroadcastTaskContent.filePath,
+        records: demoBroadcastTaskContent.records,
+        warnings: demoBroadcastTaskContent.warnings,
+      };
+      return initial;
+    });
   const [missingGraphics, setMissingGraphics] = useState<MissingGraphic[]>([]);
   const [missingGraphicsResolved, setMissingGraphicsResolved] =
     useState<Record<string, string>>({});
@@ -1354,12 +1375,14 @@ export function App() {
     setOperationError(null);
     try {
       const content = await readBroadcastTaskFile(filePath);
-      setBroadcastTaskEntries((current) => ({ ...current, [effectId]: content.entries }));
+      setBroadcastTaskContents((current) => ({ ...current, [effectId]: content }));
       setBroadcastTaskSummaries((current) => ({
         ...current,
         [effectId]: {
-          entryCount: content.entries.length,
+          entryCount: content.records.length,
+          fields: content.fields,
           filePath: content.filePath,
+          records: content.records,
           warnings: content.warnings,
         },
       }));
@@ -1367,6 +1390,10 @@ export function App() {
         ...effect,
         broadcast: effect.broadcast && {
           ...effect.broadcast,
+          dataMapping: {
+            ...effect.broadcast.dataMapping,
+            filePath: content.filePath,
+          },
           settings: {
             ...effect.broadcast.settings,
             animationInOut: {
@@ -1385,7 +1412,7 @@ export function App() {
         },
       }));
       setEffectsMessage(
-        `Файл задания прочитан: ${content.entries.length} записей` +
+        `Файл задания прочитан: ${content.records.length} записей` +
           (content.warnings.length > 0 ? `, предупреждений — ${content.warnings.length}.` : "."),
       );
     } catch (reason) {
@@ -1567,7 +1594,10 @@ export function App() {
     const preset = effect.broadcast?.presetEffectId
       ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
       : null;
-    const taskEntries = broadcastTaskEntries[effect.id] ?? [];
+    const taskContent = broadcastTaskContents[effect.id];
+    const taskEntries = taskContent && effect.broadcast?.dataMapping.filePath
+      ? mapBroadcastTaskRecords(taskContent.records, effect.broadcast.dataMapping)
+      : [];
     setEffectsBusy(true);
     setOperationError(null);
     try {
@@ -1660,7 +1690,7 @@ export function App() {
       return;
     }
     setEffectLibrary((current) => current.filter((entry) => entry.id !== effectId));
-    setBroadcastTaskEntries((current) => {
+    setBroadcastTaskContents((current) => {
       const { [effectId]: removed, ...rest } = current;
       return rest;
     });
@@ -2882,7 +2912,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.13";
+const applicationVersion = "7.0.14";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

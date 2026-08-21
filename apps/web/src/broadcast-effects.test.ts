@@ -5,6 +5,7 @@ import {
   applyBroadcastPlan,
   joinTickerItems,
   lottieTextFieldKey,
+  mapBroadcastTaskRecords,
   planBroadcastEffect,
   removeBroadcastEffect,
   snapToFrameGrid,
@@ -49,6 +50,7 @@ function preset(properties: LottieEditableProperty[] = []): GraphicEffectAsset {
       inPoint: 0,
       outPoint: 100,
       properties,
+      responsiveTextKeys: [],
       sourcePath: "/fx/preset.json",
       version: "5.7.0",
       warnings: [],
@@ -67,6 +69,7 @@ function broadcastEffect(
 ): GraphicEffectAsset {
   return {
     broadcast: {
+      dataMapping: { filePath: null, matchSourceKey: "name", bindings: [] },
       kind: kind as never,
       placement,
       presetEffectId: "preset-1",
@@ -154,6 +157,22 @@ function broadcastEffect(
     width: 1_920,
   };
 }
+
+test("JSON mapping binds arbitrary source fields to template text keys", () => {
+  assert.deepEqual(mapBroadcastTaskRecords([
+    { media: "Clip A", "programme.title": "Вечерние новости", presenter: "Анна" },
+  ], {
+    filePath: "/data/rundown.json",
+    matchSourceKey: "media",
+    bindings: [
+      { sourceKey: "programme.title", targetKey: "main_title" },
+      { sourceKey: "presenter", targetKey: "subtitle" },
+    ],
+  }), [{
+    name: "Clip A",
+    values: { main_title: "Вечерние новости", subtitle: "Анна" },
+  }]);
+});
 
 function style() {
   return {

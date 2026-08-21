@@ -18,7 +18,7 @@ const offline = process.argv.includes("--offline");
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
   ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "7.0.13";
+const applicationVersion = "7.0.14";
 
 export function buildDatabaseUrl({
   database,

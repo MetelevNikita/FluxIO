@@ -121,7 +121,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.13");
+    assert.equal(health.version, "7.0.14");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -139,7 +139,7 @@ test("Lottie inspector exposes operator properties and preserves animation until
     layers: [
       {
         ty: 1,
-        nm: "Lower third background",
+        nm: "fit:Title",
         hd: false,
         sc: "#112233",
         ks: {
@@ -173,6 +173,7 @@ test("Lottie inspector exposes operator properties and preserves animation until
     property.label === "Fill · Accent" && property.value === "#FF8000"));
   assert.ok(metadata.properties.some((property) =>
     property.label === "Text" && property.value === "Original title"));
+  assert.deepEqual(metadata.responsiveTextKeys, ["Title"]);
   const scale = metadata.properties.find((property) => property.label === "Scale");
   assert.deepEqual(scale?.originalValue, [100, 100, 100]);
   assert.match(metadata.warnings.join(" "), /Animated properties are preserved/);
@@ -3121,7 +3122,7 @@ test("stinger audio mixes into every track before the length tail, not after it"
   assert.match(command.filterGraph, new RegExp(`atrim=end_sample=${sampleCount}`));
 });
 
-test("a task file accepts one object and a whole schedule, and reports unusable keys", () => {
+test("a task file accepts scalar and nested fields and describes them for JSON Parser", () => {
   const single = parseBroadcastTaskDocument({
     name: " Инзерские зубчатки ",
     eng: "Inzer Cogs",
@@ -3132,19 +3133,25 @@ test("a task file accepts one object and a whole schedule, and reports unusable 
     values: { eng: "Inzer Cogs", region: "Республика Башкортостан" },
   }]);
   assert.deepEqual(single.warnings, []);
+  assert.equal(single.records[0]?.region, "Республика Башкортостан");
+  assert.equal(single.fields.find((field) => field.key === "eng")?.populatedCount, 1);
 
   const batch = parseBroadcastTaskDocument([
     { name: "Первый", eng: "First" },
     { name: "Первый", eng: "Again" },
-    { name: "Второй", duration: 12 },
+    { name: "Второй", duration: 12, programme: { title: "Новости" }, live: true },
   ]);
   assert.deepEqual(batch.entries.map((entry) => entry.name), ["Первый", "Второй"]);
   assert.deepEqual(batch.entries[0]!.values, { eng: "Again" });
-  assert.equal(batch.entries[1]!.values.duration, undefined);
-  assert.match(batch.warnings.join("\n"), /"duration" is ignored because its value is not a string/);
+  assert.equal(batch.entries[1]!.values.duration, "12");
+  assert.equal(batch.entries[1]!.values["programme.title"], "Новости");
+  assert.equal(batch.entries[1]!.values.live, "true");
   assert.match(batch.warnings.join("\n"), /appears more than once/);
 
-  assert.throws(() => parseBroadcastTaskDocument([{ eng: "no name" }]), /must be one object/);
+  const withoutName = parseBroadcastTaskDocument([{ media_id: "clip-42", eng: "no name" }]);
+  assert.equal(withoutName.records[0]?.media_id, "clip-42");
+  assert.deepEqual(withoutName.entries, []);
+  assert.match(withoutName.warnings.join("\n"), /JSON Parser/);
 });
 
 test("ticker source reads plain lines and both supported JSON shapes", () => {

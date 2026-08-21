@@ -1,4 +1,5 @@
 import type {
+  BroadcastDataMapping,
   BroadcastEffectKind,
   BroadcastTextStyle,
   BroadcastTextOverlay,
@@ -36,6 +37,35 @@ export interface BroadcastTargetClip {
 export interface BroadcastTaskEntry {
   name: string;
   values: Record<string, string>;
+}
+
+/**
+ * Применяет mapping из JSON Parser к сырым строкам источника. Результат уже
+ * использует имена полей шаблона, поэтому планировщикам эффектов не важно,
+ * как поля назывались во внешней newsroom/MAM-системе.
+ */
+export function mapBroadcastTaskRecords(
+  records: readonly Record<string, string>[],
+  mapping: BroadcastDataMapping,
+): BroadcastTaskEntry[] {
+  const result: BroadcastTaskEntry[] = [];
+  for (const record of records) {
+    const name = record[mapping.matchSourceKey]?.trim() ?? "";
+    if (!name) continue;
+    const values: Record<string, string> = {};
+    if (mapping.bindings.length === 0) {
+      for (const [key, value] of Object.entries(record)) {
+        if (key !== mapping.matchSourceKey) values[key] = value;
+      }
+    } else {
+      for (const binding of mapping.bindings) {
+        const value = record[binding.sourceKey];
+        if (value != null) values[binding.targetKey] = value;
+      }
+    }
+    result.push({ name, values });
+  }
+  return result;
 }
 
 /** Один Lottie-рендер: набор переопределений текста, общий для нескольких роликов. */
@@ -146,6 +176,7 @@ function planDynamicTitle(context: PlanContext): void {
         name: `${context.effect.name} plate`,
         renderKey: presetCaptionRender(
           context,
+          clip.name,
           settings.captionKey,
           settings.captionText,
           dynamicField,
@@ -180,7 +211,9 @@ function resolveDynamicTitleContent(
       `"${clip.name}": в файле задания несколько записей с таким name — взята первая`,
     );
   }
-  const value = matches[0]?.values[settings.taskKey]?.trim() ?? "";
+  const value = matches[0]?.values[settings.dynamicKey]?.trim()
+    ?? matches[0]?.values[settings.taskKey]?.trim()
+    ?? "";
   if (!value && settings.text.trim()) {
     context.plan.warnings.push(
       `"${clip.name}": ключ "${settings.taskKey}" не найден — использован резервный текст`,
@@ -302,7 +335,7 @@ function planNextProgram(context: PlanContext): void {
     const next = position >= 0 ? nextMovieAfter(context.clips, position) : undefined;
     const title = next
       ? (settings.source === "task-file"
-          ? titlesByName.get(next.name.trim())?.values.next_title ?? next.name
+          ? titlesByName.get(next.name.trim())?.values[settings.titleKey] ?? next.name
           : next.name)
       : settings.fallbackTitle;
     if (!title) {
@@ -319,6 +352,7 @@ function planNextProgram(context: PlanContext): void {
         name: `${context.effect.name} → ${title}`,
         renderKey: presetCaptionRender(
           context,
+          next?.name ?? clip.name,
           settings.subtitleKey,
           settings.subtitleText,
           dynamicField,
@@ -397,6 +431,7 @@ function planTickerCrawl(context: PlanContext): void {
         name: `${context.effect.name} plate`,
         renderKey: presetCaptionRender(
           context,
+          clip.name,
           settings.captionKey,
           settings.captionText,
           dynamicField,
@@ -468,6 +503,7 @@ function planClockCountdown(context: PlanContext): void {
         name: `${context.effect.name} plate`,
         renderKey: presetCaptionRender(
           context,
+          clip.name,
           settings.captionKey,
           settings.captionText,
           dynamicField,
@@ -747,6 +783,7 @@ function clampPercent(value: number): number {
  */
 function presetCaptionRender(
   context: PlanContext,
+  dataRecordName: string,
   captionKey: string,
   captionText: string,
   dynamicField: LottieEditableProperty | null = null,
@@ -756,6 +793,15 @@ function presetCaptionRender(
   const fields = lottieTextFields(context.preset);
   const overrides: Record<string, string> = {};
   const fitSamples: Record<string, LottieFitSample> = {};
+
+  // Все дополнительные связи из JSON Parser запекаются в соответствующие
+  // поля пользовательского шаблона. Поле с живым значением ниже очищается и
+  // поверх него рисуется drawtext, поэтому часы/строка остаются покадровыми.
+  const record = context.taskEntries.find((entry) => entry.name.trim() === dataRecordName.trim());
+  for (const [key, value] of Object.entries(record?.values ?? {})) {
+    const field = fields.get(key);
+    if (field) overrides[field.id] = value;
+  }
 
   if (captionKey && captionText) {
     const field = fields.get(captionKey);

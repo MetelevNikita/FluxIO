@@ -174,8 +174,18 @@ export function inspectLottieDocument(
     outPoint,
     backgroundColor: "transparent",
     properties,
+    responsiveTextKeys: collectResponsiveTextKeys(document.layers),
     warnings,
   });
+}
+
+/** Связи `fit:` верхней композиции, которые можно безопасно показать оператору. */
+function collectResponsiveTextKeys(layers: unknown): string[] {
+  if (!Array.isArray(layers)) return [];
+  return [...new Set(layers
+    .filter(isObject)
+    .map(fitTargetName)
+    .filter((value): value is string => Boolean(value)))];
 }
 
 /**

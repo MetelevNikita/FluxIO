@@ -38,40 +38,105 @@ export async function readBroadcastTaskFile(filePath: string): Promise<Broadcast
 /**
  * Приводит документ задания к списку записей `{ name, values }`.
  *
- * • `name` — служебный ключ, он в Lottie не передаётся.
- * • Значение поля обязано быть строкой: числа и объекты нельзя положить в
- *   текстовый слой, поэтому такой ключ отбрасывается с предупреждением.
- * • Ключи сопоставляются точно и с учётом регистра — `eng` и `ENG` разные.
+ * • Строки, числа и boolean приводятся к тексту.
+ * • Вложенные значения получают dotted key (`program.title`).
+ * • Старое поле `name` остаётся совместимым идентификатором, но JSON Parser
+ *   позволяет выбрать для сопоставления любой другой ключ.
  */
 export function parseBroadcastTaskDocument(document: unknown): {
+  records: Record<string, string>[];
+  fields: { key: string; populatedCount: number; samples: string[] }[];
   entries: { name: string; values: Record<string, string> }[];
   warnings: string[];
 } {
   const parsed = broadcastTaskFileSchema.safeParse(document);
   if (!parsed.success) {
     throw new Error(
-      "Task file must be one object or an array of objects, each with a non-empty name",
+      "Task file must be one object or an array of objects",
     );
   }
   const warnings: string[] = [];
+  const records: Record<string, string>[] = [];
   const entries = new Map<string, { name: string; values: Record<string, string> }>();
-  for (const raw of parsed.data) {
-    const name = raw.name.trim();
-    const values: Record<string, string> = {};
-    for (const [key, value] of Object.entries(raw)) {
-      if (key === "name") continue;
-      if (typeof value === "string") {
-        values[key] = value;
-      } else {
-        warnings.push(`"${name}": key "${key}" is ignored because its value is not a string`);
+  for (const [index, raw] of parsed.data.entries()) {
+    const record: Record<string, string> = {};
+    flattenTaskValue(raw, "", record, warnings, index + 1);
+    records.push(record);
+    const name = record.name?.trim() ?? "";
+    if (name) {
+      const values = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "name"));
+      if (entries.has(name)) {
+        warnings.push(`"${name}" appears more than once in the task file; the last entry wins`);
       }
+      entries.set(name, { name, values });
     }
-    if (entries.has(name)) {
-      warnings.push(`"${name}" appears more than once in the task file; the last entry wins`);
-    }
-    entries.set(name, { name, values });
   }
-  return { entries: [...entries.values()], warnings };
+  if (entries.size === 0) {
+    warnings.push('Поле "name" не найдено: выберите идентификатор ролика в JSON Parser');
+  }
+  return {
+    records,
+    fields: describeTaskFields(records),
+    entries: [...entries.values()],
+    warnings,
+  };
+}
+
+/** Объекты и массивы превращаются в ключи `program.title` и `items.0`. */
+function flattenTaskValue(
+  value: unknown,
+  prefix: string,
+  target: Record<string, string>,
+  warnings: string[],
+  row: number,
+): void {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    if (!prefix) return;
+    if (prefix.length > 256) {
+      warnings.push(`Строка ${row}: слишком длинный ключ пропущен`);
+      return;
+    }
+    target[prefix] = String(value);
+    return;
+  }
+  if (value == null) return;
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => flattenTaskValue(
+      entry,
+      prefix ? `${prefix}.${index}` : String(index),
+      target,
+      warnings,
+      row,
+    ));
+    return;
+  }
+  if (isObject(value)) {
+    for (const [key, entry] of Object.entries(value)) {
+      flattenTaskValue(entry, prefix ? `${prefix}.${key}` : key, target, warnings, row);
+    }
+    return;
+  }
+  warnings.push(`Строка ${row}: значение "${prefix}" неподдерживаемого типа пропущено`);
+}
+
+function describeTaskFields(
+  records: Record<string, string>[],
+): { key: string; populatedCount: number; samples: string[] }[] {
+  const values = new Map<string, string[]>();
+  for (const record of records) {
+    for (const [key, value] of Object.entries(record)) {
+      const current = values.get(key) ?? [];
+      current.push(value);
+      values.set(key, current);
+    }
+  }
+  return [...values]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, fieldValues]) => ({
+      key,
+      populatedCount: fieldValues.length,
+      samples: [...new Set(fieldValues.map((value) => value.slice(0, 512)))].slice(0, 3),
+    }));
 }
 
 export async function readTickerSourceFile(filePath: string): Promise<TickerSourceContent> {

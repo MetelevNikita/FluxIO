@@ -514,17 +514,33 @@ export const effectPlacementSchema = z.object({
   offsetYPercent: z.number().min(-100).max(100).default(0),
 });
 
+/**
+ * Явная связь поля входного JSON с редактируемым текстовым полем шаблона.
+ * Имена не обязаны совпадать: например, `program.title` можно направить в
+ * Text Layer `next_title` без переделки выгрузки или проекта After Effects.
+ */
+export const broadcastDataBindingSchema = z.object({
+  sourceKey: z.string().trim().min(1).max(256),
+  targetKey: z.string().trim().min(1).max(128),
+});
+
+export const broadcastDataMappingSchema = z.object({
+  filePath: z.string().min(1).nullable().default(null),
+  /** Поле JSON, по которому запись находится для конкретного ролика. */
+  matchSourceKey: z.string().trim().min(1).max(256).default("name"),
+  bindings: z.array(broadcastDataBindingSchema).max(128).default([]),
+});
+
 export const broadcastEffectDefinitionSchema = z.object({
   kind: broadcastEffectKindSchema,
   presetEffectId: z.string().min(1).nullable().default(null),
   settings: broadcastEffectSettingsSchema.default(() => broadcastEffectSettingsSchema.parse({})),
   placement: effectPlacementSchema.default(() => effectPlacementSchema.parse({})),
+  dataMapping: broadcastDataMappingSchema.default(() => broadcastDataMappingSchema.parse({})),
 });
 
-/** Одна запись файла задания: служебное `name` плюс произвольные текстовые ключи. */
-export const broadcastTaskEntrySchema = z.object({
-  name: z.string().trim().min(1).max(512),
-}).catchall(z.unknown());
+/** Одна сырая запись допускает произвольную структуру; сервер распрямит её в dotted keys. */
+export const broadcastTaskEntrySchema = z.record(z.string(), z.unknown());
 
 /** Файл задания принимает и один объект, и массив объектов на всю сетку. */
 export const broadcastTaskFileSchema = z.union([
@@ -538,6 +554,14 @@ export const readBroadcastTaskRequestSchema = z.object({
 
 export const broadcastTaskFileContentSchema = z.object({
   filePath: z.string().min(1),
+  /** Сырые нормализованные строки, из которых UI строит пользовательский mapping. */
+  records: z.array(z.record(z.string(), z.string())).min(1).max(2_000),
+  fields: z.array(z.object({
+    key: z.string().min(1).max(256),
+    populatedCount: z.number().int().nonnegative().max(2_000),
+    samples: z.array(z.string().max(512)).max(3),
+  })).max(512),
+  /** Совместимое представление для старых файлов, где идентификатор называется `name`. */
   entries: z.array(z.object({
     name: z.string().min(1),
     values: z.record(z.string(), z.string()),
@@ -633,6 +657,8 @@ export const lottieEffectMetadataSchema = z.object({
   outPoint: z.number().finite(),
   backgroundColor: z.string().regex(/^(?:transparent|#[0-9a-fA-F]{6})$/),
   properties: z.array(lottieEditablePropertySchema).max(2_000),
+  /** Text Layer names that have a Shape Layer named `fit:<Text Layer>`. */
+  responsiveTextKeys: z.array(z.string().min(1).max(256)).max(256).default([]),
   warnings: z.array(z.string().max(512)).max(100).default([]),
 });
 
@@ -1449,6 +1475,8 @@ export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
 export type BroadcastEffectKind = z.infer<typeof broadcastEffectKindSchema>;
 export type BroadcastEffectDefinition = z.infer<typeof broadcastEffectDefinitionSchema>;
 export type BroadcastEffectSettings = z.infer<typeof broadcastEffectSettingsSchema>;
+export type BroadcastDataBinding = z.infer<typeof broadcastDataBindingSchema>;
+export type BroadcastDataMapping = z.infer<typeof broadcastDataMappingSchema>;
 export type AnimationInOutSettings = z.infer<typeof animationInOutSettingsSchema>;
 export type AnimationInOutMode = z.infer<typeof animationInOutModeSchema>;
 export type DynamicTitleSettings = z.infer<typeof dynamicTitleSettingsSchema>;

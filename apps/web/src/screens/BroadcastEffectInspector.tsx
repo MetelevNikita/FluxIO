@@ -9,6 +9,11 @@ import type {
 import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw, Save } from "lucide-react";
 import { lottieTextFields } from "../broadcast-effects";
 import {
+  BroadcastJsonMappingDialog,
+  type JsonMappingSummary,
+  type JsonMappingTarget,
+} from "../components/BroadcastJsonMappingDialog";
+import {
   memo,
   useEffect,
   useRef,
@@ -23,11 +28,7 @@ import {
  * выбор Lottie-пресета, который служит эффекту графикой.
  */
 
-export interface BroadcastTaskSummary {
-  filePath: string;
-  entryCount: number;
-  warnings: string[];
-}
+export type BroadcastTaskSummary = JsonMappingSummary;
 
 interface BroadcastEffectInspectorProps {
   busy: boolean;
@@ -124,6 +125,27 @@ export function BroadcastEffectInspector({
 
   const selectedPreset = presets.find((candidate) => candidate.id === definition.presetEffectId);
   const presetKeys = selectedPreset ? [...lottieTextFields(selectedPreset).keys()] : [];
+  const responsiveKeys = new Set(selectedPreset?.lottie?.responsiveTextKeys ?? []);
+  const logicalTarget = definition.kind === "dynamic-title"
+    ? (settings.dynamicTitle.dynamicKey || settings.dynamicTitle.taskKey)
+    : definition.kind === "next-program"
+      ? settings.nextProgram.titleKey
+      : definition.kind === "ticker-crawl"
+        ? settings.tickerCrawl.dynamicKey
+        : definition.kind === "clock-countdown"
+          ? settings.clockCountdown.dynamicKey
+          : "";
+  const mappingTargets: JsonMappingTarget[] = (presetKeys.length > 0
+    ? presetKeys
+    : logicalTarget ? [logicalTarget] : [])
+    .map((key) => ({ key, label: key, responsive: responsiveKeys.has(key) }));
+  const [mappingOpen, setMappingOpen] = useState(false);
+  const lastOpenedTaskPath = useRef<string | null>(null);
+  useEffect(() => {
+    if (!taskSummary?.filePath || taskSummary.filePath === lastOpenedTaskPath.current) return;
+    lastOpenedTaskPath.current = taskSummary.filePath;
+    setMappingOpen(true);
+  }, [taskSummary?.filePath]);
 
   const presetPicker = (label: string, optional: boolean) => (
     <div className="broadcast-field broadcast-field-wide broadcast-preset-picker">
@@ -187,6 +209,39 @@ export function BroadcastEffectInspector({
         onPlacementChange={updatePlacement}
         presets={presets}
       />
+      <div className="broadcast-workflow-rail" aria-label="Настройка эффекта">
+        <span className={definition.presetEffectId ? "done" : "active"}><b>01</b> Шаблон</span>
+        <span className={definition.dataMapping.filePath ? "done" : "active"}><b>02</b> Данные</span>
+        <span className="active"><b>03</b> Эфир</span>
+        <span><b>04</b> Оформление</span>
+      </div>
+
+      {definition.kind === "stinger-transition" ? null : (
+        <section className="broadcast-studio-card">
+          <header><span>01</span><div><strong>Шаблон и данные</strong><small>Выберите оформление, затем свяжите JSON с Text Layer</small></div></header>
+          {presetPicker("Пользовательский шаблон", definition.kind !== "animation-in-out")}
+          <PresetFieldsHint effect={effect} presets={presets} />
+          <TaskFileField
+            busy={busy}
+            filePath={definition.dataMapping.filePath}
+            mappedCount={definition.dataMapping.bindings.length}
+            onClear={() => onChange({
+              ...effect,
+              broadcast: {
+                ...definition,
+                dataMapping: { filePath: null, matchSourceKey: "name", bindings: [] },
+              },
+            })}
+            onConfigure={() => setMappingOpen(true)}
+            onSelect={onSelectTaskFile}
+            summary={taskSummary}
+          />
+          <p className="broadcast-hint">
+            JSON можно подключить к любому текстовому шаблону. Метка <code>FIT READY</code>
+            в Parser означает, что подложка будет менять ширину вместе с текстом.
+          </p>
+        </section>
+      )}
       {definition.kind === "stinger-transition" ? null : (
         <PlacementFields
           disabled={busy}
@@ -194,11 +249,24 @@ export function BroadcastEffectInspector({
           placement={definition.placement}
         />
       )}
-      <PresetFieldsHint effect={effect} presets={presets} />
+
+      <BroadcastJsonMappingDialog
+        mapping={definition.dataMapping}
+        onClose={() => setMappingOpen(false)}
+        onSave={(dataMapping) => {
+          onChange({ ...effect, broadcast: { ...definition, dataMapping } });
+          setMappingOpen(false);
+        }}
+        open={mappingOpen}
+        summary={taskSummary}
+        targets={mappingTargets}
+      />
+
+      <section className="broadcast-studio-card broadcast-behavior-card">
+        <header><span>03</span><div><strong>Поведение в эфире</strong><small>Источник значения, окно показа, анимация и стиль</small></div></header>
 
       {definition.kind === "animation-in-out" ? (
         <>
-          {presetPicker("Lottie-пресет анимации", false)}
           <div className="broadcast-grid">
             <label className="broadcast-field">
               <span>Режим</span>
@@ -241,19 +309,11 @@ export function BroadcastEffectInspector({
               value={settings.animationInOut.durationSeconds}
             />
           </div>
-          <TaskFileField
-            busy={busy}
-            filePath={settings.animationInOut.taskFilePath}
-            onClear={() => updateSettings("animationInOut", { taskFilePath: null })}
-            onSelect={onSelectTaskFile}
-            summary={taskSummary}
-          />
         </>
       ) : null}
 
       {definition.kind === "dynamic-title" ? (
         <>
-          {presetPicker("Декор и подложка Lottie", true)}
           <div className="broadcast-grid">
             <label className="broadcast-field">
               <span>Источник текста</span>
@@ -304,15 +364,6 @@ export function BroadcastEffectInspector({
               value={settings.dynamicTitle.durationSeconds}
             />
           </div>
-          {settings.dynamicTitle.source === "task-file" ? (
-            <TaskFileField
-              busy={busy}
-              filePath={settings.dynamicTitle.taskFilePath}
-              onClear={() => updateSettings("dynamicTitle", { taskFilePath: null })}
-              onSelect={onSelectTaskFile}
-              summary={taskSummary}
-            />
-          ) : null}
           {definition.presetEffectId ? (
             <div className="broadcast-grid">
               <PresetKeyField
@@ -355,7 +406,6 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "next-program" ? (
         <>
-          {presetPicker("Пресет плашки", true)}
           <div className="broadcast-grid">
             <NumberField
               disabled={busy}
@@ -425,15 +475,6 @@ export function BroadcastEffectInspector({
               </p>
             ) : null}
           </div>
-          {settings.nextProgram.source === "task-file" ? (
-            <TaskFileField
-              busy={busy}
-              filePath={settings.nextProgram.taskFilePath}
-              onClear={() => updateSettings("nextProgram", { taskFilePath: null })}
-              onSelect={onSelectTaskFile}
-              summary={taskSummary}
-            />
-          ) : null}
           <TextStyleFields
             busy={busy}
             fonts={fonts}
@@ -445,7 +486,6 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "ticker-crawl" ? (
         <>
-          {presetPicker("Подложка под строку", true)}
           <div className="broadcast-grid">
             <label className="broadcast-field">
               <span>Источник текста</span>
@@ -632,7 +672,6 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "clock-countdown" ? (
         <>
-          {presetPicker("Подложка под часы", true)}
           <div className="broadcast-grid">
             <label className="broadcast-field">
               <span>Режим</span>
@@ -884,6 +923,7 @@ export function BroadcastEffectInspector({
           </p>
         </>
       ) : null}
+      </section>
     </section>
   );
 }
@@ -992,14 +1032,18 @@ function PresetKeyField({
 function TaskFileField({
   busy,
   filePath,
+  mappedCount,
   summary,
   onClear,
+  onConfigure,
   onSelect,
 }: {
   busy: boolean;
   filePath: string | null;
+  mappedCount: number;
   summary: BroadcastTaskSummary | null;
   onClear: () => void;
+  onConfigure: () => void;
   onSelect: () => void;
 }) {
   const matched = summary && summary.filePath === filePath ? summary : null;
@@ -1014,6 +1058,11 @@ function TaskFileField({
       <button disabled={busy} onClick={onSelect} type="button">
         <FileJson2 size={12} /> {filePath ? "Обновить" : "Выбрать"}
       </button>
+      {matched ? (
+        <button className="json-parser-button" disabled={busy} onClick={onConfigure} type="button">
+          <KeyRound size={12} /> JSON Parser · {mappedCount}
+        </button>
+      ) : null}
       {filePath ? (
         <button disabled={busy} onClick={onClear} title="Снять файл задания" type="button">
           <RotateCcw size={12} />

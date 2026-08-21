@@ -62,6 +62,7 @@ test("the same Lottie source can be imported repeatedly as independent projects"
         type: "text",
         value: "News",
       }],
+      responsiveTextKeys: [],
       sourcePath: "/graphics/title.json",
       version: "5.12",
       warnings: [],

@@ -884,6 +884,13 @@ p {
   gap: 12px;
 }
 
+/* Предпросмотр не должен съедать рабочую область настроек на ноутбуке. */
+.effect-inspector .lottie-preview-shell { width: min(100%, 340px); }
+
+@media (max-height: 800px) {
+  .effect-inspector .lottie-preview-shell { width: min(100%, 250px); }
+}
+
 .effect-inspector-scroll {
   min-width: 0;
   min-height: 0;
@@ -4533,6 +4540,219 @@ input[type="range"] {
   color: var(--warning);
   font-size: 8px;
   font-style: normal;
+}
+
+/* Новый рабочий поток CG: шаблон → данные → эфир → оформление. */
+.broadcast-workflow-rail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #090d13;
+}
+
+.broadcast-workflow-rail > span {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border-right: 1px solid var(--border);
+  padding: 7px 8px;
+  color: var(--muted-dark);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.broadcast-workflow-rail > span:last-child { border-right: 0; }
+.broadcast-workflow-rail > span b { color: #536174; font-size: 7px; }
+.broadcast-workflow-rail > span.active { color: var(--text); }
+.broadcast-workflow-rail > span.done { color: var(--tier2); background: rgba(79, 209, 197, 0.05); }
+.broadcast-workflow-rail > span.done b { color: var(--tier2); }
+
+.broadcast-studio-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid #263348;
+  border-radius: 6px;
+  padding: 10px;
+  background: linear-gradient(135deg, rgba(33, 48, 70, 0.35), rgba(13, 17, 25, 0.2));
+}
+
+.broadcast-studio-card > header,
+.json-mapping-section-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.broadcast-studio-card > header > span,
+.json-mapping-section-title > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--tier2-border);
+  border-radius: 50%;
+  color: var(--tier2);
+  font: 700 7px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.broadcast-studio-card > header > div,
+.json-mapping-section-title > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.broadcast-studio-card > header strong,
+.json-mapping-section-title strong { color: var(--text); font-size: 9px; }
+.broadcast-studio-card > header small,
+.json-mapping-section-title small { color: var(--muted-dark); font-size: 7px; }
+.broadcast-file-field .json-parser-button { color: var(--tier2); border-color: var(--tier2-border); }
+
+/* JSON Parser — отдельное рабочее окно вместо ещё одного поля инспектора. */
+.json-mapping-backdrop { z-index: 120; padding: 24px; }
+.json-mapping-dialog {
+  width: min(1120px, 96vw);
+  max-height: min(780px, 92vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #32445e;
+  border-radius: 10px;
+  color: var(--text);
+  background: #0b1018;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.65);
+}
+
+.json-mapping-dialog > header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+  background: linear-gradient(90deg, rgba(79, 209, 197, 0.09), transparent 45%);
+}
+
+.json-mapping-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--tier2-border);
+  border-radius: 8px;
+  color: var(--tier2);
+  background: var(--tier2-soft);
+}
+
+.json-mapping-dialog > header > div:nth-child(2) { min-width: 0; flex: 1; }
+.json-mapping-dialog > header span { color: var(--tier2); font-size: 7px; letter-spacing: 0.14em; }
+.json-mapping-dialog > header h2 { margin: 2px 0 0; font-size: 18px; }
+.json-mapping-dialog > header p { margin: 3px 0 0; color: var(--muted-dark); font-size: 8px; }
+.json-mapping-dialog > header > button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+}
+.json-mapping-dialog > header > button:hover { color: var(--text); background: var(--surface-hover); }
+
+.json-mapping-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.8fr);
+  overflow: auto;
+}
+
+.json-mapping-source,
+.json-mapping-preview { min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.json-mapping-preview { border-left: 1px solid var(--border); background: #090d13; }
+.json-mapping-source > label { display: flex; flex-direction: column; gap: 5px; }
+.json-mapping-source > label > span { color: var(--muted); font-size: 8px; }
+.json-mapping-source select,
+.json-binding-row select {
+  min-width: 0;
+  height: 29px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px;
+  color: var(--text);
+  background: #111722;
+  font-size: 9px;
+}
+
+.json-mapping-section-title .json-auto-map {
+  height: 24px;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+  border: 1px solid var(--tier2-border);
+  border-radius: 4px;
+  padding: 0 7px;
+  color: var(--tier2);
+  background: transparent;
+  font-size: 8px;
+}
+
+.json-binding-list { display: flex; flex-direction: column; gap: 5px; }
+.json-binding-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 18px minmax(110px, 0.8fr) 74px;
+  gap: 7px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px;
+  background: #0e141e;
+}
+.json-binding-arrow { color: var(--tier2); text-align: center; }
+.json-binding-row > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.json-binding-row > div strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; }
+.json-binding-row code { overflow: hidden; color: var(--muted-dark); font-size: 7px; text-overflow: ellipsis; }
+.json-binding-row > small { grid-column: 1 / -1; overflow: hidden; color: #728097; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.json-fit-ready,
+.json-fit-missing { display: inline-flex; gap: 4px; align-items: center; font-size: 7px; white-space: nowrap; }
+.json-fit-ready { color: #52d6a5; }
+.json-fit-missing { color: #69758a; }
+.json-empty-targets { border: 1px dashed var(--border); border-radius: 5px; padding: 18px; color: var(--muted-dark); font-size: 8px; text-align: center; }
+
+.json-preview-table { overflow: auto; border: 1px solid var(--border); border-radius: 5px; }
+.json-preview-table table { width: 100%; border-collapse: collapse; font-size: 7px; }
+.json-preview-table th,
+.json-preview-table td { max-width: 140px; overflow: hidden; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.json-preview-table th { color: var(--tier2); background: #111722; }
+.json-preview-table td { color: var(--muted); }
+.json-fit-explainer { display: flex; gap: 9px; border: 1px solid rgba(82, 214, 165, 0.24); border-radius: 6px; padding: 10px; color: #52d6a5; background: rgba(82, 214, 165, 0.05); }
+.json-fit-explainer div { color: var(--text); }
+.json-fit-explainer strong { font-size: 9px; }
+.json-fit-explainer p { margin: 4px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.json-fit-explainer b { color: #52d6a5; }
+.json-parser-warnings p { margin: 4px 0; color: var(--warning); font-size: 7px; }
+
+.json-mapping-dialog > footer {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  background: #0d131c;
+}
+.json-mapping-dialog > footer > span { display: inline-flex; gap: 4px; align-items: center; margin-right: auto; color: var(--muted); font-size: 8px; }
+.json-mapping-dialog > footer button { height: 28px; border: 1px solid var(--border); border-radius: 4px; padding: 0 11px; color: var(--muted); background: #111722; font-size: 8px; }
+.json-mapping-dialog > footer button.primary { color: #07110f; border-color: var(--tier2); background: var(--tier2); font-weight: 700; }
+.json-mapping-dialog > footer button:disabled { opacity: 0.4; }
+
+@media (max-width: 900px) {
+  .broadcast-workflow-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .json-mapping-body { grid-template-columns: 1fr; }
+  .json-mapping-preview { border-top: 1px solid var(--border); border-left: 0; }
+  .json-binding-row { grid-template-columns: minmax(130px, 1fr) 18px minmax(100px, 1fr); }
+  .json-binding-row .json-fit-ready,
+  .json-binding-row .json-fit-missing { grid-column: 3; }
 }
 
 .broadcast-note {
