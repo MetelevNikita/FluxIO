@@ -6,9 +6,11 @@ import {
   joinTickerItems,
   lottieTextFieldKey,
   mapBroadcastTaskRecords,
+  normalizeTaskTitle,
   planBroadcastEffect,
   removeBroadcastEffect,
   snapToFrameGrid,
+  summarizeBroadcastTaskMatches,
   type BroadcastTargetClip,
   type PlanBroadcastEffectInput,
 } from "./broadcast-effects.js";
@@ -174,6 +176,19 @@ test("JSON mapping binds arbitrary source fields to template text keys", () => {
   }]);
 });
 
+test("Animation JSON uses title for lookup and keeps same-name language fields", () => {
+  assert.deepEqual(mapBroadcastTaskRecords([
+    { title: "Clip A", eng: "News", rus: "Новости", fre: "Actualités" },
+  ], {
+    filePath: "/data/titles.json",
+    matchSourceKey: "title",
+    bindings: [],
+  }), [{
+    name: "Clip A",
+    values: { eng: "News", fre: "Actualités", rus: "Новости" },
+  }]);
+});
+
 function style() {
   return {
     boxColor: "#000000",
@@ -305,21 +320,62 @@ test("animation in/out binds a task entry to exactly one clip and maps its keys"
   });
 });
 
-test("animation in/out refuses an ambiguous or missing clip name", () => {
-  const duplicate = plan({
+test("animation in/out applies one JSON title to every repeated schedule clip", () => {
+  const repeated = plan({
     clips: [
-      { durationSeconds: 100, id: "a", name: "Повтор" },
-      { durationSeconds: 100, id: "b", name: "Повтор" },
+      { durationSeconds: 100, id: "a", name: "Повтор.mov" },
+      { durationSeconds: 100, id: "b", name: "/media/ПОВТОР.MXF" },
     ],
     effect: broadcastEffect("animation-in-out", {}),
     preset: preset([textProperty("Main composition · eng", "prop-eng")]),
-    taskEntries: [{ name: "Повтор", values: {} }, { name: "Нет такого", values: {} }],
+    taskEntries: [{ name: " повтор ", values: { ENG: "Repeat" } }],
+  });
+
+  assert.equal(repeated.errors.length, 0);
+  assert.equal(repeated.layers.length, 2);
+  assert.equal(repeated.renders.length, 1);
+  assert.deepEqual(repeated.renders[0]!.overrides, { "prop-eng": "Repeat" });
+});
+
+test("animation in/out rejects duplicate JSON titles but ignores records outside schedule", () => {
+  const duplicate = plan({
+    clips: [{ durationSeconds: 100, id: "a", name: "Повтор" }],
+    effect: broadcastEffect("animation-in-out", {}),
+    preset: preset([textProperty("Main composition · eng", "prop-eng")]),
+    taskEntries: [
+      { name: "Повтор", values: { eng: "First" } },
+      { name: "повтор.mov", values: { eng: "Second" } },
+      { name: "Нет в расписании", values: { eng: "Unused" } },
+    ],
   });
 
   assert.equal(duplicate.layers.length, 0);
-  assert.equal(duplicate.errors.length, 2);
-  assert.match(duplicate.errors[0]!, /2 clips share this name/);
-  assert.match(duplicate.errors[1]!, /no clip with this name/);
+  assert.equal(duplicate.errors.length, 1);
+  assert.match(duplicate.errors[0]!, /2 JSON records share this title/);
+});
+
+test("task match summary counts repeated clips before project application", () => {
+  const summary = summarizeBroadcastTaskMatches([
+    { name: "Clip A", values: {} },
+    { name: "Clip B", values: {} },
+    { name: "clip b.mov", values: {} },
+    { name: "Not scheduled", values: {} },
+  ], [
+    { durationSeconds: 1, id: "a1", name: "CLIP A.mov" },
+    { durationSeconds: 1, id: "a2", name: "/media/clip a.mxf" },
+    { durationSeconds: 1, id: "b", name: "Clip B" },
+    { durationSeconds: 1, id: "c", name: "Clip C" },
+  ]);
+
+  assert.deepEqual(summary, {
+    recordCount: 4,
+    matchedRecordCount: 1,
+    matchedClipCount: 2,
+    unmatchedRecordCount: 3,
+    unmatchedClipCount: 2,
+    duplicateTitles: ["Clip B"],
+  });
+  assert.equal(normalizeTaskTitle(" C:\\Media\\NEWS_01.MOV "), "news_01");
 });
 
 test("next program reads the following playlist item and warns on the last clip", () => {

@@ -6,8 +6,12 @@ import type {
   GraphicEffectAsset,
   SystemFont,
 } from "@gruber/contracts";
-import { FileJson2, FileVideo2, FolderOpen, KeyRound, Rss, RotateCcw, Save } from "lucide-react";
-import { lottieTextFields } from "../broadcast-effects";
+import { FileJson2, FileVideo2, FolderOpen, KeyRound, Layers3, Rss, RotateCcw, Save } from "lucide-react";
+import {
+  lottieTextFields,
+  mapBroadcastTaskRecords,
+  summarizeBroadcastTaskMatches,
+} from "../broadcast-effects";
 import {
   BroadcastJsonMappingDialog,
   type JsonMappingSummary,
@@ -16,6 +20,7 @@ import {
 import {
   memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -42,8 +47,10 @@ interface BroadcastEffectInspectorProps {
   onSelectStingerFile: () => void;
   onLoadTickerFeed: () => void;
   onApplyChanges: () => void;
+  onApplyTaskToProject: () => void;
   onImportPreset: () => void;
   assignedClipCount: number;
+  clips: { id: string; name: string }[];
 }
 
 export const broadcastEffectCatalog: {
@@ -99,8 +106,10 @@ export function BroadcastEffectInspector({
   onSelectStingerFile,
   onLoadTickerFeed,
   onApplyChanges,
+  onApplyTaskToProject,
   onImportPreset,
   assignedClipCount,
+  clips,
 }: BroadcastEffectInspectorProps) {
   const definition = effect.broadcast;
   if (!definition) return null;
@@ -139,6 +148,13 @@ export function BroadcastEffectInspector({
     ? presetKeys
     : logicalTarget ? [logicalTarget] : [])
     .map((key) => ({ key, label: key, responsive: responsiveKeys.has(key) }));
+  const taskEntries = useMemo(() => taskSummary && definition.dataMapping.filePath
+    ? mapBroadcastTaskRecords(taskSummary.records, definition.dataMapping)
+    : [], [taskSummary, definition.dataMapping]);
+  const taskMatchSummary = useMemo(
+    () => summarizeBroadcastTaskMatches(taskEntries, clips),
+    [taskEntries, clips],
+  );
   const [mappingOpen, setMappingOpen] = useState(false);
   const lastOpenedTaskPath = useRef<string | null>(null);
   useEffect(() => {
@@ -229,7 +245,11 @@ export function BroadcastEffectInspector({
               ...effect,
               broadcast: {
                 ...definition,
-                dataMapping: { filePath: null, matchSourceKey: "name", bindings: [] },
+                dataMapping: {
+                  filePath: null,
+                  matchSourceKey: definition.kind === "animation-in-out" ? "title" : "name",
+                  bindings: [],
+                },
               },
             })}
             onConfigure={() => setMappingOpen(true)}
@@ -240,6 +260,37 @@ export function BroadcastEffectInspector({
             JSON можно подключить к любому текстовому шаблону. Метка <code>FIT READY</code>
             в Parser означает, что подложка будет менять ширину вместе с текстом.
           </p>
+          {definition.kind === "animation-in-out" ? (
+            <div className="broadcast-task-apply">
+              <div>
+                <span>PROJECT MATCH</span>
+                <strong>
+                  {taskMatchSummary.matchedClipCount} ролик(ов) · {taskMatchSummary.matchedRecordCount} записей
+                </strong>
+                <small>
+                  Не найдено в расписании: {taskMatchSummary.unmatchedRecordCount} · без JSON: {taskMatchSummary.unmatchedClipCount}
+                </small>
+              </div>
+              <button
+                disabled={busy || !selectedPreset || !definition.dataMapping.filePath ||
+                  taskMatchSummary.matchedClipCount === 0 || taskMatchSummary.duplicateTitles.length > 0}
+                onClick={() => {
+                  if (window.confirm(
+                    `Применить данные JSON к ${taskMatchSummary.matchedClipCount} ролику(ам)?\n\n` +
+                      "Существующие слои этого Animation In/Out будут заменены, остальные эффекты сохранятся.",
+                  )) onApplyTaskToProject();
+                }}
+                type="button"
+              >
+                <Layers3 size={13} /> Применить JSON к проекту
+              </button>
+              {taskMatchSummary.duplicateTitles.length > 0 ? (
+                <p>
+                  Дубли {definition.dataMapping.matchSourceKey} в JSON: {taskMatchSummary.duplicateTitles.slice(0, 3).join(", ")}. Удалите неоднозначные записи.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </section>
       )}
       {definition.kind === "stinger-transition" ? null : (
@@ -259,6 +310,7 @@ export function BroadcastEffectInspector({
         }}
         open={mappingOpen}
         summary={taskSummary}
+        templateName={selectedPreset?.name ?? "Шаблон не выбран"}
         targets={mappingTargets}
       />
 

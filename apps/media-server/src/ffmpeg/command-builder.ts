@@ -1058,10 +1058,10 @@ function buildEndpoint(
     if (endpoint.localAddress) {
       params.set("localaddr", endpoint.localAddress);
     }
-    if (transportMuxRateBps) {
-      params.set("bitrate", String(transportMuxRateBps));
-      params.set("burst_bits", String(endpoint.packetSize * 8));
-    }
+    // Keep the FFmpeg UDP hop unpaced. On macOS, FFmpeg 9 can exhaust its
+    // paced UDP queue and fail with ENOMEM after a few seconds. MPEG-TS still
+    // gets its fixed muxrate below; final real-time pacing and packet bursts
+    // are enforced by TSDuck's regulate processor and IP output plugin.
     const target = `udp://${formatHost(endpoint.host)}:${endpoint.port}?${params}`;
     return {
       outputArgs: mpegTsOutputArgs(target, endpoint.mpegTs, transportMuxRateBps, audioTracks),

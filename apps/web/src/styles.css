@@ -4720,6 +4720,37 @@ input[type="range"] {
 .json-fit-missing { color: #69758a; }
 .json-empty-targets { border: 1px dashed var(--border); border-radius: 5px; padding: 18px; color: var(--muted-dark); font-size: 8px; text-align: center; }
 
+.json-first-object,
+.json-template-fields {
+  max-height: 190px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #0d131c;
+}
+
+.json-first-object > div,
+.json-template-fields > div {
+  min-height: 29px;
+  display: grid;
+  grid-template-columns: minmax(90px, 0.65fr) minmax(0, 1.35fr);
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 5px 7px;
+}
+
+.json-first-object > div:last-child,
+.json-template-fields > div:last-child { border-bottom: 0; }
+.json-first-object > div.match { background: rgba(79, 209, 197, 0.07); }
+.json-first-object code,
+.json-template-fields code { overflow: hidden; color: var(--tier2); font-size: 7px; text-overflow: ellipsis; }
+.json-first-object span { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.json-template-fields > div { grid-template-columns: minmax(0, 1fr) auto; }
+.json-template-fields > p { margin: 0; padding: 14px; color: var(--muted-dark); font-size: 8px; }
+
 .json-preview-table { overflow: auto; border: 1px solid var(--border); border-radius: 5px; }
 .json-preview-table table { width: 100%; border-collapse: collapse; font-size: 7px; }
 .json-preview-table th,
@@ -5133,6 +5164,56 @@ input[type="range"] {
   font-size: 8px;
   font-style: normal;
   line-height: 1.6;
+}
+
+.broadcast-task-apply {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  border: 1px solid var(--tier2-border);
+  border-radius: 5px;
+  padding: 9px;
+  background: rgba(79, 209, 197, 0.045);
+}
+
+.broadcast-task-apply > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.broadcast-task-apply span {
+  color: var(--tier2);
+  font: 700 7px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+.broadcast-task-apply strong { color: var(--text); font-size: 9px; }
+.broadcast-task-apply small { color: var(--muted-dark); font-size: 7px; }
+
+.broadcast-task-apply > button {
+  min-height: 27px;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  border: 1px solid var(--tier2-border);
+  border-radius: 4px;
+  padding: 0 9px;
+  color: var(--tier2);
+  background: rgba(79, 209, 197, 0.08);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.broadcast-task-apply > button:disabled { opacity: 0.45; }
+.broadcast-task-apply > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--danger);
+  font-size: 8px;
+  line-height: 1.45;
 }
 
 .preset-fields {

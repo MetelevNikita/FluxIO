@@ -133,6 +133,7 @@ export function inspectLottieDocument(
   if (outPoint <= inPoint || duration > maximumDurationSeconds) {
     throw new Error(`Lottie duration must be greater than 0 and no more than ${maximumDurationSeconds} seconds`);
   }
+  const fluxExport = readFluxExportMetadata(document);
   const properties: LottieEditableProperty[] = [];
   collectLayerProperties(
     document.layers,
@@ -141,6 +142,7 @@ export function inspectLottieDocument(
     properties,
     document.slots,
     document,
+    fluxExport?.editableTextKeys ?? null,
   );
   if (Array.isArray(document.assets)) {
     document.assets.forEach((asset, index) => {
@@ -152,6 +154,8 @@ export function inspectLottieDocument(
         `Precomp · ${name}`,
         properties,
         document.slots,
+        null,
+        fluxExport?.editableTextKeys ?? null,
       );
     });
   }
@@ -166,6 +170,7 @@ export function inspectLottieDocument(
   if (properties.some((property) => property.type === "text") && Array.isArray(document.chars)) {
     warnings.push("This Lottie embeds font glyphs. New characters render only when those glyphs were exported from After Effects.");
   }
+  warnings.push(...(fluxExport?.warnings ?? []));
   return lottieEffectMetadataSchema.parse({
     sourcePath,
     version: stringValue(document.v) || "unknown",
@@ -177,6 +182,35 @@ export function inspectLottieDocument(
     responsiveTextKeys: collectResponsiveTextKeys(document.layers),
     warnings,
   });
+}
+
+interface FluxExportMetadata {
+  editableTextKeys: Set<string>;
+  warnings: string[];
+}
+
+/**
+ * Метаданные панели Flux Title Exporter необязательны: обычный Bodymovin JSON
+ * по-прежнему показывает все Text Layer. Если дизайнер явно выбрал поля в AE,
+ * остальные текстовые слои остаются частью картинки, но не засоряют редактор
+ * оператора и JSON Parser.
+ */
+function readFluxExportMetadata(document: JsonObject): FluxExportMetadata | null {
+  const meta = isObject(document.meta) ? document.meta : null;
+  const flux = meta && isObject(meta.flux) ? meta.flux : null;
+  if (!flux || flux.schemaVersion !== 1 || !Array.isArray(flux.fields)) return null;
+  const editableTextKeys = new Set<string>();
+  for (const field of flux.fields) {
+    if (!isObject(field) || field.type !== "text") continue;
+    const layerName = stringValue(field.layerName) || stringValue(field.key);
+    if (layerName) editableTextKeys.add(layerName);
+  }
+  const warnings = Array.isArray(flux.warnings)
+    ? flux.warnings.filter((value): value is string => typeof value === "string")
+      .map((value) => value.slice(0, 512))
+      .slice(0, 50)
+    : [];
+  return { editableTextKeys, warnings };
 }
 
 /** Связи `fit:` верхней композиции, которые можно безопасно показать оператору. */
@@ -246,7 +280,11 @@ export async function fitPlatesToText(
     const sampleFont = sample?.fontFilePath
       ? await fonts.forFile(sample.fontFilePath)
       : templateFont;
-    if (!templateFont || !sampleFont) {
+    // Flux Title Exporter не встраивает лицензируемый font binary в JSON.
+    // Для гибридной надписи оператор всё равно выбирает конкретный font file;
+    // им можно честно измерить и исходный sample, и новое эфирное значение.
+    const templateMeasureFont = templateFont ?? sampleFont;
+    if (!templateMeasureFont || !sampleFont) {
       warnings.push(
         `The font of "${target}" is neither embedded nor selected, so its plate was left as designed`,
       );
@@ -260,7 +298,7 @@ export async function fitPlatesToText(
     if (templateSize <= 0 || sampleSize <= 0) continue;
 
     const templateWidth = measureTextWidth(
-      templateFont,
+      templateMeasureFont,
       stringValue(original.t),
       templateSize,
       numberValue(original.tr) ?? 0,
@@ -559,6 +597,8 @@ function collectLayerProperties(
   slots: unknown,
   /** Корневой документ: из него берутся размер кадра и границы времени. */
   composition: JsonObject | null = null,
+  /** null сохраняет историческое поведение: редактируются все Text Layer. */
+  editableTextKeys: Set<string> | null = null,
 ): void {
   if (!Array.isArray(layers)) return;
   layers.forEach((layer, layerIndex) => {
@@ -586,7 +626,11 @@ function collectLayerProperties(
       collectTransformProperty(layer.ks.p, `${layerPath}/ks/p`, group, "Position", "vector", target);
       collectTransformProperty(layer.ks.s, `${layerPath}/ks/s`, group, "Scale", "vector", target);
     }
-    if (isObject(layer.t) && isObject(layer.t.d)) {
+    if (
+      isObject(layer.t) &&
+      isObject(layer.t.d) &&
+      (editableTextKeys == null || editableTextKeys.has(layerName))
+    ) {
       collectTextProperties(layer.t.d, layerPath, group, slots, target, () =>
         composition ? readTextBox(composition, layers, layer, firstTextDocument(layer.t)) : null);
     }

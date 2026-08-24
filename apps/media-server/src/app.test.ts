@@ -76,6 +76,7 @@ import { calculateCpuPercent } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
 import {
   applyLottieProperties,
+  fitPlatesToText,
   inspectLottieDocument,
 } from "./effects/lottie.js";
 import {
@@ -121,7 +122,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.14");
+    assert.equal(health.version, "7.0.16");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -177,6 +178,43 @@ test("Lottie inspector exposes operator properties and preserves animation until
   const scale = metadata.properties.find((property) => property.label === "Scale");
   assert.deepEqual(scale?.originalValue, [100, 100, 100]);
   assert.match(metadata.warnings.join(" "), /Animated properties are preserved/);
+});
+
+test("Flux Title Exporter metadata exposes only fields selected in After Effects", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 50,
+    w: 1920,
+    h: 1080,
+    meta: {
+      generator: "Flux Title Exporter 0.1.0",
+      flux: {
+        schemaVersion: 1,
+        fields: [{ key: "title", layerName: "Title", type: "text" }],
+        warnings: ["Glow is not part of the safe Lottie subset"],
+      },
+    },
+    layers: [
+      {
+        ty: 5,
+        nm: "Title",
+        t: { d: { k: [{ s: { t: "Editable" }, t: 0 }] } },
+      },
+      {
+        ty: 5,
+        nm: "Permanent caption",
+        t: { d: { k: [{ s: { t: "Baked into design" }, t: 0 }] } },
+      },
+    ],
+  };
+
+  const metadata = inspectLottieDocument(document, "/graphics/exported-title.json");
+  const textProperties = metadata.properties.filter((property) => property.type === "text");
+  assert.equal(textProperties.length, 1);
+  assert.equal(textProperties[0]?.value, "Editable");
+  assert.match(metadata.warnings.join(" "), /Glow is not part/);
 });
 
 test("Lottie operator overrides update visibility, text and animated values", () => {
@@ -1584,6 +1622,62 @@ test("A plate grows to the side its text is set from", () => {
   assert.equal(fitRectangleToText(animated, 80, 0), false, "анимированный размер не трогаем");
 });
 
+test("Flux Title Exporter plate follows the actual replacement text width", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-title-font-"));
+  const fontFilePath = path.join(directory, "TestTitle.ttf");
+  await writeFile(fontFilePath, buildTestFont());
+  try {
+    const template = {
+      v: "5.12.2",
+      fr: 25,
+      ip: 0,
+      op: 50,
+      w: 1920,
+      h: 1080,
+      fonts: { list: [{ fName: "TestTitle", fFamily: "Test Title", fStyle: "Regular" }] },
+      layers: [
+        {
+          ty: 4,
+          nm: "fit:Title",
+          shapes: [{
+            ty: "rc",
+            s: { a: 0, k: [300, 100] },
+            p: { a: 0, k: [0, 0] },
+          }],
+        },
+        {
+          ty: 5,
+          nm: "Title",
+          t: { d: { k: [{ s: { f: "TestTitle", s: 100, t: "AB", tr: 0, j: 0 } }] } },
+        },
+      ],
+    };
+    const metadata = inspectLottieDocument(template, "/graphics/exported-title.json");
+    const properties = metadata.properties.map((property) => property.type === "text"
+      ? {
+          ...property,
+          value: "ABAB",
+          overridden: true,
+          fitSample: { fontFilePath, fontSizePercent: null, text: "ABAB" },
+        }
+      : property);
+    const rendered = applyLottieProperties(template, properties);
+    const warnings = await fitPlatesToText(rendered, template, properties);
+    assert.deepEqual(warnings, []);
+
+    const plate = (rendered.layers as Array<{ shapes: Array<{
+      p: { k: number[] };
+      s: { k: number[] };
+    }> }>)[0]!.shapes[0]!;
+    // Test font: AB = 90 px, ABAB = 180 px. The plate therefore grows by
+    // exactly 90 px, while the left edge stays fixed for left-aligned text.
+    assert.deepEqual(plate.s.k, [390, 100]);
+    assert.deepEqual(plate.p.k, [45, 0]);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("Subtitle cue text drops what subparse leaves visible and keeps what it escapes itself", () => {
   // subparse отдаёт pango-markup и сам превращает & в &amp;, поэтому экранировать
   // здесь нельзя — в эфир ушло бы «&amp;». А ASS-разметку он пропускает как текст.
@@ -1891,11 +1985,24 @@ test("CBR transport muxrate uses target bitrate and supports an explicit TS rate
     transportMuxRateBps: calculateTransportMuxRate(request),
   }).args.join(" ");
   assert.match(rendered, /-muxrate 4500000/);
-  assert.match(rendered, /bitrate=4500000/);
-  assert.match(rendered, /burst_bits=10528/);
+  assert.doesNotMatch(rendered, /[?&]bitrate=/);
+  assert.doesNotMatch(rendered, /burst_bits=/);
   assert.match(rendered, /buffer_size=4194304/);
   assert.match(rendered, /nal-hrd=cbr/);
   assert.match(rendered, /filler=1/);
+
+  request.endpoint.host = "192.0.2.50";
+  request.endpoint.localAddress = "192.168.10.20";
+  const tsduck = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 19_001,
+    request,
+  }).args.join(" ");
+  assert.match(tsduck, /regulate --bitrate 4500000 --packet-burst 7/);
+  assert.match(tsduck, /-O ip --buffer-size 4194304 --enforce-burst --packet-burst 7/);
+  assert.match(tsduck, /--local-address 192\.168\.10\.20/);
+  assert.match(tsduck, /192\.0\.2\.50:5000/);
 });
 
 test("FFmpeg applies deterministic I/P/B GOP settings to all program codecs", () => {

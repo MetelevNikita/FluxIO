@@ -65,6 +65,8 @@ interface EffectsScreenProps {
   onLoadTickerFeed: (effectId: string) => Promise<void>;
   /** Перенести правки в уже назначенные ролики. */
   onApplyBroadcastChanges: (effectId: string) => Promise<void>;
+  /** Идемпотентно разложить Animation In/Out по всему расписанию из JSON. */
+  onApplyBroadcastTaskToProject: (effect: GraphicEffectAsset) => Promise<void>;
   /** Подгрузить Lottie и сразу назначить его пресетом этого эффекта. */
   onImportBroadcastPreset: (effectId: string) => Promise<void>;
   /** Сколько роликов несёт каждый эффект — по его id. */
@@ -102,6 +104,7 @@ export const EffectsScreen = memo(function EffectsScreen({
   onSelectStingerFile,
   onLoadTickerFeed,
   onApplyBroadcastChanges,
+  onApplyBroadcastTaskToProject,
   onImportBroadcastPreset,
   assignedClipCounts,
   onReorder,
@@ -445,6 +448,7 @@ export const EffectsScreen = memo(function EffectsScreen({
                 <BroadcastEffectInspector
                   assignedClipCount={assignedClipCounts[draftEffect.id] ?? 0}
                   busy={busy}
+                  clips={clips}
                   effect={draftEffect}
                   onApplyChanges={() => {
                     // Черновик мог ещё не дойти до библиотеки — переносим его
@@ -454,6 +458,13 @@ export const EffectsScreen = memo(function EffectsScreen({
                     void onApplyBroadcastChanges(draftEffect.id);
                   }}
                   onChange={changeBroadcastDraft}
+                  onApplyTaskToProject={() => {
+                    // Массовое применение должно получить именно видимый
+                    // черновик mapping, не дожидаясь debounce библиотеки.
+                    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+                    onChangeBroadcastEffect(draftEffect);
+                    void onApplyBroadcastTaskToProject(draftEffect);
+                  }}
                   onImportPreset={() => void onImportBroadcastPreset(draftEffect.id)}
                   fonts={fonts}
                   onLoadTickerFeed={() => void onLoadTickerFeed(draftEffect.id)}

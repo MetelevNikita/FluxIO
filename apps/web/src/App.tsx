@@ -59,6 +59,7 @@ import {
   mapBroadcastTaskRecords,
   planBroadcastEffect,
   removeBroadcastEffect,
+  summarizeBroadcastTaskMatches,
   type BroadcastRenderRequest,
   type BroadcastTargetClip,
 } from "./broadcast-effects";
@@ -210,6 +211,8 @@ export function App() {
     selectTickerSourceFile(id));
   const stableLoadTickerFeed = useStableCallback((id: string) => loadTickerFeed(id));
   const stableApplyBroadcastChanges = useStableCallback((id: string) => applyBroadcastChanges(id));
+  const stableApplyBroadcastTaskToProject = useStableCallback((effect: GraphicEffectAsset) =>
+    applyBroadcastTaskToProject(effect));
   const stableImportBroadcastPreset = useStableCallback((id: string) => importBroadcastPreset(id));
   const stableReorderEffects = useStableCallback((moved: string, before: string | null) =>
     reorderEffectLibrary(moved, before));
@@ -1325,7 +1328,12 @@ export function App() {
     const title = broadcastEffectTitle(kind);
     const existing = effectLibrary.filter((effect) => effect.broadcast?.kind === kind).length;
     const effect = graphicEffectAssetSchema.parse({
-      broadcast: { kind },
+      broadcast: {
+        kind,
+        dataMapping: {
+          matchSourceKey: kind === "animation-in-out" ? "title" : "name",
+        },
+      },
       durationSeconds: 0,
       filePath: `broadcast://${kind}`,
       height: 0,
@@ -1456,15 +1464,74 @@ export function App() {
     // Снятие и повторную раскладку делаем одним проходом: состояние React
     // обновляется асинхронно, и раскладка по ещё не очищенному плейлисту
     // добавила бы вторую копию слоёв поверх старых.
-    await applyBroadcastEffect(effect, targetIds, {
+    const result = await applyBroadcastEffect(effect, targetIds, {
       base: {
         current: removeBroadcastEffect(playlist, effectId),
         future: removeBroadcastEffect(futurePlaylist, effectId),
       },
       silent: true,
     });
+    if (!result) return;
     setEffectsMessage(
       `${effect.name}: настройки перенесены в ${assignedIds.size} ролик(ов).`,
+    );
+  }
+
+  /**
+   * Массовая раскладка Animation In/Out по JSON. В отличие от обычного
+   * назначения эта операция идемпотентна: сначала снимает с расписания только
+   * слои выбранного эффекта, затем заново создаёт их для совпавших `title`.
+   * Остальные эфирные эффекты и ручные FX не затрагиваются.
+   */
+  async function applyBroadcastTaskToProject(effect: GraphicEffectAsset) {
+    if (effect.broadcast?.kind !== "animation-in-out") return;
+    const taskContent = broadcastTaskContents[effect.id];
+    if (!taskContent || !effect.broadcast.dataMapping.filePath) {
+      setOperationError(`${effect.name}: сначала загрузите JSON и настройте JSON Parser.`);
+      return;
+    }
+    const taskEntries = mapBroadcastTaskRecords(
+      taskContent.records,
+      effect.broadcast.dataMapping,
+    );
+    const summary = summarizeBroadcastTaskMatches(
+      taskEntries,
+      [...playlist, ...futurePlaylist].map(broadcastTargetClip),
+    );
+    if (summary.duplicateTitles.length > 0) {
+      setOperationError(
+        `${effect.name}: в JSON повторяется идентификатор ` +
+          `«${effect.broadcast.dataMapping.matchSourceKey}»: ` +
+          `${summary.duplicateTitles.slice(0, 3).join(", ")}. Удалите неоднозначные записи.`,
+      );
+      return;
+    }
+    if (summary.matchedClipCount === 0) {
+      setOperationError(
+        `${effect.name}: ни одно значение «${effect.broadcast.dataMapping.matchSourceKey}» ` +
+          "из JSON не совпало с именем ролика в расписании.",
+      );
+      return;
+    }
+    const result = await applyBroadcastEffect(effect, null, {
+      base: {
+        current: removeBroadcastEffect(playlist, effect.id),
+        future: removeBroadcastEffect(futurePlaylist, effect.id),
+      },
+      silent: true,
+    });
+    if (!result) return;
+    setEffectsMessage(
+      `${effect.name}: JSON применён к ${result.touched} ролику(ам). ` +
+        `Совпало записей: ${summary.matchedRecordCount}; ` +
+        `вне расписания: ${summary.unmatchedRecordCount}; ` +
+        `роликов без JSON: ${summary.unmatchedClipCount}.` +
+        (result.warnings.length > 0
+          ? ` Предупреждений: ${result.warnings.length} — ${result.warnings[0]}`
+          : "") +
+        (result.errors.length > 0
+          ? ` Ошибок привязки: ${result.errors.length} — ${result.errors[0]}`
+          : ""),
     );
   }
 
@@ -1590,7 +1657,7 @@ export function App() {
     effect: GraphicEffectAsset,
     targetIds: Set<string> | null,
     options: { base?: { current: MediaAsset[]; future: MediaAsset[] }; silent?: boolean } = {},
-  ) {
+  ): Promise<{ touched: number; warnings: string[]; errors: string[] } | null> {
     const preset = effect.broadcast?.presetEffectId
       ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
       : null;
@@ -1627,7 +1694,7 @@ export function App() {
       if (plans.every((entry) => entry.plan.layers.length === 0 &&
         entry.plan.textOverlays.length === 0)) {
         setOperationError(errors[0] ?? `${effect.name}: эффекту не к чему применяться.`);
-        return;
+        return null;
       }
       const renderedPathByKey = await renderBroadcastVariants(plans.flatMap((entry) =>
         entry.plan.renders), preset);
@@ -1645,8 +1712,10 @@ export function App() {
             (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
         );
       }
+      return { touched, warnings, errors };
     } catch (reason) {
       setOperationError(errorMessage(reason));
+      return null;
     } finally {
       setEffectsBusy(false);
     }
@@ -2313,6 +2382,7 @@ export function App() {
           onSelectTickerSourceFile={stableSelectTickerSourceFile}
           onLoadTickerFeed={stableLoadTickerFeed}
           onApplyBroadcastChanges={stableApplyBroadcastChanges}
+          onApplyBroadcastTaskToProject={stableApplyBroadcastTaskToProject}
           onImportBroadcastPreset={stableImportBroadcastPreset}
           onReorder={stableReorderEffects}
           assignedClipCounts={assignedClipCounts}
@@ -2912,7 +2982,7 @@ function broadcastTargetClip(asset: MediaAsset): BroadcastTargetClip {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.14";
+const applicationVersion = "7.0.16";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

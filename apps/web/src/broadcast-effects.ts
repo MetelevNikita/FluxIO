@@ -39,6 +39,21 @@ export interface BroadcastTaskEntry {
   values: Record<string, string>;
 }
 
+export interface BroadcastTaskMatchSummary {
+  recordCount: number;
+  matchedRecordCount: number;
+  matchedClipCount: number;
+  unmatchedRecordCount: number;
+  unmatchedClipCount: number;
+  duplicateTitles: string[];
+}
+
+interface BroadcastTaskMatchClip {
+  id: string;
+  name: string;
+  durationSeconds?: number;
+}
+
 /**
  * Применяет mapping из JSON Parser к сырым строкам источника. Результат уже
  * использует имена полей шаблона, поэтому планировщикам эффектов не важно,
@@ -66,6 +81,53 @@ export function mapBroadcastTaskRecords(
     result.push({ name, values });
   }
   return result;
+}
+
+/**
+ * Предпросмотр массового назначения до тяжёлого Lottie-рендера.
+ *
+ * `title` в JSON и имя материала сравниваются как имена файлов: без пути,
+ * расширения, различий регистра и окружающих пробелов. Поэтому запись
+ * `NEWS_01` честно совпадает и с `D:\Rundown\News_01.mov`, и с повтором того
+ * же ролика в Future. Несколько JSON-записей с одним title неоднозначны и не
+ * считаются совпадением.
+ */
+export function summarizeBroadcastTaskMatches(
+  entries: readonly BroadcastTaskEntry[],
+  clips: readonly BroadcastTaskMatchClip[],
+): BroadcastTaskMatchSummary {
+  const entriesByTitle = groupTaskEntriesByTitle(entries);
+  const clipKeys = new Set(clips.map((clip) => normalizeTaskTitle(clip.name)).filter(Boolean));
+  const matchedEntryKeys = new Set<string>();
+  let matchedClipCount = 0;
+  let unmatchedClipCount = 0;
+
+  for (const clip of clips) {
+    const key = normalizeTaskTitle(clip.name);
+    const matches = key ? entriesByTitle.get(key) ?? [] : [];
+    if (matches.length === 1) {
+      matchedClipCount += 1;
+      matchedEntryKeys.add(key);
+    } else {
+      unmatchedClipCount += 1;
+    }
+  }
+
+  const duplicateTitles: string[] = [];
+  let unmatchedRecordCount = 0;
+  for (const [key, grouped] of entriesByTitle) {
+    if (grouped.length > 1) duplicateTitles.push(grouped[0]!.name.trim());
+    if (grouped.length !== 1 || !clipKeys.has(key)) unmatchedRecordCount += grouped.length;
+  }
+
+  return {
+    recordCount: entries.length,
+    matchedRecordCount: matchedEntryKeys.size,
+    matchedClipCount,
+    unmatchedRecordCount,
+    unmatchedClipCount,
+    duplicateTitles,
+  };
 }
 
 /** Один Lottie-рендер: набор переопределений текста, общий для нескольких роликов. */
@@ -228,9 +290,10 @@ function resolveDynamicTitleContent(
 
 /**
  * Пресет входной и/или выходной анимации, привязанный к конкретным роликам
- * файлом задания. Ролик ищется по служебному ключу `name`: сравнение точное,
- * без учёта окружающих пробелов. Ни одного совпадения или больше одного — это
- * ошибка привязки, и эффект для такой записи не запускается.
+ * файлом задания. Ролик ищется по служебному ключу mapping (`title` в
+ * рекомендуемом формате). Сравниваются basename без расширения и регистр.
+ * Одна запись может лечь на несколько повторений ролика в расписании. А вот
+ * несколько JSON-записей с одним title неоднозначны и пропускаются.
  */
 function planAnimationInOut(context: PlanContext): void {
   const settings = context.definition.settings.animationInOut;
@@ -283,21 +346,28 @@ function bindTaskEntries(
   fields: Map<string, LottieEditableProperty>,
 ): { clip: BroadcastTargetClip; overrides: Record<string, string> }[] {
   const bindings: { clip: BroadcastTargetClip; overrides: Record<string, string> }[] = [];
-  for (const entry of context.taskEntries) {
-    const matches = context.targets.filter((clip) => clip.name.trim() === entry.name.trim());
-    if (matches.length === 0) {
-      context.plan.errors.push(`"${entry.name}": no clip with this name is in the schedule`);
-      continue;
-    }
+  const entriesByTitle = groupTaskEntriesByTitle(context.taskEntries);
+  const fieldsByNormalizedKey = new Map<string, LottieEditableProperty>();
+  for (const [key, field] of fields) fieldsByNormalizedKey.set(normalizeFieldKey(key), field);
+  const reportedDuplicateTitles = new Set<string>();
+
+  for (const clip of context.targets) {
+    const title = normalizeTaskTitle(clip.name);
+    const matches = title ? entriesByTitle.get(title) ?? [] : [];
+    if (matches.length === 0) continue;
     if (matches.length > 1) {
-      context.plan.errors.push(
-        `"${entry.name}": ${matches.length} clips share this name, the binding is ambiguous`,
-      );
+      if (!reportedDuplicateTitles.has(title)) {
+        context.plan.errors.push(
+          `"${matches[0]!.name}": ${matches.length} JSON records share this title, the binding is ambiguous`,
+        );
+        reportedDuplicateTitles.add(title);
+      }
       continue;
     }
+    const entry = matches[0]!;
     const overrides: Record<string, string> = {};
     for (const [key, value] of Object.entries(entry.values)) {
-      const field = fields.get(key);
+      const field = fields.get(key) ?? fieldsByNormalizedKey.get(normalizeFieldKey(key));
       if (!field) {
         context.plan.warnings.push(
           `"${entry.name}": key "${key}" has no matching Lottie text field and is ignored`,
@@ -306,9 +376,34 @@ function bindTaskEntries(
       }
       overrides[field.id] = value;
     }
-    bindings.push({ clip: matches[0]!, overrides });
+    bindings.push({ clip, overrides });
   }
   return bindings;
+}
+
+function groupTaskEntriesByTitle(
+  entries: readonly BroadcastTaskEntry[],
+): Map<string, BroadcastTaskEntry[]> {
+  const grouped = new Map<string, BroadcastTaskEntry[]>();
+  for (const entry of entries) {
+    const key = normalizeTaskTitle(entry.name);
+    if (!key) continue;
+    const current = grouped.get(key) ?? [];
+    current.push(entry);
+    grouped.set(key, current);
+  }
+  return grouped;
+}
+
+export function normalizeTaskTitle(value: string): string {
+  const fileName = value.replaceAll("\\", "/").split("/").at(-1)?.trim() ?? value.trim();
+  const dot = fileName.lastIndexOf(".");
+  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+  return stem.trim().toLocaleLowerCase();
+}
+
+function normalizeFieldKey(value: string): string {
+  return value.trim().toLocaleLowerCase();
 }
 
 /* -------------------------------------------------------------------------- *

@@ -1,0 +1,16 @@
+[
+  {
+    "media_id": "NEWS_01",
+    "title_ru": "Новости",
+    "title_en": "News",
+    "title_it": "Notizie",
+    "title_fr": "Actualités"
+  },
+  {
+    "media_id": "WEATHER_01",
+    "title_ru": "Прогноз погоды",
+    "title_en": "Weather forecast",
+    "title_it": "Previsioni del tempo",
+    "title_fr": "Prévisions météo"
+  }
+]
