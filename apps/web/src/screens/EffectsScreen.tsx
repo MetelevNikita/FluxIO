@@ -18,13 +18,14 @@ import {
   LoaderCircle,
   Pause,
   Play,
-  Plus,
   RotateCcw,
   Send,
   Trash2,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { effectBlocker } from "../broadcast-effects";
 import {
   applyLottiePropertyOverrides,
   updateLinkedScaleVector,
@@ -50,8 +51,6 @@ interface EffectsScreenProps {
   busy: boolean;
   operationError: string | null;
   message: string | null;
-  onSelectFiles?: () => Promise<void>;
-  onSelectDirectory?: () => Promise<void>;
   onSelectTitleDirectory?: (effectId: string) => Promise<void>;
   onClearTitleDirectory: (effectId: string) => void;
   onRemove: (effectId: string) => void;
@@ -64,6 +63,7 @@ interface EffectsScreenProps {
   onSelectBroadcastTaskFile: (effectId: string) => Promise<void>;
   onSelectTickerSourceFile: (effectId: string) => Promise<void>;
   onSelectStingerFile: (effectId: string) => Promise<void>;
+  onSelectStingerSequence: (effectId: string) => Promise<void>;
   onLoadTickerFeed: (effectId: string) => Promise<void>;
   /** Перенести правки в уже назначенные ролики. */
   onApplyBroadcastChanges: (effect: GraphicEffectAsset) => Promise<void>;
@@ -91,8 +91,6 @@ export const EffectsScreen = memo(function EffectsScreen({
   busy,
   operationError,
   message,
-  onSelectFiles,
-  onSelectDirectory,
   onSelectTitleDirectory,
   onClearTitleDirectory,
   onRemove,
@@ -105,6 +103,7 @@ export const EffectsScreen = memo(function EffectsScreen({
   onSelectBroadcastTaskFile,
   onSelectTickerSourceFile,
   onSelectStingerFile,
+  onSelectStingerSequence,
   onLoadTickerFeed,
   onApplyBroadcastChanges,
   onApplyBroadcastTaskToProject,
@@ -146,9 +145,24 @@ export const EffectsScreen = memo(function EffectsScreen({
   const [previewCollapsed, setPreviewCollapsed] = useState(() => window.innerHeight < 800);
   const renderNoticeTimer = useRef<number | null>(null);
 
+  /**
+   * В списке живут только эфирные эффекты. Графика уровня 3 осталась в
+   * библиотеке — на неё ссылается `presetEffectId`, её нужно рендерить и
+   * восстанавливать, — но самостоятельным элементом она быть перестала.
+   *
+   * Только фильтр и никакой сортировки: порядок в библиотеке задал оператор,
+   * и он же определяет порядок наложения слоёв в кадре.
+   */
+  const listedEffects = useMemo(
+    () => effects.filter((effect) => Boolean(effect.broadcast)),
+    [effects],
+  );
+
+  // Запасной выбор берётся из показанного списка, а не из всей библиотеки:
+  // иначе инспектор открыл бы графику, которой в списке уже нет.
   const selectedEffect = useMemo(
-    () => effects.find((effect) => effect.id === selectedEffectId) ?? effects[0] ?? null,
-    [effects, selectedEffectId],
+    () => effects.find((effect) => effect.id === selectedEffectId) ?? listedEffects[0] ?? null,
+    [effects, listedEffects, selectedEffectId],
   );
   const lottieNeedsRender = Boolean(
     draftEffect?.lottie && selectedEffect?.lottie &&
@@ -192,6 +206,15 @@ export const EffectsScreen = memo(function EffectsScreen({
     () => effects.filter((effect) => !effect.broadcast),
     [effects],
   );
+  /**
+   * Чего не хватает выбранному эффекту. Раньше это выяснялось только при
+   * попытке применить — карточка до того выглядела рабочей.
+   */
+  const draftBlocker = useMemo(
+    () => draftEffect ? effectBlocker(draftEffect, effects) : null,
+    [draftEffect, effects],
+  );
+
   const previewSource = useMemo(() => {
     const source = previewEffect ?? draftEffect;
     if (!source) return null;
@@ -250,15 +273,7 @@ export const EffectsScreen = memo(function EffectsScreen({
         <div>
           <span className="eyebrow">{tr("Графическое оформление эфира", "Broadcast graphics")}</span>
           <h1>{tr("Библиотека эффектов", "Effects library")}</h1>
-          <p>{tr("Импортируйте Lottie JSON или alpha-медиа, настройте и назначьте эффект проекту либо ролику.", "Import Lottie JSON or alpha media, configure it, and assign the effect to the project or a clip.")}</p>
-        </div>
-        <div className="effects-import-actions">
-          <button disabled={busy || !onSelectFiles} onClick={() => void onSelectFiles?.()} type="button">
-            <Plus size={14} /> {tr("Импорт Lottie / медиа", "Import Lottie / media")}
-          </button>
-          <button disabled={busy || !onSelectDirectory} onClick={() => void onSelectDirectory?.()} type="button">
-            <FolderOpen size={14} /> {tr("Добавить папку", "Add folder")}
-          </button>
+          <p>{tr("Создайте эфирный эффект, задайте его оформление и настройки, затем назначьте проекту либо ролику.", "Create a broadcast effect, set its design and options, then assign it to the project or a clip.")}</p>
         </div>
       </section>
 
@@ -294,13 +309,13 @@ export const EffectsScreen = memo(function EffectsScreen({
           <LoaderCircle className="spin" size={13} /> {tr("Обработка выбранного файла…", "Processing selected file…")}
         </div>
       ) : message ? <div className="effects-message">{message}</div> : null}
-      {busy && effects.length === 0 ? (
+      {busy && listedEffects.length === 0 ? (
         <div className="effects-empty"><LoaderCircle className="spin" size={24} /> {tr("Анализ и подготовка эффектов…", "Analyzing and preparing effects…")}</div>
-      ) : effects.length === 0 ? (
+      ) : listedEffects.length === 0 ? (
         <div className="effects-empty">
           <Layers3 size={30} />
           <strong>{tr("В проекте пока нет эффектов", "No project effects yet")}</strong>
-          <span>{tr("Импортируйте Bodymovin/Lottie `.json`, изображение или видео с alpha-каналом.", "Import a Bodymovin/Lottie `.json`, image, or video with an alpha channel.")}</span>
+          <span>{tr("Выберите вид эфирного эффекта в каталоге выше — оформление задаётся внутри него.", "Pick a broadcast effect kind in the catalog above; its design is set inside the effect.")}</span>
         </div>
       ) : (
         <div className="effects-workspace">
@@ -318,7 +333,7 @@ export const EffectsScreen = memo(function EffectsScreen({
               setDropTargetId(null);
             }}
           >
-            {effects.map((effect) => (
+            {listedEffects.map((effect) => (
               <article
                 className={`effect-card ${effect.broadcast ? "broadcast" : ""} ${selectedEffect?.id === effect.id ? "selected" : ""} ${draggedEffectId === effect.id ? "dragging" : ""} ${dropTargetId === effect.id ? "drop-target" : ""}`}
                 draggable
@@ -379,6 +394,11 @@ export const EffectsScreen = memo(function EffectsScreen({
                   <div className="effect-broadcast-summary">
                     <span>{tr("Поведение", "Behavior")}</span>
                     <strong>{broadcastEffectSummary(effect, tr)}</strong>
+                    {effectBlocker(effect, effects) ? (
+                      <em className="effect-blocked">
+                        <TriangleAlert size={11} /> {effectBlocker(effect, effects)}
+                      </em>
+                    ) : null}
                   </div>
                 ) : !effect.lottie ? (
                   <div className="effect-title-source">
@@ -499,6 +519,7 @@ export const EffectsScreen = memo(function EffectsScreen({
                   fonts={fonts}
                   onLoadTickerFeed={() => void onLoadTickerFeed(draftEffect.id)}
                   onSelectStingerFile={() => void onSelectStingerFile(draftEffect.id)}
+                  onSelectStingerSequence={() => void onSelectStingerSequence(draftEffect.id)}
                   onSelectTaskFile={() => void onSelectBroadcastTaskFile(draftEffect.id)}
                   onSelectTickerSource={() => void onSelectTickerSourceFile(draftEffect.id)}
                   presets={presets}
@@ -517,20 +538,22 @@ export const EffectsScreen = memo(function EffectsScreen({
               <section className="effect-assignment-panel">
                 <div className="effect-assignment-heading">
                   <strong>{tr("Применение", "Assignment")}</strong>
-                  <span className={lottieNeedsRender ? "dirty" : broadcastDraftPending ? "pending" : "ready"}>
-                    {lottieNeedsRender
-                      ? tr("нужен рендер", "render required")
-                      : broadcastDraftPending ? tr("черновик", "draft") : tr("актуально", "up to date")}
+                  <span className={draftBlocker ? "dirty" : lottieNeedsRender ? "dirty" : broadcastDraftPending ? "pending" : "ready"}>
+                    {draftBlocker
+                      ? tr("не собран", "incomplete")
+                      : lottieNeedsRender
+                        ? tr("нужен рендер", "render required")
+                        : broadcastDraftPending ? tr("черновик", "draft") : tr("актуально", "up to date")}
                   </span>
                 </div>
                 <button
-                  disabled={busy || clips.length === 0 || lottieNeedsRender}
+                  disabled={busy || clips.length === 0 || lottieNeedsRender || Boolean(draftBlocker)}
                   onClick={() => {
                     if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
                     if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
                     onAddToEntireProject(draftEffect);
                   }}
-                  title={lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined}
+                  title={draftBlocker ?? (lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined)}
                   type="button"
                 >
                   <Layers3 size={13} /> {tr("Применить ко всему проекту", "Apply to entire project")}
@@ -540,13 +563,13 @@ export const EffectsScreen = memo(function EffectsScreen({
                     {clips.map((clip) => <option key={clip.id} value={clip.id}>{clip.schedule} · {clip.name}</option>)}
                   </select>
                   <button
-                    disabled={busy || !targetClipId || lottieNeedsRender}
+                    disabled={busy || !targetClipId || lottieNeedsRender || Boolean(draftBlocker)}
                     onClick={() => {
                       if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
                       if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
                       onAddToClip(draftEffect, targetClipId);
                     }}
-                    title={lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined}
+                    title={draftBlocker ?? (lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined)}
                     type="button"
                   >
                     <Send size={13} /> {tr("Применить к ролику", "Apply to clip")}

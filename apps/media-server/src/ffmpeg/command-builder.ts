@@ -13,8 +13,8 @@ import type {
   StartPlayoutRequest,
   VideoEncoding,
 } from "@gruber/contracts";
-import { defaultMpegTsOutputSettings } from "@gruber/contracts";
-import { buildTextOverlayFilter, tickerRegion } from "./text-overlay.js";
+import { defaultMpegTsOutputSettings, isBarsSource } from "@gruber/contracts";
+import { buildTextOverlayFilter, tickerCanvasColor, tickerRegion } from "./text-overlay.js";
 import {
   ffmpegMpegTsMuxDelaySeconds,
   ffmpegMpegTsMuxPreloadSeconds,
@@ -367,6 +367,24 @@ export function buildFfmpegCompositePreviewCommand(
   };
 }
 
+/**
+ * Вход одного ролика.
+ *
+ * У заглушки файла нет — цветные полосы рисует сам FFmpeg, поэтому вместо
+ * `-i путь` подставляется генератор `smptehdbars`. Размер и частота кадров
+ * берутся из настроек эфира: заглушка обязана попасть в ту же сетку, что и
+ * обычные ролики, иначе program encoder получит поток другого формата.
+ */
+export function clipInputArgs(item: PreparedPlayoutItem, video: VideoEncoding): string[] {
+  if (!isBarsSource(item.filePath)) return ["-i", item.filePath];
+  return [
+    "-f",
+    "lavfi",
+    "-i",
+    `smptehdbars=size=${video.width}x${video.height}:rate=${decimal(video.frameRate)}`,
+  ];
+}
+
 export function buildFfmpegCommand(
   request: StartPlayoutRequest,
   items: PreparedPlayoutItem[],
@@ -390,7 +408,7 @@ export function buildFfmpegCommand(
   const inputSourcesEmbedded = options.embedInputSourcesInFilterGraph === true;
   if (!inputSourcesEmbedded) {
     for (const item of items) {
-      args.push("-i", item.filePath);
+      args.push(...clipInputArgs(item, request.video));
     }
     for (const item of items) {
       if (item.ageTitle?.enabled && item.ageTitle.filePath) {
@@ -408,6 +426,16 @@ export function buildFfmpegCommand(
       }
       for (const effect of item.effects ?? []) {
         for (const source of graphicEffectSources(effect)) {
+          if (source.sequence) {
+            // Частоты кадров в .png нет — её задаёт оператор, иначе FFmpeg
+            // возьмёт своё умолчание и переход поедет по длительности.
+            args.push("-framerate", decimal(effect.sequenceFrameRate ?? request.video.frameRate));
+            if (effect.sequenceStartNumber != null) {
+              args.push("-start_number", String(effect.sequenceStartNumber));
+            }
+            args.push("-i", source.filePath);
+            continue;
+          }
           if (source.kind === "static") {
             args.push(
               "-loop",
@@ -713,13 +741,15 @@ function buildFilterGraph(
         itemVideoSource = outputLabel;
         return;
       }
-      // Строка ограничена полосой: рисуем её на отдельном прозрачном холсте
-      // нужного размера и накладываем. Обрезка получается настоящей — сам
-      // `drawtext` рисовать «до края и не дальше» не умеет.
+      // Строка ограничена полосой: рисуем её на отдельном холсте нужного
+      // размера и накладываем. Обрезка получается настоящей — сам `drawtext`
+      // рисовать «до края и не дальше» не умеет. Если у надписи включена
+      // плашка, этот же холст ею и служит: он залит цветом и не едет вместе
+      // с текстом.
       const canvas = `vtickerbg${index}_${overlayIndex}`;
       const painted = `vticker${index}_${overlayIndex}`;
       filters.push(
-        `color=c=black@0:s=${region.width}x${region.height}:` +
+        `color=c=${tickerCanvasColor(overlay.style)}:s=${region.width}x${region.height}:` +
           `r=${decimal(request.video.frameRate)}:d=${decimal(item.durationSeconds)}[${canvas}]`,
         `[${canvas}]${buildTextOverlayFilter(overlay, frame, true)}[${painted}]`,
         `[${itemVideoSource}][${painted}]overlay=x=${region.x}:y=${region.y}:` +
@@ -1163,26 +1193,36 @@ function formatHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
-function graphicEffectSources(effect: GraphicEffectLayer): Array<{
+interface GraphicEffectSource {
   filePath: string;
   kind: "static" | "video";
   role: "background" | "title";
-}> {
+  /**
+   * Источник собран из пронумерованных кадров: `filePath` — printf-шаблон.
+   * Для фильтров это обычное видео (у него есть таймлайн, и `sourceInSeconds`
+   * обязан работать), отличается только сборка входа.
+   */
+  sequence: boolean;
+}
+
+function graphicEffectSources(effect: GraphicEffectLayer): GraphicEffectSource[] {
   const backgroundPath = effect.backgroundPath ?? effect.filePath;
-  const sources: Array<{
-    filePath: string;
-    kind: "static" | "video";
-    role: "background" | "title";
-  }> = [{
+  const isSequence = effect.sequenceFrameRate != null;
+  const sources: GraphicEffectSource[] = [{
     filePath: backgroundPath,
-    kind: graphicSourceKind(backgroundPath),
+    // Шаблон заканчивается на .png, но статичной картинкой не является:
+    // без этой поправки к нему приклеился бы `-loop 1`, а вторая половина
+    // перехода взяла бы те же кадры, что и первая.
+    kind: isSequence ? "video" : graphicSourceKind(backgroundPath),
     role: "background",
+    sequence: isSequence,
   }];
   if (effect.titlePath && effect.titlePath !== backgroundPath) {
     sources.push({
       filePath: effect.titlePath,
       kind: graphicSourceKind(effect.titlePath),
       role: "title",
+      sequence: false,
     });
   }
   return sources;

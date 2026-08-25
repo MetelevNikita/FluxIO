@@ -12,6 +12,7 @@
 - [`product-requirements.md`](product-requirements.md) — назначение, границы MVP и требования надёжности.
 - [`architecture.md`](architecture.md) — компоненты, данные, FFmpeg pipeline и безопасность.
 - [`design-system.md`](design-system.md) — дизайн-токены и фактическое поведение интерфейса из Figma.
+- [`effects-flow-map.html`](effects-flow-map.html) — карта потока работы с эфирными эффектами сверху вниз: от каталога до кадра в эфире.
 - [`development-plan.md`](development-plan.md) — завершённые этапы и следующая очередь работ.
 - [`adr`](adr) — журнал архитектурных решений.
 - [`progress`](progress) — отчёты по законченным вертикальным срезам и команды проверки.

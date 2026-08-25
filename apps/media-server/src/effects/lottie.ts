@@ -134,6 +134,17 @@ export function inspectLottieDocument(
     throw new Error(`Lottie duration must be greater than 0 and no more than ${maximumDurationSeconds} seconds`);
   }
   const fluxExport = readFluxExportMetadata(document);
+  // Шаблоны титров принимаются только из FluxIO Title Studio. Обычный Bodymovin
+  // не несёт ни списка объявленных дизайнером полей, ни связей с полями файла
+  // задания: оператору пришлось бы показать все текстовые слои композиции
+  // вперемешку со служебными и набирать имена руками, а промах в имени слоя не
+  // виден до эфира — плашка молча выходит с шаблонным текстом.
+  if (!fluxExport) {
+    throw new Error(
+      "Шаблон должен быть экспортирован из FluxIO Title Studio: в файле нет блока meta.flux. " +
+        "Обычный экспорт Bodymovin не описывает, какие слои редактируются и с какими полями JSON они связаны.",
+    );
+  }
   const properties: LottieEditableProperty[] = [];
   collectLayerProperties(
     document.layers,
@@ -188,7 +199,8 @@ export function inspectLottieDocument(
 }
 
 interface FluxExportMetadata {
-  editableTextKeys: Set<string>;
+  /** `null` — дизайнер полей не объявил, показываем все текстовые слои. */
+  editableTextKeys: Set<string> | null;
   dataSourceName: string | null;
   matchSourceKey: string | null;
   dataBindings: { sourceKey: string; targetKey: string }[];
@@ -232,7 +244,15 @@ function readFluxExportMetadata(document: JsonObject): FluxExportMetadata | null
           : [];
       }).slice(0, 128)
     : [];
-  return { dataBindings, dataSourceName, editableTextKeys, matchSourceKey, warnings };
+  return {
+    dataBindings,
+    dataSourceName,
+    // Пустой список полей значит «не объявлено», а не «редактировать нечего»:
+    // иначе экспорт без выбранных слоёв прятал бы вообще весь текст шаблона.
+    editableTextKeys: editableTextKeys.size > 0 ? editableTextKeys : null,
+    matchSourceKey,
+    warnings,
+  };
 }
 
 /** Связи `fit:` верхней композиции, которые можно безопасно показать оператору. */

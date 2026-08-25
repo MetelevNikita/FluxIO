@@ -4,6 +4,7 @@ import type {
   BroadcastTextStyle,
   BroadcastTextOverlay,
   ClipAudioOverlay,
+  EffectDecoration,
   GraphicEffectAsset,
   EffectPlacement,
   GraphicEffectLayer,
@@ -175,6 +176,135 @@ export interface PlanBroadcastEffectInput {
 
 const minimumWindowSeconds = 0.04;
 
+/**
+ * Виды, у которых оформление — только файл. Сам эффект и есть «показать
+ * графику»: без неё показывать нечего, поэтому выбора «файл или плашка» у них
+ * нет ни в интерфейсе, ни в плане.
+ */
+export const fileOnlyEffectKinds: ReadonlySet<BroadcastEffectKind> = new Set([
+  "animation-in-out",
+  "stinger-transition",
+]);
+
+/** Оформление с поправкой на вид: у файловых видов выбор оператора игнорируется. */
+export function effectDecoration(
+  definition: NonNullable<GraphicEffectAsset["broadcast"]>,
+): EffectDecoration {
+  return fileOnlyEffectKinds.has(definition.kind) ? "file" : definition.decoration;
+}
+
+/** Что вид принимает как оформление. */
+export interface EffectGraphicPolicy {
+  extensions: readonly string[];
+  /** Чем объяснить отказ оператору. */
+  accepts: string;
+  /**
+   * Шаблон титров: `.json` обязан быть экспортом FluxIO Title Studio. Обычный
+   * Bodymovin не несёт ни списка редактируемых слоёв, ни связей с полями JSON,
+   * поэтому оператору пришлось бы набирать имена слоёв руками — а промах в
+   * имени не виден до эфира.
+   */
+  template: boolean;
+}
+
+/**
+ * Набор форматов у каждого вида свой, и это не украшение: у стингера файл
+ * обязан нести альфу, у титров — метаданные шаблона, а бегущей строке нужна
+ * подложка, а не шаблон с текстовыми слоями.
+ */
+export const effectGraphicPolicies: Record<BroadcastEffectKind, EffectGraphicPolicy> = {
+  "animation-in-out": {
+    extensions: [".mov", ".webm", ".png"],
+    accepts: "видео или картинку с альфа-каналом",
+    template: false,
+  },
+  "dynamic-title": {
+    extensions: [".json"],
+    accepts: "шаблон FluxIO Title Studio",
+    template: true,
+  },
+  "next-program": {
+    extensions: [".json"],
+    accepts: "шаблон FluxIO Title Studio",
+    template: true,
+  },
+  "ticker-crawl": {
+    extensions: [".mov", ".webm", ".png"],
+    accepts: "видео или картинку с альфа-каналом для подложки",
+    template: false,
+  },
+  "clock-countdown": {
+    extensions: [".json"],
+    accepts: "шаблон FluxIO Title Studio",
+    template: true,
+  },
+  "stinger-transition": {
+    extensions: [".mov", ".png"],
+    accepts: ".mov с альфой или последовательность .png",
+    template: false,
+  },
+};
+
+function fileExtension(filePath: string): string {
+  const name = filePath.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot).toLowerCase() : "";
+}
+
+/**
+ * Почему файл не подходит этому виду — или `null`, если подходит.
+ *
+ * Проверка идёт по расширению до обращения к службе: разбирать файл, который
+ * заведомо будет отвергнут, незачем, а оператору важно увидеть причину сразу
+ * при выборе, а не при попытке применить эффект.
+ */
+export function graphicFileRejection(kind: BroadcastEffectKind, filePath: string): string | null {
+  const policy = effectGraphicPolicies[kind];
+  const extension = fileExtension(filePath);
+  if (policy.extensions.includes(extension)) return null;
+  return `${broadcastEffectTitleFor(kind)} принимает ${policy.accepts}` +
+    ` (${policy.extensions.join(", ")}), а выбран «${extension || "файл без расширения"}»`;
+}
+
+const effectTitles: Record<BroadcastEffectKind, string> = {
+  "animation-in-out": "Анимация входа/выхода",
+  "dynamic-title": "Динамическая плашка",
+  "next-program": "Следующая программа",
+  "ticker-crawl": "Бегущая строка",
+  "clock-countdown": "Часы / отсчёт",
+  "stinger-transition": "Стингер-переход",
+};
+
+function broadcastEffectTitleFor(kind: BroadcastEffectKind): string {
+  return effectTitles[kind];
+}
+
+/**
+ * Чего эффекту не хватает, чтобы его можно было применить, — или `null`, если
+ * он готов.
+ *
+ * Раньше это выяснялось только при попытке применить: план возвращал ошибку, а
+ * до того карточка выглядела рабочей. Теперь состояние видно в списке, и кнопки
+ * применения выключены, пока эффект не собран.
+ */
+export function effectBlocker(
+  effect: GraphicEffectAsset,
+  library: readonly GraphicEffectAsset[],
+): string | null {
+  const definition = effect.broadcast;
+  if (!definition) return null;
+  if (definition.kind === "stinger-transition") {
+    return definition.settings.stingerTransition.assetPath
+      ? null
+      : "Не выбран файл перехода";
+  }
+  if (effectDecoration(definition) !== "file") return null;
+  if (!definition.presetEffectId) return "Не выбран файл оформления";
+  return library.some((entry) => entry.id === definition.presetEffectId)
+    ? null
+    : "Файл оформления потерян";
+}
+
 export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastEffectPlan {
   const definition = input.effect.broadcast;
   const plan = emptyPlan();
@@ -187,6 +317,10 @@ export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastE
     createId: input.createId ?? (() => globalThis.crypto.randomUUID()),
     definition,
     plan,
+    // Оформление выбирает оператор. При «плашке» назначенный файл не
+    // используется, даже если он остался в эффекте: иначе переключение
+    // ничего бы не меняло, а плашку рисовали бы обе стороны сразу.
+    preset: effectDecoration(definition) === "file" ? input.preset : null,
     targets: input.clips.filter((clip) => !input.targetIds || input.targetIds.has(clip.id)),
   };
   if (context.targets.length === 0) {
@@ -666,12 +800,28 @@ function clockSample(format: string): string {
  */
 function planStingerTransition(context: PlanContext): void {
   const settings = context.definition.settings.stingerTransition;
-  const assetPath = settings.assetPath ?? context.preset?.filePath ?? null;
+  // Переход берётся только из собственного файла. Lottie-пресет здесь больше
+  // не принимается: у файла ffprobe проверяет альфу, частоту кадров и звук до
+  // применения, а у шаблона проверять нечего — несовместимость всплыла бы
+  // только на рендере.
+  const assetPath = settings.assetPath;
   if (!assetPath) {
-    context.plan.errors.push("The stinger needs an alpha video or a preset");
+    context.plan.errors.push("Переход не применится: не выбран файл перехода");
     return;
   }
-  if (settings.assetPath && settings.blendMode === "alpha" && settings.sourceHasAlpha === false) {
+  if (settings.sourceKind === "sequence") {
+    if (!settings.sourceFrameRate) {
+      context.plan.errors.push(
+        "Для последовательности .png задайте частоту кадров: в самих файлах её нет",
+      );
+      return;
+    }
+    if (settings.audioEnabled) {
+      context.plan.errors.push("У последовательности .png нет звуковой дорожки");
+      return;
+    }
+  }
+  if (settings.blendMode === "alpha" && settings.sourceHasAlpha === false) {
     context.plan.errors.push(
       "У файла стингера не обнаружен альфа-канал: выберите Luma или подготовьте alpha-видео",
     );
@@ -812,6 +962,15 @@ function pushLayer(
       sourceDurationSeconds: isStinger
         ? settings.durationSeconds
         : context.preset?.durationSeconds ?? context.effect.durationSeconds,
+      // Переход из пронумерованных кадров: частота задана оператором, в самих
+      // .png её нет. Признаком служит именно она — по ней command-builder
+      // отличает шаблон от одиночной картинки.
+      sequenceFrameRate: isStinger && settings.sourceKind === "sequence"
+        ? settings.sourceFrameRate
+        : null,
+      sequenceStartNumber: isStinger && settings.sourceKind === "sequence"
+        ? settings.sequenceStartNumber
+        : null,
       sourceInSeconds: options.sourceInSeconds ?? 0,
       startSeconds,
       tier: 2,

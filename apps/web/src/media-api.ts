@@ -5,6 +5,8 @@ import {
   graphicEffectAssetSchema,
   graphicEffectImportResultSchema,
   graphicEffectVerificationSchema,
+  imageSequenceSchema,
+  type ImageSequence,
   broadcastConfigurationSummarySchema,
   broadcastTaskFileContentSchema,
   tickerSourceContentSchema,
@@ -94,6 +96,20 @@ export async function scanGraphicEffectDirectory(
 }
 
 /** Какие из путей графики расписания уже не лежат на диске сервера. */
+/**
+ * Разбор последовательности кадров по одному выбранному файлу: служба выводит
+ * шаблон нумерации, границы диапазона и пропуски.
+ */
+export async function readImageSequence(framePath: string): Promise<ImageSequence> {
+  return imageSequenceSchema.parse(
+    await request("/api/effects/sequence", {
+      body: JSON.stringify({ framePath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
 export async function verifyGraphicEffectPaths(paths: string[]): Promise<string[]> {
   if (paths.length === 0) return [];
   return graphicEffectVerificationSchema.parse(

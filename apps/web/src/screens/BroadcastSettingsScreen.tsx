@@ -27,8 +27,9 @@ import type {
 import { attachHlsVideo } from "../hls-video";
 import { usePlayoutStatus } from "../playout-status";
 import { getPlayoutAudioLevel } from "../media-api";
-import { mediaApiUrl, mediaPath } from "../runtime";
+import { mediaApiUrl } from "../runtime";
 import { useI18n } from "../i18n";
+import { ColourBars } from "../components/ColourBars";
 import type { BroadcastSettings } from "../types";
 
 interface BroadcastSettingsScreenProps {
@@ -1203,6 +1204,7 @@ function EncodingMonitor() {
 }
 
 function LivePreview({ active, source }: { active: boolean; source: string | null }) {
+  const { tr } = useI18n();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [previewState, setPreviewState] = useState<"idle" | "loading" | "playing" | "error">(
     active && source ? "loading" : "idle",
@@ -1231,8 +1233,10 @@ function LivePreview({ active, source }: { active: boolean; source: string | nul
     });
   }, [active, source]);
 
+  // До старта и при эфире без расписания в мониторе стоят цветные полосы — то
+  // же самое, что в этот момент уходит в линию.
   if (!active || !source) {
-    return <img alt="Encoding preview idle" src={mediaPath("program-preview.png")} />;
+    return <ColourBars title={tr("Эфир не запущен", "Playout is not running")} />;
   }
   return (
     <>

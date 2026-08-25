@@ -469,8 +469,21 @@ export const clockCountdownSettingsSchema = z.object({
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
 });
 
+/**
+ * Чем задан переход: одним видеофайлом или последовательностью кадров.
+ *
+ * У последовательности нет ни собственной частоты кадров, ни звука, поэтому
+ * форма настроек у неё другая — отсюда явный признак, а не догадка по пути.
+ */
+export const stingerSourceKindSchema = z.enum(["file", "sequence"]);
+
 export const stingerTransitionSettingsSchema = z.object({
+  /** Для `sequence` здесь лежит printf-шаблон, а не путь к одному файлу. */
   assetPath: z.string().min(1).nullable().default(null),
+  sourceKind: stingerSourceKindSchema.default("file"),
+  /** Номер первого кадра последовательности. */
+  sequenceStartNumber: z.number().int().nonnegative().max(1_000_000).nullable().default(null),
+  sequenceFrameCount: z.number().int().positive().max(10_000).nullable().default(null),
   sourceFrameRate: z.number().positive().max(240).nullable().default(null),
   sourcePixelFormat: z.string().max(64).nullable().default(null),
   sourceHasAlpha: z.boolean().nullable().default(null),
@@ -490,7 +503,23 @@ export const stingerTransitionSettingsSchema = z.object({
 }).refine((settings) => settings.cutPointSeconds < settings.durationSeconds, {
   message: "Stinger cut point must be inside its duration",
   path: ["cutPointSeconds"],
-});
+}).refine(
+  // Частота кадров в самих .png не записана: без неё длительность перехода
+  // не определена, и FFmpeg взял бы своё умолчание в 25 fps.
+  (settings) => settings.sourceKind !== "sequence" || settings.sourceFrameRate != null,
+  {
+    message: "Для последовательности .png нужно задать частоту кадров",
+    path: ["sourceFrameRate"],
+  },
+).refine(
+  // Звука в последовательности нет физически. Молча выключать нельзя: оператор
+  // считал бы, что переход звучит.
+  (settings) => settings.sourceKind !== "sequence" || !settings.audioEnabled,
+  {
+    message: "У последовательности .png нет звуковой дорожки",
+    path: ["audioEnabled"],
+  },
+);
 
 export const broadcastEffectSettingsSchema = z.object({
   animationInOut: animationInOutSettingsSchema.default(() => animationInOutSettingsSchema.parse({})),
@@ -538,13 +567,34 @@ export const broadcastDataMappingSchema = z.object({
   bindings: z.array(broadcastDataBindingSchema).max(128).default([]),
 });
 
+/**
+ * Чем оформлен эффект.
+ *
+ * `file` — загруженный шаблон или alpha-медиа: оформление рисует он, а живое
+ * значение ложится поверх штатной надписью. `plate` — прямоугольник, который
+ * эффект рисует сам: цвет, прозрачность и отступ лежат в стиле надписи.
+ *
+ * У Animation in/out и Stinger выбора нет — без файла этих эффектов просто не
+ * существует, поэтому им оформление всегда `file` (см. `fileOnlyEffectKinds`).
+ */
+export const effectDecorationSchema = z.enum(["file", "plate"]);
+
 export const broadcastEffectDefinitionSchema = z.object({
   kind: broadcastEffectKindSchema,
   presetEffectId: z.string().min(1).nullable().default(null),
+  /** Отсутствует у сессий до v8.0.0 — восстанавливается ниже по `presetEffectId`. */
+  decoration: effectDecorationSchema.optional(),
   settings: broadcastEffectSettingsSchema.default(() => broadcastEffectSettingsSchema.parse({})),
   placement: effectPlacementSchema.default(() => effectPlacementSchema.parse({})),
   dataMapping: broadcastDataMappingSchema.default(() => broadcastDataMappingSchema.parse({})),
-});
+}).transform((definition) => ({
+  ...definition,
+  // Сессии, записанные до появления поля, о выборе оформления не знают. Если
+  // графика эффекту назначена — значит он оформлен ею, и простой `default`
+  // молча погасил бы плашку, которая уже выходит в эфир.
+  decoration: definition.decoration
+    ?? (definition.presetEffectId ? ("file" as const) : ("plate" as const)),
+}));
 
 /** Одна сырая запись допускает произвольную структуру; сервер распрямит её в dotted keys. */
 export const broadcastTaskEntrySchema = z.record(z.string(), z.unknown());
@@ -711,6 +761,12 @@ export const graphicEffectLayerSchema = z.object({
   blendMode: stingerBlendModeSchema.default("alpha"),
   lumaThreshold: z.number().min(0).max(1).default(0.08),
   /**
+   * Слой собран из пронумерованных кадров: `filePath` — printf-шаблон, а не
+   * файл. Частоту кадров задаёт оператор, в самих .png её нет.
+   */
+  sequenceFrameRate: z.number().positive().max(240).nullable().default(null),
+  sequenceStartNumber: z.number().int().nonnegative().max(1_000_000).nullable().default(null),
+  /**
    * Сдвиг слоя по кадру в процентах его ширины и высоты. Слой рисуется во весь
    * кадр, поэтому сдвиг двигает всю графику разом — и вместе с ней надпись
    * эффекта, которой планировщик поправил координаты на те же проценты.
@@ -795,12 +851,62 @@ export const playoutItemSchema = z.object({
   audioTracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks).optional(),
 });
 
+/**
+ * Псевдопуть источника цветных полос. Файла с таким именем не существует:
+ * FFmpeg рисует полосы фильтром, поэтому эфир поднимается даже тогда, когда
+ * в расписании нет ни одного ролика, — вместо отказа на старте в линию уходит
+ * привычная инженеру заглушка.
+ *
+ * Соглашение то же, что у эффектов второго уровня с их `broadcast://`: путь
+ * указывает на способ получить картинку, а не на файл.
+ */
+export const barsSourcePath = "bars://smpte";
+
+/**
+ * Длительность одного круга заглушки. Полосы крутятся повтором расписания,
+ * поэтому число задаёт только частоту перезапуска рендерера, а не то, сколько
+ * заглушка продержится в эфире.
+ */
+export const barsSegmentSeconds = 60;
+
+export function isBarsSource(filePath: string): boolean {
+  return filePath === barsSourcePath;
+}
+
+/** Единственный элемент расписания-заглушки. */
+export function barsPlayoutItem(durationSeconds: number = barsSegmentSeconds): PlayoutItem {
+  return playoutItemSchema.parse({
+    id: "bars",
+    name: "Colour bars",
+    filePath: barsSourcePath,
+    hasAudio: false,
+    sourceDurationSeconds: durationSeconds,
+    trimOutSeconds: durationSeconds,
+  });
+}
+
 export const analyzeGraphicEffectsRequestSchema = z.object({
   paths: z.array(z.string().min(1)).min(1).max(200),
 });
 
 export const scanGraphicEffectsRequestSchema = z.object({
   directoryPath: z.string().min(1),
+});
+
+/** Разбор последовательности кадров по одному выбранному файлу. */
+export const imageSequenceRequestSchema = z.object({
+  framePath: z.string().min(1),
+});
+
+export const imageSequenceSchema = z.object({
+  /** printf-шаблон с абсолютным путём: именно он уходит в FFmpeg. */
+  pattern: z.string().min(1),
+  startNumber: z.number().int().nonnegative(),
+  frameCount: z.number().int().positive(),
+  /** Пропущенные номера внутри диапазона — дыры в переходе. */
+  missing: z.array(z.number().int().nonnegative()).max(20).default([]),
+  width: z.number().int().nonnegative().default(0),
+  height: z.number().int().nonnegative().default(0),
 });
 
 /** Системный шрифт для динамических надписей. */
@@ -1161,7 +1267,12 @@ export const defaultSubtitleOutput = {
 };
 
 export const startPlayoutRequestSchema = z.object({
-  playlist: z.array(playoutItemSchema).min(1).max(1_000),
+  /**
+   * Пустое расписание допустимо: вместо отказа на старте в линию уходят
+   * цветные полосы. Подстановка живёт в supervisor, чтобы её видел любой
+   * вызывающий, а не только HTTP-маршрут.
+   */
+  playlist: z.array(playoutItemSchema).max(1_000),
   nextPlaylist: z.array(playoutItemSchema).max(1_000).default([]),
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
@@ -1501,6 +1612,7 @@ export type AgeTitleOverlay = z.infer<typeof ageTitleOverlaySchema>;
 export type ItemLogoOverlay = z.infer<typeof itemLogoOverlaySchema>;
 export type BroadcastEffectKind = z.infer<typeof broadcastEffectKindSchema>;
 export type BroadcastEffectDefinition = z.infer<typeof broadcastEffectDefinitionSchema>;
+export type EffectDecoration = z.infer<typeof effectDecorationSchema>;
 export type BroadcastEffectSettings = z.infer<typeof broadcastEffectSettingsSchema>;
 export type BroadcastDataBinding = z.infer<typeof broadcastDataBindingSchema>;
 export type BroadcastDataMapping = z.infer<typeof broadcastDataMappingSchema>;
@@ -1514,6 +1626,7 @@ export type TickerCrawlSettings = z.infer<typeof tickerCrawlSettingsSchema>;
 export type ClockCountdownSettings = z.infer<typeof clockCountdownSettingsSchema>;
 export type StingerTransitionSettings = z.infer<typeof stingerTransitionSettingsSchema>;
 export type StingerBlendMode = z.infer<typeof stingerBlendModeSchema>;
+export type StingerSourceKind = z.infer<typeof stingerSourceKindSchema>;
 export type CountdownSource = z.infer<typeof countdownSourceSchema>;
 export type BroadcastTextStyle = z.infer<typeof broadcastTextStyleSchema>;
 export type BroadcastTextOverlay = z.infer<typeof broadcastTextOverlaySchema>;
@@ -1539,6 +1652,7 @@ export type ScheduleExportExtension = z.infer<typeof scheduleExportExtensionSche
 export type SerializeScheduleRequest = z.infer<typeof serializeScheduleRequestSchema>;
 export type SerializedSchedule = z.infer<typeof serializedScheduleSchema>;
 export type PlayoutItem = z.infer<typeof playoutItemSchema>;
+export type ImageSequence = z.infer<typeof imageSequenceSchema>;
 export type AudioTrack = z.infer<typeof audioTrackSchema>;
 export type ProgramAudioTrack = z.infer<typeof programAudioTrackSchema>;
 export type AudioProgram = z.infer<typeof audioProgramSchema>;

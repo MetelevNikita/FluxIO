@@ -44,6 +44,19 @@ export function tickerRegion(
   };
 }
 
+/**
+ * Цвет холста полосы. Залитый холст и есть плашка бегущей строки: он стоит на
+ * месте, пока текст едет, и обрезает надпись по краю. Без плашки холст остаётся
+ * прозрачным и нужен только ради обрезки.
+ *
+ * Скруглить углы здесь нечем: и холст, и плашка `drawtext` рисуют прямой
+ * прямоугольник. Скругление потребовало бы отдельной картинки-подложки на
+ * каждый размер.
+ */
+export function tickerCanvasColor(style: BroadcastTextStyle): string {
+  return style.boxEnabled ? `${style.boxColor}@${decimal(style.boxOpacity)}` : "black@0";
+}
+
 /** Один аргумент фильтра `drawtext` без завершающей запятой. */
 export function buildTextOverlayFilter(
   overlay: BroadcastTextOverlay,
@@ -64,7 +77,10 @@ export function buildTextOverlayFilter(
     ...(overlay.style.fontFilePath
       ? [`fontfile='${escapeFilterValue(overlay.style.fontFilePath)}'`]
       : []),
-    ...(overlay.style.boxEnabled
+    // Внутри полосы плашкой служит сам холст: он залит цветом и стоит на месте,
+    // пока текст едет. Собственная плашка `drawtext` поехала бы вместе с
+    // надписью — снаружи это выглядит как прямоугольник, ползающий по плашке.
+    ...(overlay.style.boxEnabled && !insideRegion
       ? [
           "box=1",
           `boxcolor=${overlay.style.boxColor}@${decimal(overlay.style.boxOpacity)}`,

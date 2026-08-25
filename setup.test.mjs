@@ -18,6 +18,7 @@ import {
   parseEnv,
   platformServiceStopCommand,
   probeGstreamerDvbPlugin,
+  selectEnvBackupsToRemove,
   serializeEnv,
   validatePort,
   windowsToolCandidates,
@@ -154,6 +155,37 @@ test("setup environment serialization round-trips quoted values", () => {
     GRUBER_SECRET_KEY: "abc$def`ghi\\jkl\"mno",
   };
   assert.deepEqual(parseEnv(serializeEnv(values)), values);
+});
+
+test("setup keeps only the two newest .env backups", () => {
+  const files = [
+    ".env",
+    ".env.example",
+    ".env.backup-2026-08-17T03-29-19-087Z",
+    ".env.backup-2026-08-24T10-56-29-861Z",
+    ".env.backup-2026-08-20T07-42-10-145Z",
+    ".env.backup-2026-08-24T09-46-43-370Z",
+    "package.json",
+  ];
+  assert.deepEqual(selectEnvBackupsToRemove(files), [
+    ".env.backup-2026-08-20T07-42-10-145Z",
+    ".env.backup-2026-08-17T03-29-19-087Z",
+  ]);
+});
+
+test("setup never touches files that only look like .env backups", () => {
+  assert.deepEqual(
+    selectEnvBackupsToRemove([".env", ".env.example", "notes.env.backup-2026-01-01T00-00-00-000Z"]),
+    [],
+  );
+});
+
+test("setup leaves the backups alone until there are more than it keeps", () => {
+  const files = [
+    ".env.backup-2026-08-24T09-46-43-370Z",
+    ".env.backup-2026-08-24T10-56-29-861Z",
+  ];
+  assert.deepEqual(selectEnvBackupsToRemove(files), []);
 });
 
 test("setup validates TCP ports", () => {

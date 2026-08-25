@@ -556,6 +556,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
         backgroundPath: effect.filePath,
         blendMode: "alpha",
         lumaThreshold: 0.08,
+        sequenceFrameRate: null,
+        sequenceStartNumber: null,
         // Сдвиг задаётся эффектом второго уровня; уровень 3 ложится как есть.
         offsetXPercent: 0,
         offsetYPercent: 0,

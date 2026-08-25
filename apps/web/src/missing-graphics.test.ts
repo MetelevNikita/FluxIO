@@ -13,6 +13,8 @@ function layer(overrides: Partial<GraphicEffectLayer> = {}): GraphicEffectLayer 
   return {
     backgroundPath: "/fx/lower.mov",
     blendMode: "alpha",
+    sequenceFrameRate: null,
+    sequenceStartNumber: null,
     effectId: "fx-lower",
     endSeconds: 5,
     filePath: "/fx/lower.mov",

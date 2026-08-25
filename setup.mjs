@@ -14,11 +14,18 @@ import { fileURLToPath } from "node:url";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
-const offline = process.argv.includes("--offline");
+/**
+ * Офлайн-режим спрашивается первым вопросом мастера, поэтому значение меняется
+ * в рантайме. Флаг `--offline` отвечает на вопрос заранее и пропускает его.
+ */
+const offlineFlagPassed = process.argv.includes("--offline");
+let offline = offlineFlagPassed;
+/** Сколько резервных копий `.env` держим на диске: последняя и предыдущая. */
+const envBackupsToKeep = 2;
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
   ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "7.0.17";
+const applicationVersion = "8.0.0";
 
 export function buildDatabaseUrl({
   database,
@@ -190,6 +197,12 @@ async function main() {
   const prompt = new Prompt();
 
   try {
+    offline = await askOfflineMode(prompt);
+    if (offline) {
+      console.log("\n  Сетевые установки и npm ci отключены.");
+      console.log("  Зависимости, Electron runtime и медиаинструменты берутся из дерева проекта.");
+    }
+
     const mode = await askProjectMode(prompt);
     const database = await askDatabase(prompt, mode, existingEnv);
     const service = await askMediaService(prompt, existingEnv);
@@ -218,9 +231,29 @@ async function main() {
 // Вопросы мастера: каждый блок отвечает за один экран установки
 //
 
+/**
+ * Первый вопрос мастера. Офлайн-режим меняет весь дальнейший сценарий — сетевые
+ * установки и `npm ci` отключаются, а зависимости обязаны уже лежать в дереве, —
+ * поэтому спросить нужно до всего остального.
+ */
+async function askOfflineMode(prompt) {
+  if (offlineFlagPassed) {
+    console.log("\n1. Тип установки: офлайн (передан --offline)");
+    return true;
+  }
+  return prompt.choose(
+    "1. Тип установки",
+    [
+      { label: "Обычная — есть доступ в интернет", value: false },
+      { label: "Офлайн — без интернета, всё из подготовленного дерева", value: true },
+    ],
+    0,
+  );
+}
+
 async function askProjectMode(prompt) {
   return prompt.choose(
-    "1. Режим проекта",
+    "2. Режим проекта",
     [
       { label: "Тест / разработка", value: "test" },
       { label: "Production", value: "production" },
@@ -648,7 +681,6 @@ function printHeader() {
   console.log(`\nFluxIO v${applicationVersion} — мастер установки`);
   console.log("=================================");
   console.log("Docker не используется. Пароли не выводятся в итоговый отчёт.");
-  if (offline) console.log("Offline mode: сетевые установки и npm ci отключены.");
   console.log();
 }
 
@@ -756,12 +788,40 @@ function parseExistingDatabase(value) {
   }
 }
 
+/**
+ * Держит на диске только последнюю и предыдущую копии `.env`. Мастер запускают
+ * десятки раз, и без ротации корень зарастает бэкапами, каждый из которых
+ * содержит секреты.
+ */
+export function selectEnvBackupsToRemove(fileNames, keep = envBackupsToKeep) {
+  const prefix = `${path.basename(envPath)}.backup-`;
+  return fileNames
+    .filter((name) => name.startsWith(prefix))
+    // В имени лежит ISO-метка фиксированной ширины, поэтому лексикографический
+    // порядок совпадает с хронологическим и разбирать дату не нужно.
+    .sort()
+    .reverse()
+    .slice(keep);
+}
+
+async function pruneEnvBackups() {
+  const stale = selectEnvBackupsToRemove(readdirSync(projectRoot));
+  for (const name of stale) {
+    await rm(path.join(projectRoot, name), { force: true });
+  }
+  return stale.length;
+}
+
 async function saveEnv(values) {
   if (existsSync(envPath)) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = `${envPath}.backup-${timestamp}`;
     await copyFile(envPath, backupPath);
     console.log(`\nСуществующий .env сохранён: ${path.basename(backupPath)}`);
+    const removed = await pruneEnvBackups();
+    if (removed > 0) {
+      console.log(`Устаревших копий удалено: ${removed} (храним последние ${envBackupsToKeep}).`);
+    }
   }
   await writeFile(envPath, serializeEnv(values), { encoding: "utf8", mode: 0o600 });
   console.log("Конфигурация записана в .env (mode 0600).");

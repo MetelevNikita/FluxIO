@@ -13,6 +13,8 @@ import {
   systemFontListSchema,
   verifyGraphicEffectsRequestSchema,
   graphicEffectAssetSchema,
+  imageSequenceRequestSchema,
+  imageSequenceSchema,
   lottieSourceRequestSchema,
   renderLottieEffectRequestSchema,
   scanGraphicEffectsRequestSchema,
@@ -27,6 +29,8 @@ import {
   readTickerSourceFile,
 } from "../../effects/broadcast-task.js";
 import { scanSystemFonts } from "../../effects/system-fonts.js";
+import { probeMedia } from "../../ffmpeg/probe.js";
+import { readImageSequence } from "../../effects/image-sequence.js";
 import {
   lottieWasmBytes,
   readRenderableLottieDocument,
@@ -45,6 +49,30 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
       );
 
       return graphicEffectImportResultSchema.parse(result);
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  /**
+   * Разбор последовательности кадров. Оператор выбирает любой кадр, шаблон
+   * нумерации и границы диапазона выводятся из его имени и соседей в каталоге.
+   */
+  app.post("/api/effects/sequence", async (request, reply) => {
+    try {
+      const body = imageSequenceRequestSchema.parse(request.body);
+      const sequence = await readImageSequence(body.framePath);
+      // Размер берётся с первого кадра: у последовательности он одинаков у
+      // всех, а альфа у .png есть всегда — проверять её нечем и незачем.
+      const probe = await probeMedia(
+        sequence.firstFramePath,
+        context.capabilities.ffprobePath,
+      ).catch(() => null);
+      return imageSequenceSchema.parse({
+        ...sequence,
+        width: probe?.width ?? 0,
+        height: probe?.height ?? 0,
+      });
     } catch (error) {
       return badRequest(reply, error);
     }

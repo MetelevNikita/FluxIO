@@ -6,7 +6,6 @@ import {
   type BroadcastTaskFileContent,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
-  type GraphicEffectImportResult,
   type MediaProbe,
   type ParsedSchedule,
   type ScheduleExportExtension,
@@ -57,6 +56,7 @@ import {
 } from "./missing-graphics";
 import {
   applyBroadcastPlan,
+  graphicFileRejection,
   mapBroadcastTaskRecords,
   planBroadcastEffect,
   removeBroadcastEffect,
@@ -69,9 +69,9 @@ import {
   type BroadcastTaskSummary,
 } from "./screens/BroadcastEffectInspector";
 import {
-  appendLottieEffectInstances,
   assignEffectToAssets,
   lottieTextValues,
+  removeEffectFromLibrary,
 } from "./effect-assignment";
 import { buildAudioProgram } from "./audio-program";
 import type { AudioTrackLibrary } from "./types";
@@ -90,10 +90,10 @@ import {
   scanMediaDirectory,
   scanAudioTracks,
   readBroadcastTaskFile,
+  readImageSequence,
   readTickerFeed,
   readTickerSourceFile,
   verifyGraphicEffectPaths,
-  scanGraphicEffectDirectory,
   serializeScheduleFile,
   saveWorkspaceSession as persistWorkspaceSession,
   deleteWorkspaceSession as deletePersistedWorkspaceSession,
@@ -198,8 +198,6 @@ export function App() {
   const stableRemoveEffect = useStableCallback((id: string) => removeEffect(id));
   const stableRenderProjectLottie = useStableCallback((effect: GraphicEffectAsset) =>
     renderProjectLottie(effect));
-  const stableSelectEffectDirectory = useStableCallback(() => selectEffectDirectory());
-  const stableSelectEffectFiles = useStableCallback(() => selectEffectFiles());
   const stableSelectTitleDirectory = useStableCallback((id: string) =>
     selectEffectTitleDirectory(id));
   const stableChangeBroadcastEffect = useStableCallback((effect: GraphicEffectAsset) =>
@@ -209,6 +207,7 @@ export function App() {
   const stableSelectBroadcastTaskFile = useStableCallback((id: string) =>
     selectBroadcastTaskFile(id));
   const stableSelectStingerFile = useStableCallback((id: string) => selectStingerFile(id));
+  const stableSelectStingerSequence = useStableCallback((id: string) => selectStingerSequence(id));
   const stableSelectTickerSourceFile = useStableCallback((id: string) =>
     selectTickerSourceFile(id));
   const stableLoadTickerFeed = useStableCallback((id: string) => loadTickerFeed(id));
@@ -862,6 +861,10 @@ export function App() {
               backgroundPath: element.backgroundPath,
               blendMode: "alpha" as const,
               lumaThreshold: 0.08,
+              // Импортированное расписание не описывает последовательностей
+              // кадров: там всегда готовый файл.
+              sequenceFrameRate: null,
+              sequenceStartNumber: null,
               // Импортированное расписание не несёт сдвига: графика ложится
               // туда, куда её поставил дизайнер.
               offsetXPercent: 0,
@@ -1140,18 +1143,6 @@ export function App() {
     if (paths?.length) await analyzePaths(paths, activeSchedule);
   }
 
-  async function selectEffectFiles() {
-    const paths = await window.gruberDesktop?.selectEffectFiles();
-    if (!paths?.length) return;
-    await importEffects(() => analyzeGraphicEffectPaths(paths));
-  }
-
-  async function selectEffectDirectory() {
-    const directoryPath = await window.gruberDesktop?.selectEffectDirectory();
-    if (!directoryPath) return;
-    await importEffects(() => scanGraphicEffectDirectory(directoryPath));
-  }
-
   async function selectEffectTitleDirectory(effectId: string) {
     const selection = await window.gruberDesktop?.selectEffectTitleDirectory();
     if (!selection) return;
@@ -1180,33 +1171,6 @@ export function App() {
     setPlaylist((current) => assignEffectTitles(current, effectId, []));
     setFuturePlaylist((current) => assignEffectTitles(current, effectId, []));
     setEffectsMessage("Per-clip title folder cleared; the shared BG remains assigned.");
-  }
-
-  async function importEffects(load: () => Promise<GraphicEffectImportResult>) {
-    setEffectsBusy(true);
-    setOperationError(null);
-    try {
-      const result = await load();
-      const imported = result.items;
-      setEffectLibrary((current) => appendLottieEffectInstances(
-        mergeEffectAssets(current, imported.filter((effect) => !effect.lottie)),
-        imported.filter((effect) => Boolean(effect.lottie)),
-      ));
-      setEffectsMessage(
-        `${imported.length} effect(s) analyzed and added to this project.` +
-          (result.issues.length > 0
-            ? ` Пропущено: ${result.issues.length}. ${result.issues[0]?.message ?? ""}`
-            : ""),
-      );
-      if (imported.length === 0 && result.issues.length > 0) {
-        setOperationError(result.issues.map((issue) =>
-          `${issue.filePath}: ${issue.message}`).slice(0, 5).join("\n"));
-      }
-    } catch (error) {
-      setOperationError(errorMessage(error));
-    } finally {
-      setEffectsBusy(false);
-    }
   }
 
   async function renderProjectLottie(effect: GraphicEffectAsset): Promise<GraphicEffectAsset> {
@@ -1598,14 +1562,23 @@ export function App() {
   }
 
   /**
-   * Подгрузка Lottie прямо из настроек эффекта второго уровня: файл
-   * анализируется, попадает в библиотеку как эффект уровня 3 и сразу
-   * назначается пресетом — без похода в общий импорт и обратно.
+   * Подгрузка графики прямо из настроек эффекта второго уровня: файл
+   * анализируется, попадает в библиотеку и сразу назначается этому эффекту.
+   * Общего импорта больше нет — графика принадлежит эффекту, а не библиотеке.
    */
   async function importBroadcastPreset(effectId: string) {
+    const target = effectLibrary.find((entry) => entry.id === effectId);
+    if (!target?.broadcast) return;
     const paths = await window.gruberDesktop?.selectEffectFiles();
     const selected = paths?.[0];
     if (!selected) return;
+    // Расширение проверяется до обращения к службе: разбирать заведомо чужой
+    // файл незачем, а причину отказа оператор должен увидеть сразу на выборе.
+    const rejection = graphicFileRejection(target.broadcast.kind, selected);
+    if (rejection) {
+      setOperationError(rejection);
+      return;
+    }
     setEffectsBusy(true);
     setOperationError(null);
     try {
@@ -1703,6 +1676,73 @@ export function App() {
         },
       }));
       setEffectsMessage(`Бегущая строка: загружено ${content.items.length} сообщений.`);
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /**
+   * Переход из пронумерованных кадров. Оператор выбирает любой кадр, шаблон и
+   * границы диапазона выводит служба.
+   *
+   * Частоту кадров она вывести не может — в .png её нет. Берём текущую частоту
+   * проекта как отправную точку и показываем поле: иначе переход поехал бы по
+   * длительности на чужом умолчании FFmpeg.
+   */
+  async function selectStingerSequence(effectId: string) {
+    const framePath = await window.gruberDesktop?.selectStingerFile();
+    if (!framePath) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const sequence = await readImageSequence(framePath);
+      const frameRate = Number(settings.frameRate) || 25;
+      const durationSeconds = Math.min(30, Math.max(0.04, sequence.frameCount / frameRate));
+      updateBroadcastSettings(effectId, (effect) => {
+        const current = effect.broadcast!.settings.stingerTransition;
+        const cutPointSeconds = current.cutPointSeconds < durationSeconds
+          ? current.cutPointSeconds
+          : Math.max(1 / frameRate, durationSeconds / 2);
+        return {
+          ...effect,
+          broadcast: effect.broadcast && {
+            ...effect.broadcast,
+            settings: {
+              ...effect.broadcast.settings,
+              stingerTransition: {
+                ...current,
+                assetPath: sequence.pattern,
+                sourceKind: "sequence" as const,
+                sequenceStartNumber: sequence.startNumber,
+                sequenceFrameCount: sequence.frameCount,
+                sourceFrameRate: frameRate,
+                // У .png альфа есть всегда, а звука нет физически.
+                sourceHasAlpha: true,
+                sourceHasAudio: false,
+                sourcePixelFormat: "rgba",
+                audioEnabled: false,
+                cutPointSeconds,
+                durationSeconds,
+              },
+            },
+          },
+        };
+      });
+      setEffectsMessage(
+        `Последовательность: ${sequence.frameCount} кадр(ов) с номера ${sequence.startNumber}` +
+          `, ${durationSeconds.toFixed(2)} с при ${frameRate} fps.` +
+          (sequence.missing.length > 0
+            ? ` Пропущены кадры: ${sequence.missing.join(", ")} — переход оборвётся на первом из них.`
+            : ""),
+      );
+      if (sequence.missing.length > 0) {
+        setOperationError(
+          `В последовательности не хватает кадров (${sequence.missing.length}). ` +
+            "FFmpeg остановит чтение на первом пропуске, и переход оборвётся посреди стыка.",
+        );
+      }
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1861,7 +1901,9 @@ export function App() {
     if (assigned && !window.confirm(`Remove ${effect.name} and every assignment from the playlists?`)) {
       return;
     }
-    setEffectLibrary((current) => current.filter((entry) => entry.id !== effectId));
+    // Вместе с эффектом уходит и его графика: самостоятельным элементом списка
+    // она быть перестала, и осиротевшую запись оператор бы уже не увидел.
+    setEffectLibrary((current) => removeEffectFromLibrary(current, effectId));
     setBroadcastTaskContents((current) => {
       const { [effectId]: removed, ...rest } = current;
       return rest;
@@ -2476,14 +2518,13 @@ export function App() {
           onClearTitleDirectory={stableClearTitleDirectory}
           onRemove={stableRemoveEffect}
           onRenderLottie={stableRenderProjectLottie}
-          onSelectDirectory={window.gruberDesktop ? stableSelectEffectDirectory : undefined}
-          onSelectFiles={window.gruberDesktop ? stableSelectEffectFiles : undefined}
           onSelectTitleDirectory={window.gruberDesktop ? stableSelectTitleDirectory : undefined}
           broadcastTaskSummaries={broadcastTaskSummaries}
           onChangeBroadcastEffect={stableChangeBroadcastEffect}
           onCreateBroadcastEffect={stableCreateBroadcastEffect}
           onSelectBroadcastTaskFile={stableSelectBroadcastTaskFile}
           onSelectStingerFile={stableSelectStingerFile}
+          onSelectStingerSequence={stableSelectStingerSequence}
           onSelectTickerSourceFile={stableSelectTickerSourceFile}
           onLoadTickerFeed={stableLoadTickerFeed}
           onApplyBroadcastChanges={stableApplyBroadcastChanges}
@@ -2810,9 +2851,9 @@ function buildStartRequest(
   nextPlaylist: MediaAsset[] = [],
   requireStreaming = true,
 ): StartPlayoutRequest {
-  if (playlist.length === 0) {
-    throw new Error("Playlist is empty");
-  }
+  // Пустое расписание больше не отказ: служба поднимет линию на цветных полосах,
+  // и собрать расписание можно уже под живым эфиром. Превью отдельного ролика
+  // это не касается — там пустой список означает, что показывать нечего.
   if (requireStreaming && !settings.streamingEnabled) {
     throw new Error("Streaming output is disabled");
   }
@@ -3111,7 +3152,7 @@ function pixelFormatHasAlpha(pixelFormat: string): boolean {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "7.0.17";
+const applicationVersion = "8.0.0";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

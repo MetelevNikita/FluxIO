@@ -3,6 +3,8 @@ import test from "node:test";
 import type { GraphicEffectAsset, LottieEditableProperty } from "@gruber/contracts";
 import {
   applyBroadcastPlan,
+  effectBlocker,
+  graphicFileRejection,
   containTextBox,
   joinTickerItems,
   lottieTextFieldKey,
@@ -76,6 +78,9 @@ function broadcastEffect(
   return {
     broadcast: {
       dataMapping: { filePath: null, matchSourceKey: "name", bindings: [] },
+      // Файл эффекту назначен, поэтому оформление у фикстуры — «шаблон»:
+      // при «плашке» план игнорировал бы пресет.
+      decoration: "file" as const,
       kind: kind as never,
       placement,
       presetEffectId: "preset-1",
@@ -897,7 +902,126 @@ test("stinger splits across the cut and takes the second half from mid file", ()
   assert.equal(result.audioOverlays[1]!.overlay.sourceInSeconds, 0.52);
 });
 
-test("a stinger without its own file falls back to the Lottie preset", () => {
+test("each kind accepts only the graphics it can actually use", () => {
+  // Шаблон титров в бегущую строку не годится: ей нужна подложка, а не набор
+  // текстовых слоёв. И наоборот — alpha-медиа нечего подставить в титр.
+  assert.equal(graphicFileRejection("dynamic-title", "/g/title.json"), null);
+  assert.equal(graphicFileRejection("next-program", "/g/title.json"), null);
+  assert.equal(graphicFileRejection("clock-countdown", "/g/title.json"), null);
+  assert.equal(graphicFileRejection("ticker-crawl", "/g/plate.mov"), null);
+  assert.equal(graphicFileRejection("animation-in-out", "/g/in.png"), null);
+  assert.equal(graphicFileRejection("stinger-transition", "/g/wipe.mov"), null);
+
+  assert.match(graphicFileRejection("ticker-crawl", "/g/title.json") ?? "", /Бегущая строка/);
+  assert.match(graphicFileRejection("dynamic-title", "/g/plate.mov") ?? "", /Title Studio/);
+  assert.match(graphicFileRejection("stinger-transition", "/g/clip.mp4") ?? "", /альфой/);
+});
+
+test("the format check ignores case and paths without an extension", () => {
+  assert.equal(graphicFileRejection("dynamic-title", "C:\\Titles\\Lower.JSON"), null);
+  assert.match(
+    graphicFileRejection("dynamic-title", "/g/README") ?? "",
+    /файл без расширения/,
+  );
+});
+
+test("an effect that cannot be applied says so before the operator tries", () => {
+  const stinger = broadcastEffect("stinger-transition", {
+    stingerTransition: {
+      ...broadcastEffect("stinger-transition", {}).broadcast!.settings.stingerTransition,
+      assetPath: null,
+    },
+  });
+  assert.match(effectBlocker(stinger, []) ?? "", /файл перехода/);
+
+  const title = broadcastEffect("dynamic-title", {});
+  // Файл назначен, но самой графики в библиотеке нет — перенос проекта или
+  // чужая сессия. Молча применяться такой эффект не должен.
+  assert.match(effectBlocker(title, []) ?? "", /потерян/);
+  assert.equal(effectBlocker(title, [preset()]), null);
+});
+
+test("an effect drawing its own plate needs no file at all", () => {
+  const effect = broadcastEffect("clock-countdown", {});
+  const withPlate: GraphicEffectAsset = {
+    ...effect,
+    broadcast: { ...effect.broadcast!, decoration: "plate", presetEffectId: null },
+  };
+  assert.equal(effectBlocker(withPlate, []), null);
+});
+
+test("a stinger built from frames carries the operator's rate into the layer", () => {
+  const result = plan({
+    effect: broadcastEffect("stinger-transition", {
+      stingerTransition: {
+        ...broadcastEffect("stinger-transition", {}).broadcast!.settings.stingerTransition,
+        assetPath: "/fx/wipe_%04d.png",
+        sourceKind: "sequence",
+        sequenceStartNumber: 1,
+        sequenceFrameCount: 50,
+        sourceFrameRate: 50,
+        cutPointSeconds: 0.5,
+        durationSeconds: 1,
+      },
+    }),
+    preset: null,
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.layers.length, 2);
+  // Признаком последовательности служит именно частота: по ней command-builder
+  // отличает шаблон нумерации от одиночной картинки.
+  assert.equal(result.layers[0]!.layer.sequenceFrameRate, 50);
+  assert.equal(result.layers[0]!.layer.sequenceStartNumber, 1);
+  // Вторая половина по-прежнему берётся от точки разреза, округлённой к
+  // кадровой сетке: 0.5 с при 25 fps это 13-й кадр, то есть 0.52 с.
+  assert.equal(result.layers[1]!.layer.sourceInSeconds, 0.52);
+});
+
+test("a sequence without a frame rate is refused before it reaches the air", () => {
+  const result = plan({
+    effect: broadcastEffect("stinger-transition", {
+      stingerTransition: {
+        ...broadcastEffect("stinger-transition", {}).broadcast!.settings.stingerTransition,
+        assetPath: "/fx/wipe_%04d.png",
+        sourceKind: "sequence",
+        sourceFrameRate: null,
+      },
+    }),
+    preset: null,
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.layers, []);
+  assert.match(result.errors[0] ?? "", /частоту кадров/);
+});
+
+test("a sequence cannot carry the transition sound it does not have", () => {
+  const result = plan({
+    effect: broadcastEffect("stinger-transition", {
+      stingerTransition: {
+        ...broadcastEffect("stinger-transition", {}).broadcast!.settings.stingerTransition,
+        assetPath: "/fx/wipe_%04d.png",
+        sourceKind: "sequence",
+        sourceFrameRate: 25,
+        audioEnabled: true,
+      },
+    }),
+    preset: null,
+    targetIds: new Set(["a"]),
+  });
+
+  // Отставший звуковой вход останавливает мультиплексор целиком, поэтому
+  // выясняться это должно до применения, а не в эфире.
+  assert.deepEqual(result.audioOverlays, []);
+  assert.match(result.errors[0] ?? "", /звуковой дорожки/);
+});
+
+test("a stinger without its own file does not silently fall back to a template", () => {
+  // Раньше переход подхватывал Lottie-пресет. У файла ffprobe проверяет альфу,
+  // частоту кадров и звук до применения, у шаблона проверять нечего — поэтому
+  // источник у стингера теперь только один, и его отсутствие это ошибка.
   const result = plan({
     effect: broadcastEffect("stinger-transition", {
       stingerTransition: {
@@ -914,10 +1038,29 @@ test("a stinger without its own file falls back to the Lottie preset", () => {
     targetIds: new Set(["a"]),
   });
 
-  assert.deepEqual(result.errors, []);
-  assert.equal(result.layers.length, 2);
-  assert.equal(result.layers[0]!.layer.filePath, "/cache/preset.mov");
-  assert.equal(result.layers[1]!.layer.sourceInSeconds, 0.52);
+  assert.deepEqual(result.layers, []);
+  assert.match(result.errors[0] ?? "", /не выбран файл перехода/);
+});
+
+test("choosing the plate makes the plan ignore a file that stayed attached", () => {
+  const effect = broadcastEffect("dynamic-title", {
+    dynamicTitle: {
+      ...broadcastEffect("dynamic-title", {}).broadcast!.settings.dynamicTitle,
+      text: "Прямой эфир",
+    },
+  });
+  const withPlate: GraphicEffectAsset = {
+    ...effect,
+    broadcast: { ...effect.broadcast!, decoration: "plate" },
+  };
+  const result = plan({ effect: withPlate, preset: preset(), targetIds: new Set(["a"]) });
+
+  // Файл остался назначенным, но оформление выбрано плашкой: FX-слоя нет,
+  // надпись рисуется сама. Иначе плашку рисовали бы обе стороны сразу.
+  assert.deepEqual(result.layers, []);
+  assert.deepEqual(result.renders, []);
+  assert.equal(result.textOverlays.length, 1);
+  assert.equal(result.textOverlays[0]!.overlay.content, "Прямой эфир");
 });
 
 test("stinger snaps to the frame grid and rejects a cut outside the transition", () => {

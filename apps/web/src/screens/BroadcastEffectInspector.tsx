@@ -6,8 +6,10 @@ import type {
   GraphicEffectAsset,
   SystemFont,
 } from "@gruber/contracts";
-import { FileJson2, FileVideo2, FolderOpen, KeyRound, Layers3, Rss, RotateCcw, Save } from "lucide-react";
+import { FileJson2, FileVideo2, FolderOpen, KeyRound, Layers3, Rss, RotateCcw, Save, Square, X } from "lucide-react";
 import {
+  effectDecoration,
+  fileOnlyEffectKinds,
   lottieTextFields,
   mapBroadcastTaskRecords,
   summarizeBroadcastTaskMatches,
@@ -46,6 +48,7 @@ interface BroadcastEffectInspectorProps {
   onSelectTaskFile: () => void;
   onSelectTickerSource: () => void;
   onSelectStingerFile: () => void;
+  onSelectStingerSequence: () => void;
   onLoadTickerFeed: () => void;
   onApplyChanges: () => void;
   onApplyTaskToProject: () => void;
@@ -124,6 +127,7 @@ export function BroadcastEffectInspector({
   onSelectTaskFile,
   onSelectTickerSource,
   onSelectStingerFile,
+  onSelectStingerSequence,
   onLoadTickerFeed,
   onApplyChanges,
   onApplyTaskToProject,
@@ -186,48 +190,77 @@ export function BroadcastEffectInspector({
     setMappingOpen(true);
   }, [taskSummary?.filePath]);
 
-  const presetPicker = (label: string, optional: boolean) => (
+  /**
+   * Оформление эффекта: загруженный файл либо прямоугольная плашка, которую
+   * рисует сам эффект. Выпадающего списка пресетов больше нет — графика
+   * принадлежит эффекту, а не общей библиотеке, поэтому выбирать не из чего:
+   * файл либо загружен сюда, либо нет.
+   */
+  const decoration = effectDecoration(definition);
+  const fileOnly = fileOnlyEffectKinds.has(definition.kind);
+
+  const decorationPicker = (label: string) => (
     <div className="broadcast-field broadcast-field-wide broadcast-preset-picker">
       <span>{label}</span>
-      <div>
-        <select
-          aria-label={label}
-          disabled={busy}
-          onChange={(event) => {
-            const presetEffectId = event.target.value || null;
-            const preset = presets.find((candidate) => candidate.id === presetEffectId);
-            const suggestedBindings = preset?.lottie?.dataBindings ?? [];
-            onChange({
-              ...effect,
-              broadcast: {
-                ...definition,
-                presetEffectId,
-                dataMapping: definition.dataMapping.bindings.length > 0 || suggestedBindings.length === 0
-                  ? definition.dataMapping
-                  : {
-                      ...definition.dataMapping,
-                      bindings: suggestedBindings,
-                      matchSourceKey: preset?.lottie?.matchSourceKey ??
-                        definition.dataMapping.matchSourceKey,
-                    },
-              },
-            });
-          }}
-          value={definition.presetEffectId ?? ""}
-        >
-          {optional ? <option value="">{tr("Без пресета · штатная надпись", "No preset · standard text")}</option> : null}
-          {presets.length === 0 ? <option value="">{tr("Пресетов пока нет — подгрузите Lottie", "No presets yet — load Lottie")}</option> : null}
-          {presets.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.lottie ? "LOTTIE" : preset.kind.toUpperCase()} · {preset.name}
-            </option>
-          ))}
-        </select>
-        {/* Подгрузка прямо отсюда: иначе ради пресета приходится уходить
-            в общий импорт и возвращаться обратно к настройкам эффекта. */}
-        <button disabled={busy} onClick={onImportPreset} type="button">
-          <FileJson2 size={12} /> {tr("Подгрузить Lottie", "Load Lottie")}
-        </button>
+      <div className="broadcast-decoration">
+        {fileOnly ? null : (
+          <div className="broadcast-decoration-choice" role="group" aria-label={label}>
+            <button
+              aria-pressed={decoration === "file"}
+              disabled={busy}
+              onClick={() => onChange({
+                ...effect,
+                broadcast: { ...definition, decoration: "file" },
+              })}
+              type="button"
+            >
+              <FileJson2 size={12} /> {tr("Шаблон", "Template")}
+            </button>
+            <button
+              aria-pressed={decoration === "plate"}
+              disabled={busy}
+              onClick={() => onChange({
+                ...effect,
+                broadcast: { ...definition, decoration: "plate" },
+              })}
+              type="button"
+            >
+              <Square size={12} /> {tr("Плашка", "Plate")}
+            </button>
+          </div>
+        )}
+        {decoration === "file" ? (
+          <div className="broadcast-decoration-file">
+            <span className={selectedPreset ? "chosen" : "missing"}>
+              {selectedPreset
+                ? selectedPreset.name
+                : tr("Файл не выбран — эффект не применится", "No file chosen; the effect will not apply")}
+            </span>
+            <button disabled={busy} onClick={onImportPreset} type="button">
+              {selectedPreset ? tr("Заменить", "Replace") : tr("Загрузить", "Load")}
+            </button>
+            {selectedPreset ? (
+              <button
+                disabled={busy}
+                onClick={() => onChange({
+                  ...effect,
+                  broadcast: { ...definition, presetEffectId: null },
+                })}
+                title={tr("Снять файл с эффекта", "Detach the file from this effect")}
+                type="button"
+              >
+                <X size={12} />
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <p className="broadcast-decoration-hint">
+            {tr(
+              "Прямоугольник рисует сам эффект. Цвет, прозрачность и отступ — в блоке «Оформление текста» ниже.",
+              "The effect draws the rectangle itself. Color, opacity, and padding live in the text style block below.",
+            )}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -265,7 +298,7 @@ export function BroadcastEffectInspector({
         presets={presets}
       />
       <div className="broadcast-workflow-rail" aria-label={tr("Настройка эффекта", "Effect setup")}>
-        <span className={definition.presetEffectId ? "done" : "active"}><b>01</b> {tr("Шаблон", "Template")}</span>
+        <span className={decoration === "plate" || definition.presetEffectId ? "done" : "active"}><b>01</b> {tr("Оформление", "Design")}</span>
         <span className={!usesTaskData ? "disabled" : definition.dataMapping.filePath ? "done" : "active"}>
           <b>02</b> {tr("Данные", "Data")}
         </span>
@@ -276,7 +309,7 @@ export function BroadcastEffectInspector({
       {definition.kind === "stinger-transition" ? null : (
         <section className="broadcast-studio-card">
           <header><span>01</span><div><strong>{tr("Шаблон и данные", "Template and data")}</strong><small>{tr("Выберите оформление, затем свяжите JSON с Text Layer", "Choose the design, then map JSON to Text Layers")}</small></div></header>
-          {presetPicker(tr("Пользовательский шаблон", "Custom template"), definition.kind !== "animation-in-out")}
+          {decorationPicker(tr("Оформление", "Design"))}
           <PresetFieldsHint effect={effect} presets={presets} />
           {usesTaskData ? (
             <>
@@ -914,7 +947,6 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "stinger-transition" ? (
         <>
-          {presetPicker(tr("Lottie-пресет перехода", "Transition Lottie preset"), true)}
           <div className="broadcast-file-field">
             <span>{tr("Файл перехода с альфа-каналом", "Transition file with alpha channel")}</span>
             <strong title={settings.stingerTransition.assetPath ?? undefined}>
@@ -922,6 +954,9 @@ export function BroadcastEffectInspector({
                 ? shortPath(settings.stingerTransition.assetPath)
                 : tr("Не выбран", "Not selected")}
             </strong>
+            <button disabled={busy} onClick={onSelectStingerSequence} type="button">
+              <Layers3 size={12} /> {tr("Последовательность .png", "PNG sequence")}
+            </button>
             <button disabled={busy} onClick={onSelectStingerFile} type="button">
               <FileVideo2 size={12} /> {settings.stingerTransition.assetPath ? tr("Заменить", "Replace") : tr("Выбрать", "Select")}
             </button>
@@ -935,7 +970,7 @@ export function BroadcastEffectInspector({
                   sourceHasAudio: null,
                   sourcePixelFormat: null,
                 })}
-                title={tr("Снять файл и использовать пресет", "Remove file and use preset")}
+                title={tr("Снять файл перехода", "Remove the transition file")}
                 type="button"
               >
                 <RotateCcw size={12} />
@@ -943,13 +978,19 @@ export function BroadcastEffectInspector({
             ) : null}
             <em className="broadcast-hint">
               {settings.stingerTransition.assetPath
-                ? tr("Переход берётся из файла. Снимите его, чтобы использовать Lottie-пресет.", "The transition uses the file. Remove it to use the Lottie preset.")
-                : definition.presetEffectId
-                  ? tr("Файл не выбран — переход берётся из Lottie-пресета выше.", "No file selected — the transition uses the Lottie preset above.")
-                  : tr("Укажите файл или выберите Lottie-пресет: без источника переход не применится.", "Choose a file or Lottie preset; the transition needs a source.")}
+                ? tr("Переход берётся из этого файла.", "The transition uses this file.")
+                : tr("Без файла переход не применится: укажите .mov с альфой.", "Without a file the transition will not apply: choose a .mov with alpha.")}
             </em>
             {settings.stingerTransition.assetPath ? (
               <div className="stinger-source-facts">
+                {settings.stingerTransition.sourceKind === "sequence" ? (
+                  <span>
+                    {settings.stingerTransition.sequenceFrameCount ?? "—"} {tr("кадр(ов)", "frame(s)")}
+                    {settings.stingerTransition.sequenceStartNumber != null
+                      ? ` ${tr("с", "from")} #${settings.stingerTransition.sequenceStartNumber}`
+                      : ""}
+                  </span>
+                ) : null}
                 <span>{settings.stingerTransition.sourceFrameRate?.toFixed(2) ?? "—"} fps</span>
                 <span>{settings.stingerTransition.sourcePixelFormat ?? "pixel format —"}</span>
                 <span className={settings.stingerTransition.sourceHasAlpha ? "ok" : "warning"}>
@@ -959,6 +1000,40 @@ export function BroadcastEffectInspector({
                   audio {settings.stingerTransition.sourceHasAudio ? tr("есть", "present") : tr("нет", "none")}
                 </span>
               </div>
+            ) : null}
+            {settings.stingerTransition.sourceKind === "sequence" ? (
+              <>
+                <NumberField
+                  disabled={busy}
+                  label={tr("Частота кадров последовательности", "Sequence frame rate")}
+                  max={240}
+                  min={1}
+                  onChange={(sourceFrameRate) => {
+                    const frames = settings.stingerTransition.sequenceFrameCount;
+                    const durationSeconds = frames
+                      ? Math.min(30, Math.max(0.04, frames / Math.max(1, sourceFrameRate)))
+                      : settings.stingerTransition.durationSeconds;
+                    updateSettings("stingerTransition", {
+                      sourceFrameRate,
+                      durationSeconds,
+                      // Точка разреза обязана остаться внутри перехода: смена
+                      // частоты меняет его длину, а не только скорость.
+                      cutPointSeconds: Math.min(
+                        settings.stingerTransition.cutPointSeconds,
+                        Math.max(1 / Math.max(1, sourceFrameRate), durationSeconds / 2),
+                      ),
+                    });
+                  }}
+                  step={1}
+                  value={settings.stingerTransition.sourceFrameRate ?? 25}
+                />
+                <em className="broadcast-hint">
+                  {tr(
+                    "В самих .png частоты кадров нет — длительность перехода считается как число кадров, делённое на это значение.",
+                    "PNG files carry no frame rate; the transition length is the frame count divided by this value.",
+                  )}
+                </em>
+              </>
             ) : null}
             {settings.stingerTransition.assetPath &&
               settings.stingerTransition.blendMode === "alpha" &&

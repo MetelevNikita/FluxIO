@@ -23,6 +23,29 @@ export function appendLottieEffectInstances(
   return result;
 }
 
+/**
+ * Убирает эффект и его графику, если на неё больше никто не ссылается.
+ *
+ * Графика перестала быть самостоятельным элементом списка, поэтому осиротевшая
+ * запись оператору невидима — но остаётся в сессии и заново рендерится при
+ * каждом её восстановлении, занимая однопоточную службу.
+ *
+ * Общий файл у нескольких эффектов остаётся: удаление одного из них не должно
+ * гасить графику у соседей. Порядок остальных записей сохраняется — он задаёт
+ * порядок наложения слоёв в кадре.
+ */
+export function removeEffectFromLibrary(
+  effects: readonly GraphicEffectAsset[],
+  effectId: string,
+): GraphicEffectAsset[] {
+  const removed = effects.find((entry) => entry.id === effectId);
+  const rest = effects.filter((entry) => entry.id !== effectId);
+  const presetId = removed?.broadcast?.presetEffectId ?? null;
+  if (!presetId) return rest;
+  const stillReferenced = rest.some((entry) => entry.broadcast?.presetEffectId === presetId);
+  return stillReferenced ? rest : rest.filter((entry) => entry.id !== presetId);
+}
+
 export function lottieTextValues(effect: GraphicEffectAsset): string[] {
   return effect.lottie?.properties
     .filter((property) => property.type === "text")
@@ -55,6 +78,8 @@ export function assignEffectToAssets(
         effectId: effect.id,
         endSeconds,
         lumaThreshold: 0.08,
+        sequenceFrameRate: null,
+        sequenceStartNumber: null,
         // Эффект уровня 3 ложится туда, куда его поставил дизайнер; сдвиг
         // задаётся эффектом второго уровня.
         offsetXPercent: 0,

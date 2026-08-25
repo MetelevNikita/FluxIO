@@ -12,7 +12,13 @@ import type {
   PlayoutStatus,
   StartPlayoutRequest,
 } from "@gruber/contracts";
-import { defaultMpegTsOutputSettings, playoutStatusSchema } from "@gruber/contracts";
+import {
+  barsPlayoutItem,
+  barsSegmentSeconds,
+  defaultMpegTsOutputSettings,
+  isBarsSource,
+  playoutStatusSchema,
+} from "@gruber/contracts";
 import {
   buildFfmpegClipAudioProducerCommand,
   buildFfmpegClipVideoProducerCommand,
@@ -212,7 +218,7 @@ export class PlayoutSupervisor {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
     }
-    return this.#startPrepared(request);
+    return this.#startPrepared(withBarsFallback(request));
   }
 
   async take(request: StartPlayoutRequest): Promise<PlayoutStatus> {
@@ -2077,6 +2083,18 @@ async function prepareItems(
       let filePath: string;
       let sourceDurationSeconds: number;
       let hasAudio: boolean;
+      // У заглушки файла нет: полосы рисует сам FFmpeg. Проверять путь на диске
+      // нечем, поэтому ветка идёт до realpath и stat.
+      if (isBarsSource(item.filePath)) {
+        return {
+          id: item.id,
+          name: item.name,
+          filePath: item.filePath,
+          trimInSeconds: 0,
+          durationSeconds: item.trimOutSeconds ?? barsSegmentSeconds,
+          hasAudio: false,
+        };
+      }
       if (item.sourceDurationSeconds != null && item.hasAudio != null) {
         if (!path.isAbsolute(item.filePath)) {
           throw new PlayoutPreflightError(`Media path must be absolute: ${item.filePath}`);
@@ -2581,4 +2599,19 @@ async function reserveDistinctUdpPort(excludedPort: number): Promise<number> {
 
 function formatSeconds(value: number): string {
   return `${value.toFixed(3).replace(/\.?0+$/, "")} seconds`;
+}
+
+/**
+ * Подставляет заглушку, когда стартовать нечем.
+ *
+ * Пустое расписание раньше было отказом на старте. Инженеру привычнее обратное:
+ * линия поднимается, в неё уходят цветные полосы, и уже под живым эфиром можно
+ * собрать расписание — транспорт, PCR и адрес выдачи при этом настоящие.
+ *
+ * Повтор включается принудительно: заглушка обязана крутиться, пока её не
+ * сменят, а без повтора эфир завершился бы через один круг полос.
+ */
+export function withBarsFallback(request: StartPlayoutRequest): StartPlayoutRequest {
+  if (request.playlist.length > 0) return request;
+  return { ...request, playlist: [barsPlayoutItem()], repeatPlaylist: true };
 }

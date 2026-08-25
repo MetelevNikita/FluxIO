@@ -64,7 +64,14 @@ import {
   shouldTransitionToFutureSchedule,
   usesTsdDuckTransport,
   waitForPlayoutStop,
+  withBarsFallback,
 } from "./ffmpeg/playout-supervisor.js";
+import {
+  collectSequenceNumbers,
+  deriveSequenceNameParts,
+  describeSequenceNumbers,
+  sequencePattern,
+} from "./effects/image-sequence.js";
 import { runCommand } from "./ffmpeg/process.js";
 import {
   checkpointFromStatus,
@@ -122,11 +129,49 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.17");
+    assert.equal(health.version, "8.0.0");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
   }
+});
+
+test("a plain Bodymovin export is refused with the reason, not accepted half-working", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 50,
+    w: 1920,
+    h: 1080,
+    layers: [{ ty: 5, nm: "Title", ks: {}, t: { d: { k: [{ s: { t: "Hello" } }] } } }],
+  };
+
+  // Без блока meta.flux неизвестно, какие слои дизайнер объявил редактируемыми
+  // и с какими полями JSON они связаны. Принять такой файл значит показать
+  // оператору все слои подряд и заставить набирать имена руками.
+  assert.throws(
+    () => inspectLottieDocument(document, "/templates/plain.json"),
+    /FluxIO Title Studio/,
+  );
+});
+
+test("a Title Studio export that declares no fields still shows its text layers", () => {
+  const document = {
+    v: "5.12.2",
+    fr: 25,
+    ip: 0,
+    op: 50,
+    w: 1920,
+    h: 1080,
+    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
+    layers: [{ ty: 5, nm: "Title", ks: {}, t: { d: { k: [{ s: { t: "Hello" } }] } } }],
+  };
+
+  // Пустой список полей значит «не объявлено», а не «редактировать нечего»:
+  // иначе экспорт без выбранных слоёв прятал бы весь текст шаблона.
+  const metadata = inspectLottieDocument(document, "/templates/blank-fields.json");
+  assert.equal(metadata.properties.filter((property) => property.type === "text").length, 1);
 });
 
 test("Lottie inspector exposes operator properties and preserves animation until override", () => {
@@ -137,6 +182,7 @@ test("Lottie inspector exposes operator properties and preserves animation until
     op: 50,
     w: 1920,
     h: 1080,
+    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
     layers: [
       {
         ty: 1,
@@ -233,6 +279,7 @@ test("Lottie operator overrides update visibility, text and animated values", ()
     op: 25,
     w: 640,
     h: 360,
+    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
     layers: [{
       nm: "Title",
       hd: false,
@@ -267,6 +314,7 @@ test("Lottie Essential Graphics text slots are editable and override the rendere
     op: 25,
     w: 640,
     h: 360,
+    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
     slots: {
       "Programme/Title": {
         p: { k: [{ s: { f: "ArialMT", t: "Slot title" }, t: 0 }] },
@@ -313,6 +361,7 @@ test("Lottie text metadata warns when the export embeds a limited glyph set", ()
     op: 25,
     w: 640,
     h: 360,
+    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
     chars: [{ ch: "A" }],
     layers: [{ ty: 5, nm: "Title", t: { d: { k: [{ s: { t: "A" } }] } } }],
   };
@@ -1025,6 +1074,8 @@ test("an effect layer is composited where the operator moved it", () => {
       id: "layer-1",
       kind: "video",
       lumaThreshold: 0.08,
+      sequenceFrameRate: null,
+      sequenceStartNumber: null,
       name: "Plate",
       // −10 % ширины и +5 % высоты кадра 1280×720.
       offsetXPercent: -10,
@@ -1317,6 +1368,8 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       sourceInSeconds: 0,
       blendMode: "alpha" as const,
       lumaThreshold: 0.08,
+      sequenceFrameRate: null,
+      sequenceStartNumber: null,
       offsetXPercent: 0,
       offsetYPercent: 0,
       tier: 3 as const,
@@ -1335,6 +1388,8 @@ test("FFmpeg layers shared FX background, matched alpha title and SRT subtitles"
       sourceInSeconds: 0,
       blendMode: "alpha" as const,
       lumaThreshold: 0.08,
+      sequenceFrameRate: null,
+      sequenceStartNumber: null,
       offsetXPercent: 0,
       offsetYPercent: 0,
       tier: 3 as const,
@@ -1642,6 +1697,7 @@ test("Flux Title Exporter plate follows the actual replacement text width", asyn
       op: 50,
       w: 1920,
       h: 1080,
+      meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
       fonts: { list: [{ fName: "TestTitle", fFamily: "Test Title", fStyle: "Regular" }] },
       layers: [
         {
@@ -3113,13 +3169,64 @@ test("a ticker bound to a plate is clipped to its own canvas, not the whole fram
     "/tmp/preview",
   );
 
-  // Строка рисуется на своём прозрачном холсте шириной 40% кадра…
-  assert.match(command.filterGraph, /color=c=black@0:s=512x65:r=25:d=2\[vtickerbg0_0\]/);
+  // Строка рисуется на своём холсте шириной 40% кадра…
+  assert.match(command.filterGraph, /color=c=#000000@0\.6:s=512x65:r=25:d=2\[vtickerbg0_0\]/);
   // …внутри него координата считается от его же ширины…
   assert.match(command.filterGraph, /\[vtickerbg0_0\]drawtext=.*x='w-mod/);
   assert.match(command.filterGraph, /y='\(h-th\)\/2'/);
   // …и холст накладывается на кадр ровно в заданную полосу.
   assert.match(command.filterGraph, /\[vticker0_0\]overlay=x=230:y=601/);
+});
+
+test("the plate of a banded ticker is the canvas itself, so it does not ride along", () => {
+  const request = baseRequest();
+  const overlay = textOverlay({
+    content: "TEST",
+    mode: "ticker",
+    regionWidthPercent: 40,
+    regionXPercent: 18,
+    style: { ...textStyle(), boxColor: "#101820", boxOpacity: 0.75 },
+  });
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
+    "/tmp/preview",
+  );
+
+  // Холст залит цветом плашки и стоит на месте, пока текст едет.
+  assert.match(command.filterGraph, /color=c=#101820@0\.75:s=512x65/);
+  // Собственная плашка drawtext при этом выключена: иначе прямоугольник ползал
+  // бы по неподвижной плашке вместе с надписью.
+  assert.doesNotMatch(command.filterGraph, /\[vtickerbg0_0\]drawtext=[^;]*box=1/);
+});
+
+test("a banded ticker without a plate keeps its canvas transparent", () => {
+  const request = baseRequest();
+  const overlay = textOverlay({
+    content: "TEST",
+    mode: "ticker",
+    regionWidthPercent: 40,
+    regionXPercent: 18,
+    style: { ...textStyle(), boxEnabled: false },
+  });
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
+    "/tmp/preview",
+  );
+
+  // Холст нужен только ради обрезки по краю полосы, рисовать он ничего не должен.
+  assert.match(command.filterGraph, /color=c=black@0:s=512x65/);
+});
+
+test("a full-width ticker still draws its own plate around the text", () => {
+  const filter = buildTextOverlayFilter(
+    textOverlay({ content: "NEWS", mode: "ticker" }),
+    { airEpochSeconds: 0, height: 720, width: 1_280 },
+  );
+  // Полосы нет — холста тоже, поэтому плашку рисует сам drawtext по ширине текста.
+  assert.match(filter, /box=1/);
+  assert.match(filter, /boxcolor=#000000@0\.6/);
 });
 
 test("a full-width ticker needs no separate canvas", () => {
@@ -3130,6 +3237,111 @@ test("a full-width ticker needs no separate canvas", () => {
     "/tmp/preview",
   );
   assert.doesNotMatch(command.filterGraph, /vtickerbg/);
+});
+
+test("an empty schedule starts on colour bars instead of refusing to go on air", () => {
+  const request = { ...baseRequest(), playlist: [], repeatPlaylist: false };
+  const withBars = withBarsFallback(request);
+
+  assert.equal(withBars.playlist.length, 1);
+  assert.equal(withBars.playlist[0]!.filePath, "bars://smpte");
+  // Повтор обязателен: без него заглушка отыграла бы один круг и эфир встал.
+  assert.equal(withBars.repeatPlaylist, true);
+});
+
+test("a schedule with clips is left exactly as it came", () => {
+  const request = baseRequest();
+  assert.equal(withBarsFallback(request), request);
+});
+
+test("colour bars are generated by FFmpeg in the frame format of the playout", () => {
+  const request = withBarsFallback({ ...baseRequest(), playlist: [] });
+  const item = {
+    id: "bars",
+    name: "Colour bars",
+    filePath: "bars://smpte",
+    trimInSeconds: 0,
+    durationSeconds: 60,
+    hasAudio: false,
+  };
+  const command = buildFfmpegCommand(request, [item], "/tmp/preview");
+
+  // Файла нет — вместо `-i путь` встаёт генератор, и обязательно в той же
+  // сетке, что и обычные ролики: иначе encoder получит поток другого формата.
+  const input = command.args.indexOf("-i");
+  assert.equal(command.args[input - 2], "-f");
+  assert.equal(command.args[input - 1], "lavfi");
+  assert.match(String(command.args[input + 1]), /^smptehdbars=size=\d+x\d+:rate=/);
+  assert.doesNotMatch(command.args.join(" "), /-i bars:\/\//);
+});
+
+test("the frame number is taken from the end of the name, not from the middle", () => {
+  // У `cam2_frame_0042.png` номер кадра — 0042, а не 2 из имени камеры.
+  assert.deepEqual(deriveSequenceNameParts("cam2_frame_0042.png"), {
+    prefix: "cam2_frame_",
+    digits: 4,
+    suffix: ".png",
+  });
+  assert.equal(deriveSequenceNameParts("wipe.png"), null);
+});
+
+test("a gap in the numbering is counted, not skipped over", () => {
+  const parts = { prefix: "f_", digits: 3, suffix: ".png" };
+  const numbers = collectSequenceNumbers(
+    ["f_001.png", "f_002.png", "f_004.png", "notes.txt", "f_abc.png"],
+    parts,
+  );
+  assert.deepEqual(numbers, [1, 2, 4]);
+
+  // Три файла — но диапазон из четырёх кадров с дырой: FFmpeg остановится
+  // на третьем, и переход оборвётся посреди стыка.
+  assert.deepEqual(describeSequenceNumbers(numbers), {
+    startNumber: 1,
+    frameCount: 4,
+    missing: [3],
+  });
+});
+
+test("the printf width is fixed only when every frame is padded the same", () => {
+  const parts = { prefix: "f_", digits: 4, suffix: ".png" };
+  assert.equal(sequencePattern(parts, true), "f_%04d.png");
+  // Ширина разная: %04d не нашёл бы f_100.png, а %d читает и то, и другое.
+  assert.equal(sequencePattern(parts, false), "f_%d.png");
+});
+
+test("a stinger built from frames sets the rate FFmpeg cannot read from .png", () => {
+  const request = baseRequest();
+  const layer = {
+    id: "seq",
+    effectId: "fx-seq",
+    name: "wipe",
+    filePath: "/fx/wipe_%04d.png",
+    kind: "video" as const,
+    sourceDurationSeconds: 1,
+    startSeconds: 0,
+    endSeconds: 1,
+    sourceInSeconds: 0,
+    blendMode: "alpha" as const,
+    lumaThreshold: 0.08,
+    sequenceFrameRate: 50,
+    sequenceStartNumber: 7,
+    offsetXPercent: 0,
+    offsetYPercent: 0,
+    tier: 2 as const,
+    titlePaths: [],
+  };
+  const command = buildFfmpegCommand(
+    request,
+    [{ ...preparedItems()[0]!, effects: [layer] }],
+    "/tmp/preview",
+  );
+  const joined = command.args.join(" ");
+
+  assert.match(joined, /-framerate 50 -start_number 7 -i \/fx\/wipe_%04d\.png/);
+  // Шаблон заканчивается на .png, но статичной картинкой не является: без
+  // поправки к нему приклеился бы -loop 1, и обе половины перехода взяли бы
+  // один и тот же кадр.
+  assert.doesNotMatch(joined, /-loop 1 -framerate [\d.]+ -i \/fx\/wipe/);
 });
 
 test("clock drawtext follows on-air time, not the renderer's own wall clock", () => {
@@ -3182,6 +3394,8 @@ test("stinger halves come from one file: the tail at zero, the head from the cut
       sourceInSeconds: 0.52,
       blendMode: "luma" as const,
       lumaThreshold: 0.1,
+      sequenceFrameRate: null,
+      sequenceStartNumber: null,
       offsetXPercent: 0,
       offsetYPercent: 0,
       tier: 2 as const,
