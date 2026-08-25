@@ -10,7 +10,13 @@ import {
   lottieTextFieldKey,
   mapBroadcastTaskRecords,
   normalizeTaskTitle,
+  broadcastEffectSpans,
+  clipDisplayTitle,
   planBroadcastEffect,
+  removeBroadcastEffectSpan,
+  retimeBroadcastEffectSpan,
+  preferredTextFont,
+  withDefaultTextFont,
   removeBroadcastEffect,
   snapToFrameGrid,
   summarizeBroadcastTaskMatches,
@@ -901,6 +907,191 @@ test("stinger splits across the cut and takes the second half from mid file", ()
   assert.equal(result.audioOverlays[0]!.overlay.startSeconds, 99.48);
   assert.equal(result.audioOverlays[1]!.overlay.sourceInSeconds, 0.52);
 });
+
+test("the default font is a real file with Cyrillic, not FFmpeg's built-in one", () => {
+  const fonts = [
+    { family: "Comic Sans MS", filePath: "/f/comic.ttf", cyrillic: false },
+    { family: "Menlo", filePath: "/f/menlo.ttf", cyrillic: true },
+    { family: "Arial", filePath: "/f/arial.ttf", cyrillic: true },
+  ];
+  // Из знакомых семейств выбирается Arial, а не первый попавшийся с кириллицей.
+  assert.equal(preferredTextFont(fonts)?.filePath, "/f/arial.ttf");
+
+  // Знакомых нет — берётся любой с кириллицей, но не без неё.
+  assert.equal(preferredTextFont([fonts[0]!, fonts[1]!])?.filePath, "/f/menlo.ttf");
+  assert.equal(preferredTextFont([fonts[0]!]), null);
+  assert.equal(preferredTextFont([]), null);
+});
+
+test("the default font fills every empty style and never overwrites a chosen one", () => {
+  const settings = broadcastEffect("dynamic-title", {}).broadcast!.settings;
+  const chosen = {
+    ...settings,
+    tickerCrawl: {
+      ...settings.tickerCrawl,
+      style: { ...settings.tickerCrawl.style, fontFilePath: "/f/chosen.ttf", fontFamily: "Chosen" },
+    },
+  };
+  const font = { family: "Arial", filePath: "/f/arial.ttf", cyrillic: true };
+  const result = withDefaultTextFont(chosen, font);
+
+  assert.equal(result.dynamicTitle.style.fontFilePath, "/f/arial.ttf");
+  assert.equal(result.dynamicTitle.style.fontFamily, "Arial");
+  assert.equal(result.clockCountdown.style.fontFilePath, "/f/arial.ttf");
+  // Выбранный оператором шрифт умолчание не трогает.
+  assert.equal(result.tickerCrawl.style.fontFilePath, "/f/chosen.ttf");
+});
+
+test("no Cyrillic font in the system leaves the settings untouched", () => {
+  const settings = broadcastEffect("dynamic-title", {}).broadcast!.settings;
+  assert.equal(withDefaultTextFont(settings, null), settings);
+});
+
+test("one effect is one timeline track, not a plate and a caption apart", () => {
+  const asset = {
+    effects: [{ ...fxLayer("plate", "fx2-title", 2), startSeconds: 1, endSeconds: 6 }],
+    textOverlays: [{ ...textOverlay("caption", "fx2-title"), startSeconds: 1, endSeconds: 6 }],
+  };
+  const spans = broadcastEffectSpans(asset);
+
+  assert.equal(spans.length, 1);
+  assert.deepEqual(spans[0]!.parts, ["graphics", "text"]);
+  assert.deepEqual(spans[0]!.layerIds, ["plate"]);
+  assert.deepEqual(spans[0]!.textOverlayIds, ["caption"]);
+});
+
+test("the in and out windows of one effect stay separate tracks", () => {
+  const asset = {
+    effects: [
+      { ...fxLayer("in", "fx2-anim", 2), startSeconds: 0, endSeconds: 3 },
+      { ...fxLayer("out", "fx2-anim", 2), startSeconds: 17, endSeconds: 20 },
+    ],
+  };
+  // Один effectId, но два окна: ключ включает окно, поэтому вход и выход
+  // остаются разными дорожками и двигаются независимо.
+  assert.equal(broadcastEffectSpans(asset).length, 2);
+});
+
+test("the same tier 3 file dropped twice keeps two independent tracks", () => {
+  const asset = {
+    effects: [
+      { ...fxLayer("a", "fx-lower", 3), startSeconds: 0, endSeconds: 5 },
+      { ...fxLayer("b", "fx-lower", 3), startSeconds: 0, endSeconds: 5 },
+    ],
+  };
+  assert.equal(broadcastEffectSpans(asset).length, 2);
+});
+
+test("retiming a track moves every part of the effect at once", () => {
+  const asset = {
+    effects: [{ ...fxLayer("plate", "fx2-stinger", 2), startSeconds: 1, endSeconds: 3 }],
+    textOverlays: [{ ...textOverlay("caption", "fx2-stinger"), startSeconds: 1, endSeconds: 3 }],
+    audioOverlays: [{
+      id: "sfx",
+      effectId: "fx2-stinger",
+      filePath: "/fx/wipe.mov",
+      startSeconds: 1,
+      durationSeconds: 2,
+      sourceInSeconds: 0,
+      gainDb: -6,
+    }],
+  };
+  const span = broadcastEffectSpans(asset)[0]!;
+  const moved = retimeBroadcastEffectSpan(asset, span, 8, 11);
+
+  // Именно рассинхрон этих трёх окон и оставлял надпись висеть после того,
+  // как плашка отыграла.
+  assert.equal(moved.effects[0]!.startSeconds, 8);
+  assert.equal(moved.effects[0]!.endSeconds, 11);
+  assert.equal(moved.textOverlays[0]!.startSeconds, 8);
+  assert.equal(moved.textOverlays[0]!.endSeconds, 11);
+  assert.equal(moved.audioOverlays[0]!.startSeconds, 8);
+  assert.equal(moved.audioOverlays[0]!.durationSeconds, 3);
+});
+
+test("the track keeps its key after being moved, so a drag does not stall", () => {
+  const asset = {
+    effects: [{ ...fxLayer("plate", "fx2-title", 2), startSeconds: 1, endSeconds: 6 }],
+    textOverlays: [{ ...textOverlay("caption", "fx2-title"), startSeconds: 1, endSeconds: 6 }],
+  };
+  const before = broadcastEffectSpans(asset)[0]!;
+  const moved = retimeBroadcastEffectSpan(asset, before, 2, 7);
+  const after = broadcastEffectSpans({ ...asset, ...moved })[0]!;
+
+  // Перетаскивание — это поток мелких шагов, и каждый следующий ищет дорожку
+  // по ключу. Ключ от окна менялся бы вместе с ним, и эффект замирал после
+  // первого шага.
+  assert.equal(after.key, before.key);
+  assert.equal(after.startSeconds, 2);
+});
+
+test("the promo shows a clip name, not a file name", () => {
+  assert.equal(
+    clipDisplayTitle("/media/I built the hybrid PCMac setup [get-save.com].mp4"),
+    "I built the hybrid PCMac setup [get-save.com]",
+  );
+  assert.equal(clipDisplayTitle("C:\\Rundown\\News_01.mxf"), "News_01");
+  // Год в скобках — часть названия, а не мусор: трогать его нельзя.
+  assert.equal(clipDisplayTitle("Титаник [1997].mov"), "Титаник [1997]");
+  // Точка в середине имени расширением не является.
+  assert.equal(clipDisplayTitle("S01.E02.Пилот"), "S01.E02.Пилот");
+  assert.equal(clipDisplayTitle("без расширения"), "без расширения");
+});
+
+test("removing a track takes the whole effect off the clip", () => {
+  const asset = {
+    effects: [{ ...fxLayer("plate", "fx2-title", 2), startSeconds: 1, endSeconds: 6 }],
+    textOverlays: [{ ...textOverlay("caption", "fx2-title"), startSeconds: 1, endSeconds: 6 }],
+  };
+  const span = broadcastEffectSpans(asset)[0]!;
+  const cleared = removeBroadcastEffectSpan(asset, span);
+
+  assert.deepEqual(cleared.effects, []);
+  assert.deepEqual(cleared.textOverlays, []);
+});
+
+function fxLayer(id: string, effectId: string, tier: 2 | 3) {
+  return {
+    id,
+    effectId,
+    name: "effect",
+    filePath: "/fx/a.mov",
+    kind: "video" as const,
+    sourceDurationSeconds: 10,
+    startSeconds: 0,
+    endSeconds: 5,
+    sourceInSeconds: 0,
+    blendMode: "alpha" as const,
+    lumaThreshold: 0.08,
+    sequenceFrameRate: null,
+    sequenceStartNumber: null,
+    offsetXPercent: 0,
+    offsetYPercent: 0,
+    tier,
+    titlePaths: [],
+  };
+}
+
+function textOverlay(id: string, effectId: string) {
+  return {
+    id,
+    effectId,
+    name: "effect",
+    mode: "static" as const,
+    content: "TEXT",
+    style: style(),
+    startSeconds: 0,
+    endSeconds: 5,
+    clockFormat: "HH:MM:SS" as const,
+    countdownFromSeconds: 0,
+    direction: "left" as const,
+    regionWidthPercent: 100,
+    regionXPercent: 0,
+    repeat: 0,
+    speedPixelsPerSecond: 120,
+    timezoneOffsetMinutes: 0,
+  };
+}
 
 test("each kind accepts only the graphics it can actually use", () => {
   // Шаблон титров в бегущую строку не годится: ей нужна подложка, а не набор

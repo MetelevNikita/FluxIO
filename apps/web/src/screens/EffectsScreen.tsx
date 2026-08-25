@@ -25,12 +25,12 @@ import {
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { effectBlocker } from "../broadcast-effects";
+import { effectBlocker, preferredTextFont } from "../broadcast-effects";
 import {
   applyLottiePropertyOverrides,
   updateLinkedScaleVector,
 } from "../lottie-properties";
-import { getLottieSource, listSystemFonts, lottieWasmUrl } from "../media-api";
+import { getLottieSource, lottieWasmUrl } from "../media-api";
 import {
   BroadcastEffectInspector,
   broadcastEffectCatalog,
@@ -58,7 +58,7 @@ interface EffectsScreenProps {
   onAddToEntireProject: (effect: GraphicEffectAsset) => void;
   onAddToClip: (effect: GraphicEffectAsset, clipId: string) => void;
   broadcastTaskSummaries: Record<string, BroadcastTaskSummary>;
-  onCreateBroadcastEffect: (kind: BroadcastEffectKind) => void;
+  onCreateBroadcastEffect: (kind: BroadcastEffectKind, defaultFont: SystemFont | null) => void;
   onChangeBroadcastEffect: (effect: GraphicEffectAsset) => void;
   onSelectBroadcastTaskFile: (effectId: string) => Promise<void>;
   onSelectTickerSourceFile: (effectId: string) => Promise<void>;
@@ -77,6 +77,9 @@ interface EffectsScreenProps {
   onReorder: (movedEffectId: string, beforeEffectId: string | null) => void;
   /** Идёт эфир: тяжёлый WASM-предпросмотр в это время не крутим. */
   playoutActive: boolean;
+  /** Системные шрифты грузит App: они нужны и при применении эффекта. */
+  fonts: SystemFont[];
+  fontLoadError: string | null;
 }
 
 /**
@@ -111,32 +114,12 @@ export const EffectsScreen = memo(function EffectsScreen({
   assignedClipCounts,
   onReorder,
   playoutActive,
+  fonts,
+  fontLoadError,
 }: EffectsScreenProps) {
   const { tr } = useI18n();
   const [draggedEffectId, setDraggedEffectId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  // Системные шрифты запрашиваются один раз за сессию: список большой, а
-  // меняется он только при установке шрифтов в систему.
-  const [fonts, setFonts] = useState<SystemFont[]>([]);
-  const [fontLoadError, setFontLoadError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void listSystemFonts()
-      .then((items) => {
-        if (cancelled) return;
-        setFonts(items);
-        setFontLoadError(null);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setFontLoadError(tr(
-            `Не удалось получить системные шрифты: ${String(error)}`,
-            `Could not load system fonts: ${String(error)}`,
-          ));
-        }
-      });
-    return () => { cancelled = true; };
-  }, [tr]);
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
   const [previewEffect, setPreviewEffect] = useState<GraphicEffectAsset | null>(null);
@@ -293,7 +276,9 @@ export const EffectsScreen = memo(function EffectsScreen({
             <button
               disabled={busy}
               key={entry.kind}
-              onClick={() => onCreateBroadcastEffect(entry.kind)}
+              // Шрифт подставляется сразу: без файла кириллица выходит
+              // прямоугольниками, а подложку `fit:` нечем измерить.
+              onClick={() => onCreateBroadcastEffect(entry.kind, preferredTextFont(fonts))}
               title={tr(entry.summary, entry.summaryEn)}
               type="button"
             >

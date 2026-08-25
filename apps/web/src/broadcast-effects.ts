@@ -1,6 +1,7 @@
 import type {
   BroadcastDataMapping,
   BroadcastEffectKind,
+  BroadcastEffectSettings,
   BroadcastTextStyle,
   BroadcastTextOverlay,
   ClipAudioOverlay,
@@ -10,6 +11,7 @@ import type {
   GraphicEffectLayer,
   LottieEditableProperty,
   LottieFitSample,
+  SystemFont,
 } from "@gruber/contracts";
 import type { MediaAsset } from "./types.js";
 
@@ -191,6 +193,74 @@ export function effectDecoration(
   definition: NonNullable<GraphicEffectAsset["broadcast"]>,
 ): EffectDecoration {
   return fileOnlyEffectKinds.has(definition.kind) ? "file" : definition.decoration;
+}
+
+/**
+ * Семейства, с которых начинается поиск шрифта по умолчанию.
+ *
+ * Порядок не случаен: сначала то, что есть почти везде и уверенно несёт
+ * кириллицу, потом системные гарнитуры конкретных ОС.
+ */
+const preferredFontFamilies = [
+  "arial",
+  "helvetica",
+  "pt sans",
+  "noto sans",
+  "dejavu sans",
+  "liberation sans",
+  "roboto",
+  "segoe ui",
+  "tahoma",
+  "verdana",
+];
+
+/**
+ * Шрифт, которым эфирная надпись рисуется, пока оператор не выбрал свой.
+ *
+ * Без явного файла `drawtext` берёт встроенный шрифт FFmpeg, и кириллица
+ * выходит пустыми прямоугольниками — заметно это только на выходе. Хуже того,
+ * без файла нечем измерить надпись, поэтому подложка `fit:` остаётся исходной
+ * ширины и длинный текст вылезает за её край.
+ *
+ * Поэтому берётся первый доступный шрифт с кириллицей: сначала из знакомых
+ * семейств, потом любой подходящий.
+ */
+export function preferredTextFont(fonts: readonly SystemFont[]): SystemFont | null {
+  const cyrillic = fonts.filter((font) => font.cyrillic);
+  if (cyrillic.length === 0) return null;
+  for (const family of preferredFontFamilies) {
+    const match = cyrillic.find((font) => font.family.toLowerCase() === family);
+    if (match) return match;
+  }
+  for (const family of preferredFontFamilies) {
+    const match = cyrillic.find((font) => font.family.toLowerCase().startsWith(family));
+    if (match) return match;
+  }
+  return cyrillic[0] ?? null;
+}
+
+/**
+ * Проставляет шрифт во все стили надписей эффекта. Вид использует только свой
+ * блок, но эффект можно переключить, и оставлять в остальных пустой шрифт
+ * значит откладывать ту же поломку на потом.
+ */
+export function withDefaultTextFont(
+  settings: BroadcastEffectSettings,
+  font: SystemFont | null,
+): BroadcastEffectSettings {
+  if (!font) return settings;
+  const apply = <T extends { style: BroadcastTextStyle }>(block: T): T => (
+    block.style.fontFilePath
+      ? block
+      : { ...block, style: { ...block.style, fontFilePath: font.filePath, fontFamily: font.family } }
+  );
+  return {
+    ...settings,
+    dynamicTitle: apply(settings.dynamicTitle),
+    nextProgram: apply(settings.nextProgram),
+    tickerCrawl: apply(settings.tickerCrawl),
+    clockCountdown: apply(settings.clockCountdown),
+  };
 }
 
 /** Что вид принимает как оформление. */
@@ -573,12 +643,13 @@ function planNextProgram(context: PlanContext): void {
           "использовано имя ролика",
       );
     }
+    const nextTitle = next ? clipDisplayTitle(next.name) : "";
     const title = next
       ? (settings.source === "task-file"
           ? (nextEntries.length === 1
-              ? nextEntries[0]?.values[settings.titleKey] ?? next.name
-              : next.name)
-          : next.name)
+              ? nextEntries[0]?.values[settings.titleKey] ?? nextTitle
+              : nextTitle)
+          : nextTitle)
       : settings.fallbackTitle;
     if (!title) {
       context.plan.warnings.push(
@@ -635,6 +706,33 @@ function planNextProgram(context: PlanContext): void {
  * типам вовсе, берётся просто следующий элемент — иначе на ручном плейлисте
  * эффект не сработал бы никогда.
  */
+/**
+ * Имя ролика в том виде, в котором его не стыдно показать в эфире.
+ *
+ * В расписании лежит имя файла, и в анонс уходило оно целиком — вместе с путём
+ * и расширением: «… setup Ive always wanted [get-save.com].mp4». Убираем
+ * каталог и расширение; остальное трогать нельзя, иначе у фильма вида
+ * «Титаник [1997]» пропал бы год.
+ *
+ * Настоящее название всё равно берётся из файла задания — это лишь то, что
+ * можно сделать, имея одно имя файла.
+ */
+export function clipDisplayTitle(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? name;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return base.trim() || name.trim();
+  // Список, а не длина хвоста: «S01.E02.Пилот» расширения не имеет, а по длине
+  // «.Пилот» на него похож — и название потеряло бы последнее слово.
+  const extension = base.slice(dot + 1).toLowerCase();
+  const withoutExtension = mediaExtensions.has(extension) ? base.slice(0, dot) : base;
+  return withoutExtension.trim() || name.trim();
+}
+
+const mediaExtensions = new Set([
+  "mp4", "mov", "mxf", "mkv", "avi", "m4v", "webm", "ts", "m2ts", "mts",
+  "mpg", "mpeg", "wmv", "flv", "vob", "m2v", "dv", "gxf", "lxf",
+]);
+
 function nextMovieAfter(
   clips: readonly BroadcastTargetClip[],
   position: number,
@@ -1329,4 +1427,169 @@ function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
   const groups = new Map<string, T[]>();
   for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
   return groups;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Эффект как одна сущность на таймлайне
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Эффект второго уровня лежит на ролике несколькими сущностями сразу: файл
+ * оформления, живая надпись, иногда звуковая вставка. Планировщик создаёт их
+ * с одним и тем же окном, но на таймлайне они были отдельными дорожками — и
+ * подрезка одной не двигала остальные. Снаружи это выглядело так: плашка
+ * отыграла и исчезла, а надпись осталась висеть в кадре.
+ *
+ * Поэтому окно у эффекта одно, а дорожка на таймлайне — одна на эффект.
+ */
+export interface BroadcastEffectSpan {
+  key: string;
+  effectId: string;
+  name: string;
+  startSeconds: number;
+  endSeconds: number;
+  layerIds: string[];
+  textOverlayIds: string[];
+  audioOverlayIds: string[];
+  /** Из чего собрана дорожка — показывается оператору в подписи. */
+  parts: ("graphics" | "text" | "audio")[];
+}
+
+interface BroadcastSpanSource {
+  effects?: GraphicEffectLayer[] | undefined;
+  textOverlays?: BroadcastTextOverlay[] | undefined;
+  audioOverlays?: ClipAudioOverlay[] | undefined;
+}
+
+/**
+ * Чем части эффекта объединяются в одну дорожку: общий эффект и общее окно.
+ *
+ * Группа считается по окну, но её **ключ окном быть не может**: при
+ * перетаскивании окно меняется, ключ бы менялся вместе с ним, и следующее же
+ * движение мыши не нашло бы дорожку — эффект замирал после первого шага.
+ * Поэтому ключ берётся от опознавателей частей: они переживают любой перенос.
+ */
+function windowGroup(effectId: string, startSeconds: number, endSeconds: number): string {
+  return `${effectId}|${startSeconds.toFixed(3)}|${endSeconds.toFixed(3)}`;
+}
+
+/**
+ * Дорожки таймлайна: по одной на эффект второго уровня и по одной на каждый
+ * слой уровня 3.
+ *
+ * Уровень 3 намеренно не группируется: один и тот же файл можно положить на
+ * ролик несколько раз независимыми слоями, и склеивать их по имени нельзя.
+ * Animation in/out даёт два окна — вход и выход — с одним `effectId`; они
+ * остаются разными дорожками, потому что ключ включает само окно.
+ */
+export function broadcastEffectSpans(asset: BroadcastSpanSource): BroadcastEffectSpan[] {
+  const spans = new Map<string, BroadcastEffectSpan>();
+  const order: string[] = [];
+
+  const ensure = (
+    group: string,
+    memberId: string,
+    effectId: string,
+    name: string,
+    start: number,
+    end: number,
+  ) => {
+    let span = spans.get(group);
+    if (!span) {
+      span = {
+        // Ключ от первой части группы: он не меняется при переносе дорожки.
+        key: `${effectId}:${memberId}`,
+        effectId,
+        name,
+        startSeconds: start,
+        endSeconds: end,
+        layerIds: [],
+        textOverlayIds: [],
+        audioOverlayIds: [],
+        parts: [],
+      };
+      spans.set(group, span);
+      order.push(group);
+    }
+    return span;
+  };
+
+  for (const layer of asset.effects ?? []) {
+    const group = layer.tier === 2
+      ? windowGroup(layer.effectId, layer.startSeconds, layer.endSeconds)
+      : `layer:${layer.id}`;
+    const span = ensure(
+      group, layer.id, layer.effectId, layer.name, layer.startSeconds, layer.endSeconds,
+    );
+    span.layerIds.push(layer.id);
+    if (!span.parts.includes("graphics")) span.parts.push("graphics");
+  }
+
+  for (const overlay of asset.textOverlays ?? []) {
+    const group = windowGroup(overlay.effectId, overlay.startSeconds, overlay.endSeconds);
+    const span = ensure(
+      group, overlay.id, overlay.effectId, overlay.name, overlay.startSeconds, overlay.endSeconds,
+    );
+    span.textOverlayIds.push(overlay.id);
+    if (!span.parts.includes("text")) span.parts.push("text");
+  }
+
+  for (const overlay of asset.audioOverlays ?? []) {
+    const end = overlay.startSeconds + overlay.durationSeconds;
+    const group = windowGroup(overlay.effectId, overlay.startSeconds, end);
+    const span = ensure(group, overlay.id, overlay.effectId, "", overlay.startSeconds, end);
+    span.audioOverlayIds.push(overlay.id);
+    if (!span.parts.includes("audio")) span.parts.push("audio");
+  }
+
+  return order.map((group) => spans.get(group)!);
+}
+
+/**
+ * Переносит окно эффекта целиком: все его части получают одно и то же начало и
+ * конец. Половину эффекта сдвинуть нельзя — именно из-за этого надпись
+ * переживала свою плашку.
+ */
+export function retimeBroadcastEffectSpan(
+  asset: BroadcastSpanSource,
+  span: BroadcastEffectSpan,
+  startSeconds: number,
+  endSeconds: number,
+): {
+  effects: GraphicEffectLayer[];
+  textOverlays: BroadcastTextOverlay[];
+  audioOverlays: ClipAudioOverlay[];
+} {
+  const layerIds = new Set(span.layerIds);
+  const textIds = new Set(span.textOverlayIds);
+  const audioIds = new Set(span.audioOverlayIds);
+  return {
+    effects: (asset.effects ?? []).map((layer) =>
+      layerIds.has(layer.id) ? { ...layer, startSeconds, endSeconds } : layer),
+    textOverlays: (asset.textOverlays ?? []).map((overlay) =>
+      textIds.has(overlay.id) ? { ...overlay, startSeconds, endSeconds } : overlay),
+    audioOverlays: (asset.audioOverlays ?? []).map((overlay) =>
+      audioIds.has(overlay.id)
+        ? { ...overlay, startSeconds, durationSeconds: Math.max(0.04, endSeconds - startSeconds) }
+        : overlay),
+  };
+}
+
+/** Снимает с ролика все части одной дорожки. */
+export function removeBroadcastEffectSpan(
+  asset: BroadcastSpanSource,
+  span: BroadcastEffectSpan,
+): {
+  effects: GraphicEffectLayer[];
+  textOverlays: BroadcastTextOverlay[];
+  audioOverlays: ClipAudioOverlay[];
+} {
+  const layerIds = new Set(span.layerIds);
+  const textIds = new Set(span.textOverlayIds);
+  const audioIds = new Set(span.audioOverlayIds);
+  return {
+    effects: (asset.effects ?? []).filter((layer) => !layerIds.has(layer.id)),
+    textOverlays: (asset.textOverlays ?? []).filter((overlay) => !textIds.has(overlay.id)),
+    audioOverlays: (asset.audioOverlays ?? []).filter((overlay) => !audioIds.has(overlay.id)),
+  };
 }

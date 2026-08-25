@@ -33,6 +33,12 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  broadcastEffectSpans,
+  removeBroadcastEffectSpan,
+  retimeBroadcastEffectSpan,
+  type BroadcastEffectSpan,
+} from "../broadcast-effects";
 import { airDurationSeconds } from "../clip-duration";
 import { attachHlsVideo } from "../hls-video";
 import { mediaPath } from "../runtime";
@@ -54,7 +60,6 @@ import type {
   Scte35MarkerKind,
 } from "../types";
 import type {
-  BroadcastTextOverlay,
   ClipPreviewSession,
   ScheduleExportExtension,
   ScheduleStartMarker,
@@ -588,41 +593,30 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     });
   }
 
-  function updateEffectLayer(layerId: string, patch: Partial<GraphicEffectLayer>): void {
-    onUpdateItem(selectedAsset.id, {
-      effects: (selectedAsset.effects ?? []).map((layer) =>
-        layer.id === layerId ? { ...layer, ...patch } : layer
-      ),
-    });
-  }
-
-  function removeEffectLayer(layerId: string): void {
-    onUpdateItem(selectedAsset.id, {
-      effects: removeEffectLayerById(selectedAsset.effects ?? [], layerId),
-    });
-  }
-
   function removeEffectLayerFromItem(assetId: string, layerId: string): void {
     onUpdateItems([assetId], (asset) => ({
       effects: removeEffectLayerById(asset.effects ?? [], layerId),
     }));
   }
 
-  // Динамическая надпись — такой же слой ролика, как FX: её тоже нужно двигать
-  // и снимать прямо из плейлиста. Изменения уходят в эфир на лету через
-  // PUT /api/playout/playlist, как и остальная графика будущих роликов.
-  function updateTextOverlay(overlayId: string, patch: Partial<BroadcastTextOverlay>): void {
-    onUpdateItem(selectedAsset.id, {
-      textOverlays: (selectedAsset.textOverlays ?? []).map((overlay) =>
-        overlay.id === overlayId ? { ...overlay, ...patch } : overlay
-      ),
-    });
+  /**
+   * Дорожка таймлайна — это весь эффект целиком. Двигать и снимать его половину
+   * нельзя: рассинхрон окон и был причиной того, что надпись оставалась висеть
+   * в кадре после того, как её плашка отыграла.
+   */
+  function retimeSpan(spanKey: string, window: { startSeconds: number; endSeconds: number }): void {
+    const span = broadcastEffectSpans(selectedAsset).find((entry) => entry.key === spanKey);
+    if (!span) return;
+    onUpdateItem(
+      selectedAsset.id,
+      retimeBroadcastEffectSpan(selectedAsset, span, window.startSeconds, window.endSeconds),
+    );
   }
 
-  function removeTextOverlay(overlayId: string): void {
-    onUpdateItem(selectedAsset.id, {
-      textOverlays: removeEffectLayerById(selectedAsset.textOverlays ?? [], overlayId),
-    });
+  function removeSpan(spanKey: string): void {
+    const span = broadcastEffectSpans(selectedAsset).find((entry) => entry.key === spanKey);
+    if (!span) return;
+    onUpdateItem(selectedAsset.id, removeBroadcastEffectSpan(selectedAsset, span));
   }
 
   /**
@@ -1462,10 +1456,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           </div>
           <EffectTimeline
             asset={selectedAsset}
-            onRemoveLayer={removeEffectLayer}
-            onRemoveTextOverlay={removeTextOverlay}
-            onUpdateLayer={updateEffectLayer}
-            onUpdateTextOverlay={updateTextOverlay}
+            onRemoveSpan={removeSpan}
+            onRetimeSpan={retimeSpan}
           />
           {audioTracksEnabled ? (
             <div className="audio-track-timeline">
@@ -1672,19 +1664,15 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
 
 function EffectTimeline({
   asset,
-  onRemoveLayer,
-  onRemoveTextOverlay,
-  onUpdateLayer,
-  onUpdateTextOverlay,
+  onRemoveSpan,
+  onRetimeSpan,
 }: {
   asset: MediaAsset;
-  onRemoveLayer: (layerId: string) => void;
-  onRemoveTextOverlay: (overlayId: string) => void;
-  onUpdateLayer: (layerId: string, patch: Partial<GraphicEffectLayer>) => void;
-  onUpdateTextOverlay: (overlayId: string, patch: Partial<BroadcastTextOverlay>) => void;
+  onRemoveSpan: (spanKey: string) => void;
+  onRetimeSpan: (spanKey: string, window: { startSeconds: number; endSeconds: number }) => void;
 }) {
   const duration = Math.max(0.04, effectiveClipDuration(asset));
-  const layers = asset.effects ?? [];
+  const spans = broadcastEffectSpans(asset);
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const dragState = useRef<{
     end: number;
@@ -1725,10 +1713,8 @@ function EffectTimeline({
       endSeconds: drag.end,
       startSeconds: drag.start,
     });
-    // Одна и та же дорожка таскает и FX-слой, и динамическую надпись — они
-    // лежат в разных списках ролика, поэтому смотрим, кому принадлежит id.
-    if (layers.some((layer) => layer.id === drag.layerId)) onUpdateLayer(drag.layerId, window);
-    else onUpdateTextOverlay(drag.layerId, window);
+    // Дорожка — это весь эффект: плашка, надпись и звук двигаются вместе.
+    onRetimeSpan(drag.layerId, window);
   }
 
   function finishLayerDrag(event: ReactPointerEvent<HTMLElement>) {
@@ -1745,26 +1731,23 @@ function EffectTimeline({
         <div>{ticks.map((ratio) => <i key={ratio}>{formatTimecode(duration * ratio, asset.fps)}</i>)}</div>
       </div>
       <div className="effect-tracks">
-        {layers.map((layer, index) => {
-          const start = Math.min(duration - 0.04, Math.max(0, layer.startSeconds));
-          const end = Math.min(duration, Math.max(start + 0.04, layer.endSeconds));
+        {spans.map((span) => {
+          const start = Math.min(duration - 0.04, Math.max(0, span.startSeconds));
+          const end = Math.min(duration, Math.max(start + 0.04, span.endSeconds));
+          const broadcast = span.layerIds.length === 0 || span.parts.length > 1 ||
+            span.textOverlayIds.length > 0;
           return (
-            <div
-              className={`effect-track ${layer.tier === 2 ? "broadcast-track" : ""}`}
-              key={layer.id}
-            >
-              <span title={layer.titlePath ?? layer.backgroundPath ?? layer.filePath}>
-                <b>{layer.tier === 2 ? "L2" : `FX ${index + 1}`}</b>
-                {shortEffectName(layer.name)} · {layer.tier === 2
-                  ? (layer.sourceInSeconds > 0 ? "HEAD" : "BG")
-                  : layer.titlePath ? "BG+TITLE" : "BG"}
+            <div className={`effect-track ${broadcast ? "broadcast-track" : ""}`} key={span.key}>
+              <span title={`${span.name} · ${span.parts.join(" + ")}`}>
+                <b>{broadcast ? "L2" : "FX"}</b>
+                {shortEffectName(span.name)} · {spanPartsLabel(span)}
               </span>
               <div className="effect-track-rail">
                 <i
-                  aria-label={`Move FX ${index + 1} on timeline`}
-                  data-layer-id={layer.id}
+                  aria-label={`Move ${span.name} on timeline`}
+                  data-layer-id={span.key}
                   onPointerCancel={finishLayerDrag}
-                  onPointerDown={(event) => startLayerDrag(event, layer.id, start, end)}
+                  onPointerDown={(event) => startLayerDrag(event, span.key, start, end)}
                   onPointerMove={moveLayer}
                   onPointerUp={finishLayerDrag}
                   style={{ left: `${start / duration * 100}%`, width: `${(end - start) / duration * 100}%` }}
@@ -1774,23 +1757,25 @@ function EffectTimeline({
                   <em>{formatLayerSeconds(end - start)}</em>
                 </i>
                 <input
-                  aria-label={`FX ${index + 1} start`}
+                  aria-label={`${span.name} start`}
                   className="effect-range effect-range-start"
                   max={duration}
                   min={0}
-                  onChange={(event) => onUpdateLayer(layer.id, {
+                  onChange={(event) => onRetimeSpan(span.key, {
                     startSeconds: Math.min(Number(event.target.value), end - 0.04),
+                    endSeconds: end,
                   })}
                   step={0.04}
                   type="range"
                   value={start}
                 />
                 <input
-                  aria-label={`FX ${index + 1} end`}
+                  aria-label={`${span.name} end`}
                   className="effect-range effect-range-end"
                   max={duration}
                   min={0.04}
-                  onChange={(event) => onUpdateLayer(layer.id, {
+                  onChange={(event) => onRetimeSpan(span.key, {
+                    startSeconds: start,
                     endSeconds: Math.max(Number(event.target.value), start + 0.04),
                   })}
                   step={0.04}
@@ -1798,67 +1783,7 @@ function EffectTimeline({
                   value={end}
                 />
               </div>
-              <button aria-label={`Remove ${layer.name}`} onClick={() => onRemoveLayer(layer.id)} type="button">
-                <Trash2 size={11} />
-              </button>
-            </div>
-          );
-        })}
-        {(asset.textOverlays ?? []).map((overlay) => {
-          const start = Math.min(duration - 0.04, Math.max(0, overlay.startSeconds));
-          const end = Math.min(duration, Math.max(start + 0.04, overlay.endSeconds));
-          return (
-            <div className="effect-track broadcast-track" key={overlay.id}>
-              <span title={overlay.content || overlay.mode}>
-                <b>{overlay.mode.toUpperCase()}</b>{shortEffectName(overlay.name)}
-              </span>
-              <div className="effect-track-rail">
-                <i
-                  aria-label={`Move ${overlay.name} on timeline`}
-                  data-layer-id={overlay.id}
-                  onPointerCancel={finishLayerDrag}
-                  onPointerDown={(event) => startLayerDrag(event, overlay.id, start, end)}
-                  onPointerMove={moveLayer}
-                  onPointerUp={finishLayerDrag}
-                  style={{
-                    left: `${start / duration * 100}%`,
-                    width: `${(end - start) / duration * 100}%`,
-                  }}
-                  title={`${formatTimecode(start, asset.fps)} – ${formatTimecode(end, asset.fps)}\n` +
-                    "Перетащите, чтобы сдвинуть; края — подрезка"}
-                >
-                  <em>{formatLayerSeconds(end - start)}</em>
-                </i>
-                <input
-                  aria-label={`${overlay.name} start`}
-                  className="effect-range effect-range-start"
-                  max={duration}
-                  min={0}
-                  onChange={(event) => onUpdateTextOverlay(overlay.id, {
-                    startSeconds: Math.min(Number(event.target.value), end - 0.04),
-                  })}
-                  step={0.04}
-                  type="range"
-                  value={start}
-                />
-                <input
-                  aria-label={`${overlay.name} end`}
-                  className="effect-range effect-range-end"
-                  max={duration}
-                  min={0.04}
-                  onChange={(event) => onUpdateTextOverlay(overlay.id, {
-                    endSeconds: Math.max(Number(event.target.value), start + 0.04),
-                  })}
-                  step={0.04}
-                  type="range"
-                  value={end}
-                />
-              </div>
-              <button
-                aria-label={`Remove ${overlay.name}`}
-                onClick={() => onRemoveTextOverlay(overlay.id)}
-                type="button"
-              >
+              <button aria-label={`Remove ${span.name}`} onClick={() => onRemoveSpan(span.key)} type="button">
                 <Trash2 size={11} />
               </button>
             </div>
@@ -2055,6 +1980,12 @@ function fxDensityClass(asset: MediaAsset): string {
 
 function effectiveClipDuration(asset: MediaAsset): number {
   return Math.max(0.04, airDurationSeconds(asset));
+}
+
+/** Из чего собрана дорожка: оператор должен видеть, что это одна сущность. */
+function spanPartsLabel(span: BroadcastEffectSpan): string {
+  const names: Record<string, string> = { graphics: "графика", text: "надпись", audio: "звук" };
+  return span.parts.map((part) => names[part] ?? part).join(" + ");
 }
 
 function shortEffectName(value: string): string {

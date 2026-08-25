@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  broadcastEffectSettingsSchema,
   graphicEffectAssetSchema,
   serviceHealthSchema,
   type BroadcastEffectKind,
   type BroadcastTaskFileContent,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
+  type SystemFont,
   type MediaProbe,
   type ParsedSchedule,
   type ScheduleExportExtension,
@@ -59,6 +61,8 @@ import {
   graphicFileRejection,
   mapBroadcastTaskRecords,
   planBroadcastEffect,
+  preferredTextFont,
+  withDefaultTextFont,
   removeBroadcastEffect,
   summarizeBroadcastTaskMatches,
   type BroadcastRenderRequest,
@@ -83,6 +87,7 @@ import {
   getPlayoutStatus,
   getSystemMetrics,
   getWorkspaceSession,
+  listSystemFonts,
   mediaThumbnailUrl,
   parseScheduleFile,
   probeMediaPaths,
@@ -202,8 +207,24 @@ export function App() {
     selectEffectTitleDirectory(id));
   const stableChangeBroadcastEffect = useStableCallback((effect: GraphicEffectAsset) =>
     changeBroadcastEffect(effect));
-  const stableCreateBroadcastEffect = useStableCallback((kind: BroadcastEffectKind) =>
-    createBroadcastEffect(kind));
+  // Системные шрифты грузятся один раз за сессию и нужны в двух местах: при
+  // создании эффекта и при его применении — у старых эффектов шрифт пуст, а
+  // без файла кириллица выходит прямоугольниками и подложку нечем измерить.
+  const [systemFonts, setSystemFonts] = useState<SystemFont[]>([]);
+  const [systemFontsError, setSystemFontsError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void listSystemFonts()
+      .then((items) => { if (!cancelled) { setSystemFonts(items); setSystemFontsError(null); } })
+      .catch((error: unknown) => {
+        if (!cancelled) setSystemFontsError(`Не удалось получить системные шрифты: ${String(error)}`);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const stableCreateBroadcastEffect = useStableCallback(
+    (kind: BroadcastEffectKind, defaultFont: SystemFont | null) =>
+      createBroadcastEffect(kind, defaultFont));
   const stableSelectBroadcastTaskFile = useStableCallback((id: string) =>
     selectBroadcastTaskFile(id));
   const stableSelectStingerFile = useStableCallback((id: string) => selectStingerFile(id));
@@ -1351,12 +1372,20 @@ export function App() {
     );
   }
 
-  function createBroadcastEffect(kind: BroadcastEffectKind) {
+  /**
+   * `defaultFontFilePath` приходит с экрана: там уже загружен список системных
+   * шрифтов. Без файла шрифта `drawtext` берёт встроенный шрифт FFmpeg, и
+   * кириллица выходит прямоугольниками; вдобавок надпись нечем измерить, и
+   * подложка `fit:` остаётся исходной ширины под любым текстом.
+   */
+  function createBroadcastEffect(kind: BroadcastEffectKind, defaultFont: SystemFont | null) {
     const title = broadcastEffectTitle(kind);
     const existing = effectLibrary.filter((effect) => effect.broadcast?.kind === kind).length;
+    const blank = broadcastEffectSettingsSchema.parse({});
     const effect = graphicEffectAssetSchema.parse({
       broadcast: {
         kind,
+        settings: withDefaultTextFont(blank, defaultFont),
         dataMapping: {
           matchSourceKey: kind === "animation-in-out" ? "title" : "name",
         },
@@ -1806,10 +1835,28 @@ export function App() {
    * недельная сетка иначе заказала бы сотни одинаковых файлов.
    */
   async function applyBroadcastEffect(
+    // eslint-disable-next-line prefer-const -- подставляем шрифт до планирования
     effect: GraphicEffectAsset,
     targetIds: Set<string> | null,
     options: { base?: { current: MediaAsset[]; future: MediaAsset[] }; silent?: boolean } = {},
   ): Promise<{ touched: number; warnings: string[]; errors: string[] } | null> {
+    // Эффекты, созданные до появления умолчания, приходят с пустым шрифтом.
+    // Без файла `drawtext` рисует встроенным шрифтом FFmpeg — кириллица выходит
+    // прямоугольниками, — а подложку `fit:` нечем измерить, и она остаётся
+    // исходной ширины под любым текстом. Чиним молча нельзя: правку сохраняем
+    // в библиотеку и говорим о ней.
+    const repairedSettings = effect.broadcast
+      ? withDefaultTextFont(effect.broadcast.settings, preferredTextFont(systemFonts))
+      : null;
+    const fontRepaired = Boolean(
+      effect.broadcast && repairedSettings && repairedSettings !== effect.broadcast.settings,
+    );
+    if (fontRepaired && effect.broadcast && repairedSettings) {
+      const patched = { ...effect, broadcast: { ...effect.broadcast, settings: repairedSettings } };
+      effect = patched;
+      setEffectLibrary((current) =>
+        current.map((entry) => (entry.id === patched.id ? patched : entry)));
+    }
     const preset = effect.broadcast?.presetEffectId
       ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
       : null;
@@ -1851,6 +1898,7 @@ export function App() {
       if (!options.silent) {
         setEffectsMessage(
           `${effect.name}: применён к ${touched} ролику(ам).` +
+            (fontRepaired ? " Шрифт надписи был не задан — подставлен системный с кириллицей." : "") +
             (warnings.length > 0 ? ` Предупреждений: ${warnings.length} — ${warnings[0]}` : "") +
             (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
         );
@@ -2522,6 +2570,8 @@ export function App() {
           broadcastTaskSummaries={broadcastTaskSummaries}
           onChangeBroadcastEffect={stableChangeBroadcastEffect}
           onCreateBroadcastEffect={stableCreateBroadcastEffect}
+          fonts={systemFonts}
+          fontLoadError={systemFontsError}
           onSelectBroadcastTaskFile={stableSelectBroadcastTaskFile}
           onSelectStingerFile={stableSelectStingerFile}
           onSelectStingerSequence={stableSelectStingerSequence}
