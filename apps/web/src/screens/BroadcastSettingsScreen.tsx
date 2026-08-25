@@ -28,6 +28,7 @@ import { attachHlsVideo } from "../hls-video";
 import { usePlayoutStatus } from "../playout-status";
 import { getPlayoutAudioLevel } from "../media-api";
 import { mediaApiUrl, mediaPath } from "../runtime";
+import { useI18n } from "../i18n";
 import type { BroadcastSettings } from "../types";
 
 interface BroadcastSettingsScreenProps {
@@ -86,6 +87,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   settingsProfileBusy,
   settingsProfileMessage,
 }: BroadcastSettingsScreenProps) {
+  const { tr } = useI18n();
   const settingsFileInput = useRef<HTMLInputElement>(null);
   function update<Key extends keyof BroadcastSettings>(
     key: Key,
@@ -107,10 +109,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
       <section className="settings-column">
         <div className="settings-heading settings-heading-row">
           <div>
-            <h1>Encoding Settings</h1>
+            <h1>{tr("Настройки кодирования", "Encoding Settings")}</h1>
             <p>
-              Configure video, audio, transport, and streaming parameters for
-              your broadcast pipeline.
+              {tr("Настройте видео, звук, транспорт и параметры выдачи эфирного контура.", "Configure video, audio, transport, and streaming parameters for your broadcast pipeline.")}
             </p>
           </div>
           <div className="playout-actions">
@@ -119,10 +120,10 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               className={`schedule-repeat-button ${settings.repeatSchedule ? "active" : ""}`}
               disabled={active}
               onClick={() => update("repeatSchedule", !settings.repeatSchedule)}
-              title="Restart the playlist from the first clip after the last clip finishes"
+              title={tr("После последнего ролика начать плейлист заново", "Restart the playlist from the first clip after the last clip finishes")}
               type="button"
             >
-              <Repeat2 size={15} /> Repeat
+              <Repeat2 size={15} /> {tr("Повтор", "Repeat")}
             </button>
             <span className={`playout-state state-${playoutState ?? "idle"}`}>
               {playoutState ?? "idle"}
@@ -134,7 +135,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 onClick={onStop}
                 type="button"
               >
-                <Square fill="currentColor" size={13} /> Stop
+                <Square fill="currentColor" size={13} /> {tr("Стоп", "Stop")}
               </button>
             ) : (
               <button
@@ -149,10 +150,10 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 type="button"
               >
                 <Radio size={15} /> {recoveryCheckpoint
-                  ? "Resume Stream"
+                  ? tr("Продолжить эфир", "Resume Stream")
                   : scheduleStartMarker
-                    ? "Start from Marker"
-                    : "Start Stream"}
+                    ? tr("Старт с метки", "Start from Marker")
+                    : tr("Начать эфир", "Start Stream")}
               </button>
             )}
           </div>
@@ -160,9 +161,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
 
         <div className="encoding-profile-toolbar">
           <div>
-            <strong>Encoding settings profile</strong>
+            <strong>{tr("Профиль настроек кодирования", "Encoding settings profile")}</strong>
             <span title={settingsProfileMessage ?? undefined}>
-              {settingsProfileMessage ?? "Portable .txt profile · passwords are never exported"}
+              {settingsProfileMessage ?? tr("Переносимый профиль .txt · пароли никогда не экспортируются", "Portable .txt profile · passwords are never exported")}
             </span>
           </div>
           <div className="encoding-profile-actions">
@@ -171,7 +172,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               onClick={() => void onSaveSettings()}
               type="button"
             >
-              <Download size={14} /> Save .TXT
+              <Download size={14} /> {tr("Сохранить .TXT", "Save .TXT")}
             </button>
             <button
               disabled={active || settingsProfileBusy}
@@ -180,7 +181,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 : settingsFileInput.current?.click()}
               type="button"
             >
-              <Upload size={14} /> Import .TXT
+              <Upload size={14} /> {tr("Импорт .TXT", "Import .TXT")}
             </button>
             <input
               accept=".txt,text/plain"
@@ -199,9 +200,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
         {recoveryCheckpoint ? (
           <div className="recovery-resume-banner" role="status">
             <div>
-              <strong>Interrupted playout checkpoint found</strong>
+              <strong>{tr("Найдена точка восстановления прерванного эфира", "Interrupted playout checkpoint found")}</strong>
               <span>
-                Clip {recoveryCheckpoint.currentItemIndex + 1}: {recoveryCheckpoint.currentItemName ?? "Unknown"}
+                {tr("Ролик", "Clip")} {recoveryCheckpoint.currentItemIndex + 1}: {recoveryCheckpoint.currentItemName ?? tr("Неизвестно", "Unknown")}
                 {" · "}{formatMonitorTime(recoveryCheckpoint.outTimeSeconds)} elapsed
                 {" · "}{recoveryCheckpoint.progressPercent.toFixed(1)}%
               </span>
@@ -215,7 +216,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
         {!recoveryCheckpoint && scheduleStartMarker ? (
           <div className="recovery-resume-banner schedule-start-banner" role="status">
             <div>
-              <strong><MapPin size={14} /> Schedule start clip selected</strong>
+              <strong><MapPin size={14} /> {tr("Выбран стартовый ролик расписания", "Schedule start clip selected")}</strong>
               <span>{scheduleStartItemName ?? scheduleStartMarker.assetId}</span>
             </div>
             <button disabled={active} onClick={onStartFresh} type="button">
@@ -228,9 +229,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <div className="operation-error" role="alert">{operationError}</div>
         ) : null}
 
-        <SettingsCard icon={<Video size={16} />} title="Video Codec">
+        <SettingsCard icon={<Video size={16} />} title={tr("Видеокодек", "Video Codec")}>
           <SelectField
-            label="Codec"
+            label={tr("Кодек", "Codec")}
             onChange={(value) => onSettingsChange({
               ...settings,
               videoCodec: value,
@@ -242,19 +243,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             value={settings.videoCodec}
           />
           <SelectField
-            label="Profile"
+            label={tr("Профиль", "Profile")}
             onChange={(value) => update("profile", value)}
             options={["Main Profile", "High Profile", "Main 10"]}
             value={settings.profile}
           />
           <SelectField
-            label="Level"
+            label={tr("Уровень", "Level")}
             onChange={(value) => update("level", value)}
             options={["4.0", "4.1", "5.0", "5.1", "5.2"]}
             value={settings.level}
           />
           <RangeField
-            label="Preset"
+            label={tr("Пресет", "Preset")}
             max={100}
             min={0}
             onChange={(value) => update("preset", value)}
@@ -267,10 +268,10 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           </div>
         </SettingsCard>
 
-        <SettingsCard icon={<Grid2X2 size={16} />} title="Resolution & Frame Rate">
+        <SettingsCard icon={<Grid2X2 size={16} />} title={tr("Разрешение и частота кадров", "Resolution & Frame Rate")}>
           <div className="dimension-row">
             <NumberField
-              label="Width"
+              label={tr("Ширина", "Width")}
               onChange={(value) => {
                 onSettingsChange({
                   ...settings,
@@ -283,7 +284,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               value={settings.width}
             />
             <button
-              aria-label="Lock aspect ratio"
+              aria-label={tr("Сохранить соотношение сторон", "Lock aspect ratio")}
               className={`dimension-lock ${settings.dimensionsLocked ? "active" : ""}`}
               onClick={() =>
                 update("dimensionsLocked", !settings.dimensionsLocked)
@@ -293,13 +294,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               <LockKeyhole size={17} />
             </button>
             <NumberField
-              label="Height"
+              label={tr("Высота", "Height")}
               onChange={(value) => update("height", value)}
               value={settings.height}
             />
           </div>
           <SelectField
-            label="Frame Rate"
+            label={tr("Частота кадров", "Frame Rate")}
             onChange={(value) => update("frameRate", value)}
             options={[
               "23.976 fps",
@@ -312,44 +313,44 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             value={settings.frameRate}
           />
           <SelectField
-            label="Field Order"
+            label={tr("Порядок полей", "Field Order")}
             onChange={(value) => update("fieldOrder", value)}
             options={[
-              { label: "Progressive", value: "progressive" },
-              { label: "Upper field first (TFF)", value: "upper" },
-              { label: "Lower field first (BFF)", value: "lower" },
+              { label: tr("Прогрессивная", "Progressive"), value: "progressive" },
+              { label: tr("Верхнее поле первым (TFF)", "Upper field first (TFF)"), value: "upper" },
+              { label: tr("Нижнее поле первым (BFF)", "Lower field first (BFF)"), value: "lower" },
             ]}
             value={settings.fieldOrder}
           />
           <ToggleField
             checked={settings.deinterlace}
-            label="Deinterlace Filter (YADIF)"
+            label={tr("Деинтерлейс-фильтр (YADIF)", "Deinterlace Filter (YADIF)")}
             onChange={(checked) => update("deinterlace", checked)}
           />
         </SettingsCard>
 
-        <SettingsCard icon={<Rows3 size={16} />} title="GOP Structure (I/P/B)">
+        <SettingsCard icon={<Rows3 size={16} />} title={tr("Структура GOP (I/P/B)", "GOP Structure (I/P/B)")}>
           <div className="three-column-fields">
             <NumberField
-              label="GOP length (frames)"
+              label={tr("Длина GOP (кадры)", "GOP length (frames)")}
               max={600}
               min={1}
               onChange={(value) => update("gopSize", value)}
               value={settings.gopSize}
             />
             <NumberField
-              label="Consecutive B-frames"
+              label={tr("Последовательные B-кадры", "Consecutive B-frames")}
               max={settings.videoCodec === "MPEG-2 Video" ? 2 : 16}
               min={0}
               onChange={(value) => update("bFrames", value)}
               value={settings.bFrames}
             />
             <SelectField
-              label="GOP mode"
+              label={tr("Режим GOP", "GOP mode")}
               onChange={(value) => update("closedGop", value === "closed")}
               options={[
-                { label: "Closed GOP", value: "closed" },
-                { label: "Open GOP", value: "open" },
+                { label: tr("Закрытый GOP", "Closed GOP"), value: "closed" },
+                { label: tr("Открытый GOP", "Open GOP"), value: "open" },
               ]}
               value={settings.closedGop ? "closed" : "open"}
             />
@@ -361,11 +362,11 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
 
         <SettingsCard
           icon={<Captions size={16} />}
-          title="Subtitle Output"
+          title={tr("Выдача субтитров", "Subtitle Output")}
         >
           <SelectField
             disabled={!settings.streamingEnabled}
-            label="Delivery mode"
+            label={tr("Режим выдачи", "Delivery mode")}
             onChange={(value) => update(
               "subtitleOutputMode",
               value as BroadcastSettings["subtitleOutputMode"],
@@ -381,19 +382,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <>
               <div className="three-column-fields">
                 <NumberField
-                  label="Subtitle PID"
+                  label={tr("PID субтитров", "Subtitle PID")}
                   max={8_190}
                   min={32}
                   onChange={(value) => update("subtitlePid", Math.min(8_190, Math.max(32, value)))}
                   value={settings.subtitlePid}
                 />
                 <TextField
-                  label="ISO 639 language"
+                  label={tr("Язык ISO 639", "ISO 639 language")}
                   onChange={(value) => update("subtitleLanguage", value.slice(0, 3))}
                   value={settings.subtitleLanguage}
                 />
                 <SelectField
-                  label="Subtitle type"
+                  label={tr("Тип субтитров", "Subtitle type")}
                   onChange={(value) => update(
                     "subtitleType",
                     value as BroadcastSettings["subtitleType"],
@@ -404,19 +405,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               </div>
               <div className="three-column-fields">
                 <TextField
-                  label="Font family"
+                  label={tr("Гарнитура шрифта", "Font family")}
                   onChange={(value) => update("subtitleFontFamily", value)}
                   value={settings.subtitleFontFamily}
                 />
                 <NumberField
-                  label="Font size"
+                  label={tr("Размер шрифта", "Font size")}
                   max={160}
                   min={12}
                   onChange={(value) => update("subtitleFontSize", value)}
                   value={settings.subtitleFontSize}
                 />
                 <NumberField
-                  label="Bottom margin (px)"
+                  label={tr("Отступ снизу (px)", "Bottom margin (px)")}
                   max={1_000}
                   min={0}
                   onChange={(value) => update("subtitleBottomMargin", value)}
@@ -425,7 +426,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               </div>
               <div className="three-column-fields">
                 <SelectField
-                  label="Palette colours"
+                  label={tr("Цвета палитры", "Palette colours")}
                   onChange={(value) => update(
                     "subtitleMaxColours",
                     Number(value) as BroadcastSettings["subtitleMaxColours"],
@@ -434,14 +435,14 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                   value={String(settings.subtitleMaxColours)}
                 />
                 <NumberField
-                  label="Reserved bitrate (kbps)"
+                  label={tr("Резерв битрейта (кбит/с)", "Reserved bitrate (kbps)")}
                   max={2_000}
                   min={32}
                   onChange={(value) => update("subtitleBitrateKbps", value)}
                   value={settings.subtitleBitrateKbps}
                 />
                 <NumberField
-                  label="PTS offset (ms)"
+                  label={tr("Смещение PTS (мс)", "PTS offset (ms)")}
                   max={10_000}
                   min={0}
                   onChange={(value) => update("subtitlePtsOffsetMs", value)}
@@ -452,8 +453,8 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 <Captions size={15} />
                 <span>
                   {incompatibleSubtitleOutput
-                    ? "RTMP/FLV cannot carry a DVB subtitle PID. Select UDP or SRT."
-                    : "Only clips with SRT enabled in Playlist are included. PMT signalling and the subtitling descriptor are generated automatically; page IDs are 1/1. Keep PTS offset at 0 ms unless a measured receiver delay needs compensation."}
+                    ? tr("RTMP/FLV не передаёт PID DVB-субтитров. Выберите UDP или SRT.", "RTMP/FLV cannot carry a DVB subtitle PID. Select UDP or SRT.")
+                    : tr("Учитываются только ролики с включённым SRT в плейлисте. Сигнализация PMT и дескриптор субтитров создаются автоматически; ID страниц — 1/1. Оставьте смещение PTS равным 0 мс, если не требуется компенсация измеренной задержки приёмника.", "Only clips with SRT enabled in Playlist are included. PMT signalling and the subtitling descriptor are generated automatically; page IDs are 1/1. Keep PTS offset at 0 ms unless a measured receiver delay needs compensation.")}
                 </span>
               </div>
             </>
@@ -462,16 +463,16 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
 
         <SettingsCard
           icon={<ChartNoAxesColumnIncreasing size={16} />}
-          title="Bitrate Control"
+          title={tr("Управление битрейтом", "Bitrate Control")}
         >
           <SelectField
-            label="Rate Control Mode"
+            label={tr("Режим управления", "Rate Control Mode")}
             onChange={(value) => update("rateControl", value)}
             options={["CBR", "VBR", "CRF"]}
             value={settings.rateControl}
           />
           <RangeField
-            label="Target Bitrate"
+            label={tr("Целевой битрейт", "Target Bitrate")}
             max={50}
             min={1}
             onChange={(value) => update("targetBitrate", value)}
@@ -486,13 +487,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <div className="two-column-fields">
             <NumberField
               disabled={settings.rateControl !== "VBR"}
-              label="Max Bitrate (Mbps)"
+              label={tr("Макс. битрейт (Мбит/с)", "Max Bitrate (Mbps)")}
               onChange={(value) => update("maxBitrate", value)}
               step={0.5}
               value={settings.maxBitrate}
             />
             <NumberField
-              label="VBV Buffer (kbit)"
+              label={tr("Буфер VBV (кбит)", "VBV Buffer (kbit)")}
               onChange={(value) => update("bufferSize", value)}
               value={settings.bufferSize}
             />
@@ -517,30 +518,30 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             />
           )}
           icon={<AudioLines size={16} />}
-          title="Audio"
+          title={tr("Звук", "Audio")}
         >
           <div className="two-column-fields">
             <SelectField
-              label="Codec"
+              label={tr("Кодек", "Codec")}
               onChange={(value) => update("audioCodec", value)}
               options={["AAC-LC", "MP2", "AC-3"]}
               value={settings.audioCodec}
             />
             <SelectField
-              label="Sample Rate"
+              label={tr("Частота дискретизации", "Sample Rate")}
               onChange={(value) => update("sampleRate", value)}
               options={["44100 Hz", "48000 Hz", "96000 Hz"]}
               value={settings.sampleRate}
             />
           </div>
           <SelectField
-            label="Channels"
+            label={tr("Каналы", "Channels")}
             onChange={(value) => update("channels", value)}
             options={["Mono", "Stereo (L/R)", "5.1"]}
             value={settings.channels}
           />
           <RangeField
-            label="Audio Bitrate"
+            label={tr("Битрейт звука", "Audio Bitrate")}
             max={320}
             min={64}
             onChange={(value) => update("audioBitrate", value)}
@@ -553,7 +554,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           </div>
           <NumberField
             disabled={!settings.loudnessNormalizationEnabled}
-            label="Programme loudness target (LUFS)"
+            label={tr("Целевая громкость программы (LUFS)", "Programme loudness target (LUFS)")}
             max={-5}
             min={-70}
             onChange={(value) => update(
@@ -576,16 +577,16 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <ToggleField
               checked={settings.streamingEnabled}
               compact
-              label="Enabled"
+              label={tr("Включено", "Enabled")}
               onChange={(checked) => update("streamingEnabled", checked)}
             />
           }
           icon={<Radio size={16} />}
-          title="Streaming"
+          title={tr("Выдача", "Streaming")}
         >
           <SelectField
             disabled={!settings.streamingEnabled}
-            label="Protocol"
+            label={tr("Протокол", "Protocol")}
             onChange={(value) => update("protocol", value)}
             options={["SRT", "UDP", "RTMP", "RTMPS"]}
             value={settings.protocol}
@@ -604,13 +605,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <>
               <TextField
                 disabled={!settings.streamingEnabled}
-                label="Server URL"
+                label={tr("Адрес сервера", "Server URL")}
                 onChange={(value) => update("rtmpServerUrl", value)}
                 value={settings.rtmpServerUrl}
               />
               <SecretField
                 disabled={!settings.streamingEnabled}
-                label="Stream Key"
+                label={tr("Ключ потока", "Stream Key")}
                 onChange={(value) => update("rtmpStreamKey", value)}
                 value={settings.rtmpStreamKey}
               />
@@ -623,12 +624,12 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <ToggleField
               checked={settings.scte35PlanningEnabled}
               compact
-              label="Planner"
+              label={tr("Планировщик", "Planner")}
               onChange={(checked) => update("scte35PlanningEnabled", checked)}
             />
           }
           icon={<FlagTriangleRight size={16} />}
-          title="SCTE-35 Ad Markers"
+          title={tr("Рекламные метки SCTE-35", "SCTE-35 Ad Markers")}
         >
           <div className="scte35-planner-summary">
             <div>
@@ -642,7 +643,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           </div>
           <SelectField
             disabled={!settings.scte35PlanningEnabled}
-            label="Cue command"
+            label={tr("Команда cue", "Cue command")}
             onChange={(value) => update("scte35Command", value)}
             options={[
               "time_signal + segmentation_descriptor",
@@ -653,14 +654,14 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <div className="two-column-fields">
             <SelectField
               disabled={!settings.scte35PlanningEnabled}
-              label="Segmentation owner"
+              label={tr("Владелец сегментации", "Segmentation owner")}
               onChange={(value) => update("scte35Owner", value)}
               options={["Provider", "Distributor"]}
               value={settings.scte35Owner}
             />
             <NumberField
               disabled={!settings.scte35PlanningEnabled}
-              label="Default Event ID"
+              label={tr("Event ID по умолчанию", "Default Event ID")}
               onChange={(value) => update("scte35DefaultEventId", Math.min(4_294_967_295, value))}
               value={settings.scte35DefaultEventId}
             />
@@ -674,13 +675,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             />
             <NumberField
               disabled={!settings.scte35PlanningEnabled}
-              label="Pre-roll (ms)"
+              label={tr("Предварительная подача (мс)", "Pre-roll (ms)")}
               onChange={(value) => update("scte35PreRollMs", Math.min(60_000, value))}
               value={settings.scte35PreRollMs}
             />
             <NumberField
               disabled={!settings.scte35PlanningEnabled}
-              label="Default break (sec)"
+              label={tr("Длительность блока по умолчанию (с)", "Default break (sec)")}
               onChange={(value) => update("scte35DefaultBreakDuration", Math.min(86_400, Math.max(1, value)))}
               value={settings.scte35DefaultBreakDuration}
             />
@@ -688,21 +689,21 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <div className="two-column-fields">
             <SelectField
               disabled={!settings.scte35PlanningEnabled}
-              label="UPID type"
+              label={tr("Тип UPID", "UPID type")}
               onChange={(value) => update("scte35UpidType", value)}
               options={["Ad-ID", "UUID", "URI", "None"]}
               value={settings.scte35UpidType}
             />
             <TextField
               disabled={!settings.scte35PlanningEnabled || settings.scte35UpidType === "None"}
-              label="Default UPID"
+              label={tr("UPID по умолчанию", "Default UPID")}
               onChange={(value) => update("scte35DefaultUpid", value)}
               value={settings.scte35DefaultUpid}
             />
           </div>
           <SelectField
             disabled={!settings.scte35PlanningEnabled || !settings.repeatSchedule}
-            label="Event IDs when playlist repeats"
+            label={tr("Event ID при повторе плейлиста", "Event IDs when playlist repeats")}
             onChange={(value) => update("scte35LoopEventStrategy", value)}
             options={["Increment each loop", "Reuse playlist Event IDs"]}
             value={settings.scte35LoopEventStrategy}
@@ -711,8 +712,8 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <FlagTriangleRight size={15} />
             <span>
               {settings.protocol.startsWith("RTMP")
-                ? "RTMP/FLV does not carry the MPEG-TS SCTE-35 PID. Use UDP or SRT MPEG-TS for cue delivery."
-                : "FFmpeg sends CBR MPEG-TS through the TSDuck injector. The output PMT announces the SCTE-35 PID and each marker is emitted twice before its event time."}
+                ? tr("RTMP/FLV не передаёт PID SCTE-35 в MPEG-TS. Для доставки cue используйте UDP или SRT MPEG-TS.", "RTMP/FLV does not carry the MPEG-TS SCTE-35 PID. Use UDP or SRT MPEG-TS for cue delivery.")
+                : tr("FFmpeg передаёт CBR MPEG-TS через инжектор TSDuck. Выходная PMT объявляет PID SCTE-35, а каждая метка выдаётся дважды перед временем события.", "FFmpeg sends CBR MPEG-TS through the TSDuck injector. The output PMT announces the SCTE-35 PID and each marker is emitted twice before its event time.")}
             </span>
           </div>
         </SettingsCard>

@@ -36,6 +36,7 @@ import {
   broadcastEffectTitle,
   type BroadcastTaskSummary,
 } from "./BroadcastEffectInspector";
+import { useI18n } from "../i18n";
 
 export interface EffectTargetClip {
   id: string;
@@ -47,6 +48,7 @@ interface EffectsScreenProps {
   effects: GraphicEffectAsset[];
   clips: EffectTargetClip[];
   busy: boolean;
+  operationError: string | null;
   message: string | null;
   onSelectFiles?: () => Promise<void>;
   onSelectDirectory?: () => Promise<void>;
@@ -54,8 +56,8 @@ interface EffectsScreenProps {
   onClearTitleDirectory: (effectId: string) => void;
   onRemove: (effectId: string) => void;
   onRenderLottie: (effect: GraphicEffectAsset) => Promise<GraphicEffectAsset>;
-  onAddToEntireProject: (effectId: string) => void;
-  onAddToClip: (effectId: string, clipId: string) => void;
+  onAddToEntireProject: (effect: GraphicEffectAsset) => void;
+  onAddToClip: (effect: GraphicEffectAsset, clipId: string) => void;
   broadcastTaskSummaries: Record<string, BroadcastTaskSummary>;
   onCreateBroadcastEffect: (kind: BroadcastEffectKind) => void;
   onChangeBroadcastEffect: (effect: GraphicEffectAsset) => void;
@@ -64,7 +66,7 @@ interface EffectsScreenProps {
   onSelectStingerFile: (effectId: string) => Promise<void>;
   onLoadTickerFeed: (effectId: string) => Promise<void>;
   /** Перенести правки в уже назначенные ролики. */
-  onApplyBroadcastChanges: (effectId: string) => Promise<void>;
+  onApplyBroadcastChanges: (effect: GraphicEffectAsset) => Promise<void>;
   /** Идемпотентно разложить Animation In/Out по всему расписанию из JSON. */
   onApplyBroadcastTaskToProject: (effect: GraphicEffectAsset) => Promise<void>;
   /** Подгрузить Lottie и сразу назначить его пресетом этого эффекта. */
@@ -87,6 +89,7 @@ export const EffectsScreen = memo(function EffectsScreen({
   effects,
   clips,
   busy,
+  operationError,
   message,
   onSelectFiles,
   onSelectDirectory,
@@ -110,28 +113,56 @@ export const EffectsScreen = memo(function EffectsScreen({
   onReorder,
   playoutActive,
 }: EffectsScreenProps) {
+  const { tr } = useI18n();
   const [draggedEffectId, setDraggedEffectId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   // Системные шрифты запрашиваются один раз за сессию: список большой, а
   // меняется он только при установке шрифтов в систему.
   const [fonts, setFonts] = useState<SystemFont[]>([]);
+  const [fontLoadError, setFontLoadError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void listSystemFonts()
-      .then((items) => { if (!cancelled) setFonts(items); })
-      .catch(() => undefined);
+      .then((items) => {
+        if (cancelled) return;
+        setFonts(items);
+        setFontLoadError(null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setFontLoadError(tr(
+            `Не удалось получить системные шрифты: ${String(error)}`,
+            `Could not load system fonts: ${String(error)}`,
+          ));
+        }
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [tr]);
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
   const [previewEffect, setPreviewEffect] = useState<GraphicEffectAsset | null>(null);
   const [renderNotice, setRenderNotice] = useState<string | null>(null);
   const [targetClipId, setTargetClipId] = useState("");
+  const [previewCollapsed, setPreviewCollapsed] = useState(() => window.innerHeight < 800);
   const renderNoticeTimer = useRef<number | null>(null);
 
   const selectedEffect = useMemo(
     () => effects.find((effect) => effect.id === selectedEffectId) ?? effects[0] ?? null,
     [effects, selectedEffectId],
+  );
+  const lottieNeedsRender = Boolean(
+    draftEffect?.lottie && selectedEffect?.lottie &&
+    JSON.stringify({
+      backgroundColor: draftEffect.lottie.backgroundColor,
+      properties: draftEffect.lottie.properties,
+    }) !== JSON.stringify({
+      backgroundColor: selectedEffect.lottie.backgroundColor,
+      properties: selectedEffect.lottie.properties,
+    }),
+  );
+  const broadcastDraftPending = Boolean(
+    draftEffect?.broadcast && selectedEffect?.broadcast &&
+    JSON.stringify(draftEffect.broadcast) !== JSON.stringify(selectedEffect.broadcast),
   );
 
   useEffect(() => {
@@ -144,7 +175,7 @@ export const EffectsScreen = memo(function EffectsScreen({
     if (selectedEffect.id !== selectedEffectId) setSelectedEffectId(selectedEffect.id);
     setDraftEffect(selectedEffect);
     setPreviewEffect(selectedEffect);
-  }, [selectedEffect?.id, selectedEffect?.filePath]);
+  }, [selectedEffect?.id, selectedEffect?.filePath, selectedEffect?.broadcast]);
 
   useEffect(() => () => {
     if (renderNoticeTimer.current != null) window.clearTimeout(renderNoticeTimer.current);
@@ -181,13 +212,16 @@ export const EffectsScreen = memo(function EffectsScreen({
       const rendered = await onRenderLottie(draftEffect);
       setDraftEffect(rendered);
       setPreviewEffect(rendered);
-      setRenderNotice(`${rendered.name} successfully rendered and added to the current project.`);
+      setRenderNotice(tr(
+        `${rendered.name} успешно отрендерен и добавлен в текущий проект.`,
+        `${rendered.name} successfully rendered and added to the current project.`,
+      ));
       if (renderNoticeTimer.current != null) window.clearTimeout(renderNoticeTimer.current);
       renderNoticeTimer.current = window.setTimeout(() => setRenderNotice(null), 5_000);
     } catch {
       // The parent publishes the actionable render error in the global error panel.
     }
-  }, [draftEffect, onRenderLottie]);
+  }, [draftEffect, onRenderLottie, tr]);
 
   const renderLottieDraft = useCallback(() => void renderDraft(), [renderDraft]);
 
@@ -214,27 +248,29 @@ export const EffectsScreen = memo(function EffectsScreen({
     <main className="effects-screen">
       <section className="effects-library-header">
         <div>
-          <span className="eyebrow">Universal graphics project</span>
-          <h1>Effects library</h1>
-          <p>Import After Effects Lottie JSON, edit operator-safe properties, then assign it to the project or a clip.</p>
+          <span className="eyebrow">{tr("Графическое оформление эфира", "Broadcast graphics")}</span>
+          <h1>{tr("Библиотека эффектов", "Effects library")}</h1>
+          <p>{tr("Импортируйте Lottie JSON или alpha-медиа, настройте и назначьте эффект проекту либо ролику.", "Import Lottie JSON or alpha media, configure it, and assign the effect to the project or a clip.")}</p>
         </div>
         <div className="effects-import-actions">
           <button disabled={busy || !onSelectFiles} onClick={() => void onSelectFiles?.()} type="button">
-            <Plus size={14} /> Import Lottie / media
+            <Plus size={14} /> {tr("Импорт Lottie / медиа", "Import Lottie / media")}
           </button>
           <button disabled={busy || !onSelectDirectory} onClick={() => void onSelectDirectory?.()} type="button">
-            <FolderOpen size={14} /> Add folder
+            <FolderOpen size={14} /> {tr("Добавить папку", "Add folder")}
           </button>
         </div>
       </section>
 
-      <section className="broadcast-catalog" aria-label="Broadcast effects">
+      <section className="broadcast-catalog" aria-label={tr("Эфирные эффекты", "Broadcast effects")}>
         <div className="broadcast-catalog-heading">
-          <span className="broadcast-tier-badge">Уровень 2</span>
-          <strong>Эфирные эффекты</strong>
+          <span className="broadcast-tier-badge">{tr("Уровень 2", "Tier 2")}</span>
+          <strong>{tr("Эфирные эффекты", "Broadcast effects")}</strong>
           <small>
-            Параметрические эффекты с собственным поведением. Уровень 3 —
-            импортированные Lottie-пресеты — служит им оформлением.
+            {tr(
+              "Параметрические эффекты с собственным поведением. Уровень 3 — импортированные Lottie-пресеты — служит им оформлением.",
+              "Parametric effects with their own behavior. Imported Tier 3 Lottie presets provide their visual design.",
+            )}
           </small>
         </div>
         <div className="broadcast-catalog-actions">
@@ -243,29 +279,34 @@ export const EffectsScreen = memo(function EffectsScreen({
               disabled={busy}
               key={entry.kind}
               onClick={() => onCreateBroadcastEffect(entry.kind)}
-              title={entry.summary}
+              title={tr(entry.summary, entry.summaryEn)}
               type="button"
             >
-              <Radio size={13} /> {entry.title}
+              <Radio size={13} /> {tr(entry.titleRu, entry.title)}
             </button>
           ))}
         </div>
       </section>
 
-      {message ? <div className="effects-message">{message}</div> : null}
+      {operationError ? <div className="operation-error" role="alert">{operationError}</div> : null}
+      {busy ? (
+        <div className="effects-message effects-busy-message" role="status">
+          <LoaderCircle className="spin" size={13} /> {tr("Обработка выбранного файла…", "Processing selected file…")}
+        </div>
+      ) : message ? <div className="effects-message">{message}</div> : null}
       {busy && effects.length === 0 ? (
-        <div className="effects-empty"><LoaderCircle className="spin" size={24} /> Analyzing and rendering effects…</div>
+        <div className="effects-empty"><LoaderCircle className="spin" size={24} /> {tr("Анализ и подготовка эффектов…", "Analyzing and preparing effects…")}</div>
       ) : effects.length === 0 ? (
         <div className="effects-empty">
           <Layers3 size={30} />
-          <strong>No project effects yet</strong>
-          <span>Import a Bodymovin/Lottie `.json`, alpha image or alpha video.</span>
+          <strong>{tr("В проекте пока нет эффектов", "No project effects yet")}</strong>
+          <span>{tr("Импортируйте Bodymovin/Lottie `.json`, изображение или видео с alpha-каналом.", "Import a Bodymovin/Lottie `.json`, image, or video with an alpha channel.")}</span>
         </div>
       ) : (
         <div className="effects-workspace">
           <section
             className="effects-grid"
-            aria-label="Project effects"
+            aria-label={tr("Эффекты проекта", "Project effects")}
             onDragOver={(event) => { if (draggedEffectId) event.preventDefault(); }}
             onDrop={(event) => {
               // Сброс мимо карточки — перенос в конец списка.
@@ -322,43 +363,43 @@ export const EffectsScreen = memo(function EffectsScreen({
                   <strong title={effect.name}>{effect.name}</strong>
                   <span>
                     {effect.broadcast
-                      ? `УРОВЕНЬ 2 · ${broadcastEffectTitle(effect.broadcast.kind)}`
+                      ? `${tr("УРОВЕНЬ 2", "TIER 2")} · ${broadcastEffectTitle(effect.broadcast.kind, tr)}`
                       : `${effect.lottie ? "LOTTIE" : effect.kind.toUpperCase()} · ${effect.width}×${effect.height}`}
                   </span>
                   <small>
                     {effect.broadcast
                       ? (effect.broadcast.presetEffectId
                           ? effects.find((candidate) => candidate.id === effect.broadcast?.presetEffectId)?.name ??
-                            "Пресет не найден"
-                          : "Без пресета")
-                      : effect.kind === "video" ? formatDuration(effect.durationSeconds) : "Full clip · static"}
+                            tr("Пресет не найден", "Preset not found")
+                          : tr("Без пресета", "No preset"))
+                      : effect.kind === "video" ? formatDuration(effect.durationSeconds) : tr("Весь ролик · статика", "Full clip · static")}
                   </small>
                 </div>
                 {effect.broadcast ? (
                   <div className="effect-broadcast-summary">
-                    <span>Поведение</span>
-                    <strong>{broadcastEffectSummary(effect)}</strong>
+                    <span>{tr("Поведение", "Behavior")}</span>
+                    <strong>{broadcastEffectSummary(effect, tr)}</strong>
                   </div>
                 ) : !effect.lottie ? (
                   <div className="effect-title-source">
-                    <span>Per-clip alpha titles</span>
+                    <span>{tr("Alpha-плашки для отдельных роликов", "Per-clip alpha titles")}</span>
                     <strong title={effect.titleDirectoryPath ?? undefined}>
                       {effect.titleDirectoryPath
                         ? `${shortPath(effect.titleDirectoryPath)} · ${effect.titlePaths.length} files`
-                        : "Not assigned"}
+                        : tr("Не назначено", "Not assigned")}
                     </strong>
                     <div>
                       <button disabled={busy || !onSelectTitleDirectory} onClick={(event) => {
                         event.stopPropagation();
                         void onSelectTitleDirectory?.(effect.id);
                       }} type="button">
-                        <FolderOpen size={12} /> {effect.titleDirectoryPath ? "Change" : "Select folder"}
+                        <FolderOpen size={12} /> {effect.titleDirectoryPath ? tr("Изменить", "Change") : tr("Выбрать папку", "Select folder")}
                       </button>
                       {effect.titleDirectoryPath ? (
                         <button onClick={(event) => {
                           event.stopPropagation();
                           onClearTitleDirectory(effect.id);
-                        }} type="button">Clear</button>
+                        }} type="button">{tr("Очистить", "Clear")}</button>
                       ) : null}
                     </div>
                   </div>
@@ -368,10 +409,10 @@ export const EffectsScreen = memo(function EffectsScreen({
                     <strong>{effect.lottie.frameRate} fps · v{effect.lottie.version}</strong>
                   </div>
                 )}
-                <button className="effect-remove-button" aria-label={`Remove ${effect.name}`} onClick={(event) => {
+                <button className="effect-remove-button" aria-label={tr(`Удалить ${effect.name}`, `Remove ${effect.name}`)} onClick={(event) => {
                   event.stopPropagation();
                   onRemove(effect.id);
-                }} title="Remove from project" type="button">
+                }} title={tr("Удалить из проекта", "Remove from project")} type="button">
                   <Trash2 size={14} />
                 </button>
               </article>
@@ -384,23 +425,32 @@ export const EffectsScreen = memo(function EffectsScreen({
                 <div className="effect-render-notice" role="status">
                   <CheckCircle2 size={17} />
                   <span>{renderNotice}</span>
-                  <button aria-label="Close render notification" onClick={() => setRenderNotice(null)} type="button">
+                  <button aria-label={tr("Закрыть уведомление о рендере", "Close render notification")} onClick={() => setRenderNotice(null)} type="button">
                     <X size={13} />
                   </button>
                 </div>
               ) : null}
-              {/* Шапка с предпросмотром прибита к панели: прокручивается только
-                  блок настроек ниже, начиная с Assignment. */}
+              {/* Шапка с предпросмотром прибита к панели; настройки и применение
+                  прокручиваются независимо и остаются доступны на малой высоте. */}
               <div className="effect-inspector-pinned">
                 <div className="effect-inspector-heading">
                   <div>
-                    <span className="eyebrow">Selected effect</span>
+                    <span className="eyebrow">{tr("Выбранный эффект", "Selected effect")}</span>
                     <strong title={draftEffect.name}>{draftEffect.name}</strong>
                   </div>
-                  {busy ? <LoaderCircle className="spin" size={18} /> : null}
+                  <div className="effect-inspector-heading-actions">
+                    <button
+                      aria-expanded={!previewCollapsed}
+                      onClick={() => setPreviewCollapsed((value) => !value)}
+                      type="button"
+                    >
+                      {previewCollapsed ? tr("Показать превью", "Show preview") : tr("Скрыть превью", "Hide preview")}
+                    </button>
+                    {busy ? <LoaderCircle className="spin" size={18} /> : null}
+                  </div>
                 </div>
 
-                {previewSource?.lottie ? (
+                {!previewCollapsed && previewSource?.lottie ? (
                   <LottiePreview
                     // Кнопка применения стоит рядом с картинкой, чтобы результат
                     // правки был виден там же, где её запускают.
@@ -409,41 +459,21 @@ export const EffectsScreen = memo(function EffectsScreen({
                     renderDisabled={busy}
                     effect={previewSource}
                   />
-                ) : (
+                ) : !previewCollapsed ? (
                   <div className="effect-raster-preview">
                     {draftEffect.broadcast
                       ? <Radio size={36} />
                       : draftEffect.kind === "static" ? <Image size={36} /> : <FileVideo2 size={36} />}
                     <span>
                       {draftEffect.broadcast
-                        ? "Выберите Lottie-пресет, чтобы увидеть предпросмотр графики."
-                        : "Existing alpha media uses the standard FX pipeline."}
+                        ? tr("Выберите Lottie-пресет, чтобы увидеть предпросмотр графики.", "Select a Lottie preset to preview the graphics.")
+                        : tr("Alpha-медиа использует стандартный FX-конвейер.", "Alpha media uses the standard FX pipeline.")}
                     </span>
                   </div>
-                )}
+                ) : null}
               </div>
 
               <div className="effect-inspector-scroll">
-              <section className="effect-assignment-panel">
-                <strong>Assignment</strong>
-                <button disabled={clips.length === 0} onClick={() => onAddToEntireProject(draftEffect.id)} type="button">
-                  <Layers3 size={13} /> Add to entire project
-                </button>
-                <div>
-                  <select aria-label="Target clip" onChange={(event) => setTargetClipId(event.target.value)} value={targetClipId}>
-                    {clips.map((clip) => <option key={clip.id} value={clip.id}>{clip.schedule} · {clip.name}</option>)}
-                  </select>
-                  <button disabled={!targetClipId} onClick={() => onAddToClip(draftEffect.id, targetClipId)} type="button">
-                    <Send size={13} /> Add to clip
-                  </button>
-                </div>
-                <small>
-                  {draftEffect.broadcast
-                    ? "Эффект сам рассчитает окна показа и текст. Точную подгонку по кадрам делайте в Playlist → Timeline Trimming."
-                    : "After assignment, set the exact IN/OUT range in Playlist → Timeline Trimming."}
-                </small>
-              </section>
-
               {draftEffect.broadcast ? (
                 <BroadcastEffectInspector
                   assignedClipCount={assignedClipCounts[draftEffect.id] ?? 0}
@@ -455,7 +485,7 @@ export const EffectsScreen = memo(function EffectsScreen({
                     // немедленно, иначе Save применил бы прежние настройки.
                     if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
                     onChangeBroadcastEffect(draftEffect);
-                    void onApplyBroadcastChanges(draftEffect.id);
+                    void onApplyBroadcastChanges(draftEffect);
                   }}
                   onChange={changeBroadcastDraft}
                   onApplyTaskToProject={() => {
@@ -476,9 +506,58 @@ export const EffectsScreen = memo(function EffectsScreen({
                 />
               ) : null}
 
+              {fontLoadError && draftEffect.broadcast ? (
+                <p className="broadcast-warning" role="alert">{fontLoadError}</p>
+              ) : null}
+
               {draftEffect.lottie ? (
                 <LottieProperties effect={draftEffect} onChange={setDraftEffect} />
               ) : null}
+
+              <section className="effect-assignment-panel">
+                <div className="effect-assignment-heading">
+                  <strong>{tr("Применение", "Assignment")}</strong>
+                  <span className={lottieNeedsRender ? "dirty" : broadcastDraftPending ? "pending" : "ready"}>
+                    {lottieNeedsRender
+                      ? tr("нужен рендер", "render required")
+                      : broadcastDraftPending ? tr("черновик", "draft") : tr("актуально", "up to date")}
+                  </span>
+                </div>
+                <button
+                  disabled={busy || clips.length === 0 || lottieNeedsRender}
+                  onClick={() => {
+                    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+                    if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
+                    onAddToEntireProject(draftEffect);
+                  }}
+                  title={lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined}
+                  type="button"
+                >
+                  <Layers3 size={13} /> {tr("Применить ко всему проекту", "Apply to entire project")}
+                </button>
+                <div>
+                  <select aria-label={tr("Целевой ролик", "Target clip")} onChange={(event) => setTargetClipId(event.target.value)} value={targetClipId}>
+                    {clips.map((clip) => <option key={clip.id} value={clip.id}>{clip.schedule} · {clip.name}</option>)}
+                  </select>
+                  <button
+                    disabled={busy || !targetClipId || lottieNeedsRender}
+                    onClick={() => {
+                      if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+                      if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
+                      onAddToClip(draftEffect, targetClipId);
+                    }}
+                    title={lottieNeedsRender ? tr("Сначала обновите Lottie-рендер", "Update the Lottie render first") : undefined}
+                    type="button"
+                  >
+                    <Send size={13} /> {tr("Применить к ролику", "Apply to clip")}
+                  </button>
+                </div>
+                <small>
+                  {draftEffect.broadcast
+                    ? tr("Эффект рассчитает окна показа и текст. Точную подгонку по кадрам делайте в Плейлист → Монтаж таймлайна.", "The effect calculates display windows and text. Fine-tune frames in Playlist → Timeline Trimming.")
+                    : tr("После назначения задайте точный диапазон IN/OUT в Плейлист → Монтаж таймлайна.", "After assignment, set the exact IN/OUT range in Playlist → Timeline Trimming.")}
+                </small>
+              </section>
               </div>
             </aside>
           ) : null}
@@ -499,6 +578,7 @@ const LottiePreview = memo(function LottiePreview({
   playoutActive?: boolean;
   renderDisabled?: boolean;
 }) {
+  const { tr } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<DotLottiePlayer | null>(null);
   const playingRef = useRef(!playoutActive);
@@ -562,7 +642,7 @@ const LottiePreview = memo(function LottiePreview({
     <div className="lottie-preview-shell">
       <div className="lottie-preview-toolbar">
         <label>
-          <span>Preview format</span>
+          <span>{tr("Формат превью", "Preview format")}</span>
           <select onChange={(event) => setResolutionKey(event.target.value as PreviewResolutionKey)} value={resolutionKey}>
             {Object.entries(previewResolutions).map(([key, value]) => (
               <option key={key} value={key}>{value.label}</option>
@@ -571,11 +651,11 @@ const LottiePreview = memo(function LottiePreview({
         </label>
         <button className={playing ? "active" : ""} onClick={togglePlayback} type="button">
           {playing ? <Pause size={12} /> : <Play size={12} />}
-          {playing ? "Stop animation" : "Start animation"}
+          {playing ? tr("Остановить анимацию", "Stop animation") : tr("Запустить анимацию", "Start animation")}
         </button>
         {onRender ? (
           <button className="lottie-render-button" disabled={renderDisabled} onClick={onRender} type="button">
-            Render changes
+            {tr("Отрендерить изменения", "Render changes")}
           </button>
         ) : null}
       </div>
@@ -587,7 +667,7 @@ const LottiePreview = memo(function LottiePreview({
         }}
       >
         <canvas ref={canvasRef} />
-        <span>{resolution.label} · RENDERED PREVIEW</span>
+        <span>{resolution.label} · {tr("ОТРЕНДЕРЕННОЕ ПРЕВЬЮ", "RENDERED PREVIEW")}</span>
         {error ? <em>{error}</em> : null}
       </div>
     </div>
@@ -609,6 +689,7 @@ const LottieProperties = memo(function LottieProperties({
   effect: GraphicEffectAsset;
   onChange: (effect: GraphicEffectAsset) => void;
 }) {
+  const { tr } = useI18n();
   if (!effect.lottie) return null;
   const textProperties = effect.lottie.properties.filter((property) => property.type === "text");
   const groups = groupProperties(effect.lottie.properties.filter((property) => property.type !== "text"));
@@ -645,13 +726,13 @@ const LottieProperties = memo(function LottieProperties({
     <section className="lottie-properties">
       <div className="lottie-properties-heading">
         <div>
-          <strong>Properties</strong>
-          <span>{effect.lottie.properties.filter((property) => property.overridden).length} overrides</span>
+          <strong>{tr("Свойства", "Properties")}</strong>
+          <span>{effect.lottie.properties.filter((property) => property.overridden).length} {tr("изменений", "overrides")}</span>
         </div>
       </div>
       <div className="lottie-composition-properties">
         <label>
-          <span>Transparent background</span>
+          <span>{tr("Прозрачный фон", "Transparent background")}</span>
           <input
             checked={effect.lottie.backgroundColor === "transparent"}
             onChange={(event) => onChange({
@@ -665,7 +746,7 @@ const LottieProperties = memo(function LottieProperties({
           />
         </label>
         <label>
-          <span>Background</span>
+          <span>{tr("Фон", "Background")}</span>
           <input
             disabled={effect.lottie.backgroundColor === "transparent"}
             onChange={(event) => onChange({
@@ -681,8 +762,8 @@ const LottieProperties = memo(function LottieProperties({
       {effect.lottie.warnings.map((warning) => <p className="lottie-warning" key={warning}>{warning}</p>)}
       <section className="lottie-text-editor">
         <div>
-          <strong>Editable text</strong>
-          <span>{textProperties.length} text field{textProperties.length === 1 ? "" : "s"}</span>
+          <strong>{tr("Редактируемый текст", "Editable text")}</strong>
+          <span>{textProperties.length} {tr("текстовых полей", `text field${textProperties.length === 1 ? "" : "s"}`)}</span>
         </div>
         {textProperties.length > 0 ? textProperties.map((property) => (
           <LottiePropertyRow
@@ -693,8 +774,10 @@ const LottieProperties = memo(function LottieProperties({
           />
         )) : (
           <p>
-            No editable Text Layers or Essential Graphics text slots were found. In After Effects,
-            keep the title as a Text Layer and do not convert it to shapes/outlines before Bodymovin export.
+            {tr(
+              "Редактируемые Text Layer или текстовые слоты Essential Graphics не найдены. В After Effects оставьте титр текстовым слоем и не преобразуйте его в кривые перед экспортом Bodymovin.",
+              "No editable Text Layers or Essential Graphics text slots were found. In After Effects, keep the title as a Text Layer and do not convert it to shapes/outlines before Bodymovin export.",
+            )}
           </p>
         )}
       </section>
@@ -726,16 +809,17 @@ function LottiePropertyRow({
   onReset: () => void;
   property: LottieEditableProperty;
 }) {
+  const { tr } = useI18n();
   return (
     <div className={`lottie-property-row ${property.overridden ? "overridden" : ""}`}>
       <label>
         <span title={property.group}>
           {property.type === "text" ? property.group : property.label}
-          {property.animated ? <i>ANIMATED</i> : null}
+          {property.animated ? <i>{tr("АНИМАЦИЯ", "ANIMATED")}</i> : null}
         </span>
         <PropertyInput property={property} onChange={onChange} />
       </label>
-      <button disabled={!property.overridden} onClick={onReset} title="Use original JSON value" type="button">
+      <button disabled={!property.overridden} onClick={onReset} title={tr("Использовать исходное значение JSON", "Use original JSON value")} type="button">
         <RotateCcw size={12} />
       </button>
     </div>
@@ -798,6 +882,7 @@ function ScalePropertyInput({ property, onChange }: {
   property: LottieEditableProperty;
   onChange: (value: LottieEditableProperty["value"]) => void;
 }) {
+  const { tr } = useI18n();
   const values = Array.isArray(property.value) ? property.value : [100, 100];
   const [linked, setLinked] = useState(() => Math.abs((values[0] ?? 100) - (values[1] ?? 100)) < 0.001);
   const maximum = Math.max(400, Math.ceil(Math.max(...values) / 100) * 100);
@@ -810,7 +895,7 @@ function ScalePropertyInput({ property, onChange }: {
       <button
         className={linked ? "linked" : ""}
         onClick={() => setLinked((current) => !current)}
-        title={linked ? "Unlock X/Y scale" : "Link X/Y scale"}
+        title={linked ? tr("Разъединить масштаб X/Y", "Unlock X/Y scale") : tr("Связать масштаб X/Y", "Link X/Y scale")}
         type="button"
       >
         {linked ? <Link2 size={12} /> : <Link2Off size={12} />}
@@ -819,7 +904,7 @@ function ScalePropertyInput({ property, onChange }: {
         <label key={axis}>
           <span>{axis === 0 ? "X" : "Y"}</span>
           <input
-            aria-label={`Scale ${axis === 0 ? "X" : "Y"} slider`}
+            aria-label={tr(`Ползунок масштаба ${axis === 0 ? "X" : "Y"}`, `Scale ${axis === 0 ? "X" : "Y"} slider`)}
             max={maximum}
             min={0}
             onChange={(event) => update(axis, Number(event.target.value))}
@@ -828,7 +913,7 @@ function ScalePropertyInput({ property, onChange }: {
             value={values[axis] ?? 100}
           />
           <input
-            aria-label={`Scale ${axis === 0 ? "X" : "Y"} percent`}
+            aria-label={tr(`Масштаб ${axis === 0 ? "X" : "Y"} в процентах`, `Scale ${axis === 0 ? "X" : "Y"} percent`)}
             max={2_000}
             min={0}
             onChange={(event) => update(axis, Number(event.target.value))}
@@ -849,7 +934,10 @@ function groupProperties(properties: LottieEditableProperty[]): Map<string, Lott
 }
 
 /** Одна строка про то, что эффект сделает — чтобы карточку можно было читать не открывая. */
-function broadcastEffectSummary(effect: GraphicEffectAsset): string {
+function broadcastEffectSummary(
+  effect: GraphicEffectAsset,
+  tr: (russian: string, english: string) => string,
+): string {
   const definition = effect.broadcast;
   if (!definition) return "";
   const settings = definition.settings;
@@ -857,31 +945,35 @@ function broadcastEffectSummary(effect: GraphicEffectAsset): string {
     const mode = settings.animationInOut.mode === "in-out"
       ? "In + Out"
       : settings.animationInOut.mode.toUpperCase();
-    return `${mode} · ${settings.animationInOut.durationSeconds} с` +
-      (settings.animationInOut.taskFilePath ? " · файл задания" : "");
+    return `${mode} · ${settings.animationInOut.durationSeconds} ${tr("с", "s")}` +
+      (settings.animationInOut.taskFilePath ? tr(" · файл задания", " · task file") : "");
   }
   if (definition.kind === "dynamic-title") {
     const source = settings.dynamicTitle.source === "task-file"
-      ? `файл · ${settings.dynamicTitle.taskKey}`
-      : (settings.dynamicTitle.text || "текст не задан");
-    return `${source} · ${settings.dynamicTitle.durationSeconds} с`;
+      ? `${tr("файл", "file")} · ${settings.dynamicTitle.taskKey}`
+      : (settings.dynamicTitle.text || tr("текст не задан", "text not set"));
+    return `${source} · ${settings.dynamicTitle.durationSeconds} ${tr("с", "s")}`;
   }
   if (definition.kind === "next-program") {
-    return `За ${settings.nextProgram.startOffsetSeconds} с до конца · ` +
-      `${settings.nextProgram.durationSeconds} с`;
+    return tr(
+      `За ${settings.nextProgram.startOffsetSeconds} с до конца · ${settings.nextProgram.durationSeconds} с`,
+      `${settings.nextProgram.startOffsetSeconds} s before end · ${settings.nextProgram.durationSeconds} s`,
+    );
   }
   if (definition.kind === "ticker-crawl") {
-    return `${settings.tickerCrawl.items.filter(Boolean).length} сообщений · ` +
-      `${settings.tickerCrawl.speedPixelsPerSecond} px/с` +
-      (settings.tickerCrawl.repeat > 0 ? ` · ${settings.tickerCrawl.repeat} круга` : " · непрерывно");
+    return `${settings.tickerCrawl.items.filter(Boolean).length} ${tr("сообщений", "messages")} · ` +
+      `${settings.tickerCrawl.speedPixelsPerSecond} px/${tr("с", "s")}` +
+      (settings.tickerCrawl.repeat > 0
+        ? ` · ${settings.tickerCrawl.repeat} ${tr("круга", "loops")}`
+        : tr(" · непрерывно", " · continuous"));
   }
   if (definition.kind === "clock-countdown") {
     return settings.clockCountdown.mode === "clock"
-      ? `Часы · ${settings.clockCountdown.format} · UTC${formatOffset(settings.clockCountdown.timezoneOffsetMinutes)}`
-      : `Отсчёт ${settings.clockCountdown.countdownSeconds} с · ${settings.clockCountdown.format}`;
+      ? `${tr("Часы", "Clock")} · ${settings.clockCountdown.format} · UTC${formatOffset(settings.clockCountdown.timezoneOffsetMinutes)}`
+      : `${tr("Отсчёт", "Countdown")} ${settings.clockCountdown.countdownSeconds} ${tr("с", "s")} · ${settings.clockCountdown.format}`;
   }
-  return `${settings.stingerTransition.durationSeconds} с · cut ` +
-    `${settings.stingerTransition.cutPointSeconds} с · ${settings.stingerTransition.blendMode}`;
+  return `${settings.stingerTransition.durationSeconds} ${tr("с", "s")} · cut ` +
+    `${settings.stingerTransition.cutPointSeconds} ${tr("с", "s")} · ${settings.stingerTransition.blendMode}`;
 }
 
 function formatOffset(minutes: number): string {

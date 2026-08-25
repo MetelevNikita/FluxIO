@@ -9,6 +9,8 @@ import type { SystemMetrics } from "@gruber/contracts";
 import type { ConnectionState } from "../App";
 import type { AppView } from "../types";
 import { FluxIoLogo } from "./FluxIoLogo";
+import { LanguageSelector } from "./LanguageSelector";
+import { useI18n } from "../i18n";
 
 interface AppHeaderProps {
   activeView: AppView;
@@ -17,19 +19,19 @@ interface AppHeaderProps {
   systemMetrics: SystemMetrics | null;
 }
 
-const navigation = [
-  { id: "import", label: "Import & Analyze", icon: FolderOpen },
-  { id: "effects", label: "Effects", icon: Layers3 },
-  { id: "playlist", label: "Playlist & Preview", icon: CirclePlay },
-  { id: "broadcast", label: "Broadcast Settings", icon: SlidersHorizontal },
-] as const;
-
 export function AppHeader({
   activeView,
   connection,
   onNavigate,
   systemMetrics,
 }: AppHeaderProps) {
+  const { tr } = useI18n();
+  const navigation = [
+    { id: "import", label: tr("Импорт и анализ", "Import & Analyze"), icon: FolderOpen },
+    { id: "effects", label: tr("Эффекты", "Effects"), icon: Layers3 },
+    { id: "playlist", label: tr("Плейлист и превью", "Playlist & Preview"), icon: CirclePlay },
+    { id: "broadcast", label: tr("Настройки эфира", "Broadcast Settings"), icon: SlidersHorizontal },
+  ] as const;
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()));
 
   useEffect(() => {
@@ -45,18 +47,18 @@ export function AppHeader({
       ? "connecting"
       : "offline";
   const badgeLabel = badgeState === "ready"
-    ? "LIVE CONSOLE"
+    ? tr("ЭФИРНАЯ КОНСОЛЬ", "LIVE CONSOLE")
     : badgeState === "degraded"
-      ? "DEGRADED"
+      ? tr("ОГРАНИЧЕННО", "DEGRADED")
       : badgeState === "connecting"
-        ? "CONNECTING"
-        : "OFFLINE";
+        ? tr("ПОДКЛЮЧЕНИЕ", "CONNECTING")
+        : tr("НЕТ СВЯЗИ", "OFFLINE");
   const connectionTitle =
     connection.kind === "ready"
-      ? `Media service ${connection.health.version} ${connection.health.status}`
+      ? `${tr("Медиасервис", "Media service")} ${connection.health.version} ${connection.health.status}`
       : connection.kind === "error"
         ? connection.message
-        : "Connecting to media service";
+        : tr("Подключение к медиасервису", "Connecting to media service");
 
   return (
     <header className="console-header">
@@ -70,7 +72,7 @@ export function AppHeader({
         </span>
       </div>
 
-      <nav className="console-navigation" aria-label="Основная навигация">
+      <nav className="console-navigation" aria-label={tr("Основная навигация", "Primary navigation")}>
         {navigation.map(({ id, label, icon: Icon }) => (
           <button
             className={`nav-tab ${activeView === id ? "active" : ""}`}
@@ -84,20 +86,21 @@ export function AppHeader({
         ))}
       </nav>
 
-      <div className="system-metrics" aria-label="Системные метрики">
+      <div className="system-metrics" aria-label={tr("Системные метрики", "System metrics")}>
         <Metric
           label="CPU"
-          title="Текущая загрузка процессора сервера"
+          title={tr("Текущая загрузка процессора сервера", "Current server CPU load")}
           value={systemMetrics ? `${systemMetrics.cpuPercent.toFixed(1)}%` : "—"}
         />
         <Metric
           label="NET"
-          title="Фактический bitrate исходящего программного потока"
+          title={tr("Фактический битрейт исходящего программного потока", "Actual outgoing programme bitrate")}
           value={systemMetrics ? formatNetworkMbps(systemMetrics.networkMbps) : "—"}
         />
         <span className="metric-divider" aria-hidden="true" />
         <time title={localTimeZoneName()}>{localTime}</time>
       </div>
+      <div className="header-language"><LanguageSelector /></div>
     </header>
   );
 }

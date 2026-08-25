@@ -314,9 +314,12 @@ export const broadcastTextStyleSchema = z.object({
   boxColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#000000"),
   boxOpacity: z.number().min(0).max(1).default(0.62),
   boxPaddingPercent: z.number().min(0).max(10).default(0.9),
-  /** Позиция базовой линии в процентах от ширины/высоты кадра. */
-  xPercent: z.number().min(0).max(100).default(4),
-  yPercent: z.number().min(0).max(100).default(86),
+  /**
+   * Позиция базовой линии в процентах кадра. Запас за пределами 0..100 нужен,
+   * чтобы надпись могла выйти за край вместе со сдвинутым FX-слоем.
+   */
+  xPercent: z.number().min(-100).max(200).default(4),
+  yPercent: z.number().min(-100).max(200).default(86),
 });
 
 export const broadcastTextOverlayModeSchema = z.enum([
@@ -351,7 +354,7 @@ export const broadcastTextOverlaySchema = z.object({
    * полосу сужают по её ширине: иначе текст выезжает за плашку и идёт по всему
    * экрану. Обрезка настоящая — строка рисуется на отдельном холсте.
    */
-  regionXPercent: z.number().min(0).max(100).default(0),
+  regionXPercent: z.number().min(-100).max(200).default(0),
   regionWidthPercent: z.number().positive().max(100).default(100),
   clockFormat: clockFormatSchema.default("HH:MM:SS"),
   /** clock: сдвиг часового пояса относительно UTC. */
@@ -468,6 +471,10 @@ export const clockCountdownSettingsSchema = z.object({
 
 export const stingerTransitionSettingsSchema = z.object({
   assetPath: z.string().min(1).nullable().default(null),
+  sourceFrameRate: z.number().positive().max(240).nullable().default(null),
+  sourcePixelFormat: z.string().max(64).nullable().default(null),
+  sourceHasAlpha: z.boolean().nullable().default(null),
+  sourceHasAudio: z.boolean().nullable().default(null),
   durationSeconds: z.number().positive().max(30).default(1),
   /**
    * Момент внутри перехода, в котором графика полностью закрывает кадр. Ровно
@@ -542,10 +549,13 @@ export const broadcastEffectDefinitionSchema = z.object({
 /** Одна сырая запись допускает произвольную структуру; сервер распрямит её в dotted keys. */
 export const broadcastTaskEntrySchema = z.record(z.string(), z.unknown());
 
+/** 4 MiB JSON достаточно для крупных суточных/архивных выгрузок до 10 000 строк. */
+export const maximumBroadcastTaskRecords = 10_000;
+
 /** Файл задания принимает и один объект, и массив объектов на всю сетку. */
 export const broadcastTaskFileSchema = z.union([
   broadcastTaskEntrySchema,
-  z.array(broadcastTaskEntrySchema).min(1).max(2_000),
+  z.array(broadcastTaskEntrySchema).min(1).max(maximumBroadcastTaskRecords),
 ]).transform((value) => (Array.isArray(value) ? value : [value]));
 
 export const readBroadcastTaskRequestSchema = z.object({
@@ -555,17 +565,17 @@ export const readBroadcastTaskRequestSchema = z.object({
 export const broadcastTaskFileContentSchema = z.object({
   filePath: z.string().min(1),
   /** Сырые нормализованные строки, из которых UI строит пользовательский mapping. */
-  records: z.array(z.record(z.string(), z.string())).min(1).max(2_000),
+  records: z.array(z.record(z.string(), z.string())).min(1).max(maximumBroadcastTaskRecords),
   fields: z.array(z.object({
     key: z.string().min(1).max(256),
-    populatedCount: z.number().int().nonnegative().max(2_000),
+    populatedCount: z.number().int().nonnegative().max(maximumBroadcastTaskRecords),
     samples: z.array(z.string().max(512)).max(3),
   })).max(512),
   /** Совместимое представление для старых файлов, где идентификатор называется `name`. */
   entries: z.array(z.object({
     name: z.string().min(1),
     values: z.record(z.string(), z.string()),
-  })).max(2_000),
+  })).max(maximumBroadcastTaskRecords),
   warnings: z.array(z.string().max(512)).max(200).default([]),
 });
 
@@ -659,6 +669,12 @@ export const lottieEffectMetadataSchema = z.object({
   properties: z.array(lottieEditablePropertySchema).max(2_000),
   /** Text Layer names that have a Shape Layer named `fit:<Text Layer>`. */
   responsiveTextKeys: z.array(z.string().min(1).max(256)).max(256).default([]),
+  /** Имя JSON-файла, с которым шаблон проверялся в FluxIO Title Studio. */
+  dataSourceName: z.string().max(512).nullable().default(null),
+  /** Рекомендованное поле поиска ролика из Title Studio. */
+  matchSourceKey: z.string().trim().min(1).max(256).nullable().default(null),
+  /** Готовые связи JSON → Text Layer, перенесённые из Title Studio. */
+  dataBindings: z.array(broadcastDataBindingSchema).max(128).default([]),
   warnings: z.array(z.string().max(512)).max(100).default([]),
 });
 
@@ -816,6 +832,17 @@ export const graphicEffectVerificationSchema = z.object({
 
 export const graphicEffectAssetListSchema = z.object({
   items: z.array(graphicEffectAssetSchema).max(200),
+});
+
+export const graphicEffectImportIssueSchema = z.object({
+  filePath: z.string().min(1),
+  message: z.string().min(1).max(2_048),
+});
+
+/** Пакетный импорт не теряет исправные файлы из-за одного несовместимого. */
+export const graphicEffectImportResultSchema = z.object({
+  items: z.array(graphicEffectAssetSchema).max(200),
+  issues: z.array(graphicEffectImportIssueSchema).max(200).default([]),
 });
 
 export const renderLottieEffectRequestSchema = z.object({
@@ -1496,6 +1523,8 @@ export type BroadcastTextOverlayMode = z.infer<typeof broadcastTextOverlayModeSc
 export type ClipAudioOverlay = z.infer<typeof clipAudioOverlaySchema>;
 export type BroadcastTaskFileContent = z.infer<typeof broadcastTaskFileContentSchema>;
 export type GraphicEffectVerification = z.infer<typeof graphicEffectVerificationSchema>;
+export type GraphicEffectImportIssue = z.infer<typeof graphicEffectImportIssueSchema>;
+export type GraphicEffectImportResult = z.infer<typeof graphicEffectImportResultSchema>;
 export type SystemFont = z.infer<typeof systemFontSchema>;
 export type TickerSourceContent = z.infer<typeof tickerSourceContentSchema>;
 export type GraphicEffectAsset = z.infer<typeof graphicEffectAssetSchema>;

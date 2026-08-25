@@ -1,5 +1,6 @@
 import { AlertTriangle, FileVideo2, LoaderCircle, X } from "lucide-react";
 import type { MissingGraphic } from "../missing-graphics";
+import { useI18n } from "../i18n";
 
 /**
  * Список графики, на которую ссылается расписание, но которой нет ни на диске,
@@ -23,21 +24,23 @@ export function MissingGraphicsDialog({
   onDropAll,
   onClose,
 }: MissingGraphicsDialogProps) {
+  const { tr } = useI18n();
   const pending = items.filter((item) => !resolved[item.filePath]).length;
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Потерянная графика">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={tr("Потерянная графика", "Missing graphics")}>
       <div className="missing-graphics-dialog">
         <header>
           <AlertTriangle size={18} />
           <div>
-            <strong>Графика расписания не найдена</strong>
+            <strong>{tr("Графика расписания не найдена", "Schedule graphics not found")}</strong>
             <span>
-              Расписание ссылается на {items.length} элемент(ов) графики, которых нет на диске
-              или в библиотеке эффектов. Укажите файлы или снимите их с роликов — иначе эфир
-              не стартует.
+              {tr(
+                `Расписание ссылается на ${items.length} элемент(ов) графики, которых нет на диске или в библиотеке эффектов. Укажите файлы или снимите их с роликов — иначе эфир не стартует.`,
+                `The schedule references ${items.length} graphic item(s) missing from disk or the effects library. Locate the files or remove them from clips before starting playout.`,
+              )}
             </span>
           </div>
-          <button aria-label="Закрыть" onClick={onClose} type="button"><X size={15} /></button>
+          <button aria-label={tr("Закрыть", "Close")} onClick={onClose} type="button"><X size={15} /></button>
         </header>
 
         <ul>
@@ -50,19 +53,19 @@ export function MissingGraphicsDialog({
                   <small title={item.filePath}>{item.filePath}</small>
                   <em>
                     {item.reason === "file-missing"
-                      ? "Файл не найден на диске"
-                      : "Эффекта нет в библиотеке проекта"}
+                      ? tr("Файл не найден на диске", "File not found on disk")
+                      : tr("Эффекта нет в библиотеке проекта", "Effect is missing from the project library")}
                     {" · "}
-                    {item.usageCount} ролик(ов)
+                    {item.usageCount} {tr("ролик(ов)", "clip(s)")}
                   </em>
                 </div>
                 {replacement ? (
                   <span className="missing-graphics-resolved" title={replacement}>
-                    Заменён
+                    {tr("Заменён", "Replaced")}
                   </span>
                 ) : (
                   <button disabled={busy} onClick={() => onLocate(item.filePath)} type="button">
-                    <FileVideo2 size={12} /> Указать файл
+                    <FileVideo2 size={12} /> {tr("Указать файл", "Locate file")}
                   </button>
                 )}
               </li>
@@ -74,14 +77,14 @@ export function MissingGraphicsDialog({
           {busy ? <LoaderCircle className="spin" size={15} /> : null}
           <span>
             {pending === 0
-              ? "Все элементы заменены."
-              : `Осталось без замены: ${pending}`}
+              ? tr("Все элементы заменены.", "All items have been replaced.")
+              : tr(`Осталось без замены: ${pending}`, `Still missing: ${pending}`)}
           </span>
           <button disabled={busy || pending === 0} onClick={onDropAll} type="button">
-            Снять оставшиеся с роликов
+            {tr("Снять оставшиеся с роликов", "Remove remaining from clips")}
           </button>
           <button className="primary" disabled={busy} onClick={onClose} type="button">
-            Готово
+            {tr("Готово", "Done")}
           </button>
         </footer>
       </div>

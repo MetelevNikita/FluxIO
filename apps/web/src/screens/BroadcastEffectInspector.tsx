@@ -26,6 +26,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { useI18n, type Translate } from "../i18n";
 
 /**
  * Настройки эфирного эффекта второго уровня. У каждого вида — своё поведение,
@@ -56,42 +57,61 @@ interface BroadcastEffectInspectorProps {
 export const broadcastEffectCatalog: {
   kind: BroadcastEffectKind;
   title: string;
+  titleRu: string;
   summary: string;
+  summaryEn: string;
 }[] = [
   {
     kind: "animation-in-out",
     summary: "Входная и выходная анимация ролика с привязкой файлом задания",
+    summaryEn: "Clip intro and outro animation driven by a task file",
     title: "Animation in/out",
+    titleRu: "Анимация входа/выхода",
   },
   {
     kind: "dynamic-title",
     summary: "Lottie-плашка с произвольным текстом из интерфейса или файла задания",
+    summaryEn: "Lottie title with text from the interface or a task file",
     title: "Dynamic title",
+    titleRu: "Динамическая плашка",
   },
   {
     kind: "next-program",
     summary: "Плашка «Смотрите далее» с названием следующего материала",
+    summaryEn: "Up-next title with the name of the following programme item",
     title: "Next program",
+    titleRu: "Следующая программа",
   },
   {
     kind: "ticker-crawl",
     summary: "Бегущая строка с постоянной скоростью при любой длине текста",
+    summaryEn: "Ticker crawl with constant speed for any text length",
     title: "Ticker crawl",
+    titleRu: "Бегущая строка",
   },
   {
     kind: "clock-countdown",
     summary: "Экранные часы по эфирному времени или обратный отсчёт",
+    summaryEn: "On-screen air-time clock or countdown",
     title: "Clock / countdown",
+    titleRu: "Часы / отсчёт",
   },
   {
     kind: "stinger-transition",
     summary: "Брендированный переход, закрывающий стык двух роликов",
+    summaryEn: "Branded transition covering the cut between two clips",
     title: "Stinger transition",
+    titleRu: "Стингер-переход",
   },
 ];
 
-export function broadcastEffectTitle(kind: BroadcastEffectKind): string {
-  return broadcastEffectCatalog.find((entry) => entry.kind === kind)?.title ?? kind;
+export function broadcastEffectTitle(
+  kind: BroadcastEffectKind,
+  tr?: (russian: string, english: string) => string,
+): string {
+  const entry = broadcastEffectCatalog.find((candidate) => candidate.kind === kind);
+  if (!entry) return kind;
+  return tr ? tr(entry.titleRu, entry.title) : entry.titleRu;
 }
 
 export function BroadcastEffectInspector({
@@ -111,9 +131,12 @@ export function BroadcastEffectInspector({
   assignedClipCount,
   clips,
 }: BroadcastEffectInspectorProps) {
+  const { tr } = useI18n();
   const definition = effect.broadcast;
   if (!definition) return null;
   const settings = definition.settings;
+  const usesTaskData = definition.kind === "animation-in-out" ||
+    definition.kind === "dynamic-title" || definition.kind === "next-program";
 
   const updateSettings = <K extends keyof BroadcastEffectSettings>(
     key: K,
@@ -170,14 +193,30 @@ export function BroadcastEffectInspector({
         <select
           aria-label={label}
           disabled={busy}
-          onChange={(event) => onChange({
-            ...effect,
-            broadcast: { ...definition, presetEffectId: event.target.value || null },
-          })}
+          onChange={(event) => {
+            const presetEffectId = event.target.value || null;
+            const preset = presets.find((candidate) => candidate.id === presetEffectId);
+            const suggestedBindings = preset?.lottie?.dataBindings ?? [];
+            onChange({
+              ...effect,
+              broadcast: {
+                ...definition,
+                presetEffectId,
+                dataMapping: definition.dataMapping.bindings.length > 0 || suggestedBindings.length === 0
+                  ? definition.dataMapping
+                  : {
+                      ...definition.dataMapping,
+                      bindings: suggestedBindings,
+                      matchSourceKey: preset?.lottie?.matchSourceKey ??
+                        definition.dataMapping.matchSourceKey,
+                    },
+              },
+            });
+          }}
           value={definition.presetEffectId ?? ""}
         >
-          {optional ? <option value="">Без пресета · штатная надпись</option> : null}
-          {presets.length === 0 ? <option value="">Пресетов пока нет — подгрузите Lottie</option> : null}
+          {optional ? <option value="">{tr("Без пресета · штатная надпись", "No preset · standard text")}</option> : null}
+          {presets.length === 0 ? <option value="">{tr("Пресетов пока нет — подгрузите Lottie", "No presets yet — load Lottie")}</option> : null}
           {presets.map((preset) => (
             <option key={preset.id} value={preset.id}>
               {preset.lottie ? "LOTTIE" : preset.kind.toUpperCase()} · {preset.name}
@@ -187,7 +226,7 @@ export function BroadcastEffectInspector({
         {/* Подгрузка прямо отсюда: иначе ради пресета приходится уходить
             в общий импорт и возвращаться обратно к настройкам эффекта. */}
         <button disabled={busy} onClick={onImportPreset} type="button">
-          <FileJson2 size={12} /> Подгрузить Lottie
+          <FileJson2 size={12} /> {tr("Подгрузить Lottie", "Load Lottie")}
         </button>
       </div>
     </div>
@@ -196,25 +235,25 @@ export function BroadcastEffectInspector({
   return (
     <section className="broadcast-inspector">
       <div className="broadcast-inspector-heading">
-        <span className="broadcast-tier-badge">Уровень 2</span>
-        <strong>{broadcastEffectTitle(definition.kind)}</strong>
+        <span className="broadcast-tier-badge">{tr("Уровень 2", "Tier 2")}</span>
+        <strong>{broadcastEffectTitle(definition.kind, tr)}</strong>
         {/* Настройки правятся после назначения, поэтому нужен явный перенос
             изменений в уже размеченные ролики. */}
         <button
           className="broadcast-save-button"
           disabled={busy || assignedClipCount === 0}
           onClick={() => {
-            if (window.confirm(
-              `Сохранить настройки «${effect.name}» и перенести их в ${assignedClipCount} ролик(ов)?\n\n` +
-                "Прежние слои этого эффекта будут заменены новыми.",
-            )) onApplyChanges();
+            if (window.confirm(tr(
+              `Сохранить настройки «${effect.name}» и перенести их в ${assignedClipCount} ролик(ов)?\n\nПрежние слои этого эффекта будут заменены новыми.`,
+              `Save settings for “${effect.name}” and apply them to ${assignedClipCount} clip(s)?\n\nExisting layers of this effect will be replaced.`,
+            ))) onApplyChanges();
           }}
           title={assignedClipCount === 0
-            ? "Эффект ещё не назначен ни одному ролику"
-            : `Перенести настройки в ${assignedClipCount} ролик(ов)`}
+            ? tr("Эффект ещё не назначен ни одному ролику", "The effect has not been assigned to any clips")
+            : tr(`Перенести настройки в ${assignedClipCount} ролик(ов)`, `Apply settings to ${assignedClipCount} clip(s)`)}
           type="button"
         >
-          <Save size={12} /> Save
+          <Save size={12} /> {tr("Обновить назначения", "Update assignments")}
           {assignedClipCount > 0 ? <i>{assignedClipCount}</i> : null}
         </button>
       </div>
@@ -225,68 +264,86 @@ export function BroadcastEffectInspector({
         onPlacementChange={updatePlacement}
         presets={presets}
       />
-      <div className="broadcast-workflow-rail" aria-label="Настройка эффекта">
-        <span className={definition.presetEffectId ? "done" : "active"}><b>01</b> Шаблон</span>
-        <span className={definition.dataMapping.filePath ? "done" : "active"}><b>02</b> Данные</span>
-        <span className="active"><b>03</b> Эфир</span>
-        <span><b>04</b> Оформление</span>
+      <div className="broadcast-workflow-rail" aria-label={tr("Настройка эффекта", "Effect setup")}>
+        <span className={definition.presetEffectId ? "done" : "active"}><b>01</b> {tr("Шаблон", "Template")}</span>
+        <span className={!usesTaskData ? "disabled" : definition.dataMapping.filePath ? "done" : "active"}>
+          <b>02</b> {tr("Данные", "Data")}
+        </span>
+        <span className="active"><b>03</b> {tr("Эфир", "Playout")}</span>
+        <span><b>04</b> {tr("Оформление", "Style")}</span>
       </div>
 
       {definition.kind === "stinger-transition" ? null : (
         <section className="broadcast-studio-card">
-          <header><span>01</span><div><strong>Шаблон и данные</strong><small>Выберите оформление, затем свяжите JSON с Text Layer</small></div></header>
-          {presetPicker("Пользовательский шаблон", definition.kind !== "animation-in-out")}
+          <header><span>01</span><div><strong>{tr("Шаблон и данные", "Template and data")}</strong><small>{tr("Выберите оформление, затем свяжите JSON с Text Layer", "Choose the design, then map JSON to Text Layers")}</small></div></header>
+          {presetPicker(tr("Пользовательский шаблон", "Custom template"), definition.kind !== "animation-in-out")}
           <PresetFieldsHint effect={effect} presets={presets} />
-          <TaskFileField
-            busy={busy}
-            filePath={definition.dataMapping.filePath}
-            mappedCount={definition.dataMapping.bindings.length}
-            onClear={() => onChange({
-              ...effect,
-              broadcast: {
-                ...definition,
-                dataMapping: {
-                  filePath: null,
-                  matchSourceKey: definition.kind === "animation-in-out" ? "title" : "name",
-                  bindings: [],
-                },
-              },
-            })}
-            onConfigure={() => setMappingOpen(true)}
-            onSelect={onSelectTaskFile}
-            summary={taskSummary}
-          />
-          <p className="broadcast-hint">
-            JSON можно подключить к любому текстовому шаблону. Метка <code>FIT READY</code>
-            в Parser означает, что подложка будет менять ширину вместе с текстом.
-          </p>
+          {usesTaskData ? (
+            <>
+              <TaskFileField
+                busy={busy}
+                filePath={definition.dataMapping.filePath}
+                mappedCount={definition.dataMapping.bindings.length}
+                onClear={() => onChange({
+                  ...effect,
+                  broadcast: {
+                    ...definition,
+                    dataMapping: {
+                      filePath: null,
+                      matchSourceKey: definition.kind === "animation-in-out" ? "title" : "name",
+                      bindings: [],
+                    },
+                    settings: {
+                      ...settings,
+                      ...(definition.kind === "animation-in-out"
+                        ? { animationInOut: { ...settings.animationInOut, taskFilePath: null } }
+                        : definition.kind === "dynamic-title"
+                          ? { dynamicTitle: { ...settings.dynamicTitle, taskFilePath: null } }
+                          : { nextProgram: { ...settings.nextProgram, taskFilePath: null } }),
+                    },
+                  },
+                })}
+                onConfigure={() => setMappingOpen(true)}
+                onSelect={onSelectTaskFile}
+                summary={taskSummary}
+              />
+              <p className="broadcast-hint">
+                {tr("JSON можно подключить к любому текстовому шаблону. Метка", "JSON can be connected to any text template. The")} <code>FIT READY</code>{" "}
+                {tr("в Parser означает, что подложка будет менять ширину вместе с текстом.", "badge in Parser means the plate changes width with the text.")}
+              </p>
+            </>
+          ) : (
+            <p className="broadcast-hint">
+              {tr("Этот эффект получает данные из собственных настроек; общий файл задания ему не нужен.", "This effect reads data from its own settings and does not need a shared task file.")}
+            </p>
+          )}
           {definition.kind === "animation-in-out" ? (
             <div className="broadcast-task-apply">
               <div>
-                <span>PROJECT MATCH</span>
+                <span>{tr("СОВПАДЕНИЯ ПРОЕКТА", "PROJECT MATCH")}</span>
                 <strong>
-                  {taskMatchSummary.matchedClipCount} ролик(ов) · {taskMatchSummary.matchedRecordCount} записей
+                  {taskMatchSummary.matchedClipCount} {tr("ролик(ов)", "clip(s)")} · {taskMatchSummary.matchedRecordCount} {tr("записей", "records")}
                 </strong>
                 <small>
-                  Не найдено в расписании: {taskMatchSummary.unmatchedRecordCount} · без JSON: {taskMatchSummary.unmatchedClipCount}
+                  {tr("Не найдено в расписании", "Not found in schedule")}: {taskMatchSummary.unmatchedRecordCount} · {tr("без JSON", "without JSON")}: {taskMatchSummary.unmatchedClipCount}
                 </small>
               </div>
               <button
                 disabled={busy || !selectedPreset || !definition.dataMapping.filePath ||
                   taskMatchSummary.matchedClipCount === 0 || taskMatchSummary.duplicateTitles.length > 0}
                 onClick={() => {
-                  if (window.confirm(
-                    `Применить данные JSON к ${taskMatchSummary.matchedClipCount} ролику(ам)?\n\n` +
-                      "Существующие слои этого Animation In/Out будут заменены, остальные эффекты сохранятся.",
-                  )) onApplyTaskToProject();
+                  if (window.confirm(tr(
+                    `Применить данные JSON к ${taskMatchSummary.matchedClipCount} ролику(ам)?\n\nСуществующие слои этого Animation In/Out будут заменены, остальные эффекты сохранятся.`,
+                    `Apply JSON data to ${taskMatchSummary.matchedClipCount} clip(s)?\n\nExisting Animation In/Out layers will be replaced; other effects will remain.`,
+                  ))) onApplyTaskToProject();
                 }}
                 type="button"
               >
-                <Layers3 size={13} /> Применить JSON к проекту
+                <Layers3 size={13} /> {tr("Применить JSON к проекту", "Apply JSON to project")}
               </button>
               {taskMatchSummary.duplicateTitles.length > 0 ? (
                 <p>
-                  Дубли {definition.dataMapping.matchSourceKey} в JSON: {taskMatchSummary.duplicateTitles.slice(0, 3).join(", ")}. Удалите неоднозначные записи.
+                  {tr("Дубли", "Duplicate")} {definition.dataMapping.matchSourceKey} {tr("в JSON", "in JSON")}: {taskMatchSummary.duplicateTitles.slice(0, 3).join(", ")}. {tr("Удалите неоднозначные записи.", "Remove ambiguous records.")}
                 </p>
               ) : null}
             </div>
@@ -310,18 +367,18 @@ export function BroadcastEffectInspector({
         }}
         open={mappingOpen}
         summary={taskSummary}
-        templateName={selectedPreset?.name ?? "Шаблон не выбран"}
+        templateName={selectedPreset?.name ?? tr("Шаблон не выбран", "No template selected")}
         targets={mappingTargets}
       />
 
       <section className="broadcast-studio-card broadcast-behavior-card">
-        <header><span>03</span><div><strong>Поведение в эфире</strong><small>Источник значения, окно показа, анимация и стиль</small></div></header>
+        <header><span>03</span><div><strong>{tr("Поведение в эфире", "Playout behavior")}</strong><small>{tr("Источник значения, окно показа, анимация и стиль", "Value source, display window, animation and style")}</small></div></header>
 
       {definition.kind === "animation-in-out" ? (
         <>
           <div className="broadcast-grid">
             <label className="broadcast-field">
-              <span>Режим</span>
+              <span>{tr("Режим", "Mode")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("animationInOut", {
@@ -336,8 +393,8 @@ export function BroadcastEffectInspector({
             </label>
             <NumberField
               disabled={busy}
-              hint="от начала ролика"
-              label="Start, с"
+              hint={tr("от начала ролика", "from clip start")}
+              label={tr("Старт, с", "Start, s")}
               min={0}
               onChange={(startSeconds) => updateSettings("animationInOut", { startSeconds })}
               step={0.04}
@@ -345,8 +402,8 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              hint="от конца ролика"
-              label="End, с"
+              hint={tr("от конца ролика", "from clip end")}
+              label={tr("Конец, с", "End, s")}
               min={0}
               onChange={(endSeconds) => updateSettings("animationInOut", { endSeconds })}
               step={0.04}
@@ -354,7 +411,7 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              label="Duration, с"
+              label={tr("Длительность, с", "Duration, s")}
               min={0.04}
               onChange={(durationSeconds) => updateSettings("animationInOut", { durationSeconds })}
               step={0.04}
@@ -368,7 +425,7 @@ export function BroadcastEffectInspector({
         <>
           <div className="broadcast-grid">
             <label className="broadcast-field">
-              <span>Источник текста</span>
+              <span>{tr("Источник текста", "Text source")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("dynamicTitle", {
@@ -376,32 +433,32 @@ export function BroadcastEffectInspector({
                 })}
                 value={settings.dynamicTitle.source}
               >
-                <option value="manual">Вручную</option>
-                <option value="task-file">Файл задания</option>
+                <option value="manual">{tr("Вручную", "Manual")}</option>
+                <option value="task-file">{tr("Файл задания", "Task file")}</option>
               </select>
             </label>
             <TextField
               disabled={busy}
               hint={settings.dynamicTitle.source === "task-file"
-                ? "используется, если в файле нет значения"
+                ? tr("используется, если в файле нет значения", "used when the file has no value")
                 : undefined}
-              label={settings.dynamicTitle.source === "task-file" ? "Резервный текст" : "Текст"}
+              label={settings.dynamicTitle.source === "task-file" ? tr("Резервный текст", "Fallback text") : tr("Текст", "Text")}
               onChange={(text) => updateSettings("dynamicTitle", { text })}
               value={settings.dynamicTitle.text}
             />
             {settings.dynamicTitle.source === "task-file" ? (
               <TextField
                 disabled={busy}
-                hint="ключ рядом с name в JSON"
-                label="Ключ значения"
+                hint={tr("ключ рядом с name в JSON", "key next to name in JSON")}
+                label={tr("Ключ значения", "Value key")}
                 onChange={(taskKey) => updateSettings("dynamicTitle", { taskKey })}
                 value={settings.dynamicTitle.taskKey}
               />
             ) : null}
             <NumberField
               disabled={busy}
-              hint="от начала ролика"
-              label="Start, с"
+              hint={tr("от начала ролика", "from clip start")}
+              label={tr("Старт, с", "Start, s")}
               min={0}
               onChange={(startSeconds) => updateSettings("dynamicTitle", { startSeconds })}
               step={0.04}
@@ -409,7 +466,7 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              label="Duration, с"
+              label={tr("Длительность, с", "Duration, s")}
               min={0.04}
               onChange={(durationSeconds) => updateSettings("dynamicTitle", { durationSeconds })}
               step={0.04}
@@ -420,30 +477,29 @@ export function BroadcastEffectInspector({
             <div className="broadcast-grid">
               <PresetKeyField
                 busy={busy}
-                hint="этот Text Layer очищается; реальный текст рисует FFmpeg"
+                hint={tr("этот Text Layer очищается; реальный текст рисует FFmpeg", "this Text Layer is cleared; FFmpeg draws the live text")}
                 keys={presetKeys}
-                label="Поле для текста"
+                label={tr("Поле для текста", "Text field")}
                 onChange={(dynamicKey) => updateSettings("dynamicTitle", { dynamicKey })}
                 value={settings.dynamicTitle.dynamicKey}
               />
               <PresetKeyField
                 busy={busy}
-                hint="необязательная постоянная подпись"
+                hint={tr("необязательная постоянная подпись", "optional fixed caption")}
                 keys={presetKeys}
-                label="Поле подписи"
+                label={tr("Поле подписи", "Caption field")}
                 onChange={(captionKey) => updateSettings("dynamicTitle", { captionKey })}
                 value={settings.dynamicTitle.captionKey}
               />
               <TextField
                 disabled={busy}
-                label="Текст подписи"
+                label={tr("Текст подписи", "Caption text")}
                 onChange={(captionText) => updateSettings("dynamicTitle", { captionText })}
                 value={settings.dynamicTitle.captionText}
               />
               <p className="broadcast-hint broadcast-field-wide">
-                Назовите Shape Layer подложки в After Effects
-                <code>fit:&lt;имя текстового слоя&gt;</code> — при каждом значении её ширина
-                сохранит исходные внутренние отступы.
+                {tr("Назовите Shape Layer подложки в After Effects", "Name the plate Shape Layer in After Effects")} {" "}
+                <code>fit:&lt;{tr("имя текстового слоя", "text layer name")}&gt;</code> — {tr("при каждом значении её ширина сохранит исходные внутренние отступы.", "its width will preserve the original padding for every value.")}
               </p>
             </div>
           ) : null}
@@ -461,8 +517,8 @@ export function BroadcastEffectInspector({
           <div className="broadcast-grid">
             <NumberField
               disabled={busy}
-              hint="до конца ролика"
-              label="Start offset, с"
+              hint={tr("до конца ролика", "before clip end")}
+              label={tr("Смещение старта, с", "Start offset, s")}
               min={0.04}
               onChange={(startOffsetSeconds) => updateSettings("nextProgram", { startOffsetSeconds })}
               step={0.5}
@@ -470,14 +526,14 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              label="Duration, с"
+              label={tr("Длительность, с", "Duration, s")}
               min={0.04}
               onChange={(durationSeconds) => updateSettings("nextProgram", { durationSeconds })}
               step={0.5}
               value={settings.nextProgram.durationSeconds}
             />
             <label className="broadcast-field">
-              <span>Источник названия</span>
+              <span>{tr("Источник названия", "Title source")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("nextProgram", {
@@ -485,45 +541,43 @@ export function BroadcastEffectInspector({
                 })}
                 value={settings.nextProgram.source}
               >
-                <option value="playlist-name">Следующий ролик плейлиста</option>
-                <option value="task-file">Файл задания, ключ next_title</option>
+                <option value="playlist-name">{tr("Следующий ролик плейлиста", "Next playlist clip")}</option>
+                <option value="task-file">{tr("Файл задания, ключ next_title", "Task file, next_title key")}</option>
               </select>
             </label>
             <PresetKeyField
               busy={busy}
-              hint="поле очищается; название рисует FFmpeg"
+              hint={tr("поле очищается; название рисует FFmpeg", "field is cleared; FFmpeg draws the title")}
               keys={presetKeys}
-              label="Поле названия"
+              label={tr("Поле названия", "Title field")}
               onChange={(titleKey) => updateSettings("nextProgram", { titleKey })}
               value={settings.nextProgram.titleKey}
             />
             <PresetKeyField
               busy={busy}
-              hint="необязательно"
+              hint={tr("необязательно", "optional")}
               keys={presetKeys}
-              label="Поле подзаголовка"
+              label={tr("Поле подзаголовка", "Subtitle field")}
               onChange={(subtitleKey) => updateSettings("nextProgram", { subtitleKey })}
               value={settings.nextProgram.subtitleKey}
             />
             <TextField
               disabled={busy}
-              label="Подзаголовок"
+              label={tr("Подзаголовок", "Subtitle")}
               onChange={(subtitleText) => updateSettings("nextProgram", { subtitleText })}
               value={settings.nextProgram.subtitleText}
             />
             <TextField
               disabled={busy}
-              hint="показывается на последнем ролике; пусто — эффект пропускается"
-              label="Резервный текст"
+              hint={tr("показывается на последнем ролике; пусто — эффект пропускается", "shown on the last clip; empty skips the effect")}
+              label={tr("Резервный текст", "Fallback text")}
               onChange={(fallbackTitle) => updateSettings("nextProgram", { fallbackTitle })}
               value={settings.nextProgram.fallbackTitle}
             />
             {definition.presetEffectId ? (
               <p className="broadcast-hint broadcast-field-wide">
-                Назовите Shape Layer подложки в After Effects
-                <code>fit:&lt;имя поля названия&gt;</code>. FluxIO очистит шаблонный текст,
-                нарисует реальное название через FFmpeg и пересчитает ширину подложки,
-                сохранив исходные отступы.
+                {tr("Назовите Shape Layer подложки в After Effects", "Name the plate Shape Layer in After Effects")} {" "}
+                <code>fit:&lt;{tr("имя поля названия", "title field name")}&gt;</code>. {tr("FluxIO очистит шаблонный текст, нарисует реальное название через FFmpeg и пересчитает ширину подложки, сохранив исходные отступы.", "FluxIO will clear the template text, draw the live title with FFmpeg and resize the plate while preserving its original padding.")}
               </p>
             ) : null}
           </div>
@@ -540,7 +594,7 @@ export function BroadcastEffectInspector({
         <>
           <div className="broadcast-grid">
             <label className="broadcast-field">
-              <span>Источник текста</span>
+              <span>{tr("Источник текста", "Text source")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("tickerCrawl", {
@@ -548,15 +602,15 @@ export function BroadcastEffectInspector({
                 })}
                 value={settings.tickerCrawl.source}
               >
-                <option value="manual">Вручную</option>
-                <option value="file">Файл .json / .txt</option>
-                <option value="feed">RSS / Atom-лента</option>
+                <option value="manual">{tr("Вручную", "Manual")}</option>
+                <option value="file">{tr("Файл .json / .txt", ".json / .txt file")}</option>
+                <option value="feed">{tr("RSS / Atom-лента", "RSS / Atom feed")}</option>
               </select>
             </label>
             <NumberField
               disabled={busy}
-              hint="пикселей кадра в секунду"
-              label="Скорость"
+              hint={tr("пикселей кадра в секунду", "frame pixels per second")}
+              label={tr("Скорость", "Speed")}
               min={1}
               onChange={(speedPixelsPerSecond) =>
                 updateSettings("tickerCrawl", { speedPixelsPerSecond })}
@@ -564,7 +618,7 @@ export function BroadcastEffectInspector({
               value={settings.tickerCrawl.speedPixelsPerSecond}
             />
             <label className="broadcast-field">
-              <span>Направление</span>
+              <span>{tr("Направление", "Direction")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("tickerCrawl", {
@@ -572,14 +626,14 @@ export function BroadcastEffectInspector({
                 })}
                 value={settings.tickerCrawl.direction}
               >
-                <option value="left">Справа налево</option>
-                <option value="right">Слева направо</option>
+                <option value="left">{tr("Справа налево", "Right to left")}</option>
+                <option value="right">{tr("Слева направо", "Left to right")}</option>
               </select>
             </label>
             <NumberField
               disabled={busy}
-              hint="0 — крутить непрерывно"
-              label="Повторов"
+              hint={tr("0 — крутить непрерывно", "0 — loop continuously")}
+              label={tr("Повторов", "Repeats")}
               min={0}
               onChange={(repeat) => updateSettings("tickerCrawl", { repeat: Math.round(repeat) })}
               step={1}
@@ -587,7 +641,7 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              label="Start, с"
+              label={tr("Старт, с", "Start, s")}
               min={0}
               onChange={(startSeconds) => updateSettings("tickerCrawl", { startSeconds })}
               step={1}
@@ -595,7 +649,7 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              label="Duration, с"
+              label={tr("Длительность, с", "Duration, s")}
               min={0.04}
               onChange={(durationSeconds) => updateSettings("tickerCrawl", { durationSeconds })}
               step={1}
@@ -603,15 +657,15 @@ export function BroadcastEffectInspector({
             />
             <TextField
               disabled={busy}
-              hint="ставится между сообщениями и замыкает круг"
-              label="Разделитель"
+              hint={tr("ставится между сообщениями и замыкает круг", "inserted between messages and closes the loop")}
+              label={tr("Разделитель", "Separator")}
               onChange={(separator) => updateSettings("tickerCrawl", { separator })}
               value={settings.tickerCrawl.separator}
             />
             <NumberField
               disabled={busy}
-              hint="левый край полосы, % кадра"
-              label="Полоса: X"
+              hint={tr("левый край полосы, % кадра", "left edge of strip, % of frame")}
+              label={tr("Полоса: X", "Strip: X")}
               max={100}
               min={0}
               onChange={(regionXPercent) => updateSettings("tickerCrawl", { regionXPercent })}
@@ -620,8 +674,8 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              hint="100 — во весь кадр"
-              label="Полоса: ширина"
+              hint={tr("100 — во весь кадр", "100 — full frame width")}
+              label={tr("Полоса: ширина", "Strip: width")}
               max={100}
               min={1}
               onChange={(regionWidthPercent) =>
@@ -632,7 +686,7 @@ export function BroadcastEffectInspector({
           </div>
           {settings.tickerCrawl.source === "feed" ? (
             <div className="broadcast-file-field">
-              <span>Адрес ленты</span>
+              <span>{tr("Адрес ленты", "Feed URL")}</span>
               <input
                 className="broadcast-feed-url"
                 disabled={busy}
@@ -648,28 +702,27 @@ export function BroadcastEffectInspector({
                 onClick={onLoadTickerFeed}
                 type="button"
               >
-                <Rss size={12} /> Загрузить
+                <Rss size={12} /> {tr("Загрузить", "Load")}
               </button>
               <em className="broadcast-hint">
-                Загружено заголовков: {settings.tickerCrawl.items.length}.
-                Ленту качает media-service — нажмите «Загрузить» ещё раз, чтобы обновить новости.
+                {tr("Загружено заголовков", "Loaded headlines")}: {settings.tickerCrawl.items.length}. {tr("Ленту загружает media-service — нажмите «Загрузить» ещё раз, чтобы обновить новости.", "The media service fetches the feed — click Load again to refresh the news.")}
               </em>
             </div>
           ) : settings.tickerCrawl.source === "file" ? (
             <div className="broadcast-file-field">
-              <span>Файл сообщений</span>
+              <span>{tr("Файл сообщений", "Message file")}</span>
               <strong title={settings.tickerCrawl.filePath ?? undefined}>
                 {settings.tickerCrawl.filePath
-                  ? `${shortPath(settings.tickerCrawl.filePath)} · ${settings.tickerCrawl.items.length} сообщений`
-                  : "Не выбран"}
+                  ? `${shortPath(settings.tickerCrawl.filePath)} · ${settings.tickerCrawl.items.length} ${tr("сообщений", "messages")}`
+                  : tr("Не выбран", "Not selected")}
               </strong>
               <button disabled={busy} onClick={onSelectTickerSource} type="button">
-                <FolderOpen size={12} /> {settings.tickerCrawl.filePath ? "Обновить" : "Выбрать"}
+                <FolderOpen size={12} /> {settings.tickerCrawl.filePath ? tr("Обновить", "Refresh") : tr("Выбрать", "Select")}
               </button>
             </div>
           ) : (
             <label className="broadcast-field broadcast-field-wide">
-              <span>Сообщения — по одному в строке</span>
+              <span>{tr("Сообщения — по одному в строке", "Messages — one per line")}</span>
               <textarea
                 disabled={busy}
                 onChange={(event) => updateSettings("tickerCrawl", {
@@ -684,32 +737,30 @@ export function BroadcastEffectInspector({
             <div className="broadcast-grid">
               <PresetKeyField
                 busy={busy}
-                hint="сюда встанет бегущая строка"
+                hint={tr("сюда встанет бегущая строка", "ticker text is placed here")}
                 keys={presetKeys}
-                label="Поле для значения"
+                label={tr("Поле для значения", "Value field")}
                 onChange={(dynamicKey) => updateSettings("tickerCrawl", { dynamicKey })}
                 value={settings.tickerCrawl.dynamicKey}
               />
               <PresetKeyField
                 busy={busy}
-                hint="постоянная подпись на подложке"
+                hint={tr("постоянная подпись на подложке", "fixed caption on the plate")}
                 keys={presetKeys}
-                label="Поле подписи в пресете"
+                label={tr("Поле подписи в пресете", "Preset caption field")}
                 onChange={(captionKey) => updateSettings("tickerCrawl", { captionKey })}
                 value={settings.tickerCrawl.captionKey}
               />
               <TextField
                 disabled={busy}
-                label="Текст подписи"
+                label={tr("Текст подписи", "Caption text")}
                 onChange={(captionText) => updateSettings("tickerCrawl", { captionText })}
                 value={settings.tickerCrawl.captionText}
               />
               <p className="broadcast-hint broadcast-field-wide">
                 {settings.tickerCrawl.dynamicKey
-                  ? "Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, " +
-                    "цветом и выключкой. Бегущая строка едет внутри полосы: задайте её X и ширину " +
-                    "по размеру плашки, иначе текст поедет по всему кадру."
-                  : "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё."}
+                  ? tr("Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, цветом и выключкой. Бегущая строка едет внутри полосы: задайте её X и ширину по размеру плашки, иначе текст поедет по всему кадру.", "The template field is cleared and the value takes its place with the same font size, color and alignment. The ticker moves inside the strip: set its X and width to match the plate, otherwise it will travel across the entire frame.")
+                  : tr("Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё.", "Select a field so the effect value appears inside the plate instead of over it.")}
               </p>
             </div>
           ) : null}
@@ -726,7 +777,7 @@ export function BroadcastEffectInspector({
         <>
           <div className="broadcast-grid">
             <label className="broadcast-field">
-              <span>Режим</span>
+              <span>{tr("Режим", "Mode")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("clockCountdown", {
@@ -734,12 +785,12 @@ export function BroadcastEffectInspector({
                 })}
                 value={settings.clockCountdown.mode}
               >
-                <option value="clock">Часы</option>
-                <option value="countdown">Обратный отсчёт</option>
+                <option value="clock">{tr("Часы", "Clock")}</option>
+                <option value="countdown">{tr("Обратный отсчёт", "Countdown")}</option>
               </select>
             </label>
             <label className="broadcast-field">
-              <span>Формат</span>
+              <span>{tr("Формат", "Format")}</span>
               <select
                 disabled={busy}
                 onChange={(event) => updateSettings("clockCountdown", {
@@ -756,8 +807,8 @@ export function BroadcastEffectInspector({
             {settings.clockCountdown.mode === "clock" ? (
               <NumberField
                 disabled={busy}
-                hint="минут относительно UTC"
-                label="Часовой пояс"
+                hint={tr("минут относительно UTC", "minutes relative to UTC")}
+                label={tr("Часовой пояс", "Time zone")}
                 min={-840}
                 onChange={(timezoneOffsetMinutes) => updateSettings("clockCountdown", {
                   timezoneOffsetMinutes: Math.round(timezoneOffsetMinutes),
@@ -768,7 +819,7 @@ export function BroadcastEffectInspector({
             ) : (
               <>
                 <label className="broadcast-field">
-                  <span>Что отсчитываем</span>
+                  <span>{tr("Что отсчитываем", "Countdown source")}</span>
                   <select
                     disabled={busy}
                     onChange={(event) => updateSettings("clockCountdown", {
@@ -776,15 +827,15 @@ export function BroadcastEffectInspector({
                     })}
                     value={settings.clockCountdown.countdownSource}
                   >
-                    <option value="clip-remaining">До конца ролика</option>
-                    <option value="fixed">Заданное число секунд</option>
+                    <option value="clip-remaining">{tr("До конца ролика", "Until clip end")}</option>
+                    <option value="fixed">{tr("Заданное число секунд", "Fixed number of seconds")}</option>
                   </select>
                 </label>
                 {settings.clockCountdown.countdownSource === "fixed" ? (
                   <NumberField
                     disabled={busy}
-                    hint="с какого значения идёт отсчёт"
-                    label="Длительность отсчёта, с"
+                    hint={tr("с какого значения идёт отсчёт", "initial countdown value")}
+                    label={tr("Длительность отсчёта, с", "Countdown duration, s")}
                     min={1}
                     onChange={(countdownSeconds) =>
                       updateSettings("clockCountdown", { countdownSeconds })}
@@ -796,8 +847,8 @@ export function BroadcastEffectInspector({
             )}
             <NumberField
               disabled={busy}
-              hint="от начала ролика"
-              label="Start, с"
+              hint={tr("от начала ролика", "from clip start")}
+              label={tr("Старт, с", "Start, s")}
               min={0}
               onChange={(startSeconds) => updateSettings("clockCountdown", { startSeconds })}
               step={1}
@@ -807,7 +858,7 @@ export function BroadcastEffectInspector({
               settings.clockCountdown.countdownSource === "clip-remaining" ? null : (
               <NumberField
                 disabled={busy}
-                label="Duration, с"
+                label={tr("Длительность, с", "Duration, s")}
                 min={0.04}
                 onChange={(durationSeconds) => updateSettings("clockCountdown", { durationSeconds })}
                 step={1}
@@ -818,41 +869,37 @@ export function BroadcastEffectInspector({
           {settings.clockCountdown.mode === "countdown" &&
             settings.clockCountdown.countdownSource === "clip-remaining" ? (
             <p className="broadcast-hint">
-              Отсчёт считается по хронометражу каждого ролика отдельно и приходит в ноль ровно
-              на его конце, поэтому окно показа задаётся автоматически — от Start и до конца ролика.
+              {tr("Отсчёт считается по хронометражу каждого ролика отдельно и приходит в ноль ровно на его конце, поэтому окно показа задаётся автоматически — от старта и до конца ролика.", "The countdown uses each clip's duration separately and reaches zero exactly at its end, so the display window is set automatically from Start to the end of the clip.")}
             </p>
           ) : null}
           {definition.presetEffectId ? (
             <div className="broadcast-grid">
               <PresetKeyField
                 busy={busy}
-                hint="сюда встанут часы или отсчёт"
+                hint={tr("сюда встанут часы или отсчёт", "clock or countdown is placed here")}
                 keys={presetKeys}
-                label="Поле для значения"
+                label={tr("Поле для значения", "Value field")}
                 onChange={(dynamicKey) => updateSettings("clockCountdown", { dynamicKey })}
                 value={settings.clockCountdown.dynamicKey}
               />
               <PresetKeyField
                 busy={busy}
-                hint="постоянная подпись на подложке"
+                hint={tr("постоянная подпись на подложке", "fixed caption on the plate")}
                 keys={presetKeys}
-                label="Поле подписи в пресете"
+                label={tr("Поле подписи в пресете", "Preset caption field")}
                 onChange={(captionKey) => updateSettings("clockCountdown", { captionKey })}
                 value={settings.clockCountdown.captionKey}
               />
               <TextField
                 disabled={busy}
-                label="Текст подписи"
+                label={tr("Текст подписи", "Caption text")}
                 onChange={(captionText) => updateSettings("clockCountdown", { captionText })}
                 value={settings.clockCountdown.captionText}
               />
               <p className="broadcast-hint broadcast-field-wide">
                 {settings.clockCountdown.dynamicKey
-                  ? "Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, " +
-                    "цветом и выключкой. Само значение рисует FFmpeg покадрово: в отрендеренный " +
-                    "один раз Lottie его не запечь. Для резиновой подложки назовите Shape Layer " +
-                    `fit:${settings.clockCountdown.dynamicKey}.`
-                  : "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё."}
+                  ? tr(`Поле шаблона очищается, а значение встаёт на его место — с тем же кеглем, цветом и выключкой. Само значение рисует FFmpeg покадрово: в отрендеренный один раз Lottie его не запечь. Для резиновой подложки назовите Shape Layer fit:${settings.clockCountdown.dynamicKey}.`, `The template field is cleared and the value takes its place with the same font size, color and alignment. FFmpeg draws the value frame by frame because it cannot be baked into a one-time Lottie render. For a flexible plate, name the Shape Layer fit:${settings.clockCountdown.dynamicKey}.`)
+                  : tr("Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё.", "Select a field so the effect value appears inside the plate instead of over it.")}
               </p>
             </div>
           ) : null}
@@ -867,22 +914,28 @@ export function BroadcastEffectInspector({
 
       {definition.kind === "stinger-transition" ? (
         <>
-          {presetPicker("Lottie-пресет перехода", true)}
+          {presetPicker(tr("Lottie-пресет перехода", "Transition Lottie preset"), true)}
           <div className="broadcast-file-field">
-            <span>Файл перехода с альфа-каналом</span>
+            <span>{tr("Файл перехода с альфа-каналом", "Transition file with alpha channel")}</span>
             <strong title={settings.stingerTransition.assetPath ?? undefined}>
               {settings.stingerTransition.assetPath
                 ? shortPath(settings.stingerTransition.assetPath)
-                : "Не выбран"}
+                : tr("Не выбран", "Not selected")}
             </strong>
             <button disabled={busy} onClick={onSelectStingerFile} type="button">
-              <FileVideo2 size={12} /> {settings.stingerTransition.assetPath ? "Заменить" : "Выбрать"}
+              <FileVideo2 size={12} /> {settings.stingerTransition.assetPath ? tr("Заменить", "Replace") : tr("Выбрать", "Select")}
             </button>
             {settings.stingerTransition.assetPath ? (
               <button
                 disabled={busy}
-                onClick={() => updateSettings("stingerTransition", { assetPath: null })}
-                title="Снять файл и использовать пресет"
+                onClick={() => updateSettings("stingerTransition", {
+                  assetPath: null,
+                  sourceFrameRate: null,
+                  sourceHasAlpha: null,
+                  sourceHasAudio: null,
+                  sourcePixelFormat: null,
+                })}
+                title={tr("Снять файл и использовать пресет", "Remove file and use preset")}
                 type="button"
               >
                 <RotateCcw size={12} />
@@ -890,16 +943,36 @@ export function BroadcastEffectInspector({
             ) : null}
             <em className="broadcast-hint">
               {settings.stingerTransition.assetPath
-                ? "Переход берётся из файла. Снимите его, чтобы использовать Lottie-пресет."
+                ? tr("Переход берётся из файла. Снимите его, чтобы использовать Lottie-пресет.", "The transition uses the file. Remove it to use the Lottie preset.")
                 : definition.presetEffectId
-                  ? "Файл не выбран — переход берётся из Lottie-пресета выше."
-                  : "Укажите файл или выберите Lottie-пресет: без источника переход не применится."}
+                  ? tr("Файл не выбран — переход берётся из Lottie-пресета выше.", "No file selected — the transition uses the Lottie preset above.")
+                  : tr("Укажите файл или выберите Lottie-пресет: без источника переход не применится.", "Choose a file or Lottie preset; the transition needs a source.")}
             </em>
+            {settings.stingerTransition.assetPath ? (
+              <div className="stinger-source-facts">
+                <span>{settings.stingerTransition.sourceFrameRate?.toFixed(2) ?? "—"} fps</span>
+                <span>{settings.stingerTransition.sourcePixelFormat ?? "pixel format —"}</span>
+                <span className={settings.stingerTransition.sourceHasAlpha ? "ok" : "warning"}>
+                  alpha {settings.stingerTransition.sourceHasAlpha ? tr("есть", "present") : tr("не обнаружена", "not detected")}
+                </span>
+                <span className={settings.stingerTransition.sourceHasAudio ? "ok" : "muted"}>
+                  audio {settings.stingerTransition.sourceHasAudio ? tr("есть", "present") : tr("нет", "none")}
+                </span>
+              </div>
+            ) : null}
+            {settings.stingerTransition.assetPath &&
+              settings.stingerTransition.blendMode === "alpha" &&
+              settings.stingerTransition.sourceHasAlpha === false ? (
+                <em className="broadcast-warning">
+                  {tr("Альфа-канал не обнаружен. Выберите Luma или подготовьте файл с alpha.", "Alpha channel was not detected. Select Luma or prepare a file with alpha.")}
+                </em>
+              ) : null}
           </div>
           <div className="broadcast-grid">
             <NumberField
               disabled={busy}
-              label="Duration, с"
+              label={tr("Длительность, с", "Duration, s")}
+              max={30}
               min={0.08}
               onChange={(durationSeconds) =>
                 updateSettings("stingerTransition", { durationSeconds })}
@@ -908,8 +981,9 @@ export function BroadcastEffectInspector({
             />
             <NumberField
               disabled={busy}
-              hint="момент полного перекрытия кадра"
-              label="Cut point, с"
+              hint={tr("момент полного перекрытия кадра", "moment the frame is fully covered")}
+              label={tr("Точка склейки, с", "Cut point, s")}
+              max={Math.max(0.04, settings.stingerTransition.durationSeconds - 0.001)}
               min={0.04}
               onChange={(cutPointSeconds) =>
                 updateSettings("stingerTransition", { cutPointSeconds })}
@@ -917,23 +991,24 @@ export function BroadcastEffectInspector({
               value={settings.stingerTransition.cutPointSeconds}
             />
             <label className="broadcast-field">
-              <span>Режим наложения</span>
+              <span>{tr("Режим наложения", "Blend mode")}</span>
               <select
-                disabled={busy}
+                disabled={busy || Boolean(settings.stingerTransition.assetPath &&
+                  settings.stingerTransition.sourceHasAudio === false)}
                 onChange={(event) => updateSettings("stingerTransition", {
                   blendMode: event.target.value as "alpha" | "luma",
                 })}
                 value={settings.stingerTransition.blendMode}
               >
-                <option value="alpha">Alpha — у файла есть альфа-канал</option>
-                <option value="luma">Luma — вырезать чёрный фон</option>
+                <option value="alpha">{tr("Alpha — у файла есть альфа-канал", "Alpha — file has an alpha channel")}</option>
+                <option value="luma">{tr("Luma — вырезать чёрный фон", "Luma — remove black background")}</option>
               </select>
             </label>
             {settings.stingerTransition.blendMode === "luma" ? (
               <NumberField
                 disabled={busy}
-                hint="ниже этой яркости — фон"
-                label="Порог яркости"
+                hint={tr("ниже этой яркости — фон", "values below this brightness are background")}
+                label={tr("Порог яркости", "Luma threshold")}
                 max={1}
                 min={0}
                 onChange={(lumaThreshold) =>
@@ -943,7 +1018,7 @@ export function BroadcastEffectInspector({
               />
             ) : null}
             <label className="broadcast-field broadcast-field-checkbox">
-              <span>Подмешивать звук перехода</span>
+              <span>{tr("Подмешивать звук перехода", "Mix transition audio")}</span>
               <input
                 checked={settings.stingerTransition.audioEnabled}
                 disabled={busy}
@@ -956,8 +1031,8 @@ export function BroadcastEffectInspector({
             {settings.stingerTransition.audioEnabled ? (
               <NumberField
                 disabled={busy}
-                hint="относительно авторского уровня"
-                label="Уровень звука, дБ"
+                hint={tr("относительно авторского уровня", "relative to the original level")}
+                label={tr("Уровень звука, дБ", "Audio level, dB")}
                 max={12}
                 min={-60}
                 onChange={(audioLevelDb) =>
@@ -968,10 +1043,7 @@ export function BroadcastEffectInspector({
             ) : null}
           </div>
           <p className="broadcast-note">
-            Переход режется по Cut point: кадры до него ложатся на хвост выбранного ролика,
-            кадры после — на голову следующего. Переключение источника остаётся штатным стыком
-            плейлиста, поэтому длительность расписания не меняется. Обе величины
-            округляются до границы кадра проекта.
+            {tr("Переход режется по точке склейки: кадры до неё ложатся на хвост выбранного ролика, кадры после — на голову следующего. Переключение источника остаётся штатным стыком плейлиста, поэтому длительность расписания не меняется. Обе величины округляются до границы кадра проекта.", "The transition is split at the cut point: frames before it cover the tail of the selected clip and frames after it cover the head of the next clip. Source switching remains the regular playlist cut, so schedule duration does not change. Both values are rounded to the project frame grid.")}
           </p>
         </>
       ) : null}
@@ -995,14 +1067,14 @@ function PresetFieldsHint({
   effect: GraphicEffectAsset;
   presets: GraphicEffectAsset[];
 }) {
+  const { tr } = useI18n();
   const definition = effect.broadcast;
   const preset = presets.find((candidate) => candidate.id === definition?.presetEffectId);
   if (!definition || !preset) return null;
   if (!preset.lottie) {
     return (
       <p className="broadcast-hint">
-        Пресет «{preset.name}» — обычное alpha-медиа: текстовых полей в нём нет,
-        подставить в него ничего нельзя.
+        {tr(`Пресет «${preset.name}» — обычное alpha-медиа: текстовых полей в нём нет, подставить в него ничего нельзя.`, `Preset “${preset.name}” is regular alpha media: it has no text fields and cannot accept substituted values.`)}
       </p>
     );
   }
@@ -1010,20 +1082,18 @@ function PresetFieldsHint({
   if (fields.length === 0) {
     return (
       <p className="broadcast-warning">
-        В пресете «{preset.name}» нет редактируемых текстовых слоёв. В After Effects заголовок
-        должен остаться Text Layer — если его перевели в кривые перед экспортом Bodymovin,
-        подставить текст уже невозможно.
+        {tr(`В пресете «${preset.name}» нет редактируемых текстовых слоёв. В After Effects заголовок должен остаться Text Layer — если его перевели в кривые перед экспортом Bodymovin, подставить текст уже невозможно.`, `Preset “${preset.name}” has no editable text layers. Keep the title as a Text Layer in After Effects; converted outlines cannot accept substituted text after Bodymovin export.`)}
       </p>
     );
   }
   return (
     <details className="preset-fields" open>
       <summary>
-        <KeyRound size={11} /> Поля пресета «{preset.name}» — {fields.length}
+        <KeyRound size={11} /> {tr("Поля пресета", "Preset fields")} «{preset.name}» — {fields.length}
       </summary>
       <table>
         <thead>
-          <tr><th>Ключ</th><th>Текст в шаблоне</th></tr>
+          <tr><th>{tr("Ключ", "Key")}</th><th>{tr("Текст в шаблоне", "Template text")}</th></tr>
         </thead>
         <tbody>
           {fields.map(([key, property]) => (
@@ -1036,8 +1106,8 @@ function PresetFieldsHint({
       </table>
       <p>
         {definition.kind === "animation-in-out"
-          ? "Эти ключи пишутся в файл задания рядом с name. Сравнение точное и с учётом регистра."
-          : "Выберите ключ в полях выше — именно в него уйдёт подставляемый текст."}
+          ? tr("Эти ключи пишутся в файл задания рядом с name. Сравнение точное и с учётом регистра.", "Write these keys next to name in the task file. Matching is exact and case-sensitive.")
+          : tr("Выберите ключ в полях выше — именно в него уйдёт подставляемый текст.", "Select a key in the fields above; the substituted text will be written there.")}
       </p>
     </details>
   );
@@ -1059,6 +1129,7 @@ function PresetKeyField({
   onChange: (value: string) => void;
   value: string;
 }): ReactNode {
+  const { tr } = useI18n();
   // Пресета ещё нет — оставляем ручной ввод, иначе поле нечем заполнить.
   if (keys.length === 0) {
     return <TextField disabled={busy} hint={hint} label={label} onChange={onChange} value={value} />;
@@ -1073,9 +1144,9 @@ function PresetKeyField({
         onChange={(event) => onChange(event.target.value)}
         value={missing ? "" : value}
       >
-        <option value="">— не подставлять —</option>
+        <option value="">— {tr("не подставлять", "do not substitute")} —</option>
         {keys.map((key) => <option key={key} value={key}>{key}</option>)}
-        {missing ? <option value={value}>{value} — в пресете нет</option> : null}
+        {missing ? <option value={value}>{value} — {tr("в пресете нет", "missing from preset")}</option> : null}
       </select>
     </label>
   );
@@ -1098,17 +1169,18 @@ function TaskFileField({
   onConfigure: () => void;
   onSelect: () => void;
 }) {
+  const { tr } = useI18n();
   const matched = summary && summary.filePath === filePath ? summary : null;
   return (
     <div className="broadcast-file-field">
-      <span>Файл задания .json</span>
+      <span>{tr("Файл задания .json", ".json task file")}</span>
       <strong title={filePath ?? undefined}>
         {filePath
-          ? `${shortPath(filePath)}${matched ? ` · ${matched.entryCount} записей` : ""}`
-          : "Не выбран · поля берут значения шаблона"}
+          ? `${shortPath(filePath)}${matched ? ` · ${matched.entryCount} ${tr("записей", "records")}` : ""}`
+          : tr("Не выбран · поля берут значения шаблона", "Not selected · fields use template values")}
       </strong>
       <button disabled={busy} onClick={onSelect} type="button">
-        <FileJson2 size={12} /> {filePath ? "Обновить" : "Выбрать"}
+        <FileJson2 size={12} /> {filePath ? tr("Обновить", "Refresh") : tr("Выбрать", "Select")}
       </button>
       {matched ? (
         <button className="json-parser-button" disabled={busy} onClick={onConfigure} type="button">
@@ -1116,7 +1188,7 @@ function TaskFileField({
         </button>
       ) : null}
       {filePath ? (
-        <button disabled={busy} onClick={onClear} title="Снять файл задания" type="button">
+        <button disabled={busy} onClick={onClear} title={tr("Снять файл задания", "Remove task file")} type="button">
           <RotateCcw size={12} />
         </button>
       ) : null}
@@ -1146,6 +1218,7 @@ function BroadcastEffectPreview({
   onPlacementChange: (placement: EffectPlacement) => void;
   presets: GraphicEffectAsset[];
 }) {
+  const { tr } = useI18n();
   const definition = effect.broadcast;
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; placement: EffectPlacement } | null>(null);
@@ -1180,8 +1253,8 @@ function BroadcastEffectPreview({
   // плашку, и на надпись — в FFmpeg они двигаются вместе.
   const style: BroadcastTextStyle = {
     ...baseStyle,
-    xPercent: clampPlacement(baseStyle.xPercent + placement.offsetXPercent, 0, 100),
-    yPercent: clampPlacement(baseStyle.yPercent + placement.offsetYPercent, 0, 100),
+    xPercent: clampPlacement(baseStyle.xPercent + placement.offsetXPercent, -100, 200),
+    yPercent: clampPlacement(baseStyle.yPercent + placement.offsetYPercent, -100, 200),
   };
 
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1248,7 +1321,7 @@ function BroadcastEffectPreview({
             <i />
             <span>
               {placement.offsetXPercent === 0 && placement.offsetYPercent === 0
-                ? "как в пресете"
+                ? tr("как в пресете", "as in preset")
                 : `${formatOffset(placement.offsetXPercent)} / ${formatOffset(placement.offsetYPercent)}`}
             </span>
           </div>
@@ -1286,7 +1359,7 @@ function BroadcastEffectPreview({
               }}
             >
               {joinPreviewTicker(settings.tickerCrawl.items, settings.tickerCrawl.separator) ||
-                "Сообщений пока нет"}
+                tr("Сообщений пока нет", "No messages yet")}
             </span>
           </div>
         ) : null}
@@ -1313,8 +1386,8 @@ function BroadcastEffectPreview({
           >
             {settings.dynamicTitle.text ||
               (settings.dynamicTitle.source === "task-file"
-                ? `Значение из ключа «${settings.dynamicTitle.taskKey}»`
-                : "Введите текст")}
+                ? tr(`Значение из ключа «${settings.dynamicTitle.taskKey}»`, `Value from key “${settings.dynamicTitle.taskKey}”`)
+                : tr("Введите текст", "Enter text"))}
           </div>
         ) : null}
 
@@ -1324,22 +1397,20 @@ function BroadcastEffectPreview({
             style={{ ...textStyle, left: `${style.xPercent}cqw` }}
           >
             {settings.nextProgram.subtitleText
-              ? `Следующий фильм — ${settings.nextProgram.subtitleText}`
-              : "Следующий фильм"}
+              ? tr(`Следующий фильм — ${settings.nextProgram.subtitleText}`, `Next program — ${settings.nextProgram.subtitleText}`)
+              : tr("Следующий фильм", "Next program")}
           </div>
         ) : null}
 
         {definition.kind === "animation-in-out" && preset ? (
           <div className="broadcast-preview-note">
-            Оформление берётся из пресета «{preset.name}» — он показан в окне предпросмотра выше.
-            Здесь видно только расписание показа.
+            {tr(`Оформление берётся из пресета «${preset.name}» — он показан в окне предпросмотра выше. Здесь видно только расписание показа.`, `The design comes from preset “${preset.name}”, shown in the preview above. Only its display schedule is shown here.`)}
           </div>
         ) : null}
 
         {definition.kind === "next-program" && preset ? (
           <div className="broadcast-preview-note">
-            Пресет «{preset.name}» рисует декор и адаптивную подложку; название выше — живая
-            надпись FFmpeg на месте выбранного текстового слоя.
+            {tr(`Пресет «${preset.name}» рисует декор и адаптивную подложку; название выше — живая надпись FFmpeg на месте выбранного текстового слоя.`, `Preset “${preset.name}” draws the decoration and adaptive plate; the title above is live FFmpeg text in the selected text layer position.`)}
           </div>
         ) : null}
 
@@ -1352,7 +1423,7 @@ function BroadcastEffectPreview({
       </div>
 
       <p className="broadcast-preview-caption">
-        {previewCaption(definition.kind, settings, dynamic)}
+        {previewCaption(definition.kind, settings, dynamic, tr)}
       </p>
     </div>
   );
@@ -1383,12 +1454,13 @@ function PlacementFields({
   onChange: (placement: EffectPlacement) => void;
   placement: EffectPlacement;
 }): ReactNode {
+  const { tr } = useI18n();
   return (
     <div className="broadcast-grid broadcast-placement">
       <NumberField
         disabled={disabled}
-        hint="% ширины кадра"
-        label="Сдвиг X"
+        hint={tr("% ширины кадра", "% of frame width")}
+        label={tr("Сдвиг X", "X offset")}
         max={100}
         min={-100}
         onChange={(offsetXPercent) => onChange({ ...placement, offsetXPercent })}
@@ -1397,8 +1469,8 @@ function PlacementFields({
       />
       <NumberField
         disabled={disabled}
-        hint="% высоты кадра"
-        label="Сдвиг Y"
+        hint={tr("% высоты кадра", "% of frame height")}
+        label={tr("Сдвиг Y", "Y offset")}
         max={100}
         min={-100}
         onChange={(offsetYPercent) => onChange({ ...placement, offsetYPercent })}
@@ -1412,7 +1484,7 @@ function PlacementFields({
         onClick={() => onChange({ offsetXPercent: 0, offsetYPercent: 0 })}
         type="button"
       >
-        <RotateCcw size={12} /> Как в пресете
+        <RotateCcw size={12} /> {tr("Как в пресете", "As in preset")}
       </button>
     </div>
   );
@@ -1426,22 +1498,23 @@ function StingerPreview({
   cutPointSeconds: number;
   durationSeconds: number;
 }) {
+  const { tr } = useI18n();
   const cutPercent = Math.min(95, Math.max(5, cutPointSeconds / durationSeconds * 100));
   return (
     <div className="stinger-preview">
       <div className="stinger-preview-bar">
         <span className="stinger-preview-a" style={{ width: `${cutPercent}%` }}>
-          хвост ролика A
+          {tr("хвост ролика A", "tail of clip A")}
         </span>
         <span className="stinger-preview-b" style={{ width: `${100 - cutPercent}%` }}>
-          голова ролика B
+          {tr("голова ролика B", "head of clip B")}
         </span>
         <i style={{ left: `${cutPercent}%` }} />
       </div>
       <div className="stinger-preview-legend">
-        <span>0 с</span>
-        <strong>Cut point {cutPointSeconds.toFixed(2)} с</strong>
-        <span>{durationSeconds.toFixed(2)} с</span>
+        <span>0 {tr("с", "s")}</span>
+        <strong>{tr("Точка склейки", "Cut point")} {cutPointSeconds.toFixed(2)} {tr("с", "s")}</strong>
+        <span>{durationSeconds.toFixed(2)} {tr("с", "s")}</span>
       </div>
     </div>
   );
@@ -1451,33 +1524,33 @@ function previewCaption(
   kind: BroadcastEffectKind,
   settings: BroadcastEffectSettings,
   dynamic: boolean,
+  tr: Translate,
 ): string {
   if (kind === "ticker-crawl") {
-    return `Приближение: скорость ${settings.tickerCrawl.speedPixelsPerSecond} px/с в кадре ` +
-      "1920×1080. В эфире положение считает FFmpeg по реальной ширине надписи.";
+    return tr(
+      `Приближение: скорость ${settings.tickerCrawl.speedPixelsPerSecond} px/с в кадре 1920×1080. В эфире положение считает FFmpeg по реальной ширине надписи.`,
+      `Approximation: ${settings.tickerCrawl.speedPixelsPerSecond} px/s in a 1920×1080 frame. On air, FFmpeg calculates position using the actual text width.`,
+    );
   }
   if (kind === "clock-countdown") {
     return dynamic
-      ? "Приближение. В эфире часы идут по эфирному времени ролика, а не по часам этой машины."
+      ? tr("Приближение. В эфире часы идут по эфирному времени ролика, а не по часам этой машины.", "Approximation. On air, the clock follows the clip's playout time, not this computer's clock.")
       : "";
   }
   if (kind === "dynamic-title") {
     const source = settings.dynamicTitle.source === "task-file"
-      ? `ключ «${settings.dynamicTitle.taskKey}» файла задания`
-      : "текст из настроек";
-    return `Гибридная плашка: Lottie рисует декор, FFmpeg — ${source}.`;
+      ? tr(`ключ «${settings.dynamicTitle.taskKey}» файла задания`, `task-file key “${settings.dynamicTitle.taskKey}”`)
+      : tr("текст из настроек", "text from settings");
+    return tr(`Гибридная плашка: Lottie рисует декор, FFmpeg — ${source}.`, `Hybrid lower third: Lottie draws the design, FFmpeg draws ${source}.`);
   }
   if (kind === "stinger-transition") {
-    return "Переключение источника происходит в Cut point — там, где графика полностью " +
-      "закрывает кадр.";
+    return tr("Переключение источника происходит в точке склейки — там, где графика полностью закрывает кадр.", "The source switches at the cut point, where the graphic fully covers the frame.");
   }
   if (kind === "animation-in-out") {
     const mode = settings.animationInOut.mode;
-    return `Режим ${mode === "in-out" ? "In + Out" : mode.toUpperCase()}, ` +
-      `по ${settings.animationInOut.durationSeconds} с.`;
+    return tr(`Режим ${mode === "in-out" ? "In + Out" : mode.toUpperCase()}, по ${settings.animationInOut.durationSeconds} с.`, `Mode ${mode === "in-out" ? "In + Out" : mode.toUpperCase()}, ${settings.animationInOut.durationSeconds} s each.`);
   }
-  return `Плашка выходит за ${settings.nextProgram.startOffsetSeconds} с до конца ролика ` +
-    `и держится ${settings.nextProgram.durationSeconds} с.`;
+  return tr(`Плашка выходит за ${settings.nextProgram.startOffsetSeconds} с до конца ролика и держится ${settings.nextProgram.durationSeconds} с.`, `The lower third appears ${settings.nextProgram.startOffsetSeconds} s before clip end and stays for ${settings.nextProgram.durationSeconds} s.`);
 }
 
 function joinPreviewTicker(items: readonly string[], separator: string): string {
@@ -1522,19 +1595,37 @@ const TextStyleFields = memo(function TextStyleFields({
   style: BroadcastTextStyle;
   onChange: (style: BroadcastTextStyle) => void;
 }) {
-  const cyrillic = fonts.filter((font) => font.cyrillic);
+  const { tr } = useI18n();
+  const [fontQuery, setFontQuery] = useState("");
+  const normalizedQuery = fontQuery.trim().toLocaleLowerCase("ru-RU");
   const selected = fonts.find((font) => font.filePath === style.fontFilePath);
+  const visibleFonts = fonts.filter((font) =>
+    !normalizedQuery ||
+    font.family.toLocaleLowerCase("ru-RU").includes(normalizedQuery) ||
+    font.filePath === style.fontFilePath,
+  );
+  const cyrillic = visibleFonts.filter((font) => font.cyrillic);
+  const totalCyrillic = fonts.filter((font) => font.cyrillic).length;
   return (
     <details className="broadcast-style" open={false}>
-      <summary>Оформление надписи</summary>
+      <summary>{tr("Оформление надписи", "Text style")}</summary>
       <div className="broadcast-grid">
         <label className="broadcast-field broadcast-field-wide">
           <span>
-            Шрифт
+            {tr("Шрифт", "Font")}
             <i>
-              {cyrillic.length} из {fonts.length} системных шрифтов с кириллицей
+              {totalCyrillic} {tr(`из ${fonts.length} системных шрифтов с кириллицей`, `of ${fonts.length} system fonts support Cyrillic`)}
             </i>
           </span>
+          <input
+            aria-label={tr("Поиск системного шрифта", "Search system fonts")}
+            className="broadcast-font-search"
+            disabled={busy || fonts.length === 0}
+            onChange={(event) => setFontQuery(event.target.value)}
+            placeholder={tr("Поиск по названию…", "Search by name…")}
+            type="search"
+            value={fontQuery}
+          />
           <select
             disabled={busy || fonts.length === 0}
             onChange={(event) => {
@@ -1547,37 +1638,38 @@ const TextStyleFields = memo(function TextStyleFields({
             }}
             value={style.fontFilePath ?? ""}
           >
-            <option value="">Шрифт FFmpeg по умолчанию</option>
+            <option value="">{tr("Шрифт FFmpeg по умолчанию", "Default FFmpeg font")}</option>
             {/* Шрифты без кириллицы отделены: выбрав такой, оператор получит в
                 эфире пустые прямоугольники вместо русского текста. */}
-            <optgroup label="С поддержкой кириллицы">
+            <optgroup label={tr("С поддержкой кириллицы", "Cyrillic supported")}>
               {cyrillic.map((font) => (
                 <option key={font.filePath} value={font.filePath}>{font.family}</option>
               ))}
             </optgroup>
-            <optgroup label="Без кириллицы — только латиница">
-              {fonts.filter((font) => !font.cyrillic).map((font) => (
+            <optgroup label={tr("Без кириллицы — только латиница", "No Cyrillic — Latin only")}>
+              {visibleFonts.filter((font) => !font.cyrillic).map((font) => (
                 <option key={font.filePath} value={font.filePath}>{font.family}</option>
               ))}
             </optgroup>
           </select>
+          {normalizedQuery && visibleFonts.length === 0 ? (
+            <i>{tr("Шрифты не найдены", "No fonts found")}</i>
+          ) : null}
         </label>
         {style.fontFilePath && selected && !selected.cyrillic ? (
           <p className="broadcast-warning broadcast-field-wide">
-            В шрифте «{selected.family}» нет кириллицы: русский текст выйдет в эфир пустыми
-            прямоугольниками.
+            {tr(`В шрифте «${selected.family}» нет кириллицы: русский текст выйдет в эфир пустыми прямоугольниками.`, `Font “${selected.family}” has no Cyrillic support: Russian text will appear as empty boxes on air.`)}
           </p>
         ) : null}
         {fonts.length === 0 ? (
           <p className="broadcast-hint broadcast-field-wide">
-            Шрифт по умолчанию берёт FFmpeg, и кириллицы в нём может не быть. Список системных
-            шрифтов подгружается с media-service.
+            {tr("Шрифт по умолчанию берёт FFmpeg, и кириллицы в нём может не быть. Список системных шрифтов подгружается с media-service.", "FFmpeg chooses the default font and it may not support Cyrillic. The media service supplies the system font list.")}
           </p>
         ) : null}
         <NumberField
           disabled={busy}
-          hint="% от высоты кадра"
-          label="Кегль"
+          hint={tr("% от высоты кадра", "% of frame height")}
+          label={tr("Кегль", "Font size")}
           min={0.5}
           onChange={(fontSizePercent) => onChange({ ...style, fontSizePercent })}
           step={0.1}
@@ -1585,26 +1677,26 @@ const TextStyleFields = memo(function TextStyleFields({
         />
         <NumberField
           disabled={busy}
-          hint="% от ширины кадра"
+          hint={tr("% от ширины кадра", "% of frame width")}
           label="X"
-          max={100}
-          min={0}
+          max={200}
+          min={-100}
           onChange={(xPercent) => onChange({ ...style, xPercent })}
           step={1}
           value={style.xPercent}
         />
         <NumberField
           disabled={busy}
-          hint="% от высоты кадра"
+          hint={tr("% от высоты кадра", "% of frame height")}
           label="Y"
-          max={100}
-          min={0}
+          max={200}
+          min={-100}
           onChange={(yPercent) => onChange({ ...style, yPercent })}
           step={1}
           value={style.yPercent}
         />
         <label className="broadcast-field">
-          <span>Цвет текста</span>
+          <span>{tr("Цвет текста", "Text color")}</span>
           <input
             disabled={busy}
             onChange={(event) => onChange({ ...style, color: event.target.value })}
@@ -1613,7 +1705,7 @@ const TextStyleFields = memo(function TextStyleFields({
           />
         </label>
         <label className="broadcast-field broadcast-field-checkbox">
-          <span>Подложка</span>
+          <span>{tr("Подложка", "Background")}</span>
           <input
             checked={style.boxEnabled}
             disabled={busy}
@@ -1624,7 +1716,7 @@ const TextStyleFields = memo(function TextStyleFields({
         {style.boxEnabled ? (
           <>
             <label className="broadcast-field">
-              <span>Цвет подложки</span>
+              <span>{tr("Цвет подложки", "Background color")}</span>
               <input
                 disabled={busy}
                 onChange={(event) => onChange({ ...style, boxColor: event.target.value })}
@@ -1634,7 +1726,7 @@ const TextStyleFields = memo(function TextStyleFields({
             </label>
             <NumberField
               disabled={busy}
-              label="Прозрачность"
+              label={tr("Прозрачность", "Opacity")}
               max={1}
               min={0}
               onChange={(boxOpacity) => onChange({ ...style, boxOpacity })}
@@ -1684,13 +1776,27 @@ const NumberField = memo(function NumberField({
         disabled={disabled}
         max={max}
         min={min}
-        onBlur={() => setDraft(null)}
+        onBlur={() => {
+          if (draft != null && draft.trim() !== "") {
+            const parsed = Number(draft);
+            if (Number.isFinite(parsed)) {
+              onChange(clampNumber(parsed, min, max));
+            }
+          }
+          setDraft(null);
+        }}
         onChange={(event) => {
           const text = event.target.value;
           setDraft(text);
           if (text.trim() === "") return;
           const next = Number(text);
-          if (Number.isFinite(next)) onChange(next);
+          if (
+            Number.isFinite(next) &&
+            (min == null || next >= min) &&
+            (max == null || next <= max)
+          ) {
+            onChange(next);
+          }
         }}
         step={step}
         type="number"
@@ -1699,6 +1805,10 @@ const NumberField = memo(function NumberField({
     </label>
   );
 });
+
+function clampNumber(value: number, min?: number, max?: number): number {
+  return Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min ?? Number.NEGATIVE_INFINITY, value));
+}
 
 const TextField = memo(function TextField({
   disabled,

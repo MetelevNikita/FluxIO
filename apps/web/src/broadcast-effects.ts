@@ -167,6 +167,9 @@ export interface PlanBroadcastEffectInput {
   targetIds: Set<string> | null;
   taskEntries: BroadcastTaskEntry[];
   frameRate: number;
+  /** Размер эфирного кадра, в который FFmpeg вписывает Lottie через contain. */
+  frameWidth: number;
+  frameHeight: number;
   createId?: () => string;
 }
 
@@ -267,11 +270,14 @@ function resolveDynamicTitleContent(
 ): string {
   const settings = context.definition.settings.dynamicTitle;
   if (settings.source === "manual") return settings.text.trim();
-  const matches = context.taskEntries.filter((entry) => entry.name.trim() === clip.name.trim());
+  const clipKey = normalizeTaskTitle(clip.name);
+  const matches = context.taskEntries.filter((entry) => normalizeTaskTitle(entry.name) === clipKey);
   if (matches.length > 1) {
     context.plan.warnings.push(
-      `"${clip.name}": в файле задания несколько записей с таким name — взята первая`,
+      `"${clip.name}": в файле задания несколько записей с таким идентификатором — ` +
+        "использован резервный текст",
     );
+    return settings.text.trim();
   }
   const value = matches[0]?.values[settings.dynamicKey]?.trim()
     ?? matches[0]?.values[settings.taskKey]?.trim()
@@ -417,9 +423,7 @@ function normalizeFieldKey(value: string): string {
  */
 function planNextProgram(context: PlanContext): void {
   const settings = context.definition.settings.nextProgram;
-  const titlesByName = new Map(
-    context.taskEntries.map((entry) => [entry.name.trim(), entry] as const),
-  );
+  const entriesByName = groupTaskEntriesByTitle(context.taskEntries);
   const dynamicField = resolveDynamicField(context, settings.titleKey, settings.subtitleKey);
   const style = styleFromPreset(context, dynamicField, settings.style);
 
@@ -428,9 +432,18 @@ function planNextProgram(context: PlanContext): void {
     // Анонсируем следующий фильм, а не следующую строку расписания: между
     // фильмами стоят отбивки и ролики, объявлять их незачем.
     const next = position >= 0 ? nextMovieAfter(context.clips, position) : undefined;
+    const nextEntries = next ? entriesByName.get(normalizeTaskTitle(next.name)) ?? [] : [];
+    if (settings.source === "task-file" && nextEntries.length > 1 && next) {
+      context.plan.warnings.push(
+        `"${next.name}": в файле задания несколько записей с таким идентификатором — ` +
+          "использовано имя ролика",
+      );
+    }
     const title = next
       ? (settings.source === "task-file"
-          ? titlesByName.get(next.name.trim())?.values[settings.titleKey] ?? next.name
+          ? (nextEntries.length === 1
+              ? nextEntries[0]?.values[settings.titleKey] ?? next.name
+              : next.name)
           : next.name)
       : settings.fallbackTitle;
     if (!title) {
@@ -658,6 +671,16 @@ function planStingerTransition(context: PlanContext): void {
     context.plan.errors.push("The stinger needs an alpha video or a preset");
     return;
   }
+  if (settings.assetPath && settings.blendMode === "alpha" && settings.sourceHasAlpha === false) {
+    context.plan.errors.push(
+      "У файла стингера не обнаружен альфа-канал: выберите Luma или подготовьте alpha-видео",
+    );
+    return;
+  }
+  if (settings.assetPath && settings.audioEnabled && settings.sourceHasAudio === false) {
+    context.plan.errors.push("В стингере нет звуковой дорожки, но подмешивание звука включено");
+    return;
+  }
   const duration = snapToFrameGrid(settings.durationSeconds, context.frameRate);
   const cutPoint = snapToFrameGrid(settings.cutPointSeconds, context.frameRate);
   if (duration !== settings.durationSeconds || cutPoint !== settings.cutPointSeconds) {
@@ -786,7 +809,9 @@ function pushLayer(
       // откроется полоса исходного кадра.
       offsetXPercent: isStinger ? 0 : context.definition.placement.offsetXPercent,
       offsetYPercent: isStinger ? 0 : context.definition.placement.offsetYPercent,
-      sourceDurationSeconds: context.preset?.durationSeconds ?? context.effect.durationSeconds,
+      sourceDurationSeconds: isStinger
+        ? settings.durationSeconds
+        : context.preset?.durationSeconds ?? context.effect.durationSeconds,
       sourceInSeconds: options.sourceInSeconds ?? 0,
       startSeconds,
       tier: 2,
@@ -857,17 +882,17 @@ function placeOverlay<T extends Pick<BroadcastTextOverlay, "style"> & Partial<Br
     ...overlay,
     style: {
       ...overlay.style,
-      xPercent: clampPercent(overlay.style.xPercent + placement.offsetXPercent),
-      yPercent: clampPercent(overlay.style.yPercent + placement.offsetYPercent),
+      xPercent: roundPercent(overlay.style.xPercent + placement.offsetXPercent),
+      yPercent: roundPercent(overlay.style.yPercent + placement.offsetYPercent),
     },
   };
   return overlay.regionXPercent == null
     ? shifted
-    : { ...shifted, regionXPercent: clampPercent(overlay.regionXPercent + placement.offsetXPercent) };
+    : { ...shifted, regionXPercent: roundPercent(overlay.regionXPercent + placement.offsetXPercent) };
 }
 
-function clampPercent(value: number): number {
-  return Math.min(100, Math.max(0, Math.round(value * 100) / 100));
+function roundPercent(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**
@@ -970,7 +995,14 @@ function styleFromPreset(
   style: BroadcastTextStyle,
 ): BroadcastTextStyle {
   if (!dynamicField || !context.preset) return style;
-  const box = dynamicField.textBox;
+  const sourceBox = dynamicField.textBox;
+  const box = sourceBox && containTextBox(
+    sourceBox,
+    context.preset.width,
+    context.preset.height,
+    context.frameWidth,
+    context.frameHeight,
+  );
   if (!box) return style;
   return {
     ...style,
@@ -980,6 +1012,41 @@ function styleFromPreset(
     fontSizePercent: box.fontSizePercent,
     xPercent: box.xPercent,
     yPercent: box.yPercent,
+  };
+}
+
+/**
+ * Переносит геометрию Text Layer из холста Lottie в эфирный кадр тем же
+ * `contain`, которым command-builder масштабирует и дополняет прозрачными
+ * полями сам MOV. Без этого у узкой композиции, например 1080×200, плашка
+ * оказывалась по центру 16:9, а drawtext сохранял проценты исходного холста:
+ * текст уезжал вниз и становился в несколько раз крупнее.
+ */
+export function containTextBox(
+  box: NonNullable<LottieEditableProperty["textBox"]>,
+  sourceWidth: number,
+  sourceHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+): NonNullable<LottieEditableProperty["textBox"]> {
+  if (
+    sourceWidth <= 0 || sourceHeight <= 0 || frameWidth <= 0 || frameHeight <= 0 ||
+    !Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
+    !Number.isFinite(frameWidth) || !Number.isFinite(frameHeight)
+  ) return box;
+  // Кроме сохранения точных значений это не даёт плавающей арифметике
+  // превратить, например, 48 в 47.99999999999999 у обычного 16:9 пресета.
+  if (sourceWidth * frameHeight === frameWidth * sourceHeight) return box;
+  const scale = Math.min(frameWidth / sourceWidth, frameHeight / sourceHeight);
+  const fittedWidth = sourceWidth * scale;
+  const fittedHeight = sourceHeight * scale;
+  const left = (frameWidth - fittedWidth) / 2;
+  const top = (frameHeight - fittedHeight) / 2;
+  return {
+    ...box,
+    xPercent: ((left + (box.xPercent / 100) * fittedWidth) / frameWidth) * 100,
+    yPercent: ((top + (box.yPercent / 100) * fittedHeight) / frameHeight) * 100,
+    fontSizePercent: ((box.fontSizePercent / 100) * sourceHeight * scale / frameHeight) * 100,
   };
 }
 

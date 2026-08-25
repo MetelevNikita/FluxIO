@@ -3,7 +3,7 @@ import {
   type AudioTrackScan,
   ffmpegCapabilitiesSchema,
   graphicEffectAssetSchema,
-  graphicEffectAssetListSchema,
+  graphicEffectImportResultSchema,
   graphicEffectVerificationSchema,
   broadcastConfigurationSummarySchema,
   broadcastTaskFileContentSchema,
@@ -26,6 +26,7 @@ import {
   type ClipPreviewSession,
   type FfmpegCapabilities,
   type GraphicEffectAsset,
+  type GraphicEffectImportResult,
   type MediaProbe,
   type NetworkInterfaceInfo,
   type PlayoutStatus,
@@ -70,26 +71,26 @@ export async function scanMediaDirectory(
 
 export async function analyzeGraphicEffectPaths(
   paths: string[],
-): Promise<GraphicEffectAsset[]> {
-  return graphicEffectAssetListSchema.parse(
+): Promise<GraphicEffectImportResult> {
+  return graphicEffectImportResultSchema.parse(
     await request("/api/effects/analyze", {
       body: JSON.stringify({ paths }),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),
-  ).items;
+  );
 }
 
 export async function scanGraphicEffectDirectory(
   directoryPath: string,
-): Promise<GraphicEffectAsset[]> {
-  return graphicEffectAssetListSchema.parse(
+): Promise<GraphicEffectImportResult> {
+  return graphicEffectImportResultSchema.parse(
     await request("/api/effects/scan", {
       body: JSON.stringify({ directoryPath }),
       headers: { "content-type": "application/json" },
       method: "POST",
     }),
-  ).items;
+  );
 }
 
 /** Какие из путей графики расписания уже не лежат на диске сервера. */

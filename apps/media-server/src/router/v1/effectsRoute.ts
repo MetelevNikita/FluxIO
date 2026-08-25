@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 
 import {
   analyzeGraphicEffectsRequestSchema,
-  graphicEffectAssetListSchema,
+  graphicEffectImportResultSchema,
   graphicEffectVerificationSchema,
   readBroadcastTaskRequestSchema,
   readTickerFeedRequestSchema,
@@ -18,7 +18,7 @@ import {
   scanGraphicEffectsRequestSchema,
 } from "@gruber/contracts";
 import {
-  analyzeGraphicEffectPaths,
+  analyzeGraphicEffectPathsPartial,
   scanGraphicEffectDirectory,
 } from "../../effects/library.js";
 import {
@@ -38,13 +38,13 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
   app.post("/api/effects/analyze", async (request, reply) => {
     try {
       const body = analyzeGraphicEffectsRequestSchema.parse(request.body);
-      const items = await analyzeGraphicEffectPaths(
+      const result = await analyzeGraphicEffectPathsPartial(
         body.paths,
         context.capabilities.ffprobePath,
         context.capabilities.ffmpegPath,
       );
 
-      return graphicEffectAssetListSchema.parse({ items });
+      return graphicEffectImportResultSchema.parse(result);
     } catch (error) {
       return badRequest(reply, error);
     }
@@ -53,13 +53,13 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
   app.post("/api/effects/scan", async (request, reply) => {
     try {
       const body = scanGraphicEffectsRequestSchema.parse(request.body);
-      const items = await scanGraphicEffectDirectory(
+      const result = await scanGraphicEffectDirectory(
         body.directoryPath,
         context.capabilities.ffprobePath,
         context.capabilities.ffmpegPath,
       );
 
-      return graphicEffectAssetListSchema.parse({ items });
+      return graphicEffectImportResultSchema.parse(result);
     } catch (error) {
       return badRequest(reply, error);
     }

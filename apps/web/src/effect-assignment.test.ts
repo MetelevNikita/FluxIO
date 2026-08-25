@@ -50,6 +50,9 @@ test("the same Lottie source can be imported repeatedly as independent projects"
       frameRate: 25,
       inPoint: 0,
       outPoint: 125,
+      dataBindings: [],
+      dataSourceName: null,
+      matchSourceKey: null,
       properties: [{
         animated: false,
         group: "Text",

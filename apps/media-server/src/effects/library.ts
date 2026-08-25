@@ -13,6 +13,11 @@ const staticExtensions = new Set([".png", ".webp"]);
 const videoExtensions = new Set([".mov", ".mp4", ".m4v", ".webm"]);
 const lottieExtensions = new Set([".json"]);
 
+export interface GraphicEffectAnalysisResult {
+  items: GraphicEffectAsset[];
+  issues: { filePath: string; message: string }[];
+}
+
 export async function analyzeGraphicEffectPaths(
   paths: string[],
   ffprobePath: string,
@@ -25,12 +30,36 @@ export async function analyzeGraphicEffectPaths(
   return assets;
 }
 
+/**
+ * Пакетный импорт с частичным успехом: один повреждённый файл не должен
+ * выбрасывать уже разобранные эффекты из той же папки.
+ */
+export async function analyzeGraphicEffectPathsPartial(
+  paths: string[],
+  ffprobePath: string,
+  ffmpegPath: string,
+): Promise<GraphicEffectAnalysisResult> {
+  const items: GraphicEffectAsset[] = [];
+  const issues: GraphicEffectAnalysisResult["issues"] = [];
+  for (const filePath of paths) {
+    try {
+      items.push(await analyzeGraphicEffect(filePath, ffprobePath, ffmpegPath));
+    } catch (error) {
+      issues.push({
+        filePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { issues, items };
+}
+
 export async function scanGraphicEffectDirectory(
   directoryPath: string,
   ffprobePath: string,
   ffmpegPath: string,
   maxFiles = 200,
-): Promise<GraphicEffectAsset[]> {
+): Promise<GraphicEffectAnalysisResult> {
   if (!path.isAbsolute(directoryPath)) {
     throw new Error(`Effects directory path must be absolute: ${directoryPath}`);
   }
@@ -56,7 +85,7 @@ export async function scanGraphicEffectDirectory(
   }
 
   await visit(root);
-  return analyzeGraphicEffectPaths(
+  return analyzeGraphicEffectPathsPartial(
     paths.sort((left, right) => left.localeCompare(right)),
     ffprobePath,
     ffmpegPath,

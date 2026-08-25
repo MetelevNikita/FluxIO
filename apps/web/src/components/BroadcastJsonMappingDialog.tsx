@@ -1,6 +1,7 @@
 import type { BroadcastDataMapping } from "@gruber/contracts";
 import { Check, Link2, Maximize2, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 
 export interface JsonMappingSummary {
   filePath: string;
@@ -33,15 +34,18 @@ export function BroadcastJsonMappingDialog({
   templateName: string;
   targets: JsonMappingTarget[];
 }) {
+  const { tr } = useI18n();
   const [matchSourceKey, setMatchSourceKey] = useState(mapping.matchSourceKey);
   const [sourceByTarget, setSourceByTarget] = useState<Record<string, string>>({});
+  const dialogRef = useRef<HTMLElement>(null);
   const fields = summary?.fields ?? [];
   const firstRecord = summary?.records[0] ?? {};
-  // Mapping строится по эталонному первому объекту, как в newsroom/CG
-  // системах: оператор видит реальное значение каждого доступного ключа, а
-  // затем одна и та же схема применяется ко всем следующим объектам массива.
+  // Выбирать можно любое поле массива, а не только ключи первой записи: в
+  // реальных rundown-файлах необязательный заголовок нередко появляется со
+  // второй или третьей строки.
+  const sourceKeys = fields.map((field) => field.key);
   const firstObjectSourceKeys = Object.keys(firstRecord);
-  const firstObjectSignature = firstObjectSourceKeys.join("|");
+  const sourceSignature = sourceKeys.join("|");
   const targetSignature = targets.map((target) => `${target.key}:${target.responsive}`).join("|");
   const bindingSignature = mapping.bindings
     .map((binding) => `${binding.sourceKey}:${binding.targetKey}`)
@@ -49,7 +53,6 @@ export function BroadcastJsonMappingDialog({
 
   useEffect(() => {
     if (!open) return;
-    const sourceKeys = firstObjectSourceKeys;
     setMatchSourceKey(sourceKeys.includes(mapping.matchSourceKey)
       ? mapping.matchSourceKey
       : preferredMatchSourceKey(sourceKeys));
@@ -58,7 +61,36 @@ export function BroadcastJsonMappingDialog({
       .map((item) => [item.targetKey, item.sourceKey]));
     setSourceByTarget(autoMapTargets(sourceKeys, targets, existing));
   }, [open, summary?.filePath, mapping.matchSourceKey, bindingSignature,
-    targetSignature, firstObjectSignature]);
+    targetSignature, sourceSignature]);
+
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    dialog?.querySelector<HTMLElement>("select, button")?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), select:not([disabled]), input:not([disabled])",
+      )];
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   const previewKeys = useMemo(() => {
     const mapped = Object.values(sourceByTarget).filter(Boolean);
@@ -77,62 +109,66 @@ export function BroadcastJsonMappingDialog({
     }))
     .filter((binding) => binding.populatedCount < summary.entryCount);
   return (
-    <div className="modal-backdrop json-mapping-backdrop" role="presentation">
-      <section aria-label="JSON Parser" aria-modal="true" className="json-mapping-dialog" role="dialog">
+    <div
+      className="modal-backdrop json-mapping-backdrop"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      role="presentation"
+    >
+      <section aria-label="JSON Parser" aria-modal="true" className="json-mapping-dialog" ref={dialogRef} role="dialog">
         <header>
           <div className="json-mapping-icon"><Link2 size={18} /></div>
           <div>
-            <span>DATA WORKSPACE</span>
+            <span>{tr("РАБОТА С ДАННЫМИ", "DATA WORKSPACE")}</span>
             <h2>JSON Parser</h2>
-            <p>{templateName} · {summary.entryCount} записей · первый объект: {firstObjectSourceKeys.length} полей · {shortPath(summary.filePath)}</p>
+            <p>{templateName} · {summary.entryCount} {tr("записей", "records")} · {tr("всего полей", "total fields")}: {sourceKeys.length} · {shortPath(summary.filePath)}</p>
           </div>
-          <button aria-label="Закрыть" onClick={onClose} type="button"><X size={16} /></button>
+          <button aria-label={tr("Закрыть", "Close")} onClick={onClose} type="button"><X size={16} /></button>
         </header>
 
         <div className="json-mapping-body">
           <section className="json-mapping-source">
             <div className="json-mapping-section-title">
-              <span>01</span><div><strong>Как найти ролик</strong><small>Выберите служебное поле первого объекта JSON</small></div>
+              <span>01</span><div><strong>{tr("Как найти ролик", "How to find a clip")}</strong><small>{tr("Выберите служебное поле массива JSON", "Choose the JSON array lookup field")}</small></div>
             </div>
             <label>
-              <span>Идентификатор записи</span>
+              <span>{tr("Идентификатор записи", "Record identifier")}</span>
               <select onChange={(event) => setMatchSourceKey(event.target.value)} value={matchSourceKey}>
-                {firstObjectSourceKeys.map((key) => (
+                {sourceKeys.map((key) => (
                   <option key={key} value={key}>
-                    {key} · {firstRecord[key]} · {fields.find((field) => field.key === key)?.populatedCount ?? 0}/{summary.entryCount}
+                    {key} · {fieldSample(fields, firstRecord, key, tr("нет значения", "no value"))} · {fields.find((field) => field.key === key)?.populatedCount ?? 0}/{summary.entryCount}
                   </option>
                 ))}
               </select>
             </label>
 
             <div className="json-mapping-section-title">
-              <span>02</span><div><strong>Ручное присвоение полей</strong><small>Ключ первого объекта JSON → Text Layer плашки</small></div>
+              <span>02</span><div><strong>{tr("Ручное присвоение полей", "Manual field mapping")}</strong><small>{tr("Поле массива JSON → Text Layer плашки", "JSON array field → title Text Layer")}</small></div>
               <button
                 className="json-auto-map"
-                onClick={() => setSourceByTarget(autoMapTargets(firstObjectSourceKeys, targets, {}))}
+                onClick={() => setSourceByTarget(autoMapTargets(sourceKeys, targets, {}))}
                 type="button"
-              ><Sparkles size={12} /> Auto map</button>
+              ><Sparkles size={12} /> {tr("Автосвязь", "Auto map")}</button>
             </div>
             <div className="json-binding-list">
               {targets.length === 0 ? (
-                <div className="json-empty-targets">Подгрузите Lottie-шаблон с редактируемыми Text Layer.</div>
+                <div className="json-empty-targets">{tr("Подгрузите Lottie-шаблон с редактируемыми Text Layer.", "Load a Lottie template with editable Text Layers.")}</div>
               ) : targets.map((target) => {
                 const sourceKey = sourceByTarget[target.key] ?? "";
-                const sample = firstRecord[sourceKey];
+                const sample = fieldSample(fields, firstRecord, sourceKey, tr("нет значения", "no value"));
                 const populatedCount = fields.find((field) => field.key === sourceKey)?.populatedCount ?? 0;
                 return (
                   <div className="json-binding-row" key={target.key}>
                     <select
-                      aria-label={`Источник для ${target.key}`}
+                      aria-label={tr(`Источник для ${target.key}`, `Source for ${target.key}`)}
                       onChange={(event) => setSourceByTarget((current) => ({
                         ...current,
                         [target.key]: event.target.value,
                       }))}
                       value={sourceKey}
                     >
-                      <option value="">— оставить значение шаблона —</option>
-                      {firstObjectSourceKeys.filter((key) => key !== matchSourceKey).map((key) => (
-                        <option key={key} value={key}>{key} · {firstRecord[key]}</option>
+                      <option value="">— {tr("оставить значение шаблона", "keep template value")} —</option>
+                      {sourceKeys.filter((key) => key !== matchSourceKey).map((key) => (
+                        <option key={key} value={key}>{key} · {fieldSample(fields, firstRecord, key, tr("нет значения", "no value"))}</option>
                       ))}
                     </select>
                     <span className="json-binding-arrow">→</span>
@@ -144,7 +180,7 @@ export function BroadcastJsonMappingDialog({
                       <Maximize2 size={11} /> {target.responsive ? "FIT READY" : "FIXED"}
                     </span>
                     <small title={sample}>
-                      Объект #1: {sample || "нет значения"} · заполнено {populatedCount}/{summary.entryCount}
+                      {tr("Объект", "Object")} #1: {sample} · {tr("заполнено", "populated")} {populatedCount}/{summary.entryCount}
                     </small>
                   </div>
                 );
@@ -154,7 +190,7 @@ export function BroadcastJsonMappingDialog({
 
           <aside className="json-mapping-preview">
             <div className="json-mapping-section-title">
-              <span>03</span><div><strong>Первый объект JSON</strong><small>По нему оператор строит mapping для всего массива</small></div>
+              <span>03</span><div><strong>{tr("Первый объект JSON", "First JSON object")}</strong><small>{tr("По нему оператор строит связи для всего массива", "Used to build mappings for the entire array")}</small></div>
             </div>
             <div className="json-first-object">
               {firstObjectSourceKeys.map((key) => (
@@ -165,10 +201,10 @@ export function BroadcastJsonMappingDialog({
             </div>
 
             <div className="json-mapping-section-title">
-              <span>04</span><div><strong>Поля плашки</strong><small>{templateName} · Text Layer, доступные для подстановки</small></div>
+              <span>04</span><div><strong>{tr("Поля плашки", "Title fields")}</strong><small>{templateName} · {tr("Text Layer, доступные для подстановки", "Text Layers available for substitution")}</small></div>
             </div>
             <div className="json-template-fields">
-              {targets.length === 0 ? <p>В шаблоне нет редактируемых Text Layer.</p> : targets.map((target) => (
+              {targets.length === 0 ? <p>{tr("В шаблоне нет редактируемых Text Layer.", "The template has no editable Text Layers.")}</p> : targets.map((target) => (
                 <div key={target.key}>
                   <code>{target.key}</code>
                   <span className={target.responsive ? "json-fit-ready" : "json-fit-missing"}>
@@ -179,7 +215,7 @@ export function BroadcastJsonMappingDialog({
             </div>
 
             <div className="json-mapping-section-title">
-              <span>05</span><div><strong>Проверка массива</strong><small>Первые три записи с выбранными полями</small></div>
+              <span>05</span><div><strong>{tr("Проверка массива", "Array check")}</strong><small>{tr("Первые три записи с выбранными полями", "First three records with selected fields")}</small></div>
             </div>
             <div className="json-preview-table">
               <table>
@@ -191,24 +227,30 @@ export function BroadcastJsonMappingDialog({
             </div>
             <div className="json-fit-explainer">
               <Maximize2 size={14} />
-              <div><strong>Отзывчивая подложка</strong><p><b>FIT READY</b> означает, что в Lottie найден Shape Layer <code>fit:&lt;Text Layer&gt;</code>. Его ширина автоматически пересчитывается под каждое значение JSON.</p></div>
+              <div><strong>{tr("Отзывчивая подложка", "Responsive plate")}</strong><p><b>FIT READY</b> {tr("означает, что в Lottie найден Shape Layer", "means that Lottie contains a Shape Layer")} <code>fit:&lt;Text Layer&gt;</code>. {tr("Его ширина автоматически пересчитывается под каждое значение JSON.", "Its width is recalculated automatically for every JSON value.")}</p></div>
             </div>
-            {firstObjectSourceKeys.length === 0 ? (
-              <div className="json-parser-warnings"><p>Первый объект JSON не содержит доступных строковых, числовых или boolean-полей.</p></div>
+            {sourceKeys.length === 0 ? (
+              <div className="json-parser-warnings"><p>{tr("JSON не содержит доступных строковых, числовых или boolean-полей.", "JSON has no usable string, number, or boolean fields.")}</p></div>
             ) : null}
             {summary.warnings.length > 0 ? (
               <div className="json-parser-warnings">{summary.warnings.slice(0, 3).map((warning) => <p key={warning}>{warning}</p>)}</div>
             ) : null}
             {matchField && matchField.populatedCount < summary.entryCount ? (
               <div className="json-parser-warnings">
-                <p>Идентификатор «{matchSourceKey}» отсутствует в {summary.entryCount - matchField.populatedCount} объекте(ах): эти записи будут пропущены.</p>
+                <p>{tr(
+                  `Идентификатор «${matchSourceKey}» отсутствует в ${summary.entryCount - matchField.populatedCount} объекте(ах): эти записи будут пропущены.`,
+                  `Identifier “${matchSourceKey}” is missing from ${summary.entryCount - matchField.populatedCount} object(s); those records will be skipped.`,
+                )}</p>
               </div>
             ) : null}
             {incompleteBindings.length > 0 ? (
               <div className="json-parser-warnings">
                 {incompleteBindings.slice(0, 3).map((binding) => (
                   <p key={binding.targetKey}>
-                    {binding.sourceKey} → {binding.targetKey}: значение есть в {binding.populatedCount}/{summary.entryCount} объектах; в остальных останется текст шаблона.
+                    {binding.sourceKey} → {binding.targetKey}: {tr(
+                      `значение есть в ${binding.populatedCount}/${summary.entryCount} объектах; в остальных останется текст шаблона.`,
+                      `value exists in ${binding.populatedCount}/${summary.entryCount} objects; the remaining objects keep the template text.`,
+                    )}
                   </p>
                 ))}
               </div>
@@ -217,11 +259,11 @@ export function BroadcastJsonMappingDialog({
         </div>
 
         <footer>
-          <span><Check size={12} /> Сопоставлено {mappedCount} из {targets.length} полей</span>
-          <button onClick={onClose} type="button">Отмена</button>
+          <span><Check size={12} /> {tr("Сопоставлено", "Mapped")} {mappedCount} {tr("из", "of")} {targets.length} {tr("полей", "fields")}</span>
+          <button onClick={onClose} type="button">{tr("Отмена", "Cancel")}</button>
           <button
             className="primary"
-            disabled={!matchSourceKey || !firstObjectSourceKeys.includes(matchSourceKey)}
+            disabled={!matchSourceKey || !sourceKeys.includes(matchSourceKey)}
             onClick={() => onSave({
               filePath: summary.filePath,
               matchSourceKey,
@@ -230,7 +272,7 @@ export function BroadcastJsonMappingDialog({
                 .map(([targetKey, sourceKey]) => ({ sourceKey, targetKey })),
             })}
             type="button"
-          >Сохранить связи</button>
+          >{tr("Сохранить связи", "Save mappings")}</button>
         </footer>
       </section>
     </div>
@@ -266,6 +308,15 @@ function preferredMatchSourceKey(sourceKeys: string[]): string {
   }
   const nestedTitle = sourceKeys.find((source) => normalizeKey(source).endsWith("title"));
   return nestedTitle ?? sourceKeys[0] ?? "title";
+}
+
+function fieldSample(
+  fields: JsonMappingSummary["fields"],
+  firstRecord: Record<string, string>,
+  key: string,
+  missingValue: string,
+): string {
+  return firstRecord[key] ?? fields.find((field) => field.key === key)?.samples[0] ?? missingValue;
 }
 
 function shortPath(value: string): string {

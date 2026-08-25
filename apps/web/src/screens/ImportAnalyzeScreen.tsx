@@ -1,6 +1,7 @@
 import { CalendarClock, Check, ChevronRight, LoaderCircle, Package, Plus, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
 import type { MediaAsset, ScheduleSlot } from "../types";
+import { useI18n } from "../i18n";
 
 interface ImportAnalyzeScreenProps {
   activeSchedule: ScheduleSlot;
@@ -33,6 +34,7 @@ export function ImportAnalyzeScreen({
   onSelectSchedule,
   operationError,
 }: ImportAnalyzeScreenProps) {
+  const { tr } = useI18n();
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const totalDuration = assets.reduce(
@@ -59,19 +61,23 @@ export function ImportAnalyzeScreen({
           className={activeSchedule === "current" ? "active" : ""}
           onClick={() => onScheduleChange("current")}
           type="button"
-        >Current import <span>{currentCount}</span></button>
+        >{tr("Текущий импорт", "Current import")} <span>{currentCount}</span></button>
         <button
           className={activeSchedule === "future" ? "active" : ""}
           onClick={() => onScheduleChange("future")}
           type="button"
-        >Future import <span>{futureCount}</span></button>
+        >{tr("Будущий импорт", "Future import")} <span>{futureCount}</span></button>
       </div>
       <div className="section-heading">
         <div>
-          <h1>{activeSchedule === "current" ? "Current" : "Future"} Media Library</h1>
+          <h1>{activeSchedule === "current"
+            ? tr("Текущая медиатека", "Current Media Library")
+            : tr("Будущая медиатека", "Future Media Library")}</h1>
           <p>
-            Ingest camera cards, directories, or standalone assets for deep
-            stream parsing.
+            {tr(
+              "Добавьте папки, карты памяти или отдельные файлы для подробного анализа потоков.",
+              "Ingest camera cards, directories, or standalone assets for deep stream parsing.",
+            )}
           </p>
         </div>
         <div className="library-heading-actions">
@@ -79,10 +85,11 @@ export function ImportAnalyzeScreen({
             className="secondary-button schedule-import-button"
             disabled={busy || !onSelectSchedule}
             onClick={() => void onSelectSchedule?.(activeSchedule)}
-            title={onSelectSchedule ? undefined : "Schedule import is available in Electron"}
+            title={onSelectSchedule ? undefined : tr("Импорт расписания доступен в Electron", "Schedule import is available in Electron")}
             type="button"
           >
-            <CalendarClock size={16} /> Import {activeSchedule === "current" ? "Current" : "Future"} .AIR/.TXT
+            <CalendarClock size={16} /> {tr("Импорт", "Import")} {activeSchedule === "current"
+              ? tr("текущего", "Current") : tr("будущего", "Future")} .AIR/.TXT
           </button>
           <button
             className="secondary-button"
@@ -97,12 +104,12 @@ export function ImportAnalyzeScreen({
             type="button"
           >
             <Plus size={16} />
-            {busy ? "Analyzing…" : "Add Standalone Files"}
+            {busy ? tr("Анализ…", "Analyzing…") : tr("Добавить отдельные файлы", "Add Standalone Files")}
           </button>
         </div>
         <span className={`library-readiness ${allReady ? "ready" : busy ? "busy" : ""}`}>
           {busy ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
-          {busy ? "Analyzing…" : `${readyCount}/${assets.length} ready`}
+          {busy ? tr("Анализ…", "Analyzing…") : `${readyCount}/${assets.length} ${tr("готово", "ready")}`}
         </span>
         <input
           accept="video/*,.mxf,.mkv,.ts"
@@ -143,11 +150,14 @@ export function ImportAnalyzeScreen({
         <span className="drop-icon">
           <Package size={23} />
         </span>
-        <strong>Drop folder with video files here</strong>
+        <strong>{tr("Перетащите сюда папку с видеофайлами", "Drop folder with video files here")}</strong>
         <span>
           {busy
-            ? "Reading media metadata with ffprobe…"
-            : "Supports ProRes, DNxHD, H.264, H.265 raw container directories"}
+            ? tr("Чтение метаданных через ffprobe…", "Reading media metadata with ffprobe…")
+            : tr(
+                "Поддерживаются ProRes, DNxHD, H.264, H.265 и папки с контейнерами.",
+                "Supports ProRes, DNxHD, H.264, H.265 raw container directories",
+              )}
         </span>
       </button>
 
@@ -160,15 +170,15 @@ export function ImportAnalyzeScreen({
           <table className="media-table">
             <thead>
               <tr>
-                <th>Preview</th>
-                <th>File name</th>
-                <th>Duration</th>
-                <th>Codec</th>
-                <th>Resolution</th>
+                <th>{tr("Превью", "Preview")}</th>
+                <th>{tr("Имя файла", "File name")}</th>
+                <th>{tr("Длительность", "Duration")}</th>
+                <th>{tr("Кодек", "Codec")}</th>
+                <th>{tr("Разрешение", "Resolution")}</th>
                 <th>FPS</th>
-                <th>Bitrate</th>
-                <th>Size</th>
-                <th>Status</th>
+                <th>{tr("Битрейт", "Bitrate")}</th>
+                <th>{tr("Размер", "Size")}</th>
+                <th>{tr("Статус", "Status")}</th>
               </tr>
             </thead>
             <tbody>
@@ -179,7 +189,7 @@ export function ImportAnalyzeScreen({
                   </td>
                   <td>
                     <strong className="asset-name">{asset.name}</strong>
-                    <span className="asset-hash">SHA-256 PARSED</span>
+                    <span className="asset-hash">SHA-256 {tr("ПРОВЕРЕН", "PARSED")}</span>
                   </td>
                   <td className="mono">{asset.duration}</td>
                   <td className="mono">{asset.codec}</td>
@@ -196,8 +206,8 @@ export function ImportAnalyzeScreen({
                 <tr>
                   <td className="empty-library" colSpan={9}>
                     {activeSchedule === "future"
-                      ? "Future import is empty. Load the next schedule or add standalone files."
-                      : "Current import is empty. Drop a folder or add standalone files."}
+                      ? tr("Будущий импорт пуст. Загрузите следующее расписание или добавьте файлы.", "Future import is empty. Load the next schedule or add standalone files.")
+                      : tr("Текущий импорт пуст. Перетащите папку или добавьте файлы.", "Current import is empty. Drop a folder or add standalone files.")}
                   </td>
                 </tr>
               ) : null}
@@ -208,9 +218,9 @@ export function ImportAnalyzeScreen({
 
       <div className="ingestion-summary">
         <div className="summary-metrics">
-          <SummaryMetric label="Analyzed Assets:" value={`${assets.length} Files`} />
-          <SummaryMetric label="Total Duration:" value={formatDuration(totalDuration)} />
-          <SummaryMetric label="Aggregate Payload:" value={formatSize(totalSize)} />
+          <SummaryMetric label={tr("Проанализировано:", "Analyzed Assets:")} value={`${assets.length} ${tr("файлов", "Files")}`} />
+          <SummaryMetric label={tr("Общая длительность:", "Total Duration:")} value={formatDuration(totalDuration)} />
+          <SummaryMetric label={tr("Общий объём:", "Aggregate Payload:")} value={formatSize(totalSize)} />
         </div>
         <div className="summary-actions">
           <button
@@ -219,7 +229,7 @@ export function ImportAnalyzeScreen({
             onClick={onClear}
             type="button"
           >
-            Clear Queue
+            {tr("Очистить очередь", "Clear Queue")}
           </button>
           <button
             className="primary-button"
@@ -227,7 +237,7 @@ export function ImportAnalyzeScreen({
             onClick={onProceed}
             type="button"
           >
-            Proceed to Playlist
+            {tr("Перейти к плейлисту", "Proceed to Playlist")}
             <ChevronRight size={17} />
           </button>
         </div>
@@ -237,13 +247,14 @@ export function ImportAnalyzeScreen({
 }
 
 function AssetStatus({ status }: { status: MediaAsset["status"] }) {
+  const { tr } = useI18n();
   const label = status === "analyzed"
-    ? "Done"
+    ? tr("Готово", "Done")
     : status === "pending"
-      ? "Analyzing"
+      ? tr("Анализ", "Analyzing")
       : status === "error"
-        ? "Error"
-        : "Ready";
+        ? tr("Ошибка", "Error")
+        : tr("Готов", "Ready");
   const Icon = status === "analyzed"
     ? Check
     : status === "error"

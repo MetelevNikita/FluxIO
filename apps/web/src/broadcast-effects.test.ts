@@ -3,6 +3,7 @@ import test from "node:test";
 import type { GraphicEffectAsset, LottieEditableProperty } from "@gruber/contracts";
 import {
   applyBroadcastPlan,
+  containTextBox,
   joinTickerItems,
   lottieTextFieldKey,
   mapBroadcastTaskRecords,
@@ -51,6 +52,9 @@ function preset(properties: LottieEditableProperty[] = []): GraphicEffectAsset {
       frameRate: 25,
       inPoint: 0,
       outPoint: 100,
+      dataBindings: [],
+      dataSourceName: null,
+      matchSourceKey: null,
       properties,
       responsiveTextKeys: [],
       sourcePath: "/fx/preset.json",
@@ -216,12 +220,31 @@ function plan(overrides: Partial<PlanBroadcastEffectInput>) {
     createId,
     effect: broadcastEffect("ticker-crawl", {}),
     frameRate: 25,
+    frameHeight: 1_080,
+    frameWidth: 1_920,
     preset: null,
     targetIds: null,
     taskEntries: [],
     ...overrides,
   });
 }
+
+test("a cropped Lottie composition maps live text through the same contain geometry as its plate", () => {
+  const mapped = containTextBox({
+    align: "left",
+    color: "#FFFFFF",
+    fontSizePercent: 22.5,
+    xPercent: 15.324074074074073,
+    yPercent: 63.552978515625,
+  }, 1_080, 200, 1_920, 1_080);
+
+  // title_JSON_3.json is 1080×200. Its plate fills the FHD width and receives
+  // transparent padding above/below; the separate drawtext must receive the
+  // exact same scale and padding.
+  assert.ok(Math.abs(mapped.xPercent - 15.324074074074073) < 1e-9);
+  assert.ok(Math.abs(mapped.yPercent - 54.46188593106995) < 1e-9);
+  assert.ok(Math.abs(mapped.fontSizePercent - 7.4074074074074066) < 1e-9);
+});
 
 test("lottie text field key uses the layer name and the Essential Graphics slot id", () => {
   assert.equal(lottieTextFieldKey(textProperty("Main composition · eng", "p1")), "eng");
@@ -280,6 +303,23 @@ test("dynamic title reads a per-clip value from the task file and falls back to 
     ["В эфире", "Нет данных"],
   );
   assert.ok(result.warnings.some((warning) => warning.includes("резервный текст")));
+});
+
+test("dynamic title matches task identifiers like file names", () => {
+  const result = plan({
+    effect: broadcastEffect("dynamic-title", {
+      dynamicTitle: {
+        ...broadcastEffect("dynamic-title", {}).broadcast!.settings.dynamicTitle,
+        source: "task-file",
+        taskKey: "status",
+        text: "Нет данных",
+      },
+    }),
+    clips: [{ durationSeconds: 30, id: "a", name: "/MEDIA/NEWS_01.MOV" }],
+    taskEntries: [{ name: " news_01 ", values: { status: "В эфире" } }],
+  });
+
+  assert.equal(result.textOverlays[0]?.overlay.content, "В эфире");
 });
 
 test("animation in/out binds a task entry to exactly one clip and maps its keys", () => {
@@ -397,6 +437,26 @@ test("next program reads the following playlist item and warns on the last clip"
   assert.equal(result.textOverlays[0]!.overlay.content, "Вечерние новости");
   assert.ok(result.warnings.some((warning) =>
     /is the last clip and has no fallback title/.test(warning)));
+});
+
+test("next program uses normalized task identifiers across a schedule boundary", () => {
+  const result = plan({
+    clips: [
+      { durationSeconds: 100, id: "current-last", name: "Фильм А.mov" },
+      { durationSeconds: 90, id: "future-first", name: "/MEDIA/FILM_B.MXF" },
+    ],
+    effect: broadcastEffect("next-program", {
+      nextProgram: {
+        ...broadcastEffect("next-program", {}).broadcast!.settings.nextProgram,
+        source: "task-file",
+        titleKey: "next_title",
+      },
+    }),
+    targetIds: new Set(["current-last"]),
+    taskEntries: [{ name: "film_b", values: { next_title: "Фильм Б из JSON" } }],
+  });
+
+  assert.equal(result.textOverlays[0]?.overlay.content, "Фильм Б из JSON");
 });
 
 test("next program announces the next movie and skips idents between films", () => {
@@ -617,6 +677,19 @@ test("moving an effect shifts its plate and its live text by the same amount", (
   });
   assert.equal(still.layers[0]?.layer.offsetXPercent, 0);
   assert.equal(still.textOverlays[0]?.overlay.style.xPercent, 40);
+
+  const outside = plan({
+    effect: broadcastEffect("clock-countdown", clockSettings, {
+      offsetXPercent: -60,
+      offsetYPercent: 40,
+    }),
+    preset: preset([textProperty("Main composition · clock", "prop-clock")]),
+    targetIds: new Set(["a"]),
+  });
+  // Текст не зажимается у края: иначе FX-слой продолжал бы движение, а
+  // отдельный drawtext отрывался от плашки.
+  assert.equal(outside.textOverlays[0]?.overlay.style.xPercent, -20);
+  assert.equal(outside.textOverlays[0]?.overlay.style.yPercent, 120);
 });
 
 test("a stinger stays where it is: moving it would open a gap at the cut", () => {
@@ -815,6 +888,7 @@ test("stinger splits across the cut and takes the second half from mid file", ()
   assert.equal(head!.layer.startSeconds, 0);
   assert.equal(head!.layer.endSeconds, 0.68);
   assert.equal(head!.layer.sourceInSeconds, 0.52);
+  assert.equal(head!.layer.sourceDurationSeconds, 1.2);
   assert.equal(head!.layer.blendMode, "luma");
   assert.equal(head!.layer.tier, 2);
   // Звук режется тем же швом, чтобы переход не был слышен дважды.

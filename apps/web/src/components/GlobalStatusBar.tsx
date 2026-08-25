@@ -1,6 +1,7 @@
 import { LoaderCircle, Server } from "lucide-react";
 import type { PlayoutStatus } from "@gruber/contracts";
 import type { ConnectionState } from "../App";
+import { useI18n } from "../i18n";
 
 interface GlobalStatusBarProps {
   connection: ConnectionState;
@@ -13,6 +14,7 @@ export function GlobalStatusBar({
   serverAddress,
   status,
 }: GlobalStatusBarProps) {
+  const { tr } = useI18n();
   const progress = status?.progressPercent ?? 0;
   const active = status
     ? ["starting", "running", "stopping"].includes(status.state)
@@ -29,25 +31,25 @@ export function GlobalStatusBar({
         className={`media-server-status ${serverActive ? "active" : "inactive"}`}
         title={connection.kind === "error"
           ? connection.message
-          : `Media server ${serverAddress}`}
+          : `${tr("Медиасервер", "Media server")} ${serverAddress}`}
       >
         <Server aria-hidden="true" size={17} />
         <span className="server-state-dot" aria-hidden="true" />
         <span className="media-server-copy">
-          <strong>{serverActive ? "ACTIVE" : "NOT ACTIVE"}</strong>
+          <strong>{serverActive ? tr("АКТИВЕН", "ACTIVE") : tr("НЕАКТИВЕН", "NOT ACTIVE")}</strong>
           <small>{serverAddress}</small>
         </span>
       </div>
       <div className="encoding-file">
         <LoaderCircle className={active ? "spin" : ""} size={16} />
         <span>
-          {active ? "On Air:" : "Playout:"}{" "}
-          <strong>{status?.currentItemName ?? status?.state ?? "idle"}</strong>
+          {active ? tr("В эфире:", "On Air:") : tr("Вещание:", "Playout:")}{" "}
+          <strong>{status?.currentItemName ?? localizedState(status?.state, tr)}</strong>
         </span>
       </div>
       <div
         className="global-progress"
-        aria-label="Encoding progress"
+        aria-label={tr("Прогресс кодирования", "Encoding progress")}
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={progress}
@@ -56,14 +58,26 @@ export function GlobalStatusBar({
         <span style={{ width: `${progress}%` }} />
       </div>
       <div className="encoding-summary">
-        <span>{progress.toFixed(1)}% Complete</span>
+        <span>{progress.toFixed(1)}% {tr("выполнено", "Complete")}</span>
         <i />
-        <span className="muted">Est. Remaining: {formatDuration(remaining)}</span>
+        <span className="muted">{tr("Осталось:", "Est. Remaining:")} {formatDuration(remaining)}</span>
         <i />
-        <span className="speed-tag">×{(status?.speed ?? 0).toFixed(2)} Speed</span>
+        <span className="speed-tag">×{(status?.speed ?? 0).toFixed(2)} {tr("скорость", "Speed")}</span>
       </div>
     </footer>
   );
+}
+
+function localizedState(
+  state: PlayoutStatus["state"] | undefined,
+  tr: (russian: string, english: string) => string,
+): string {
+  if (!state || state === "idle") return tr("ожидание", "idle");
+  if (state === "starting") return tr("запуск", "starting");
+  if (state === "running") return tr("работает", "running");
+  if (state === "stopping") return tr("остановка", "stopping");
+  if (state === "failed") return tr("ошибка", "failed");
+  return state;
 }
 
 function formatDuration(seconds: number): string {

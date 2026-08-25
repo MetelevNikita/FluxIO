@@ -180,12 +180,18 @@ export function inspectLottieDocument(
     backgroundColor: "transparent",
     properties,
     responsiveTextKeys: collectResponsiveTextKeys(document.layers),
+    dataSourceName: fluxExport?.dataSourceName ?? null,
+    matchSourceKey: fluxExport?.matchSourceKey ?? null,
+    dataBindings: fluxExport?.dataBindings ?? [],
     warnings,
   });
 }
 
 interface FluxExportMetadata {
   editableTextKeys: Set<string>;
+  dataSourceName: string | null;
+  matchSourceKey: string | null;
+  dataBindings: { sourceKey: string; targetKey: string }[];
   warnings: string[];
 }
 
@@ -210,7 +216,23 @@ function readFluxExportMetadata(document: JsonObject): FluxExportMetadata | null
       .map((value) => value.slice(0, 512))
       .slice(0, 50)
     : [];
-  return { editableTextKeys, warnings };
+  const dataSourceName = typeof flux.dataSourceName === "string"
+    ? flux.dataSourceName.slice(0, 512)
+    : null;
+  const matchSourceKey = typeof flux.matchSourceKey === "string" && flux.matchSourceKey.trim()
+    ? flux.matchSourceKey.trim().slice(0, 256)
+    : null;
+  const dataBindings = Array.isArray(flux.dataBindings)
+    ? flux.dataBindings.flatMap((binding) => {
+        if (!isObject(binding)) return [];
+        const sourceKey = stringValue(binding.sourceKey).trim();
+        const targetKey = stringValue(binding.targetKey).trim();
+        return sourceKey && targetKey
+          ? [{ sourceKey: sourceKey.slice(0, 256), targetKey: targetKey.slice(0, 128) }]
+          : [];
+      }).slice(0, 128)
+    : [];
+  return { dataBindings, dataSourceName, editableTextKeys, matchSourceKey, warnings };
 }
 
 /** Связи `fit:` верхней композиции, которые можно безопасно показать оператору. */

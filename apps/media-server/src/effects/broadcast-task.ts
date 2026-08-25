@@ -52,7 +52,7 @@ export function parseBroadcastTaskDocument(document: unknown): {
   const parsed = broadcastTaskFileSchema.safeParse(document);
   if (!parsed.success) {
     throw new Error(
-      "Task file must be one object or an array of objects",
+      "Task file must be one object or a non-empty array of no more than 10,000 objects",
     );
   }
   const warnings: string[] = [];

@@ -122,7 +122,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "7.0.16");
+    assert.equal(health.version, "7.0.17");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -193,6 +193,9 @@ test("Flux Title Exporter metadata exposes only fields selected in After Effects
       flux: {
         schemaVersion: 1,
         fields: [{ key: "title", layerName: "Title", type: "text" }],
+        dataSourceName: "rundown.json",
+        matchSourceKey: "media.name",
+        dataBindings: [{ sourceKey: "programme.title", targetKey: "Title" }],
         warnings: ["Glow is not part of the safe Lottie subset"],
       },
     },
@@ -214,6 +217,11 @@ test("Flux Title Exporter metadata exposes only fields selected in After Effects
   const textProperties = metadata.properties.filter((property) => property.type === "text");
   assert.equal(textProperties.length, 1);
   assert.equal(textProperties[0]?.value, "Editable");
+  assert.equal(metadata.dataSourceName, "rundown.json");
+  assert.equal(metadata.matchSourceKey, "media.name");
+  assert.deepEqual(metadata.dataBindings, [
+    { sourceKey: "programme.title", targetKey: "Title" },
+  ]);
   assert.match(metadata.warnings.join(" "), /Glow is not part/);
 });
 
@@ -3259,6 +3267,14 @@ test("a task file accepts scalar and nested fields and describes them for JSON P
   assert.equal(withoutName.records[0]?.media_id, "clip-42");
   assert.deepEqual(withoutName.entries, []);
   assert.match(withoutName.warnings.join("\n"), /JSON Parser/);
+
+  const largeArray = parseBroadcastTaskDocument(Array.from(
+    { length: 8_347 },
+    (_, index) => ({ title: `Ролик ${index + 1}.MP4`, text_title: `Плашка ${index + 1}` }),
+  ));
+  assert.equal(largeArray.records.length, 8_347);
+  assert.equal(largeArray.fields.find((field) => field.key === "title")?.populatedCount, 8_347);
+  assert.equal(largeArray.records[8_346]?.text_title, "Плашка 8347");
 });
 
 test("ticker source reads plain lines and both supported JSON shapes", () => {
