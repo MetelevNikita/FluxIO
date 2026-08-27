@@ -10,6 +10,11 @@ import {
   SELECT_BROADCAST_TASK_FILE_CHANNEL,
   SELECT_EFFECT_FILES_CHANNEL,
   SELECT_STINGER_FILE_CHANNEL,
+  SELECT_DECORATION_FILE_CHANNEL,
+  SAVE_TITLE_FILE_CHANNEL,
+  SELECT_TITLE_FILE_CHANNEL,
+  READ_TITLE_LIBRARY_CHANNEL,
+  SELECT_TITLE_LIBRARY_CHANNEL,
   SELECT_TICKER_SOURCE_FILE_CHANNEL,
   SELECT_EFFECT_TITLE_DIRECTORY_CHANNEL,
   SELECT_ENCODING_SETTINGS_FILE_CHANNEL,
@@ -30,8 +35,9 @@ import {
   selectFileDirectory,
   selectFiles,
   selectImageDirectory,
+  readTitleLibrary,
 } from "./dialogs.js";
-import { scheduleSaveInput, textFileSaveInput } from "./saveInput.js";
+import { scheduleSaveInput, textFileSaveInput, titleFileSaveInput } from "./saveInput.js";
 
 const videoExtensions = [
   "avi", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "mxf", "ts", "webm",
@@ -72,7 +78,7 @@ function registerMediaHandlers(): void {
 
   ipcMain.handle(SELECT_LOGO_CHANNEL, async () =>
     selectFile("Select output logo", [
-      // Анимированный логотип: mov/webm с альфой, gif и Lottie-проект. Lottie
+      // Анимированный логотип: mov/webm с альфой и gif. Проект-исходник
       // интерфейс сначала печёт в файл — FFmpeg JSON не читает.
       {
         name: "Logo images and animations",
@@ -157,6 +163,40 @@ function registerEffectHandlers(): void {
     selectFile("Select stinger transition", [
       { name: "Alpha transition", extensions: ["mov", "webm", "mp4", "m4v"] },
     ]));
+
+  // Оформление эффекта готовым alpha-медиа. Сцена рисуется своим редактором,
+  // сюда попадают только те виды, которым нужен внешний файл.
+  ipcMain.handle(SELECT_DECORATION_FILE_CHANNEL, async () =>
+    selectFile("Select effect design file", [
+      { name: "Alpha media", extensions: ["mov", "webm", "png"] },
+    ]));
+
+  // Титры лежат своим расширением: с `.json` их не отличить от файла задания
+  // или профиля настроек, и оператор узнавал бы об ошибке уже при разборе.
+  ipcMain.handle(SAVE_TITLE_FILE_CHANNEL, async (_event, input: unknown) => {
+    const payload = titleFileSaveInput(input);
+    return saveTextFile({
+      content: payload.content,
+      defaultName: payload.defaultName,
+      extension: "fto",
+      filterName: "FluxIO title",
+      title: "Save title",
+    });
+  });
+
+  ipcMain.handle(SELECT_TITLE_FILE_CHANNEL, async () => {
+    const filePath = await selectFile("Open title", [
+      { name: "FluxIO title", extensions: ["fto"] },
+    ]);
+    if (!filePath) return null;
+    return { content: await readTextFile(filePath, 8 * 1024 * 1024, "Title file"), filePath };
+  });
+
+  ipcMain.handle(READ_TITLE_LIBRARY_CHANNEL, async (_event, directoryPath: unknown) =>
+    readTitleLibrary(typeof directoryPath === "string" ? directoryPath : undefined));
+
+  ipcMain.handle(SELECT_TITLE_LIBRARY_CHANNEL, async () =>
+    selectDirectory("Select the titles folder"));
 }
 
 //

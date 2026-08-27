@@ -592,11 +592,15 @@ async function runBuildPipeline(commandEnv, mode, actions) {
 async function finishInstallation(commandEnv, mode, actions, values) {
   const installedService = await setupBackgroundService(actions, values);
   const desktopShortcut = actions.createShortcut ? await createDesktopShortcut() : null;
+  // Папка титров нужна независимо от ярлыка: в неё складываются готовые
+  // плашки, и без неё каталог в редакторе открывается пустым.
+  const titleLibrary = await createTitleLibraryFolder().catch(() => null);
 
   printSummary({
     databaseUrl: values.DATABASE_URL,
     desktopShortcut,
     installedService,
+    titleLibrary,
     mode,
     startNow: actions.startNow,
     values,
@@ -1544,6 +1548,64 @@ function escapePowerShell(value) {
   return value.replaceAll("'", "''");
 }
 
+/** Имя папки титров. Одно на все платформы: её ищут глазами. */
+export const titleLibraryFolderName = "FluxIO Titles";
+
+/**
+ * Папка титров на рабочем столе.
+ *
+ * Создаётся при установке, чтобы оператору было куда складывать готовые
+ * плашки и откуда их брать. Существующую не трогаем: в ней уже могут лежать
+ * его файлы, и «создать заново» означало бы их потерю.
+ */
+export async function createTitleLibraryFolder() {
+  const folderPath = path.join(homedir(), "Desktop", titleLibraryFolderName);
+  const created = !existsSync(folderPath);
+  await mkdir(folderPath, { recursive: true });
+  // Базовый набор кладём и в существующую папку: без него первый канал
+  // начинает с пустого холста. Уже лежащий файл не трогаем — оператор мог
+  // его поправить под себя, и перезапись стёрла бы правку.
+  const copied = await copyBuiltInTitles(folderPath);
+  const readmePath = path.join(folderPath, "README.txt");
+  if (!existsSync(readmePath)) {
+    await writeFile(
+      readmePath,
+      [
+        "FluxIO Titles",
+        "",
+        "Сюда складываются готовые титры — файлы .fto.",
+        "Сохранить: редактор титров, кнопка «Сохранить как».",
+        "Загрузить: редактор титров, кнопка каталога.",
+        "",
+        "Файл .fto — это JSON с меткой формата внутри. Своё расширение",
+        "нужно, чтобы титр не путался с файлом задания или профилем настроек.",
+      ].join("\n"),
+      "utf8",
+    );
+  }
+  return { folderPath, created, copied };
+}
+
+/**
+ * Копирует поставляемые титры в папку оператора.
+ *
+ * Существующие файлы не перезаписываются: оператор мог поправить шаблон под
+ * свой канал, и обновление стёрло бы правку молча.
+ */
+async function copyBuiltInTitles(folderPath) {
+  const sourceDirectory = path.join(projectRoot, "assets", "titles");
+  if (!existsSync(sourceDirectory)) return 0;
+  let copied = 0;
+  for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".fto")) continue;
+    const target = path.join(folderPath, entry.name);
+    if (existsSync(target)) continue;
+    await copyFile(path.join(sourceDirectory, entry.name), target);
+    copied += 1;
+  }
+  return copied;
+}
+
 async function createDesktopShortcut() {
   const launcherPath = path.join(projectRoot, "launch.mjs");
   if (!existsSync(launcherPath)) {
@@ -1898,6 +1960,7 @@ function printSummary({
   installedService,
   mode,
   startNow,
+  titleLibrary,
   values,
 }) {
   console.log("\nУстановка завершена");
@@ -1914,6 +1977,13 @@ function printSummary({
     console.log(`Логи/статус: ${installedService.logs}`);
   }
   if (desktopShortcut) console.log(`Ярлык: ${desktopShortcut}`);
+  if (titleLibrary) {
+    console.log(
+      `Папка титров: ${titleLibrary.folderPath}` +
+        (titleLibrary.created ? "" : " (уже была)") +
+        (titleLibrary.copied > 0 ? `, добавлено титров: ${titleLibrary.copied}` : ""),
+    );
+  }
   if (!startNow) console.log("Запуск пропущен. Повторите npm run setup или используйте команды из документации.");
 }
 

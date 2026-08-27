@@ -283,41 +283,38 @@
   :focus-visible { outline: 2px solid var(--tally); outline-offset: 2px; }
   @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 </style>
-
 <div class="wrap">
 
   <header class="masthead">
     <p class="eyebrow">Карта потока · уровень 2</p>
     <h1>Как работает список эффектов</h1>
     <p class="standfirst">
-      Весь путь сверху вниз — от кнопки в каталоге до кадра в эфире. Основа ваша; красным
-      отмечено дописанное и исправленное, охрой — точки, где ошибка не видна до эфира.
-      Учтены принятые решения: уровень 3 уходит из библиотеки, графика становится свойством
-      эффекта, и у каждого вида появляется свой набор оформления — файл либо параметрическая
-      плашка, которую эффект рисует сам.
+      Весь путь сверху вниз — от кнопки в каталоге до кадра в эфире. С v8.0.0 оформление
+      титров рисует собственная сцена: связка с After Effects и Lottie убрана целиком.
+      Красным отмечено то, что меняет поведение эфира; охрой — точки, где ошибка не видна
+      до выхода в линию.
     </p>
     <div class="meta">
       <span><b>Версия дерева</b> 8.0.0</span>
       <span><b>Видов эффектов</b> 6</span>
-      <span><b>Уровней в списке</b> 1</span>
-      <span><b>Сверено с</b> apps/web · apps/media-server · packages/contracts</span>
+      <span><b>Видов оформления</b> 2</span>
+      <span><b>Сверено с</b> apps/web · apps/media-server · packages/contracts · packages/scene-renderer</span>
     </div>
   </header>
 
-  <!-- ============ КАРТА ПОТОКА ============ -->
+  <!-- ============ ПОЧЕМУ СМЕНИЛСЯ ФОРМАТ ============ -->
   <section>
     <div class="col">
-      <h2><span class="h2-num">01</span>Карта потока</h2>
+      <h2><span class="h2-num">01</span>Почему сменился формат</h2>
       <p class="lede">
-        Ваша схема шла «эффект → подгрузка графики → настройки → применение → эфир». Здесь тот же
-        порядок, но с четырьмя вставленными шагами, без которых поток не описывает реальность:
-        разбор файла, план, рендер плашки и ветка отказа.
+        Это не смена вкуса. Прежняя механика дала конкретный отказ на эфире, и он был
+        неустраним внутри неё.
       </p>
     </div>
 
     <figure>
       <div class="figbox">
-        <svg viewBox="0 0 1120 2560" role="img" aria-label="Карта потока работы с эффектами сверху вниз: каталог, загрузка графики, разбор, настройки, источник данных, область применения, план, рендер плашки, применение к плейлисту, эфир">
+        <svg viewBox="0 0 1120 470" role="img" aria-label="Сравнение: раньше плашка и текст рисовались раздельно двумя механизмами с разными часами, теперь одна сцена рисует их одним проходом">
           <defs>
             <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="ah"/>
@@ -327,374 +324,286 @@
             </marker>
           </defs>
 
-          <!-- ЛЕГЕНДА -->
-          <rect class="node" x="6" y="26" width="24" height="17" rx="2"/>
-          <text class="e-label" x="38" y="39">шаг из вашей схемы</text>
-          <rect class="node-add" x="196" y="26" width="24" height="17" rx="2"/>
-          <text class="e-label" x="228" y="39">дописано или исправлено</text>
-          <rect class="node-risk" x="416" y="26" width="24" height="17" rx="2"/>
-          <text class="e-label" x="448" y="39">ошибка не видна до эфира</text>
-          <polygon class="diamond" points="646,26 668,34.5 646,43 624,34.5"/>
-          <text class="e-label" x="678" y="39">развилка</text>
-          <line class="sect-rule" x1="0" y1="60" x2="1120" y2="60"/>
+          <text class="sect-name" x="0" y="20">было · до v8.0.0</text>
+          <line class="sect-rule" x1="0" y1="32" x2="1120" y2="32"/>
 
-          <!-- ---------- ФАЗА 1 ---------- -->
-          <text class="sect-name" x="0" y="86">1 · выбор эффекта</text>
+          <rect class="node" x="0" y="52" width="230" height="76" rx="3"/>
+          <text class="n-title" x="16" y="80">Шаблон из After Effects</text>
+          <text class="n-sub" x="16" y="100">Lottie .json</text>
+          <text class="n-mono n-mute" x="16" y="118">FFmpeg его не читает</text>
 
-          <rect class="node" x="460" y="100" width="200" height="44" rx="22"/>
-          <text class="n-title" x="560" y="128" text-anchor="middle">Экран Effects</text>
-          <line class="flow" x1="560" y1="144" x2="560" y2="164" marker-end="url(#m)"/>
+          <path class="flow" d="M230,90 L296,90" marker-end="url(#m)"/>
 
-          <rect class="node" x="280" y="170" width="560" height="100" rx="4"/>
-          <text class="n-title" x="300" y="196">Каталог: шесть видов эффектов</text>
-          <text class="n-sub" x="300" y="218">Animation in/out · Dynamic title · Next program</text>
-          <text class="n-sub" x="300" y="238">Ticker crawl · Clock / Countdown · Stinger transition</text>
-          <text class="n-sub n-accent" x="300" y="260">Clock / Countdown в исходной схеме отсутствовал</text>
-          <line class="flow" x1="560" y1="270" x2="560" y2="292" marker-end="url(#m)"/>
-          <text class="e-label" x="572" y="286">создать экземпляр</text>
+          <rect class="node-risk" x="300" y="52" width="240" height="76" rx="3"/>
+          <text class="n-title" x="316" y="80">Рендер плашки в файл</text>
+          <text class="n-sub" x="316" y="100">alpha-MOV в кэш, один раз</text>
+          <text class="n-mono n-bakef" x="316" y="118">своя анимация входа</text>
 
-          <rect class="node" x="360" y="298" width="400" height="54" rx="4"/>
-          <text class="n-title" x="380" y="322">Экземпляр в списке</text>
-          <text class="n-mono" x="380" y="342">fx2-‹kind›-‹uuid› · видов может быть по нескольку</text>
-          <line class="flow" x1="560" y1="352" x2="560" y2="376" marker-end="url(#m)"/>
+          <rect class="node-risk" x="300" y="152" width="240" height="76" rx="3"/>
+          <text class="n-title" x="316" y="180">Текст поверх — drawtext</text>
+          <text class="n-sub" x="316" y="200">рисует FFmpeg покадрово</text>
+          <text class="n-mono n-bakef" x="316" y="218">жёсткое окно enable=between</text>
 
-          <!-- ---------- ФАЗА 2 ---------- -->
-          <text class="sect-name" x="0" y="410">2 · графика</text>
+          <path class="flow" d="M540,90 L640,90 L640,140" marker-end="url(#m)"/>
+          <path class="flow" d="M540,190 L640,190 L640,150" marker-end="url(#m)"/>
 
-          <polygon class="diamond" points="560,382 730,442 560,502 390,442"/>
-          <text class="n-title" x="560" y="437" text-anchor="middle">Чем оформлен</text>
-          <text class="n-title" x="560" y="455" text-anchor="middle">эффект?</text>
+          <rect class="node-live" x="660" y="112" width="300" height="96" rx="3"/>
+          <text class="n-title" x="676" y="140">Две сущности, двое часов</text>
+          <text class="n-sub" x="676" y="162">Текст включался по своему окну,</text>
+          <text class="n-sub" x="676" y="180">плашка выезжала по своей анимации.</text>
+          <text class="n-sub n-accent" x="676" y="200">Текст успевал появиться первым.</text>
 
-          <text class="e-yn" x="382" y="434" text-anchor="end">плашкой</text>
-          <polyline class="flow" points="390,442 142,442 142,464" marker-end="url(#m)"/>
+          <text class="sect-name" x="0" y="286">стало · v8.0.0</text>
+          <line class="sect-rule" x1="0" y1="298" x2="1120" y2="298"/>
 
-          <rect class="node-add" x="16" y="470" width="252" height="130" rx="4"/>
-          <text class="n-title" x="32" y="496">Параметрическая плашка</text>
-          <text class="n-sub" x="32" y="520">прямоугольник рисует сам эффект</text>
-          <text class="n-sub" x="32" y="540">цвет, прозрачность, скругление</text>
-          <text class="n-sub" x="32" y="560">привязка к тексту или к полосе</text>
-          <text class="n-sub n-accent" x="32" y="584">Next program · Ticker · Clock</text>
-          <polyline class="flow" points="142,600 142,940 274,940" marker-end="url(#m)"/>
+          <rect class="node-add" x="0" y="318" width="230" height="76" rx="3"/>
+          <text class="n-title" x="16" y="346">Сцена</text>
+          <text class="n-sub" x="16" y="366">дерево узлов внутри эффекта</text>
+          <text class="n-mono n-mute" x="16" y="384">sceneTemplateSchema</text>
 
-          <text class="e-yn" x="574" y="518">файлом</text>
-          <line class="flow" x1="560" y1="502" x2="560" y2="524" marker-end="url(#m)"/>
+          <path class="flow-add" d="M230,356 L296,356" marker-end="url(#ma)"/>
 
-          <rect class="node-add" x="280" y="530" width="560" height="122" rx="4"/>
-          <text class="n-title" x="300" y="556">Загрузка файла графики внутри эффекта</text>
-          <text class="n-sub" x="300" y="580">Lottie .json · alpha .mov / .png · последовательность .png</text>
-          <text class="n-sub" x="300" y="602">набор форматов свой у каждого вида — см. таблицу ниже</text>
-          <text class="n-sub n-accent" x="300" y="626">общей библиотеки пресетов больше нет: файл принадлежит эффекту</text>
-          <text class="n-sub n-mute" x="300" y="646">Animation in/out и Stinger без файла не работают вовсе</text>
-          <line class="flow" x1="560" y1="652" x2="560" y2="674" marker-end="url(#m)"/>
+          <rect class="node-add" x="300" y="318" width="300" height="76" rx="3"/>
+          <text class="n-title" x="316" y="346">drawScene — одна функция</text>
+          <text class="n-sub" x="316" y="366">плашка и текст за один проход</text>
+          <text class="n-mono n-mute" x="316" y="384">packages/scene-renderer</text>
 
-          <rect class="node-add" x="280" y="680" width="560" height="92" rx="4"/>
-          <text class="n-title" x="300" y="706">Разбор файла на сервере</text>
-          <text class="n-sub" x="300" y="728">ffprobe: альфа · частота кадров · pixel format · звук</text>
-          <text class="n-sub" x="300" y="748">Lottie: текстовые поля, геометрия, сразу рендер в alpha-MOV</text>
-          <text class="n-mono n-mute" x="300" y="766">FFmpeg не читает Lottie — плашка всегда печётся в файл</text>
-          <line class="flow" x1="560" y1="772" x2="560" y2="794" marker-end="url(#m)"/>
+          <path class="flow-add" d="M600,356 L656,356" marker-end="url(#ma)"/>
 
-          <polygon class="diamond" points="560,800 710,850 560,900 410,850"/>
-          <text class="n-title" x="560" y="846" text-anchor="middle">Формат</text>
-          <text class="n-title" x="560" y="864" text-anchor="middle">подходит?</text>
-
-          <text class="e-yn" x="724" y="842">нет</text>
-          <line class="flow-add" x1="710" y1="850" x2="874" y2="850" marker-end="url(#ma)"/>
-          <rect class="node-add" x="880" y="812" width="230" height="76" rx="4"/>
-          <text class="n-title n-accent" x="896" y="838">Отказ с причиной</text>
-          <text class="n-sub" x="896" y="858">до применения, а не в эфире:</text>
-          <text class="n-sub" x="896" y="876">нет альфы · нет звука · не тот формат</text>
-
-          <text class="e-yn" x="574" y="916">да</text>
-          <line class="flow" x1="560" y1="900" x2="560" y2="924" marker-end="url(#m)"/>
-
-          <!-- ---------- ФАЗА 3 ---------- -->
-          <text class="sect-name" x="0" y="968">3 · настройка</text>
-
-          <rect class="node" x="280" y="902" width="560" height="84" rx="4"/>
-          <text class="n-title" x="300" y="928">Настройки вида эффекта</text>
-          <text class="n-sub" x="300" y="950">окно показа · положение в процентах кадра · шрифт, кегль, цвет</text>
-          <text class="n-sub n-accent" x="300" y="972">черновик в панели; запись в библиотеку через 300 мс</text>
-          <line class="flow" x1="560" y1="986" x2="560" y2="1008" marker-end="url(#m)"/>
-
-          <polygon class="diamond" points="560,1014 740,1074 560,1134 380,1074"/>
-          <text class="n-title" x="560" y="1069" text-anchor="middle">Откуда данные</text>
-          <text class="n-title" x="560" y="1087" text-anchor="middle">для титров?</text>
-
-          <text class="e-yn" x="372" y="1066" text-anchor="end">вручную</text>
-          <polyline class="flow" points="380,1074 350,1074 350,1164" marker-end="url(#m)"/>
-          <text class="e-yn" x="748" y="1066">из файла задания</text>
-          <polyline class="flow" points="740,1074 770,1074 770,1164" marker-end="url(#m)"/>
-
-          <rect class="node" x="180" y="1170" width="340" height="64" rx="4"/>
-          <text class="n-title" x="200" y="1196">Ручной ввод текста</text>
-          <text class="n-sub" x="200" y="1218">строка живёт в самом эффекте</text>
-
-          <rect class="node-add" x="600" y="1170" width="340" height="88" rx="4"/>
-          <text class="n-title" x="620" y="1196">Файл задания .json</text>
-          <text class="n-sub" x="620" y="1218">ключ поиска настраивается, по умолчанию name</text>
-          <text class="n-sub" x="620" y="1238">пары: поле JSON → слой шаблона, имена совпадать не обязаны</text>
-          <line class="flow" x1="770" y1="1258" x2="770" y2="1284" marker-end="url(#m)"/>
-
-          <polygon class="diamond" points="770,1290 910,1338 770,1386 630,1338"/>
-          <text class="n-sub" x="770" y="1334" text-anchor="middle">запись найдена</text>
-          <text class="n-sub" x="770" y="1352" text-anchor="middle">однозначно?</text>
-
-          <text class="e-yn" x="924" y="1330">нет</text>
-          <polyline class="flow" points="910,1338 970,1338 970,1364" marker-end="url(#m)"/>
-          <rect class="node-risk" x="850" y="1370" width="260" height="64" rx="4"/>
-          <text class="n-sub n-bakef" x="866" y="1394">Предупреждение и резервный текст</text>
-          <text class="n-sub" x="866" y="1414">две записи с одним ключом — не выбирается молча</text>
-
-          <line class="flow" x1="350" y1="1234" x2="350" y2="1440"/>
-          <line class="flow" x1="770" y1="1386" x2="770" y2="1440"/>
-          <line class="flow" x1="350" y1="1440" x2="770" y2="1440"/>
-          <line class="flow" x1="560" y1="1440" x2="560" y2="1462" marker-end="url(#m)"/>
-
-          <rect class="node-add" x="280" y="1468" width="560" height="84" rx="4"/>
-          <text class="n-title" x="300" y="1494">Область применения</text>
-          <text class="n-sub" x="300" y="1516">весь проект   ·   выбранные ролики</text>
-          <text class="n-sub n-accent" x="300" y="1538">не зависит от того, объект в файле задания или массив</text>
-          <line class="flow" x1="560" y1="1552" x2="560" y2="1574" marker-end="url(#m)"/>
-
-          <!-- ---------- ФАЗА 4 ---------- -->
-          <text class="sect-name" x="0" y="1614">4 · план</text>
-
-          <rect class="node-add" x="240" y="1580" width="640" height="140" rx="4"/>
-          <text class="n-title n-accent" x="262" y="1610">План эффекта — чистая функция</text>
-          <text class="n-sub" x="262" y="1636">вход · настройки эффекта и его файл графики</text>
-          <text class="n-sub" x="262" y="1658">вход · Current и Future одной очередью, а не по отдельности</text>
-          <text class="n-sub" x="262" y="1680">вход · записи файла задания по сопоставлению</text>
-          <text class="n-mono n-mute" x="262" y="1704">один планировщик на каждый из шести видов</text>
-
-          <line class="flow-add" x1="880" y1="1650" x2="894" y2="1650" marker-end="url(#ma)"/>
-          <rect class="node-risk" x="900" y="1596" width="210" height="108" rx="4"/>
-          <text class="n-title n-bakef" x="914" y="1620">Ошибки и</text>
-          <text class="n-title n-bakef" x="914" y="1638">предупреждения</text>
-          <text class="n-sub" x="914" y="1660">видны до применения:</text>
-          <text class="n-sub" x="914" y="1678">пустой текст · нет шрифта</text>
-          <text class="n-sub" x="914" y="1694">ролик короче половины перехода</text>
-
-          <line class="flow" x1="560" y1="1720" x2="560" y2="1742" marker-end="url(#m)"/>
-
-          <rect class="node-add" x="280" y="1748" width="560" height="80" rx="4"/>
-          <text class="n-title" x="300" y="1774">Эффект разложен на составные части</text>
-          <text class="n-mono" x="300" y="1796">FX-слои · текстовые надписи · звуковые вставки · заказы рендера</text>
-          <text class="n-sub n-mute" x="300" y="1818">дальше supervisor и TSDuck про уровни графики уже не знают</text>
-          <line class="flow" x1="560" y1="1828" x2="560" y2="1852" marker-end="url(#m)"/>
-
-          <polygon class="diamond" points="560,1858 710,1908 560,1958 410,1908"/>
-          <text class="n-sub" x="560" y="1904" text-anchor="middle">нужен рендер</text>
-          <text class="n-sub" x="560" y="1922" text-anchor="middle">плашки?</text>
-
-          <text class="e-yn" x="724" y="1900">да</text>
-          <line class="flow" x1="710" y1="1908" x2="794" y2="1908" marker-end="url(#m)"/>
-          <rect class="node-add" x="800" y="1866" width="310" height="126" rx="4"/>
-          <text class="n-title" x="816" y="1892">Рендер варианта плашки</text>
-          <text class="n-sub" x="816" y="1914">один вызов на уникальный набор значений</text>
-          <text class="n-sub" x="816" y="1934">сотни роликов дают единицы файлов</text>
-          <text class="n-sub n-bakef" x="816" y="1960">служба однопоточная: пока идёт рендер,</text>
-          <text class="n-sub n-bakef" x="816" y="1978">не отвечает ни один маршрут</text>
-
-          <text class="e-yn" x="574" y="1980">нет</text>
-          <line class="flow" x1="560" y1="1958" x2="560" y2="2020"/>
-          <polyline class="flow" points="955,1992 955,2020 560,2020"/>
-          <line class="flow" x1="560" y1="2020" x2="560" y2="2042" marker-end="url(#m)"/>
-
-          <!-- ---------- ФАЗА 5 ---------- -->
-          <text class="sect-name" x="0" y="2082">5 · эфир</text>
-
-          <rect class="node" x="280" y="2048" width="560" height="76" rx="4"/>
-          <text class="n-title" x="300" y="2074">Применение к плейлисту</text>
-          <text class="n-sub" x="300" y="2096">слои, надписи и звук ложатся в ролики Current и Future</text>
-          <text class="n-sub n-mute" x="300" y="2114">повторное применение заменяет прежние следы того же эффекта</text>
-          <line class="flow" x1="560" y1="2124" x2="560" y2="2146" marker-end="url(#m)"/>
-
-          <rect class="node" x="280" y="2152" width="560" height="72" rx="4"/>
-          <text class="n-title" x="300" y="2178">Отправка расписания службе</text>
-          <text class="n-sub" x="300" y="2200">на лету, без остановки эфира</text>
-
-          <line class="flow" x1="840" y1="2188" x2="894" y2="2188" marker-end="url(#m)"/>
-          <rect class="node-risk" x="900" y="2148" width="210" height="80" rx="4"/>
-          <text class="n-sub n-bakef" x="914" y="2172">Так меняются не все</text>
-          <text class="n-sub n-bakef" x="914" y="2190">настройки эфира.</text>
-          <text class="n-sub" x="914" y="2210">DVB-субтитры и SCTE-35 —</text>
-          <text class="n-sub" x="914" y="2226">только через Stop / Start</text>
-
-          <line class="flow" x1="560" y1="2224" x2="560" y2="2246" marker-end="url(#m)"/>
-
-          <rect class="node" x="280" y="2252" width="560" height="72" rx="4"/>
-          <text class="n-title" x="300" y="2278">Supervisor</text>
-          <text class="n-sub" x="300" y="2300">рендерер текущего ролика и заранее запущенный рендерер следующего</text>
-          <line class="flow" x1="560" y1="2324" x2="560" y2="2346" marker-end="url(#m)"/>
-
-          <rect class="node" x="280" y="2352" width="560" height="72" rx="4"/>
-          <text class="n-title" x="300" y="2378">FFmpeg</text>
-          <text class="n-sub" x="300" y="2400">наложение FX-слоя · живая надпись · подмешивание звука · кодирование</text>
-          <line class="flow-add" x1="560" y1="2424" x2="560" y2="2450" marker-end="url(#ma)"/>
-
-          <rect class="node-live" x="460" y="2456" width="200" height="48" rx="24"/>
-          <text class="n-title n-accent" x="560" y="2486" text-anchor="middle">ЭФИР</text>
-
-          <line class="sect-rule" x1="0" y1="2528" x2="1120" y2="2528"/>
-          <text class="e-label" x="0" y="2550">Ветка «плашкой» ведёт не в эфир напрямую: параметрический вариант проходит весь тот же путь, только без разбора файла.</text>
+          <rect class="node-add" x="660" y="318" width="300" height="76" rx="3"/>
+          <text class="n-title" x="676" y="346">Один кадр — одни часы</text>
+          <text class="n-sub" x="676" y="366">разойтись во времени нечему:</text>
+          <text class="n-sub" x="676" y="384">это один и тот же вызов отрисовки</text>
         </svg>
       </div>
       <figcaption>
-        <b>Четыре вставленных шага.</b> Разбор файла ловит несовместимый формат до применения;
-        план превращает эффект в слои и надписи и здесь же отдаёт ошибки; рендер плашки
-        заказывается по числу уникальных значений, а не по числу роликов; ветка отказа
-        существует на каждой развилке. Без них поток выглядит безальтернативным, а он не такой.
+        Ту же функцию вызывает редактор в интерфейсе. Поэтому предпросмотр не может
+        разойтись с эфиром — второй реализации отрисовки в проекте нет.
       </figcaption>
     </figure>
+
+    <div class="col">
+      <div class="callout">
+        <p class="callout-h">Второй реализации отрисовки быть не должно</p>
+        <p>
+          Как только рядом появится «своя, но быстрая» отрисовка для эфира — предпросмотр
+          начнёт расходиться с выходом, и ошибка вернётся в том же виде. Правило простое:
+          эфирный <code>surface.ts</code> только создаёт полотно, регистрирует шрифты и
+          отдаёт пиксели. Если ради нового свойства пришлось трогать его — логика попала
+          не в тот слой.
+        </p>
+      </div>
+    </div>
   </section>
 
-  <!-- ============ ЧТО ДОБАВЛЕНО ============ -->
+  <!-- ============ КАРТА ПОТОКА ============ -->
   <section>
     <div class="col">
-      <h2><span class="h2-num">02</span>Что дописано и почему</h2>
+      <h2><span class="h2-num">02</span>Карта потока</h2>
       <p class="lede">
-        Порядок — по цене ошибки. <span class="tag tag-break">ломает</span> — схема описывает то,
-        чего в коде нет, и по ней сделают неправильно.
-        <span class="tag tag-diff">расходится</span> — сделано, но иначе.
-        <span class="tag tag-miss">не хватает</span> — просто отсутствует.
+        Сверху вниз: каталог → оформление → настройка → план → эфир. Развилка одна и она
+        ранняя — чем оформлен эффект: сценой, которую он рисует сам, или готовым
+        alpha-медиа.
       </p>
     </div>
 
-    <ul class="delta">
-      <li>
-        <span class="tag tag-break">ломает</span>
-        <p class="d-body">
-          <b>«Если массив — применить ко всему расписанию, если объект — выбрать клип».</b>
-          Такой связи нет. Форма файла и область применения независимы: файл принимает и объект,
-          и массив, а «весь проект» против «выбранные ролики» — отдельный выбор, доступный всегда.
-          <span class="why">По схеме оператор будет искать кнопку, которой нет, или считать, что
-          одиночную запись нельзя раскатать на всё расписание.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-break">ломает</span>
-        <p class="d-body">
-          <b>«title — обязательный параметр».</b> Ключ поиска настраивается и по умолчанию равен
-          <code>name</code>. <code>title</code> — умолчание только у Animation in/out.
-          <span class="why">Выгрузку сделают под title, и она не совпадёт ни с чем, кроме одного
-          вида эффекта.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-break">ломает</span>
-        <p class="d-body">
-          <b>«Ключи должны сопоставляться доступным полям».</b> Имена совпадать не обязаны: есть
-          явные пары «поле JSON → слой шаблона». <code>program.title</code> спокойно уходит в слой
-          <code>next_title</code> без переделки проекта After Effects.
-          <span class="why">Иначе дизайнера заставят переименовывать слои под выгрузку — и наоборот.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Шестой вид — Clock / Countdown.</b> Часы по эфирному времени и обратный отсчёт
-          (фиксированный либо до конца ролика).
-          <span class="why">Экранные часы обязаны идти по эфирному времени: рендерер следующего
-          ролика стартует заранее, и системные часы нарисовали бы в первых кадрах будущее.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>План как отдельный шаг.</b> Между настройками и эфиром стоит чистая функция, которая
-          превращает эффект в слои, надписи и звуковые вставки.
-          <span class="why">Без неё непонятно, где принимаются решения — и почему supervisor
-          ничего не знает про уровни графики.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Рендер плашки в файл и склейка одинаковых вариантов.</b> FFmpeg не читает Lottie
-          вообще. Рендер идёт по одному на уникальный набор значений.
-          <span class="why">Иначе недельная сетка заказала бы сотни одинаковых файлов, и каждый
-          из них блокировал бы однопоточную службу.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Гибрид «запечённый декор + живая надпись».</b> Постоянная подпись уходит внутрь
-          шаблона, а меняющееся значение оттуда вычищается, и на его место встаёт живой текст
-          с той же геометрией.
-          <span class="why">Часы и бегущая строка меняются покадрово — запечь их нельзя.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Current и Future одной очередью.</b> Соседство считается по обоим расписаниям сразу.
-          <span class="why">Иначе на автоматическом переходе пропадают стингер и анонс следующего
-          фильма: последний ролик текущего расписания не видит первый ролик будущего.</span>
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Ветка отказа.</b> На каждой развилке есть исход «не получилось», и оператор видит его
-          до применения: пустой текст, неоднозначная запись, кириллица без выбранного шрифта,
-          ролик короче половины перехода.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Звуковая вставка.</b> У стингера может быть звук: он делится по той же точке разреза
-          и подмешивается строго между нормализацией громкости и выравниванием длины.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-miss">не хватает</span>
-        <p class="d-body">
-          <b>Проверка потерянных путей.</b> Расписание хранит абсолютные пути, а не файлы. После
-          переноса проекта графика может исчезнуть — есть отдельная проверка и диалог замены.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-diff">расходится</span>
-        <p class="d-body">
-          <b>«position, scale, opacity».</b> В коде есть только сдвиг в процентах кадра, и он
-          двигает FX-слой и надпись синхронно — иначе плашка и текст разъезжаются. Масштаба и
-          прозрачности у эффекта второго уровня нет.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-diff">расходится</span>
-        <p class="d-body">
-          <b>Next program берёт следующий фильм, а не следующую строку расписания.</b> Отбивки
-          и ролики между фильмами пропускаются: объявлять их незачем.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-diff">расходится</span>
-        <p class="d-body">
-          <b>Ticker — три источника, а не «собственные настройки».</b> Ручной список, файл или
-          RSS-лента. Сама строка всегда рисуется живым текстом на отдельном прозрачном холсте:
-          иначе её нечем обрезать по краю плашки.
-        </p>
-      </li>
-      <li>
-        <span class="tag tag-diff">расходится</span>
-        <p class="d-body">
-          <b>Ветка «не Lottie» вела прямо в эфир.</b> Alpha-медиа и .png проходят весь остальной
-          путь наравне: план, применение, расписание. Короткого маршрута в эфир нет ни у чего.
-        </p>
-      </li>
-    </ul>
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1120 1980" role="img" aria-label="Карта потока работы с эффектами сверху вниз: каталог, развилка оформления, настройки, источник данных, план, применение к плейлисту, эфир">
+          <defs>
+            <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah"/>
+            </marker>
+            <marker id="ma2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah-add"/>
+            </marker>
+          </defs>
+
+          <rect class="node" x="6" y="10" width="24" height="17" rx="2"/>
+          <text class="e-label" x="38" y="23">обычный шаг</text>
+          <rect class="node-add" x="176" y="10" width="24" height="17" rx="2"/>
+          <text class="e-label" x="208" y="23">новое в 8.0.0</text>
+          <rect class="node-risk" x="366" y="10" width="24" height="17" rx="2"/>
+          <text class="e-label" x="398" y="23">ошибка не видна до эфира</text>
+          <polygon class="diamond" points="606,10 628,18.5 606,27 584,18.5"/>
+          <text class="e-label" x="638" y="23">развилка</text>
+          <line class="sect-rule" x1="0" y1="44" x2="1120" y2="44"/>
+
+          <!-- 1 · ВЫБОР -->
+          <text class="sect-name" x="0" y="82">1 · выбор эффекта</text>
+
+          <rect class="node" x="300" y="98" width="520" height="96" rx="3"/>
+          <text class="n-title" x="560" y="126" text-anchor="middle">Каталог: шесть видов</text>
+          <text class="n-sub" x="560" y="150" text-anchor="middle">Animation in/out · Dynamic title · Next program</text>
+          <text class="n-sub" x="560" y="170" text-anchor="middle">Ticker crawl · Clock / Countdown · Stinger transition</text>
+          <text class="n-mono n-mute" x="560" y="188" text-anchor="middle">список только фильтруется — порядок задал оператор</text>
+
+          <path class="flow" d="M560,194 L560,232" marker-end="url(#m2)"/>
+
+          <!-- 2 · ОФОРМЛЕНИЕ -->
+          <text class="sect-name" x="0" y="268">2 · оформление</text>
+
+          <polygon class="diamond" points="560,240 700,286 560,332 420,286"/>
+          <text class="n-title" x="560" y="282" text-anchor="middle">Чем оформлен эффект?</text>
+          <text class="n-sub" x="560" y="302" text-anchor="middle">решает вид, а не оператор</text>
+
+          <path class="flow-add" d="M420,286 L250,286 L250,352" marker-end="url(#ma2)"/>
+          <text class="e-yn" x="300" y="278">сцена</text>
+          <path class="flow" d="M700,286 L880,286 L880,352" marker-end="url(#m2)"/>
+          <text class="e-yn" x="790" y="278">файл</text>
+
+          <rect class="node-add" x="30" y="358" width="440" height="150" rx="3"/>
+          <text class="n-title" x="46" y="386">Сцена — дерево узлов</text>
+          <text class="n-sub" x="46" y="410">Dynamic title · Next program · Ticker crawl · Clock</text>
+          <text class="n-sub" x="46" y="430">Плашка, текст и анимация одним деревом,</text>
+          <text class="n-sub" x="46" y="450">одно время на всех — режиссёр in / hold / out.</text>
+          <text class="n-sub n-accent" x="46" y="474">Один шаблон на все четыре раскладки.</text>
+          <text class="n-mono n-mute" x="46" y="496">правится встроенным редактором титров</text>
+
+          <rect class="node" x="650" y="358" width="440" height="150" rx="3"/>
+          <text class="n-title" x="666" y="386">Готовое alpha-медиа</text>
+          <text class="n-sub" x="666" y="410">Animation in/out · Stinger transition</text>
+          <text class="n-sub" x="666" y="430">Целый видеоряд, а не плашка: рисовать</text>
+          <text class="n-sub" x="666" y="450">его узлами бессмысленно.</text>
+          <text class="n-sub n-bakef" x="666" y="474">Под раскладку не пересчитывается —</text>
+          <text class="n-sub n-bakef" x="666" y="492">на каждое разрешение нужен свой файл.</text>
+
+          <path class="flow" d="M250,508 L250,552 L560,552 L560,596" marker-end="url(#m2)"/>
+          <path class="flow" d="M880,508 L880,552 L560,552" />
+
+          <!-- 3 · НАСТРОЙКА -->
+          <text class="sect-name" x="0" y="632">3 · настройка</text>
+
+          <rect class="node" x="300" y="602" width="520" height="92" rx="3"/>
+          <text class="n-title" x="560" y="630" text-anchor="middle">Инспектор эффекта</text>
+          <text class="n-sub" x="560" y="654" text-anchor="middle">Момент, длительность, положение, источник текста</text>
+          <text class="n-mono n-mute" x="560" y="676" text-anchor="middle">черновик + задержка ~300 мс: иначе ввод «залипает»</text>
+
+          <path class="flow" d="M560,694 L560,732" marker-end="url(#m2)"/>
+
+          <polygon class="diamond" points="560,740 700,786 560,832 420,786"/>
+          <text class="n-title" x="560" y="782" text-anchor="middle">Откуда текст?</text>
+          <text class="n-sub" x="560" y="802" text-anchor="middle">вручную · JSON · сам эфир</text>
+
+          <path class="flow" d="M420,786 L200,786 L200,852" marker-end="url(#m2)"/>
+          <path class="flow" d="M700,786 L920,786 L920,852" marker-end="url(#m2)"/>
+          <path class="flow" d="M560,832 L560,852" marker-end="url(#m2)"/>
+
+          <rect class="node" x="30" y="858" width="330" height="104" rx="3"/>
+          <text class="n-title" x="46" y="886">Вручную</text>
+          <text class="n-sub" x="46" y="908">Оператор вводит строку</text>
+          <text class="n-sub" x="46" y="928">в поле инспектора.</text>
+          <text class="n-mono n-mute" x="46" y="950">простой случай, без связывания</text>
+
+          <rect class="node-data" x="396" y="858" width="330" height="104" rx="3"/>
+          <text class="n-title" x="412" y="886">Файл задания JSON</text>
+          <text class="n-sub" x="412" y="908">Единый парсер: ключ поиска +</text>
+          <text class="n-sub" x="412" y="928">связи «поле JSON → поле сцены».</text>
+          <text class="n-mono n-dataf" x="412" y="950">имена ключей не обязаны совпадать</text>
+
+          <rect class="node-live" x="762" y="858" width="330" height="104" rx="3"/>
+          <text class="n-title" x="778" y="886">Живое значение</text>
+          <text class="n-sub" x="778" y="908">Часы, отсчёт, название следующего.</text>
+          <text class="n-sub" x="778" y="928">Считается на каждом кадре —</text>
+          <text class="n-sub n-accent" x="778" y="950">заранее его не существует.</text>
+
+          <path class="flow" d="M200,962 L200,1006 L560,1006 L560,1050" marker-end="url(#m2)"/>
+          <path class="flow" d="M560,962 L560,1006"/>
+          <path class="flow" d="M920,962 L920,1006 L560,1006"/>
+
+          <!-- 4 · ПЛАН -->
+          <text class="sect-name" x="0" y="1086">4 · план</text>
+
+          <rect class="node" x="240" y="1056" width="640" height="120" rx="3"/>
+          <text class="n-title" x="560" y="1084" text-anchor="middle">planBroadcastEffect — чистая функция</text>
+          <text class="n-sub" x="560" y="1108" text-anchor="middle">Находит подходящие ролики, считает окна показа,</text>
+          <text class="n-sub" x="560" y="1128" text-anchor="middle">разрешает эффект в три вида сущностей.</text>
+          <text class="n-mono n-mute" x="560" y="1152" text-anchor="middle">ничего не рисует и не трогает диск — поэтому тестируется без процессов</text>
+
+          <path class="flow" d="M560,1176 L560,1214" marker-end="url(#m2)"/>
+
+          <rect class="node-risk" x="240" y="1220" width="640" height="86" rx="3"/>
+          <text class="n-title" x="560" y="1248" text-anchor="middle">Окна считаются от эфирной длительности</text>
+          <text class="n-sub" x="560" y="1272" text-anchor="middle">У ролика из импортированного расписания длина известна</text>
+          <text class="n-sub n-bakef" x="560" y="1292" text-anchor="middle">только объявленной: нулевая значит «не разобран», а не «пустой».</text>
+
+          <path class="flow" d="M560,1306 L560,1344" marker-end="url(#m2)"/>
+
+          <rect class="node" x="30" y="1350" width="330" height="104" rx="3"/>
+          <text class="n-title" x="46" y="1378">FX-слои</text>
+          <text class="n-sub" x="46" y="1400">Готовый файл поверх кадра.</text>
+          <text class="n-sub" x="46" y="1420">Порядок в списке = порядок</text>
+          <text class="n-sub" x="46" y="1440">наложения снизу вверх.</text>
+
+          <rect class="node-add" x="396" y="1350" width="330" height="104" rx="3"/>
+          <text class="n-title" x="412" y="1378">Показы сцен</text>
+          <text class="n-sub" x="412" y="1400">Шаблон + значения полей +</text>
+          <text class="n-sub" x="412" y="1420">окно показа. Рисуется в эфире,</text>
+          <text class="n-sub" x="412" y="1440">заранее ничего не печётся.</text>
+
+          <rect class="node" x="762" y="1350" width="330" height="104" rx="3"/>
+          <text class="n-title" x="778" y="1378">Звуковые вставки</text>
+          <text class="n-sub" x="778" y="1400">Сейчас — только звук стингера.</text>
+          <text class="n-sub" x="778" y="1420">Подмешивается одинаково</text>
+          <text class="n-sub" x="778" y="1440">во все языковые дорожки.</text>
+
+          <path class="flow" d="M560,1306 L560,1330 L195,1330 L195,1344" marker-end="url(#m2)"/>
+          <path class="flow" d="M560,1330 L927,1330 L927,1344" marker-end="url(#m2)"/>
+
+          <path class="flow" d="M195,1454 L195,1494 L560,1494 L560,1538" marker-end="url(#m2)"/>
+          <path class="flow" d="M561,1454 L561,1494"/>
+          <path class="flow" d="M927,1454 L927,1494 L560,1494"/>
+
+          <!-- 5 · ЭФИР -->
+          <text class="sect-name" x="0" y="1574">5 · эфир</text>
+
+          <rect class="node" x="240" y="1544" width="640" height="86" rx="3"/>
+          <text class="n-title" x="560" y="1572" text-anchor="middle">PUT /api/playout/playlist — на лету</text>
+          <text class="n-sub" x="560" y="1596" text-anchor="middle">Графика будущих роликов применяется без Stop/Start.</text>
+          <text class="n-mono n-mute" x="560" y="1618" text-anchor="middle">DVB subtitle PID и SCTE-35 так поменять нельзя — только перезапуском</text>
+
+          <path class="flow" d="M560,1630 L560,1668" marker-end="url(#m2)"/>
+
+          <rect class="node-add" x="30" y="1674" width="500" height="146" rx="3"/>
+          <text class="n-title" x="46" y="1702">Графический процесс сцены</text>
+          <text class="n-sub" x="46" y="1726">Отдельный процесс на показ: Skia рисует кадр,</text>
+          <text class="n-sub" x="46" y="1746">сырые RGBA уходят в pipe:3, pipe:4…</text>
+          <text class="n-sub n-accent" x="46" y="1770">Рисуется только область показа, не весь кадр:</text>
+          <text class="n-sub n-accent" x="46" y="1788">полный кадр 2160 RGBA — это 829 МБ/с.</text>
+          <text class="n-mono n-mute" x="46" y="1810">время берётся из номера кадра, а не из часов машины</text>
+
+          <rect class="node" x="590" y="1674" width="500" height="146" rx="3"/>
+          <text class="n-title" x="606" y="1702">Постоянный program encoder</text>
+          <text class="n-sub" x="606" y="1726">Один на всю сессию. Рендерер следующего</text>
+          <text class="n-sub" x="606" y="1746">ролика запущен заранее и ждёт на pipe.</text>
+          <text class="n-sub n-bakef" x="606" y="1770">Поэтому предзапущенный рендерер по системным</text>
+          <text class="n-sub n-bakef" x="606" y="1788">часам нарисовал бы в первых кадрах будущее.</text>
+          <text class="n-mono n-mute" x="606" y="1810">переход между роликами не сбрасывает PID и mux clock</text>
+
+          <path class="flow" d="M280,1820 L280,1858 L560,1858 L560,1896" marker-end="url(#m2)"/>
+          <path class="flow" d="M840,1820 L840,1858 L560,1858"/>
+
+          <rect class="node" x="300" y="1902" width="520" height="66" rx="3"/>
+          <text class="n-title" x="560" y="1930" text-anchor="middle">TSDuck → UDP / SRT / RTMP</text>
+          <text class="n-sub" x="560" y="1952" text-anchor="middle">PCR, CBR, SCTE-35, merge, зеркало для предпросмотра</text>
+        </svg>
+      </div>
+      <figcaption>
+        Эфирный контур про уровни ничего не знает: к нему приходят обычные слои, показы
+        сцен и звуковые вставки. Поэтому новый вид эффекта не требует правок в supervisor
+        и TSDuck.
+      </figcaption>
+    </figure>
   </section>
 
   <!-- ============ ШЕСТЬ ВИДОВ ============ -->
   <section>
     <div class="col">
-      <h2><span class="h2-num">03</span>Шесть видов после решений</h2>
+      <h2><span class="h2-num">03</span>Шесть видов</h2>
       <p class="lede">
-        Столбец «источник графики» — это и есть принятое изменение в табличном виде.
+        Оформление у вида не выбирается — оно следует из того, что вид вообще делает.
+        Плашку с подставляемым текстом рисует сцена; целый видеоряд сценой рисовать
+        бессмысленно.
       </p>
     </div>
 
@@ -702,188 +611,52 @@
       <table>
         <thead>
           <tr>
-            <th>Эффект</th>
-            <th>Что рисует</th>
-            <th>Откуда данные</th>
-            <th>Когда показывается</th>
-            <th>Источник графики</th>
+            <th>Вид</th>
+            <th>Оформление</th>
+            <th>Откуда текст</th>
+            <th>Чем держится окно</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td>Animation in/out</td>
-            <td>Готовую анимацию входа и&nbsp;выхода</td>
-            <td>Значения полей из файла задания</td>
-            <td>Окно от начала и&nbsp;окно от конца ролика</td>
-            <td><span class="pill pill-need">alpha-медиа · обязателен</span></td>
+            <td><b>Animation in/out</b></td>
+            <td><span class="pill pill-need">файл</span></td>
+            <td>—</td>
+            <td>от начала либо от конца ролика</td>
           </tr>
           <tr>
-            <td>Dynamic title</td>
-            <td>Декор из шаблона + живая строка</td>
-            <td>Ручной текст либо ключ записи файла задания</td>
-            <td>Смещение от начала + длительность</td>
-            <td><span class="pill pill-opt">Lottie</span></td>
+            <td><b>Dynamic title</b></td>
+            <td><span class="pill pill-opt">сцена</span></td>
+            <td>вручную либо JSON</td>
+            <td>момент + длительность</td>
           </tr>
           <tr>
-            <td>Next program</td>
-            <td>Анонс следующего <b>фильма</b></td>
-            <td>Имя ролика в расписании либо ключ файла задания</td>
-            <td>За N&nbsp;секунд до конца ролика</td>
-            <td><span class="pill pill-opt">Lottie / JSON</span> <span class="pill pill-none">или плашка</span></td>
+            <td><b>Next program</b></td>
+            <td><span class="pill pill-opt">сцена</span></td>
+            <td>следующий фильм плейлиста либо JSON</td>
+            <td>за N секунд до конца</td>
           </tr>
           <tr>
-            <td>Ticker crawl</td>
-            <td>Бегущую строку на своём холсте</td>
-            <td>Ручной список, файл или RSS-лента</td>
-            <td>Смещение от начала + длительность</td>
-            <td><span class="pill pill-opt">.mov / .png</span> <span class="pill pill-none">или плашка с привязкой</span></td>
+            <td><b>Ticker crawl</b></td>
+            <td><span class="pill pill-opt">сцена</span></td>
+            <td>вручную, файл или лента</td>
+            <td>момент + длительность</td>
           </tr>
           <tr>
-            <td>Clock / Countdown</td>
-            <td>Часы или обратный отсчёт</td>
-            <td>Эфирное время со смещением пояса; отсчёт фиксированный или до конца ролика</td>
-            <td>Смещение от начала + длительность</td>
-            <td><span class="pill pill-opt">Lottie / JSON</span> <span class="pill pill-none">или плашка</span></td>
+            <td><b>Clock / Countdown</b></td>
+            <td><span class="pill pill-opt">сцена</span></td>
+            <td>живое значение</td>
+            <td>момент + длительность</td>
           </tr>
           <tr>
-            <td>Stinger transition</td>
-            <td>Переход, закрывающий стык</td>
-            <td>Свой файл: длительность и точка разреза</td>
-            <td><b>Не настраивается</b> — момент задан стыком роликов</td>
-            <td><span class="pill pill-need">.mov или .png-секвенция</span></td>
+            <td><b>Stinger transition</b></td>
+            <td><span class="pill pill-need">файл</span></td>
+            <td>—</td>
+            <td>точка реза между роликами</td>
           </tr>
         </tbody>
       </table>
     </div>
-
-    <div class="col">
-      <div class="callout">
-        <p class="callout-h">Параметрическая плашка уже почти вся есть</p>
-        <p>
-          При разборе выяснилось, что рисовать её с нуля не нужно — обе привязки уже живут
-          в конвейере, просто не поданы оператору как выбор оформления.
-        </p>
-        <p>
-          <strong>Привязка к тексту</strong> — это штатная плашка <code>drawtext</code>: цвет,
-          прозрачность и отступ уже лежат в стиле надписи и доезжают до FFmpeg. Ширина считается
-          по реальному тексту сама. Этим закрыты Next program и Clock.
-        </p>
-        <p>
-          <strong>Привязка к полосе</strong> у Ticker — это холст, на котором уже рисуется строка.
-          Сейчас он прозрачный; чтобы получить плашку, его достаточно залить цветом с нужной
-          прозрачностью. Полоса при этом обязана быть задана: во весь кадр отдельный холст
-          не создаётся.
-        </p>
-        <p>
-          Чего действительно нет — <b>скругления углов</b>. <code>drawbox</code> и плашка
-          <code>drawtext</code> рисуют только прямые углы. Скругление потребовало бы отдельной
-          картинки-подложки на каждый размер, то есть того же механизма рендера, что у Lottie.
-          Это отдельное решение, и в объём выше оно не входит.
-        </p>
-      </div>
-
-      <div class="callout">
-        <p class="callout-h">Шаблоны титров принимаются только из FluxIO Title Studio</p>
-        <p>
-          JSON обязан нести метку экспорта студии — блок <code>meta.flux</code> со своей версией
-          схемы. Сейчас эта метка <b>необязательна</b>: обычный Bodymovin-экспорт тоже принимается
-          и показывает все текстовые слои подряд. По принятому решению метка становится
-          обязательной, и файл без неё отклоняется на выборе с внятной причиной.
-        </p>
-        <p>
-          Причина техническая, а не формальная. Студия отдаёт то, чего в самом Bodymovin нет:
-          какие слои дизайнер объявил редактируемыми, каким полем искать ролик и готовые связи
-          «поле JSON → слой». Без этого оператору показывают все текстовые слои композиции
-          вперемешку, включая служебные, а связи он набирает руками — и промах в имени слоя
-          не виден до эфира.
-        </p>
-        <p>
-          Отдельно нужно решить, что делать с уже загруженными обычными Bodymovin-шаблонами:
-          они перестанут проходить проверку, и молча отвалиться не должны.
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ МЕХАНИКА ============ -->
-  <section>
-    <div class="col">
-      <h2><span class="h2-num">04</span>Механика, которую карта не показывает</h2>
-      <p class="lede">
-        Два места, где одна коробка на схеме скрывает нетривиальное устройство. Оба стоили
-        отдельных расследований, и оба легко сломать правкой «рядом».
-      </p>
-      <h3>Плашка Dynamic title устроена из двух половин</h3>
-    </div>
-
-    <figure>
-      <div class="figbox">
-        <svg viewBox="0 0 1040 430" role="img" aria-label="Шаблон делится надвое: декор и постоянная подпись запекаются в файл, меняющееся поле очищается и рисуется живым текстом поверх">
-          <defs>
-            <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0,0 L10,5 L0,10 z" class="ah"/>
-            </marker>
-            <marker id="m2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0,0 L10,5 L0,10 z" class="ah-add"/>
-            </marker>
-          </defs>
-
-          <text class="sect-name" x="30" y="30">Шаблон Lottie</text>
-          <rect class="node" x="30" y="46" width="252" height="268" rx="5"/>
-          <rect class="node-risk" x="46" y="66" width="220" height="44" rx="3"/>
-          <text class="n-sub" x="60" y="93">декор и анимация</text>
-          <rect class="node-risk" x="46" y="122" width="220" height="44" rx="3"/>
-          <text class="n-sub" x="60" y="149">постоянная подпись</text>
-          <rect class="node-live" x="46" y="178" width="220" height="44" rx="3"/>
-          <text class="n-sub n-accent" x="60" y="205">меняющееся поле</text>
-          <rect class="node-risk" x="46" y="234" width="220" height="60" rx="3"/>
-          <text class="n-sub" x="60" y="258">слой-подложка</text>
-          <text class="n-sub" x="60" y="278">ширина под реальный текст</text>
-
-          <text class="sect-name" x="352" y="30">Два разных пути</text>
-          <rect class="node-risk" x="352" y="46" width="292" height="118" rx="5"/>
-          <text class="n-title n-bakef" x="370" y="72">Запекается один раз</text>
-          <text class="n-sub" x="370" y="94">декор, подпись и подложка → файл</text>
-          <text class="n-sub" x="370" y="114">ширина плашки считается по метрикам</text>
-          <text class="n-sub" x="370" y="134">самого шрифта, а не на глаз</text>
-          <text class="n-sub n-bakef" x="370" y="156">ключ рендера = набор значений</text>
-
-          <rect class="node-live" x="352" y="196" width="292" height="118" rx="5"/>
-          <text class="n-title n-accent" x="370" y="222">Рисуется покадрово</text>
-          <text class="n-sub" x="370" y="244">поле шаблона очищено, снята геометрия</text>
-          <text class="n-sub" x="370" y="264">координаты приводятся в эфирный кадр</text>
-          <text class="n-sub" x="370" y="284">кегль, цвет и выключка — из шаблона</text>
-          <text class="n-sub n-accent" x="370" y="306">живой текст поверх плашки</text>
-
-          <text class="sect-name" x="714" y="30">Кадр в эфире</text>
-          <rect class="node" x="714" y="46" width="296" height="268" rx="5"/>
-          <rect class="node-ghost" x="736" y="76" width="252" height="142" rx="3"/>
-          <text class="e-label" x="862" y="98" text-anchor="middle">кадр 16:9</text>
-          <rect class="node-risk" x="762" y="140" width="200" height="46" rx="3"/>
-          <line class="rule-dash" x1="778" y1="172" x2="946" y2="172"/>
-          <text class="n-sub n-accent" x="862" y="166" text-anchor="middle">живой текст</text>
-          <text class="n-sub" x="736" y="248">плашка — наложение готового файла,</text>
-          <text class="n-sub" x="736" y="268">строка — живой текст поверх него,</text>
-          <text class="n-sub n-accent" x="736" y="288">сдвиг двигает оба на одни проценты</text>
-
-          <polyline class="flow" points="266,88 310,88 310,102 346,102" marker-end="url(#m2)"/>
-          <polyline class="flow" points="266,144 310,144 310,110 346,110" marker-end="url(#m2)"/>
-          <polyline class="flow" points="266,264 324,264 324,122 346,122" marker-end="url(#m2)"/>
-          <polyline class="flow-add" points="266,200 300,200 300,255 346,255" marker-end="url(#m2a)"/>
-          <polyline class="flow" points="644,105 680,105 680,150 708,150" marker-end="url(#m2)"/>
-          <polyline class="flow-add" points="644,255 680,255 680,180 708,180" marker-end="url(#m2a)"/>
-
-          <text class="e-label" x="30" y="352">Поле, которое уходит в эфир пустым — часы, отсчёт, — в документе мерить нечем:</text>
-          <text class="e-label" x="30" y="370">ширину подложки задаёт образец, самое широкое значение формата тем же шрифтом и кеглем.</text>
-          <text class="e-label" x="30" y="398">Имя поля нельзя набрать руками: промах не виден, и плашка молча выходит</text>
-          <text class="e-label" x="30" y="416">в эфир с шаблонным текстом. Поля выбираются списком из самого шаблона.</text>
-        </svg>
-      </div>
-      <figcaption>
-        <b>Одно поле — два механизма.</b> Перепутать легко, а увидеть ошибку можно только на выходе:
-        плашка выйдет в эфир с текстом-заглушкой из After Effects.
-      </figcaption>
-    </figure>
 
     <div class="col">
       <h3>Стингер режется по стыку двух процессов</h3>
@@ -931,27 +704,19 @@
         </svg>
       </div>
       <figcaption>
-        <b>Почему стингер не проходит общий путь «когда показать».</b> У него нет окна показа: он
-        вложен в стык. Оператор задаёт длительность и точку разреза, остальное считается
-        от границы роликов.
+        <b>Почему у стингера нет окна показа.</b> Он вложен в стык: оператор задаёт длительность
+        и точку разреза, остальное считается от границы роликов.
       </figcaption>
     </figure>
   </section>
 
-  <!-- ============ ЦЕНА РЕШЕНИЙ ============ -->
+  <!-- ============ .PNG-ПОСЛЕДОВАТЕЛЬНОСТЬ ============ -->
   <section>
     <div class="col">
-      <h2><span class="h2-num">05</span>Цена решений</h2>
-      <p class="lede">
-        Уход уровня 3 из библиотеки — упрощение почти без долга: план не меняется вовсе, он и так
-        принимает графику отдельным аргументом. Два других решения добавляют работу: параметрическая
-        плашка и последовательность .png — обе новые возможности, которых сейчас нет.
-      </p>
-
-      <h3>Последовательность .png — это новая возможность</h3>
+      <h3>Последовательность .png ведёт себя не как видеофайл</h3>
       <p>
-        Сейчас её нет: разбор принимает одиночные файлы, а не пронумерованные кадры. Последовательность
-        ведёт себя иначе, чем видеофайл, сразу в нескольких местах.
+        Stinger принимает и пронумерованные кадры. Отличий от <code>.mov</code> больше, чем
+        кажется, и половина из них не видна до эфира.
       </p>
     </div>
 
@@ -988,17 +753,12 @@
           <tr>
             <td>Целостность</td>
             <td>Файл либо читается, либо нет</td>
-            <td>Пропущенный номер — дыра в переходе. Нужна проверка непрерывности нумерации</td>
+            <td>Пропущенный номер — дыра в переходе, нужна проверка непрерывности нумерации</td>
           </tr>
           <tr>
             <td>Вторая половина перехода</td>
             <td>Смещение задаётся во времени</td>
             <td>Смещение считается в кадрах от начала нумерации</td>
-          </tr>
-          <tr>
-            <td>Выбор в интерфейсе</td>
-            <td>Обычный выбор файла</td>
-            <td>Выбор папки или первого кадра + распознавание шаблона нумерации</td>
           </tr>
         </tbody>
       </table>
@@ -1006,106 +766,104 @@
 
     <div class="col">
       <div class="callout">
-        <p class="callout-h">Что здесь важнее всего</p>
+        <p class="callout-h">Частота кадров и звук — единственное, что нельзя вывести из файлов</p>
         <p>
-          <strong>Частота кадров и звук.</strong> Их нельзя вывести из файлов — только спросить
-          у оператора. Если этого не сделать, переход либо поедет по длительности, либо остановит
-          мультиплексор: отставший звуковой вход тормозит выдачу целиком, а не только свою дорожку.
+          Их можно только спросить у оператора. Без частоты переход поедет по длительности; без
+          решения о звуке отставший звуковой вход остановит мультиплексор — а он тормозит выдачу
+          целиком, а не только свою дорожку.
         </p>
       </div>
     </div>
   </section>
 
-  <!-- ============ РАБОТА ============ -->
+  <!-- ============ МЕХАНИКА ============ -->
   <section>
     <div class="col">
-      <h2><span class="h2-num">06</span>Что сделано</h2>
+      <h2><span class="h2-num">04</span>Механика, которую карта не показывает</h2>
       <p class="lede">
-        Все работы этапа закрыты в v8.0.0. Подробности — <code>docs/progress/06-01-effects-library-rework-v8.0.0.md</code>.
+        Четыре вещи, на которых легко ошибиться. Все четыре стоили отдельного
+        расследования и ни одна не видна в интерфейсе.
       </p>
-
-      <ol class="worklist">
-        <li>
-          <span class="w-h">Убрать общий импорт с экрана</span>
-          <span class="w-b">Кнопки импорта и сканирования папки уходят из шапки; список показывает
-          только эффекты второго уровня. Серверные маршруты разбора остаются — у сканирования папки
-          просто исчезает точка входа.</span>
-        </li>
-        <li>
-          <span class="w-h">Заменить выбор пресета на загрузку файла</span>
-          <span class="w-b">Выпадающий список пресетов в инспекторе исчезает. Загрузка файла прямо
-          из настроек эффекта уже реализована — она становится единственным путём, и остаётся только
-          у трёх видов из шести.</span>
-        </li>
-        <li>
-          <span class="w-h">Сделать графику свойством эффекта</span>
-          <span class="w-b">Дешёвый путь: запись остаётся в библиотеке, но скрыта из списка. План
-          не меняется вовсе — он и так принимает графику отдельным аргументом. Дорогой путь: перенос
-          метаданных внутрь определения эффекта, то есть правка контрактов и миграция сохранённых
-          сессий. Рекомендую первый.</span>
-        </li>
-        <li>
-          <span class="w-h">Удалять файл вместе с эффектом</span>
-          <span class="w-b">Иначе в библиотеке копятся невидимые оператору сироты — и каждая из них
-          перерендеривается при восстановлении сессии, занимая однопоточную службу.</span>
-        </li>
-        <li>
-          <span class="w-h">Фильтровать форматы по виду эффекта</span>
-          <span class="w-b">Lottie принимает только Dynamic Title. Animation in/out — alpha-медиа.
-          Stinger — .mov и последовательность. Отказ должен приходить на выборе файла с внятной
-          причиной, а не на применении.</span>
-        </li>
-        <li>
-          <span class="w-h">Показывать незавершённый эффект в списке</span>
-          <span class="w-b">Animation in/out и Stinger без файла не работают вовсе. Сейчас это
-          выясняется только при попытке применить — карточка должна показывать состояние, а кнопки
-          применения быть заблокированы.</span>
-        </li>
-        <li>
-          <span class="w-h">Предупредить о потере пресета при обновлении</span>
-          <span class="w-b">У оператора уже могут быть эффекты с назначенными пресетами, в том числе
-          общими для нескольких. Молча потерять назначение нельзя: снаружи это выглядит как «плашка
-          перестала выходить в эфир».</span>
-        </li>
-        <li>
-          <span class="w-h">Поддержать последовательность .png</span>
-          <span class="w-b">Самая объёмная часть: выбор папки, распознавание нумерации, обязательный
-          ввод частоты кадров, проверка непрерывности, отдельная судьба звука и пересчёт второй
-          половины перехода в кадрах.</span>
-        </li>
-        <li>
-          <span class="w-h">Довести параметрическую плашку</span>
-          <span class="w-b">Привязка к тексту работает и доезжает до FFmpeg — её нужно только
-          показать оператору как оформление. Привязка к полосе у Ticker — заливка холста, на
-          котором уже рисуется строка, вместо нынешней прозрачности. Скругление углов сюда
-          не входит: прямоугольные фильтры его не умеют.</span>
-        </li>
-        <li>
-          <span class="w-h">Сделать оформление выбором, а не следствием типа</span>
-          <span class="w-b">У Next program и Clock оформление — либо шаблон из Title Studio, либо
-          параметрическая плашка, на усмотрение оператора. У Ticker — либо alpha-медиа, либо плашка.
-          Значит «файл или плашка» становится настройкой эффекта, и у трёх видов остаётся загрузка
-          файла, которую мы собирались убрать.</span>
-        </li>
-        <li>
-          <span class="w-h">Принимать шаблоны только из FluxIO Title Studio</span>
-          <span class="w-b">Метка <code>meta.flux</code> становится обязательной: без неё файл
-          отклоняется на выборе. Заодно нужен путь для уже загруженных обычных Bodymovin-шаблонов —
-          они перестанут проходить проверку и не должны исчезнуть молча.</span>
-        </li>
-      </ol>
     </div>
+
+    <div class="col">
+      <div class="callout">
+        <p class="callout-h">Область считается после промера текста</p>
+        <p>
+          Привязанная плашка растёт по строке, поэтому промер идёт <b>до</b> расчёта
+          области. Область, посчитанная без промера, срежет длинную надпись по краю — и
+          заметно это будет только на выходе. Меряется при этом <b>образец</b>, а не
+          текущее значение: у часов оно меняется каждую секунду, и подложка дёргалась бы
+          вместе с цифрами.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p class="callout-h">Смещение области фиксируется на весь показ</p>
+        <p>
+          <code>overlay</code> получает одно смещение на весь показ, менять его покадрово
+          нельзя. Поэтому область берётся объединением по всему показу, а не по текущему
+          кадру: анимация, выезжающая сбоку, обязана поместиться в ту же полосу.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p class="callout-h">Время — из номера кадра, никогда из часов машины</p>
+        <p>
+          Рендерер следующего ролика запускается заранее, поэтому системные часы нарисовали
+          бы в его первых кадрах будущее. Это тот же капкан, что у экранных часов: там
+          supervisor держит момент реального выхода ролика и передаёт его в надпись.
+        </p>
+      </div>
+
+      <div class="callout">
+        <p class="callout-h">Координаты — доли кадра, и не все от одной стороны</p>
+        <p>
+          <code>x</code> и <code>width</code> считаются от ширины, а <code>y</code>,
+          <code>height</code>, кегль, радиус и размытие — <b>всегда от высоты</b>. Иначе
+          раскладка едет между 4:3 и 16:9. Раскладок четыре, частота рисования у
+          чересстрочных режимов считается <b>в полях</b>: 50i рисует пятьдесят раз в секунду.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ЧТО ОСТАЛОСЬ ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">05</span>Что осталось</h2>
+      <p class="lede">
+        Контур собран и проверен на живом эфире. Не хватает того, ради чего всё
+        затевалось, — редактора.
+      </p>
+    </div>
+
+    <ol class="worklist">
+      <li>
+        <span class="w-h">Редактор титров</span>
+        <span class="w-b">Холст, дерево узлов, инспектор свойств, дорожка ключей, сегменты
+        режиссёра, объявление полей и предпросмотр на реальном кадре плейлиста. Сейчас сцены
+        берутся из встроенных заготовок — четыре вида, по одной на каждый.</span>
+      </li>
+      <li>
+        <span class="w-h">Аппаратное кодирование</span>
+        <span class="w-b">Приложение определяет аппаратные кодировщики, но всегда использует
+        программные. Для UHD это, скорее всего, обязательное условие, а не оптимизация.
+        Отдельная задача, вне этого этапа.</span>
+      </li>
+    </ol>
+
   </section>
 
   <footer class="col">
     <p>Схема сверена с деревом на 8.0.0. Разбирались:</p>
     <p class="files">
-      apps/web/src/broadcast-effects.ts — шесть планировщиков, план и применение<br>
-      apps/web/src/screens/EffectsScreen.tsx · BroadcastEffectInspector.tsx<br>
-      apps/web/src/App.tsx — импорт, загрузка пресета, применение эффекта<br>
-      apps/media-server/src/effects/ — library.ts, lottie.ts, font-metrics.ts<br>
-      apps/media-server/src/ffmpeg/text-overlay.ts<br>
-      packages/contracts/src/index.ts — схемы эфирных эффектов
+      apps/web/src/broadcast-effects.ts — планировщик и применение<br>
+      apps/web/src/default-scenes.ts — встроенные сцены<br>
+      packages/contracts/src/scene.ts · scene-timing.ts — модель и время<br>
+      packages/scene-renderer/ — отрисовка, общая для редактора и эфира<br>
+      apps/media-server/src/scene/ — растеризатор и графический процесс<br>
+      apps/media-server/src/ffmpeg/command-builder.ts — входы pipe и overlay
     </p>
   </footer>
 

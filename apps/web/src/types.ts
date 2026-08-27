@@ -1,7 +1,8 @@
 import type {
-  BroadcastTextOverlay,
   ClipAudioOverlay,
+  PlayoutSceneShow,
   GraphicEffectLayer,
+  VideoHardware,
 } from "@gruber/contracts";
 
 export type AppView = "import" | "effects" | "playlist" | "broadcast";
@@ -63,10 +64,10 @@ export interface MediaAsset {
     widthPercent: number;
   };
   effects?: GraphicEffectLayer[];
-  /** Динамические надписи эфирных эффектов второго уровня (строка, часы, отсчёт). */
-  textOverlays?: BroadcastTextOverlay[];
   /** Звуковые вставки второго уровня — сейчас только звук стингера. */
   audioOverlays?: ClipAudioOverlay[];
+  /** Показы сцен второго уровня, поставленные на этот ролик. */
+  scenes?: PlayoutSceneShow[];
   subtitles?: {
     enabled: boolean;
     filePath: string | null;
@@ -112,6 +113,14 @@ export interface ScheduleMetadata {
 
 export interface BroadcastSettings {
   videoCodec: string;
+  /** Ускоритель кодирования. Для UHD это условие, а не оптимизация. */
+  videoHardware: VideoHardware;
+  /**
+   * Поднимать эфир сразу после запуска программы — с того места, где он
+   * оборвался. Для станции без оператора: машина перезагрузилась, FluxIO
+   * стартовал сам, расписание пошло дальше.
+   */
+  autoResumeOnLaunch: boolean;
   profile: string;
   level: string;
   preset: number;

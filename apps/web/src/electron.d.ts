@@ -28,6 +28,18 @@ declare global {
       selectBroadcastTaskFile: () => Promise<string | null>;
       selectTickerSourceFile: () => Promise<string | null>;
       selectStingerFile: () => Promise<string | null>;
+      selectDecorationFile: () => Promise<string | null>;
+      saveTitleFile: (input: {
+        content: string;
+        defaultName: string;
+      }) => Promise<string | null>;
+      selectTitleFile: () => Promise<{ content: string; filePath: string } | null>;
+      readTitleLibrary: (directoryPath?: string) => Promise<{
+        directoryPath: string;
+        files: { filePath: string; content: string }[];
+        issues: { filePath: string; message: string }[];
+      }>;
+      selectTitleLibrary: () => Promise<string | null>;
       selectEffectTitleDirectory: () => Promise<{
         directoryPath: string;
         filePaths: string[];

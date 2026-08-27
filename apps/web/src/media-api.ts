@@ -2,7 +2,6 @@ import {
   audioTrackScanSchema,
   type AudioTrackScan,
   ffmpegCapabilitiesSchema,
-  graphicEffectAssetSchema,
   graphicEffectImportResultSchema,
   graphicEffectVerificationSchema,
   imageSequenceSchema,
@@ -27,7 +26,6 @@ import {
   type SystemFont,
   type ClipPreviewSession,
   type FfmpegCapabilities,
-  type GraphicEffectAsset,
   type GraphicEffectImportResult,
   type MediaProbe,
   type NetworkInterfaceInfo,
@@ -170,36 +168,6 @@ export async function readTickerSourceFile(filePath: string): Promise<TickerSour
       body: JSON.stringify({ filePath }),
       headers: { "content-type": "application/json" },
       method: "POST",
-    }),
-  );
-}
-
-export function lottieWasmUrl(): string {
-  return mediaApiUrl("/api/effects/lottie/wasm");
-}
-
-export async function getLottieSource(sourcePath: string): Promise<Record<string, unknown>> {
-  const payload = await request("/api/effects/lottie/source", {
-    body: JSON.stringify({ sourcePath }),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-  });
-  if (!payload || typeof payload !== "object" || !("document" in payload)) {
-    throw new Error("Media service returned an invalid Lottie document");
-  }
-  const document = payload.document;
-  if (!document || typeof document !== "object" || Array.isArray(document)) {
-    throw new Error("Media service returned an invalid Lottie document");
-  }
-  return document as Record<string, unknown>;
-}
-
-export async function renderLottieEffect(effect: GraphicEffectAsset): Promise<GraphicEffectAsset> {
-  return graphicEffectAssetListItem(
-    await request("/api/effects/lottie/render", {
-      body: JSON.stringify({ effect }),
-      headers: { "content-type": "application/json" },
-      method: "PUT",
     }),
   );
 }
@@ -414,8 +382,4 @@ function parseProbeResponse(payload: unknown): MediaProbe[] {
     throw new Error("Media service returned an invalid probe response");
   }
   return mediaProbeSchema.array().parse(payload.items);
-}
-
-function graphicEffectAssetListItem(payload: unknown): GraphicEffectAsset {
-  return graphicEffectAssetSchema.parse(payload);
 }

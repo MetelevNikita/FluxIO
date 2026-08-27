@@ -53,5 +53,8 @@ function portableEncodingSettings(settings: BroadcastSettings): PortableEncoding
   delete candidate.streamKey;
   delete candidate.srtPassphrase;
   delete candidate.rtmpStreamKey;
+  // Автостарт — настройка станции, а не кодирования: возить её между машинами
+  // значит поднять чужой эфир на чужой машине после первой же перезагрузки.
+  delete candidate.autoResumeOnLaunch;
   return portableEncodingSettingsSchema.parse(candidate);
 }

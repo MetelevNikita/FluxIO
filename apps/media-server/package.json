@@ -15,11 +15,12 @@
   },
   "dependencies": {
     "@gruber/contracts": "*",
-    "@lottiefiles/dotlottie-web": "^0.78.2",
+    "@napi-rs/canvas": "^1.0.8",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "fastify": "5.11.2",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "@gruber/scene-renderer": "*"
   },
   "devDependencies": {
     "prisma": "^7.9.1"

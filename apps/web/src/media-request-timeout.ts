@@ -5,7 +5,6 @@ const playoutPreparationTimeoutMs = 30 * 60_000;
 const analysisPrefixes = [
   "/api/effects/analyze",
   "/api/effects/scan",
-  "/api/effects/lottie/render",
   "/api/media/probe",
   "/api/media/scan",
   "/api/schedule/parse",

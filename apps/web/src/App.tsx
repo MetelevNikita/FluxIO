@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  broadcastEffectDefinitionSchema,
   broadcastEffectSettingsSchema,
   graphicEffectAssetSchema,
   serviceHealthSchema,
@@ -21,6 +22,10 @@ import {
   type SystemMetrics,
   type WorkspaceSessionCheckpoint,
   type WorkspaceSessionSaveRequest,
+  isBarsSource,
+  type SceneLayoutTarget,
+  type SceneTemplate,
+  type TitleFileSummary,
 } from "@gruber/contracts";
 import { AppHeader } from "./components/AppHeader";
 import { PlayoutStatusProvider } from "./playout-status";
@@ -45,15 +50,31 @@ import { BroadcastSettingsScreen } from "./screens/BroadcastSettingsScreen";
 import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
 import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
 import { EffectsScreen } from "./screens/EffectsScreen";
+import { TitleEditorScreen } from "./screens/TitleEditorScreen";
+import { SceneFormatDialog } from "./title-editor/SceneFormatDialog";
+import { TitleLibraryDialog } from "./title-editor/TitleLibraryDialog";
+import { decodeScheduleBlob, encodeScheduleBlob } from "./schedule-blob";
+import { MissingEffectFilesDialog } from "./components/MissingEffectFilesDialog";
+import {
+  adoptTitleTemplate,
+  packTitleFile,
+  parseTitleFile,
+  summarizeTitleFile,
+  titleFileName,
+} from "./title-file";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
 import { airDurationSeconds } from "./clip-duration";
 import { useStableCallback } from "./stable-callback";
 import {
   applyGraphicReplacements,
+  applyEffectFileReplacement,
+  collectMissingEffectFiles,
   collectMissingGraphics,
+  effectLibraryPaths,
   dropMissingGraphics,
   graphicPathsOf,
+  type MissingEffectFile,
   type MissingGraphic,
 } from "./missing-graphics";
 import {
@@ -65,19 +86,19 @@ import {
   withDefaultTextFont,
   removeBroadcastEffect,
   summarizeBroadcastTaskMatches,
-  type BroadcastRenderRequest,
   type BroadcastTargetClip,
+  withSceneFont,
+  withSceneTargets,
 } from "./broadcast-effects";
 import {
   broadcastEffectTitle,
   type BroadcastTaskSummary,
 } from "./screens/BroadcastEffectInspector";
 import {
-  assignEffectToAssets,
-  lottieTextValues,
   removeEffectFromLibrary,
 } from "./effect-assignment";
 import { buildAudioProgram } from "./audio-program";
+import { defaultSceneTemplate } from "./default-scenes";
 import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
 import {
@@ -91,7 +112,6 @@ import {
   mediaThumbnailUrl,
   parseScheduleFile,
   probeMediaPaths,
-  renderLottieEffect,
   scanMediaDirectory,
   scanAudioTracks,
   readBroadcastTaskFile,
@@ -136,8 +156,22 @@ const initialPlaylist = [
 
 const demoDataEnabled = import.meta.env.VITE_ENABLE_DEMO_DATA === "true";
 
+/**
+ * Пауза перед автоматическим подъёмом эфира.
+ *
+ * Достаточно, чтобы оператор успел отменить, и достаточно мало, чтобы станция
+ * без оператора не простаивала после перезагрузки.
+ */
+const autoResumeDelaySeconds = 15;
+
 export function App() {
   const [view, setView] = useState<AppView>("import");
+  /**
+   * Эффект, сцену которого правит редактор титров. Редактор — накладка поверх
+   * всего приложения, а не отдельная вкладка: он открывается из эффекта и
+   * возвращает в него же.
+   */
+  const [editingSceneEffectId, setEditingSceneEffectId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>({
     kind: "loading",
   });
@@ -192,6 +226,12 @@ export function App() {
       return initial;
     });
   const [missingGraphics, setMissingGraphics] = useState<MissingGraphic[]>([]);
+  /**
+   * Файлы самой библиотеки, которых нет на диске: оформление эффекта, файл
+   * перехода, подложки сцены. Своего слоя в расписании у них нет, поэтому
+   * прежняя проверка их не видела и пропажа всплывала отказом на Start.
+   */
+  const [missingEffectFiles, setMissingEffectFiles] = useState<MissingEffectFile[]>([]);
   const [missingGraphicsResolved, setMissingGraphicsResolved] =
     useState<Record<string, string>>({});
 
@@ -199,12 +239,7 @@ export function App() {
     addEffectToClip(...args));
   const stableAddEffectToProject = useStableCallback((effect: GraphicEffectAsset) =>
     addEffectToProject(effect));
-  const stableClearTitleDirectory = useStableCallback((id: string) => clearEffectTitleDirectory(id));
   const stableRemoveEffect = useStableCallback((id: string) => removeEffect(id));
-  const stableRenderProjectLottie = useStableCallback((effect: GraphicEffectAsset) =>
-    renderProjectLottie(effect));
-  const stableSelectTitleDirectory = useStableCallback((id: string) =>
-    selectEffectTitleDirectory(id));
   const stableChangeBroadcastEffect = useStableCallback((effect: GraphicEffectAsset) =>
     changeBroadcastEffect(effect));
   // Системные шрифты грузятся один раз за сессию и нужны в двух местах: при
@@ -228,6 +263,45 @@ export function App() {
   const stableSelectBroadcastTaskFile = useStableCallback((id: string) =>
     selectBroadcastTaskFile(id));
   const stableSelectStingerFile = useStableCallback((id: string) => selectStingerFile(id));
+  const stableSelectDecorationFile = useStableCallback((id: string) =>
+    selectDecorationFile(id));
+  const stableEditScene = useStableCallback((id: string) => setEditingSceneEffectId(id));
+
+  /**
+   * Что правит редактор титров: сцена эффекта, её длительность показа и кадр
+   * из плейлиста под неё.
+   *
+   * Длительность берётся из настроек самого эффекта — режиссёр считает от неё
+   * удержание, и в редакторе показ обязан идти ровно столько же, сколько в
+   * эфире.
+   */
+  const editingScene = useMemo(() => {
+    if (!editingSceneEffectId) return null;
+    const effect = effectLibrary.find((entry) => entry.id === editingSceneEffectId);
+    const definition = effect?.broadcast;
+    if (!effect || !definition?.scene) return null;
+    const settings = definition.settings;
+    const durationSeconds = definition.kind === "next-program" ? settings.nextProgram.durationSeconds
+      : definition.kind === "ticker-crawl" ? settings.tickerCrawl.durationSeconds
+        : definition.kind === "clock-countdown" ? settings.clockCountdown.durationSeconds
+          : settings.dynamicTitle.durationSeconds;
+    return {
+      effectId: effect.id,
+      effectName: effect.name,
+      template: definition.scene,
+      durationSeconds,
+    };
+  }, [editingSceneEffectId, effectLibrary]);
+
+  /**
+   * Кадр под сценой. Берём середину первого ролика: титр почти всегда ложится
+   * на движущуюся картинку, и на чёрном фоне читаемость обманчива.
+   */
+  const editorBackdropUrl = useMemo(() => {
+    const clip = playlist[0];
+    if (!clip || isBarsSource(clip.filePath)) return null;
+    return mediaThumbnailUrl(clip.filePath, Math.max(1, airDurationSeconds(clip) / 2));
+  }, [playlist]);
   const stableSelectStingerSequence = useStableCallback((id: string) => selectStingerSequence(id));
   const stableSelectTickerSourceFile = useStableCallback((id: string) =>
     selectTickerSourceFile(id));
@@ -236,7 +310,6 @@ export function App() {
     applyBroadcastChanges(effect));
   const stableApplyBroadcastTaskToProject = useStableCallback((effect: GraphicEffectAsset) =>
     applyBroadcastTaskToProject(effect));
-  const stableImportBroadcastPreset = useStableCallback((id: string) => importBroadcastPreset(id));
   const stableReorderEffects = useStableCallback((moved: string, before: string | null) =>
     reorderEffectLibrary(moved, before));
 
@@ -302,7 +375,7 @@ export function App() {
     for (const asset of [...playlist, ...futurePlaylist]) {
       const ids = new Set([
         ...(asset.effects ?? []).map((layer) => layer.effectId),
-        ...(asset.textOverlays ?? []).map((overlay) => overlay.effectId),
+        ...(asset.scenes ?? []).map((show) => show.effectId),
       ]);
       for (const id of ids) counts[id] = (counts[id] ?? 0) + 1;
     }
@@ -689,7 +762,6 @@ export function App() {
     );
     setSavedWorkspaceSession(session);
     setRecoveryCheckpoint(session.checkpoint?.interrupted ? session.checkpoint : null);
-    void restoreLottieEffectCache(restoredEffects);
     void restoreBroadcastTaskFiles(restoredEffects);
     void checkMissingGraphics(
       [restoredCurrentPlaylist, restoredFuturePlaylist],
@@ -817,16 +889,32 @@ export function App() {
     setOperationError(null);
     try {
       const parsed = await parseScheduleFile(schedulePath);
-      const lottieLogoPaths = [...new Set(parsed.items
-        .map((item) => item.logoPath)
-        .filter((filePath): filePath is string => Boolean(filePath?.toLowerCase().endsWith(".json"))))];
-      const [probesByPath, renderedLogoEntries] = await Promise.all([
-        probeSchedulePaths(parsed),
-        Promise.all(lottieLogoPaths.map(async (filePath) =>
-          [filePath, await renderLogoFile(filePath)] as const)),
-      ]);
-      const renderedLogoPaths = new Map(renderedLogoEntries);
+      const probesByPath = await probeSchedulePaths(parsed);
       const ageAssets = mapAgeAssetPaths(ageLibrary?.imagePaths ?? []);
+      // Эффекты второго уровня восстанавливаются из заголовка расписания.
+      // Нечитаемое определение не проглатываем: без него ролики сослались бы
+      // на несуществующий эффект, и титр молча не вышел бы в эфир.
+      const restoredEffects = new Map<string, GraphicEffectAsset>();
+      const effectIssues: string[] = [];
+      for (const entry of parsed.broadcastEffects) {
+        try {
+          const broadcast = broadcastEffectDefinitionSchema.parse(
+            decodeScheduleBlob(entry.data),
+          );
+          restoredEffects.set(entry.effectId, graphicEffectAssetSchema.parse({
+            broadcast,
+            durationSeconds: 0,
+            filePath: `broadcast://${broadcast.kind}`,
+            height: 0,
+            id: entry.effectId,
+            kind: "video",
+            name: entry.name,
+            width: 0,
+          }));
+        } catch (reason) {
+          effectIssues.push(`«${entry.name}»: ${errorMessage(reason)}`);
+        }
+      }
       const scheduledAssets = parsed.items.map((item, index) => {
         const probe = probesByPath.get(item.filePath);
         const base = probe
@@ -834,9 +922,7 @@ export function App() {
           : { ...pendingAssetFromPath(item.filePath), status: "error" as const, progress: undefined };
         const ageText = item.ageTitle ?? ageRatingFromFileName(base.name);
         const logoSourcePath = (item.logoPath ?? scheduleLogoPath) || undefined;
-        const logoPath = logoSourcePath
-          ? (renderedLogoPaths.get(logoSourcePath) ?? logoSourcePath)
-          : undefined;
+        const logoPath = logoSourcePath;
         return {
           ...base,
           id: `schedule-${slot}-${hashString(parsed.sourceFilePath)}-${index}`,
@@ -904,6 +990,21 @@ export function App() {
               titlePaths: element.titlePaths,
             };
           }),
+          // Показы эффектов второго уровня: определения лежат заголовком
+          // файла, ролик ссылается на них опознавателем.
+          scenes: item.broadcastShows.flatMap((show) => {
+            const definition = restoredEffects.get(show.effectId);
+            const scene = definition?.broadcast?.scene;
+            if (!scene) return [];
+            return [{
+              id: `schedule-scene-${index}-${show.effectId}`,
+              effectId: show.effectId,
+              template: scene,
+              fields: show.fields ? decodeScheduleBlob<Record<string, string>>(show.fields) : {},
+              startSeconds: show.startOnSeconds,
+              durationSeconds: Math.max(0.04, show.endOnSeconds - show.startOnSeconds),
+            }];
+          }),
           subtitles: item.srtPath
             ? { enabled: true, filePath: item.srtPath }
             : undefined,
@@ -921,12 +1022,21 @@ export function App() {
           titleDirectoryPath: layer.titlePath ? parentDirectory(layer.titlePath) : null,
           titlePaths: layer.titlePath ? [layer.titlePath] : [],
           width: 0,
-          lottie: null,
           broadcast: null,
         } satisfies GraphicEffectAsset))
       );
       setAssets((current) => mergeAssets(current, scheduledAssets));
-      setEffectLibrary((current) => mergeEffectAssets(current, importedEffects));
+      setEffectLibrary((current) => mergeEffectAssets(
+        current,
+        // Восстановленные эффекты второго уровня кладём вместе с обычными:
+        // без них ролики ссылались бы на несуществующий эффект.
+        [...importedEffects, ...restoredEffects.values()],
+      ));
+      if (effectIssues.length > 0) {
+        setOperationError(
+          `Не удалось восстановить эффекты из расписания: ${effectIssues.join("; ")}`,
+        );
+      }
       if (slot === "current") {
         setPlaylist(scheduledAssets);
         setCurrentScheduleMetadata(metadata);
@@ -1164,142 +1274,14 @@ export function App() {
     if (paths?.length) await analyzePaths(paths, activeSchedule);
   }
 
-  async function selectEffectTitleDirectory(effectId: string) {
-    const selection = await window.gruberDesktop?.selectEffectTitleDirectory();
-    if (!selection) return;
-    setEffectLibrary((current) => current.map((effect) =>
-      effect.id === effectId
-        ? {
-            ...effect,
-            titleDirectoryPath: selection.directoryPath,
-            titlePaths: selection.filePaths,
-          }
-        : effect
-    ));
-    setPlaylist((current) => assignEffectTitles(current, effectId, selection.filePaths));
-    setFuturePlaylist((current) => assignEffectTitles(current, effectId, selection.filePaths));
-    setEffectsMessage(
-      `Title folder assigned: ${selection.filePaths.length} alpha file(s), matched by exact clip basename.`,
-    );
-  }
-
-  function clearEffectTitleDirectory(effectId: string) {
-    setEffectLibrary((current) => current.map((effect) =>
-      effect.id === effectId
-        ? { ...effect, titleDirectoryPath: null, titlePaths: [] }
-        : effect
-    ));
-    setPlaylist((current) => assignEffectTitles(current, effectId, []));
-    setFuturePlaylist((current) => assignEffectTitles(current, effectId, []));
-    setEffectsMessage("Per-clip title folder cleared; the shared BG remains assigned.");
-  }
-
-  async function renderProjectLottie(effect: GraphicEffectAsset): Promise<GraphicEffectAsset> {
-    if (!effect.lottie) throw new Error("The selected effect is not a Lottie project.");
-    setEffectsBusy(true);
-    setOperationError(null);
-    try {
-      const rendered = await renderLottieEffect(effect);
-      setEffectLibrary((current) => mergeEffectAssets(current, [rendered]));
-      const updateAssignments = (items: MediaAsset[]) => items.map((asset) => ({
-        ...asset,
-        effects: asset.effects?.map((layer) => layer.effectId === rendered.id
-          ? {
-              ...layer,
-              backgroundPath: rendered.filePath,
-              filePath: rendered.filePath,
-              kind: rendered.kind,
-              sourceDurationSeconds: rendered.durationSeconds,
-              titlePaths: lottieTextValues(rendered),
-            }
-          : layer),
-      }));
-      setPlaylist(updateAssignments);
-      setFuturePlaylist(updateAssignments);
-      setEffectsMessage(
-        `${rendered.name} rendered with ${rendered.lottie?.properties.filter((property) => property.overridden).length ?? 0} operator override(s).`,
-      );
-      return rendered;
-    } catch (error) {
-      setOperationError(errorMessage(error));
-      throw error;
-    } finally {
-      setEffectsBusy(false);
-    }
-  }
-
-  async function restoreLottieEffectCache(effects: GraphicEffectAsset[]) {
-    const lottieEffects = effects.filter((effect) => Boolean(effect.lottie));
-    if (lottieEffects.length === 0) return;
-    setEffectsBusy(true);
-    try {
-      const renderedEffects: GraphicEffectAsset[] = [];
-      for (const effect of lottieEffects) {
-        renderedEffects.push(await renderLottieEffect(effect));
-      }
-      const renderedById = new Map(renderedEffects.map((effect) => [effect.id, effect]));
-      setEffectLibrary((current) => mergeEffectAssets(current, renderedEffects));
-      const refreshLayers = (items: MediaAsset[]) => items.map((asset) => ({
-        ...asset,
-        effects: asset.effects?.map((layer) => {
-          const rendered = renderedById.get(layer.effectId);
-          return rendered
-            ? {
-                ...layer,
-                backgroundPath: rendered.filePath,
-                filePath: rendered.filePath,
-                kind: rendered.kind,
-                sourceDurationSeconds: rendered.durationSeconds,
-                titlePaths: lottieTextValues(rendered),
-              }
-            : layer;
-        }),
-      }));
-      setPlaylist(refreshLayers);
-      setFuturePlaylist(refreshLayers);
-      setEffectsMessage(`${renderedEffects.length} Lottie render cache item(s) restored.`);
-    } catch (error) {
-      setOperationError(`Lottie cache recovery failed: ${errorMessage(error)}`);
-    } finally {
-      setEffectsBusy(false);
-    }
-  }
-
   function addEffectToProject(effect: GraphicEffectAsset) {
-    if (effect.broadcast) {
-      changeBroadcastEffect(effect);
-      void applyBroadcastEffect(effect, null);
-      return;
-    }
-    const currentResult = assignEffectToAssets(playlist, effect);
-    const futureResult = assignEffectToAssets(futurePlaylist, effect);
-    setPlaylist(currentResult.items);
-    setFuturePlaylist(futureResult.items);
-    const count = currentResult.added + futureResult.added;
-    setEffectsMessage(
-      `${effect.name}: a new FX instance was added to ${count} clip(s). ` +
-        "Set each instance IN/OUT in Playlist → Timeline Trimming.",
-    );
+    changeBroadcastEffect(effect);
+    void applyBroadcastEffect(effect, null);
   }
 
   function addEffectToClip(effect: GraphicEffectAsset, clipId: string) {
-    if (effect.broadcast) {
-      changeBroadcastEffect(effect);
-      void applyBroadcastEffect(effect, new Set([clipId]));
-      return;
-    }
-    const targetIds = new Set([clipId]);
-    const currentResult = assignEffectToAssets(playlist, effect, targetIds);
-    const futureResult = assignEffectToAssets(futurePlaylist, effect, targetIds);
-    setPlaylist(currentResult.items);
-    setFuturePlaylist(futureResult.items);
-    const count = currentResult.added + futureResult.added;
-    setEffectsMessage(
-      count > 0
-        ? `${effect.name}: a new independent FX instance was added to the selected clip. ` +
-          "Set its IN/OUT in Playlist → Timeline Trimming."
-        : "The selected clip is no longer available.",
-    );
+    changeBroadcastEffect(effect);
+    void applyBroadcastEffect(effect, new Set([clipId]));
   }
 
   /* ------------------------------------------------------------------ *
@@ -1319,10 +1301,14 @@ export function App() {
     playlists: MediaAsset[][],
     library: GraphicEffectAsset[],
   ) {
-    const paths = graphicPathsOf(playlists);
+    // Проверяем и слои расписания, и файлы самой библиотеки: у эффекта
+    // второго уровня свои файлы — оформление, переход, подложки сцены, — и
+    // раньше их пропажа всплывала отказом на Start.
+    const paths = [...new Set([...graphicPathsOf(playlists), ...effectLibraryPaths(library)])];
     if (paths.length === 0) return;
     try {
       const missingPaths = new Set(await verifyGraphicEffectPaths(paths));
+      setMissingEffectFiles(collectMissingEffectFiles(library, missingPaths));
       const missing = collectMissingGraphics(playlists, library, missingPaths);
       if (missing.length === 0) return;
       setMissingGraphics(missing);
@@ -1378,13 +1364,32 @@ export function App() {
    * кириллица выходит прямоугольниками; вдобавок надпись нечем измерить, и
    * подложка `fit:` остаётся исходной ширины под любым текстом.
    */
+  /**
+   * Вид эффекта, ждущий выбора разрешений.
+   *
+   * У видов со сценой набор целей спрашивается **до** создания: от него зависит
+   * работа дизайнера — незаявленная раскладка в эфир не пойдёт, а заявленную
+   * придётся проверить глазами.
+   */
+  const [pendingSceneKind, setPendingSceneKind] = useState<BroadcastEffectKind | null>(null);
+
   function createBroadcastEffect(kind: BroadcastEffectKind, defaultFont: SystemFont | null) {
+    if (defaultSceneTemplate(kind)) { setPendingSceneKind(kind); return; }
+    createBroadcastEffectWithTargets(kind, defaultFont, ["hd"]);
+  }
+
+  function createBroadcastEffectWithTargets(
+    kind: BroadcastEffectKind,
+    defaultFont: SystemFont | null,
+    targets: SceneLayoutTarget[],
+  ) {
     const title = broadcastEffectTitle(kind);
     const existing = effectLibrary.filter((effect) => effect.broadcast?.kind === kind).length;
     const blank = broadcastEffectSettingsSchema.parse({});
     const effect = graphicEffectAssetSchema.parse({
       broadcast: {
         kind,
+        scene: withSceneTargets(withSceneFont(defaultSceneTemplate(kind), defaultFont), targets),
         settings: withDefaultTextFont(blank, defaultFont),
         dataMapping: {
           matchSourceKey: kind === "animation-in-out" ? "title" : "name",
@@ -1500,7 +1505,7 @@ export function App() {
       [...playlist, ...futurePlaylist]
         .filter((asset) =>
           asset.effects?.some((layer) => layer.effectId === effectId) ||
-          asset.textOverlays?.some((overlay) => overlay.effectId === effectId))
+          asset.scenes?.some((show) => show.effectId === effectId))
         .map((asset) => asset.id),
     );
     if (assignedIds.size === 0) {
@@ -1590,64 +1595,6 @@ export function App() {
     );
   }
 
-  /**
-   * Подгрузка графики прямо из настроек эффекта второго уровня: файл
-   * анализируется, попадает в библиотеку и сразу назначается этому эффекту.
-   * Общего импорта больше нет — графика принадлежит эффекту, а не библиотеке.
-   */
-  async function importBroadcastPreset(effectId: string) {
-    const target = effectLibrary.find((entry) => entry.id === effectId);
-    if (!target?.broadcast) return;
-    const paths = await window.gruberDesktop?.selectEffectFiles();
-    const selected = paths?.[0];
-    if (!selected) return;
-    // Расширение проверяется до обращения к службе: разбирать заведомо чужой
-    // файл незачем, а причину отказа оператор должен увидеть сразу на выборе.
-    const rejection = graphicFileRejection(target.broadcast.kind, selected);
-    if (rejection) {
-      setOperationError(rejection);
-      return;
-    }
-    setEffectsBusy(true);
-    setOperationError(null);
-    try {
-      const { items: [preset], issues } = await analyzeGraphicEffectPaths([selected]);
-      if (!preset && issues[0]) throw new Error(issues[0].message);
-      if (!preset) throw new Error("Файл не удалось разобрать как эффект");
-      setEffectLibrary((current) => {
-        const merged = mergeEffectAssets(current, [preset]);
-        return merged.map((entry) => entry.id === effectId && entry.broadcast
-          ? {
-              ...entry,
-              broadcast: {
-                ...entry.broadcast,
-                presetEffectId: preset.id,
-                dataMapping: entry.broadcast.dataMapping.bindings.length > 0 ||
-                  !preset.lottie?.dataBindings.length
-                  ? entry.broadcast.dataMapping
-                  : {
-                      ...entry.broadcast.dataMapping,
-                      bindings: preset.lottie.dataBindings,
-                      matchSourceKey: preset.lottie.matchSourceKey ??
-                        entry.broadcast.dataMapping.matchSourceKey,
-                    },
-              },
-            }
-          : entry);
-      });
-      setEffectsMessage(
-        `${preset.name}: пресет подгружен и назначен эффекту.` +
-          (preset.lottie
-            ? ` Текстовых полей — ${preset.lottie.properties.filter((p) => p.type === "text").length}.`
-            : " Текстовых полей нет: это обычное alpha-медиа."),
-      );
-    } catch (reason) {
-      setOperationError(errorMessage(reason));
-    } finally {
-      setEffectsBusy(false);
-    }
-  }
-
   /** Заголовки новостной ленты. Качает media-service: у окна Electron строгий CSP. */
   async function loadTickerFeed(effectId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
@@ -1680,6 +1627,38 @@ export function App() {
     } finally {
       setEffectsBusy(false);
     }
+  }
+
+  /**
+   * Оформление эффекта готовым alpha-медиа.
+   *
+   * Сцену рисует свой редактор, но у Animation in/out и подложки бегущей
+   * строки оформление всегда внешнее: заранее отрендеренный ролик с альфой.
+   * Формат проверяется здесь, до записи в библиотеку, — иначе отказ вылезет
+   * уже на старте эфира.
+   */
+  async function selectDecorationFile(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    if (!effect?.broadcast) return;
+    const filePath = await window.gruberDesktop?.selectDecorationFile();
+    if (!filePath) return;
+
+    const rejection = graphicFileRejection(effect.broadcast.kind, filePath);
+    if (rejection) {
+      setOperationError(rejection);
+      return;
+    }
+
+    updateBroadcastSettings(effectId, (entry) => ({
+      ...entry,
+      broadcast: entry.broadcast && {
+        ...entry.broadcast,
+        decoration: "file",
+        decorationFilePath: filePath,
+      },
+    }));
+    setOperationError(null);
+    setEffectsMessage(`Оформление эффекта «${effect.name}»: ${filePath.split(/[\\/]/).pop()}`);
   }
 
   async function selectTickerSourceFile(effectId: string) {
@@ -1720,6 +1699,250 @@ export function App() {
    * проекта как отправную точку и показываем поле: иначе переход поехал бы по
    * длительности на чужом умолчании FFmpeg.
    */
+  /**
+   * Подложка узла сцены: видео с альфой либо последовательность `.png`.
+   *
+   * Длина показа подгоняется под источник: титр короче своей подложки обрывал бы
+   * её на середине, а длиннее — держал бы в кадре застывший последний кадр.
+   */
+  async function selectSceneMedia(effectId: string, nodeId: string) {
+    const filePath = await window.gruberDesktop?.selectDecorationFile();
+    if (!filePath) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const isSequence = /\.png$/i.test(filePath);
+      const frameRate = Number(settings.frameRate) || 25;
+      let media: {
+        filePath: string; durationSeconds: number; hasAlpha: boolean;
+        sequenceFrameRate: number | null; sequenceStartNumber: number | null;
+      };
+      if (isSequence) {
+        const sequence = await readImageSequence(filePath);
+        media = {
+          filePath: sequence.pattern,
+          durationSeconds: sequence.frameCount / frameRate,
+          // У .png альфа есть всегда.
+          hasAlpha: true,
+          sequenceFrameRate: frameRate,
+          sequenceStartNumber: sequence.startNumber,
+        };
+      } else {
+        const [probe] = await probeMediaPaths([filePath]);
+        if (!probe) throw new Error("FFprobe не вернул данные файла");
+        media = {
+          filePath,
+          durationSeconds: probe.durationSeconds,
+          hasAlpha: pixelFormatHasAlpha(probe.pixelFormat),
+          sequenceFrameRate: null,
+          sequenceStartNumber: null,
+        };
+      }
+
+      updateBroadcastSettings(effectId, (effect) => {
+        const definition = effect.broadcast;
+        if (!definition?.scene) return effect;
+        return {
+          ...effect,
+          broadcast: {
+            ...definition,
+            scene: {
+              ...definition.scene,
+              nodes: definition.scene.nodes.map((node) => (node.id === nodeId
+                ? { ...node, media: { ...node.media, ...media } }
+                : node)),
+            },
+          },
+        };
+      });
+      setSceneShowDuration(effectId, media.durationSeconds);
+      setEffectsMessage(
+        `Подложка загружена: ${media.durationSeconds.toFixed(2)} с. Длина показа подогнана под неё.`,
+      );
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /** Оператор нашёл потерянный файл — подставляем его во все места сразу. */
+  async function locateMissingEffectFile(filePath: string) {
+    const picked = await window.gruberDesktop?.selectDecorationFile();
+    if (!picked) return;
+    setEffectLibrary((current) => applyEffectFileReplacement(current, filePath, picked));
+    setMissingEffectFiles((current) => current.filter((entry) => entry.filePath !== filePath));
+    setEffectsMessage(`Файл найден: ${picked}`);
+  }
+
+  /* ------------------------- автостарт после запуска ----------------------- */
+
+  /**
+   * Сколько секунд осталось до автоматического подъёма эфира.
+   *
+   * Отсчёт нужен не для красоты: машину перезагружают и ради обслуживания, и
+   * без паузы FluxIO уводил бы в линию расписание, которого оператор в этот
+   * момент не ждёт. `null` — автостарт не запланирован.
+   */
+  const [autoResumeIn, setAutoResumeIn] = useState<number | null>(null);
+  const autoResumeArmed = useRef(false);
+
+  useEffect(() => {
+    // Условия проверяются один раз за запуск: эфир, поднятый вручную и
+    // остановленный, не должен подниматься снова сам.
+    if (autoResumeArmed.current) return;
+    if (!settings.autoResumeOnLaunch) return;
+    if (!recoveryCheckpoint?.interrupted) return;
+    if (playlist.length === 0) return;
+    if (playoutStatus && playoutStatus.state !== "idle" && playoutStatus.state !== "completed") return;
+    autoResumeArmed.current = true;
+    setAutoResumeIn(autoResumeDelaySeconds);
+  }, [settings.autoResumeOnLaunch, recoveryCheckpoint, playlist.length, playoutStatus]);
+
+  useEffect(() => {
+    if (autoResumeIn === null) return;
+    if (autoResumeIn <= 0) {
+      setAutoResumeIn(null);
+      void startPlayout("resume");
+      return;
+    }
+    const timer = window.setTimeout(() => setAutoResumeIn((value) =>
+      value === null ? null : value - 1), 1_000);
+    return () => window.clearTimeout(timer);
+  }, [autoResumeIn]);
+
+  /* ---------------------------- каталог титров ---------------------------- */
+
+  const [titleLibraryOpen, setTitleLibraryOpen] = useState(false);
+  const [titleLibrary, setTitleLibrary] = useState<{
+    directoryPath: string;
+    items: TitleFileSummary[];
+    issues: { filePath: string; message: string }[];
+  }>({ directoryPath: "", items: [], issues: [] });
+
+  /**
+   * Перечитывает папку титров.
+   *
+   * Нечитаемый файл не проглатывается: он попадает в список замечаний. Молча
+   * пропущенный титр выглядит как «папка пустая».
+   */
+  async function refreshTitleLibrary(directoryPath?: string) {
+    const bridge = window.gruberDesktop;
+    if (!bridge) return;
+    setEffectsBusy(true);
+    try {
+      const read = await bridge.readTitleLibrary(directoryPath);
+      const items: TitleFileSummary[] = [];
+      const issues = [...read.issues];
+      for (const file of read.files) {
+        try {
+          items.push(summarizeTitleFile(file.filePath, parseTitleFile(file.content)));
+        } catch (reason) {
+          issues.push({ filePath: file.filePath, message: errorMessage(reason) });
+        }
+      }
+      setTitleLibrary({ directoryPath: read.directoryPath, items, issues });
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /** Сохранить текущий шаблон отдельным файлом `.fto`. */
+  async function saveTitleAs(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
+    const scene = effect?.broadcast?.scene;
+    if (!scene) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const packed = packTitleFile(scene, applicationVersion);
+      const saved = await window.gruberDesktop?.saveTitleFile({
+        content: JSON.stringify(packed, null, 2),
+        defaultName: titleFileName(scene.name),
+      });
+      if (saved) {
+        setEffectsMessage(`Титр сохранён: ${saved}`);
+        void refreshTitleLibrary(titleLibrary.directoryPath || undefined);
+      }
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /**
+   * Кладёт шаблон из файла в выбранный эффект.
+   *
+   * Опознаватели узлов выдаются заново: два узла с одним id — это потерянная
+   * привязка плашки к тексту, и заметно это только в эфире.
+   */
+  function adoptTitle(effectId: string, template: SceneTemplate) {
+    updateBroadcastSettings(effectId, (effect) => ({
+      ...effect,
+      broadcast: effect.broadcast && {
+        ...effect.broadcast,
+        scene: withSceneFont(
+          adoptTitleTemplate(template, () => window.crypto.randomUUID().slice(0, 8)),
+          preferredTextFont(systemFonts),
+        ),
+      },
+    }));
+    setTitleLibraryOpen(false);
+    setEffectsMessage(`Титр «${template.name}» загружен в эффект.`);
+  }
+
+  async function pickTitleFromLibrary(effectId: string, filePath: string) {
+    const bridge = window.gruberDesktop;
+    if (!bridge) return;
+    setEffectsBusy(true);
+    try {
+      const read = await bridge.readTitleLibrary(titleLibrary.directoryPath || undefined);
+      const file = read.files.find((entry) => entry.filePath === filePath);
+      if (!file) throw new Error("Файл титра больше не найден — перечитайте папку");
+      adoptTitle(effectId, parseTitleFile(file.content).template);
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function openTitleFile(effectId: string) {
+    setEffectsBusy(true);
+    try {
+      const picked = await window.gruberDesktop?.selectTitleFile();
+      if (!picked) return;
+      adoptTitle(effectId, parseTitleFile(picked.content).template);
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  /** Длина показа живёт в настройках вида эффекта, а не в сцене. */
+  function setSceneShowDuration(effectId: string, seconds: number) {
+    const durationSeconds = Math.max(0.1, Math.min(86_400, seconds));
+    updateBroadcastSettings(effectId, (effect) => {
+      const definition = effect.broadcast;
+      if (!definition) return effect;
+      const settingsPatch = definition.kind === "next-program"
+        ? { nextProgram: { ...definition.settings.nextProgram, durationSeconds } }
+        : definition.kind === "ticker-crawl"
+          ? { tickerCrawl: { ...definition.settings.tickerCrawl, durationSeconds } }
+          : definition.kind === "clock-countdown"
+            ? { clockCountdown: { ...definition.settings.clockCountdown, durationSeconds } }
+            : { dynamicTitle: { ...definition.settings.dynamicTitle, durationSeconds } };
+      return {
+        ...effect,
+        broadcast: { ...definition, settings: { ...definition.settings, ...settingsPatch } },
+      };
+    });
+  }
+
   async function selectStingerSequence(effectId: string) {
     const framePath = await window.gruberDesktop?.selectStingerFile();
     if (!framePath) return;
@@ -1830,7 +2053,7 @@ export function App() {
   }
 
   /**
-   * Считает план эффекта, заказывает нужные Lottie-рендеры и кладёт результат в
+   * Считает план эффекта и кладёт результат в
    * оба плейлиста. Рендер идёт по одному разу на уникальный набор значений:
    * недельная сетка иначе заказала бы сотни одинаковых файлов.
    */
@@ -1845,21 +2068,30 @@ export function App() {
     // прямоугольниками, — а подложку `fit:` нечем измерить, и она остаётся
     // исходной ширины под любым текстом. Чиним молча нельзя: правку сохраняем
     // в библиотеку и говорим о ней.
+    const defaultFont = preferredTextFont(systemFonts);
     const repairedSettings = effect.broadcast
-      ? withDefaultTextFont(effect.broadcast.settings, preferredTextFont(systemFonts))
+      ? withDefaultTextFont(effect.broadcast.settings, defaultFont)
+      : null;
+    // То же и у сцены: её текстовые узлы приходят без файла шрифта из сессий,
+    // сохранённых до появления умолчания.
+    const repairedScene = effect.broadcast
+      ? withSceneFont(effect.broadcast.scene, defaultFont)
       : null;
     const fontRepaired = Boolean(
-      effect.broadcast && repairedSettings && repairedSettings !== effect.broadcast.settings,
+      effect.broadcast && (
+        (repairedSettings && repairedSettings !== effect.broadcast.settings) ||
+        (repairedScene && repairedScene !== effect.broadcast.scene)
+      ),
     );
     if (fontRepaired && effect.broadcast && repairedSettings) {
-      const patched = { ...effect, broadcast: { ...effect.broadcast, settings: repairedSettings } };
+      const patched = {
+        ...effect,
+        broadcast: { ...effect.broadcast, settings: repairedSettings, scene: repairedScene },
+      };
       effect = patched;
       setEffectLibrary((current) =>
         current.map((entry) => (entry.id === patched.id ? patched : entry)));
     }
-    const preset = effect.broadcast?.presetEffectId
-      ? effectLibrary.find((entry) => entry.id === effect.broadcast?.presetEffectId) ?? null
-      : null;
     const taskContent = broadcastTaskContents[effect.id];
     const taskEntries = taskContent && effect.broadcast?.dataMapping.filePath
       ? mapBroadcastTaskRecords(taskContent.records, effect.broadcast.dataMapping)
@@ -1879,19 +2111,17 @@ export function App() {
         frameRate: Number(settings.frameRate) || 25,
         frameHeight: settings.height,
         frameWidth: settings.width,
-        preset,
         targetIds,
         taskEntries,
       });
       const errors = [...new Set(plan.errors)];
       const warnings = [...new Set(plan.warnings)];
-      if (plan.layers.length === 0 && plan.textOverlays.length === 0) {
+      if (plan.layers.length === 0 && plan.scenes.length === 0) {
         setOperationError(errors[0] ?? `${effect.name}: эффекту не к чему применяться.`);
         return null;
       }
-      const renderedPathByKey = await renderBroadcastVariants(plan.renders, preset);
-      const currentApplied = applyBroadcastPlan(currentAssets, plan, renderedPathByKey);
-      const futureApplied = applyBroadcastPlan(futureAssets, plan, renderedPathByKey);
+      const currentApplied = applyBroadcastPlan(currentAssets, plan);
+      const futureApplied = applyBroadcastPlan(futureAssets, plan);
       const touched = currentApplied.touched + futureApplied.touched;
       setPlaylist(currentApplied.items);
       setFuturePlaylist(futureApplied.items);
@@ -1912,40 +2142,12 @@ export function App() {
     }
   }
 
-  async function renderBroadcastVariants(
-    renders: BroadcastRenderRequest[],
-    preset: GraphicEffectAsset | null,
-  ): Promise<Map<string, string>> {
-    const rendered = new Map<string, string>();
-    if (!preset?.lottie) return rendered;
-    const unique = new Map(renders.map((render) => [render.key, render]));
-    for (const render of unique.values()) {
-      const variant = await renderLottieEffect({
-        ...preset,
-        lottie: {
-          ...preset.lottie,
-          properties: preset.lottie.properties.map((property) => {
-            const value = render.overrides[property.id];
-            // Образец приходит и к пустому полю: плашка `fit:` меряется по нему.
-            const fitSample = render.fitSamples[property.id] ?? null;
-            if (value == null && !fitSample) return property;
-            return value == null
-              ? { ...property, fitSample }
-              : { ...property, fitSample, overridden: true, value };
-          }),
-        },
-      });
-      rendered.set(render.key, variant.filePath);
-    }
-    return rendered;
-  }
-
   function removeEffect(effectId: string) {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
     if (!effect) return;
     const assigned = [...playlist, ...futurePlaylist].some((asset) =>
       asset.effects?.some((layer) => layer.effectId === effectId) ||
-      asset.textOverlays?.some((overlay) => overlay.effectId === effectId));
+      asset.scenes?.some((show) => show.effectId === effectId));
     if (assigned && !window.confirm(`Remove ${effect.name} and every assignment from the playlists?`)) {
       return;
     }
@@ -2127,30 +2329,18 @@ export function App() {
     await prepareScheduleLogo(filePath, filePath);
   }
 
-  /** Lottie JSON сначала превращается в alpha-MOV; остальные форматы идут в FFmpeg напрямую. */
-  async function prepareScheduleLogo(filePath: string, source: string) {
-    // FFmpeg не читает Lottie: проект печётся в файл с альфой тем же путём,
-    // которым готовятся эфирные пресеты, и в эфир идёт уже он.
+  /**
+   * Логотип обязан быть готовым файлом: FFmpeg накладывает его как обычный
+   * вход. Проект-исходник сюда не принимается — отказ должен быть внятным.
+   */
+  function prepareScheduleLogo(filePath: string, source: string) {
     if (filePath.toLowerCase().endsWith(".json")) {
-      setMediaBusy(true);
-      try {
-        applyScheduleLogo(await renderLogoFile(filePath), source);
-      } catch (error) {
-        setOperationError(errorMessage(error));
-      } finally {
-        setMediaBusy(false);
-      }
+      setOperationError(
+        "Логотип должен быть готовым файлом: .png, .webp, .gif, .mov или .webm.",
+      );
       return;
     }
     applyScheduleLogo(filePath, source);
-  }
-
-  async function renderLogoFile(filePath: string): Promise<string> {
-    if (!filePath.toLowerCase().endsWith(".json")) return filePath;
-    const { items: [rendered], issues } = await analyzeGraphicEffectPaths([filePath]);
-    if (!rendered && issues[0]) throw new Error(issues[0].message);
-    if (!rendered) throw new Error("Lottie logo could not be rendered");
-    return rendered.filePath;
   }
 
   async function selectScheduleLogoDirectory() {
@@ -2159,7 +2349,7 @@ export function App() {
     const logoPath = preferredLogoPath(selection.imagePaths);
     if (!logoPath) {
       setOperationError(
-        "The selected logo folder contains no supported image, animation or Lottie file.",
+        "В выбранной папке нет подходящего изображения или анимации.",
       );
       return;
     }
@@ -2269,9 +2459,25 @@ export function App() {
       const metadata = activeSchedule === "current"
         ? currentScheduleMetadata
         : futureScheduleMetadata;
+      // Эффекты второго уровня едут в расписании определением плюс ссылкой:
+      // без них импорт восстановил бы ролики, но не титры, и оператор собирал
+      // бы их заново.
+      const usedEffectIds = new Set(
+        visiblePlaylist.flatMap((asset) => (asset.scenes ?? []).map((show) => show.effectId)),
+      );
       const request: SerializeScheduleRequest = {
         delaySeconds: metadata?.delaySeconds ?? 0,
         extension,
+        broadcastEffects: effectLibrary
+          .filter((effect) => effect.broadcast && usedEffectIds.has(effect.id))
+          .map((effect) => ({
+            effectId: effect.id,
+            name: effect.name,
+            kind: effect.broadcast!.kind,
+            // base64: расписание разбирается по фигурным скобкам, а в JSON
+            // сцены их полно.
+            data: encodeScheduleBlob(effect.broadcast),
+          })),
         items: visiblePlaylist.map((asset) => ({
           type: asset.scheduleType ?? inferScheduleType(
             asset.declaredDurationSeconds ?? asset.durationSeconds,
@@ -2294,6 +2500,12 @@ export function App() {
             startOnSeconds: effect.startSeconds,
             titlePath: effect.titlePath ?? null,
             titlePaths: effect.titlePaths,
+          })),
+          broadcastShows: (asset.scenes ?? []).map((show) => ({
+            effectId: show.effectId,
+            startOnSeconds: show.startSeconds,
+            endOnSeconds: show.startSeconds + show.durationSeconds,
+            fields: Object.keys(show.fields).length > 0 ? encodeScheduleBlob(show.fields) : "",
           })),
           srtPath: asset.subtitles?.filePath ?? null,
           srtEnabled: Boolean(asset.subtitles?.enabled),
@@ -2563,26 +2775,23 @@ export function App() {
           operationError={operationError}
           onAddToClip={stableAddEffectToClip}
           onAddToEntireProject={stableAddEffectToProject}
-          onClearTitleDirectory={stableClearTitleDirectory}
           onRemove={stableRemoveEffect}
-          onRenderLottie={stableRenderProjectLottie}
-          onSelectTitleDirectory={window.gruberDesktop ? stableSelectTitleDirectory : undefined}
           broadcastTaskSummaries={broadcastTaskSummaries}
           onChangeBroadcastEffect={stableChangeBroadcastEffect}
           onCreateBroadcastEffect={stableCreateBroadcastEffect}
           fonts={systemFonts}
           fontLoadError={systemFontsError}
           onSelectBroadcastTaskFile={stableSelectBroadcastTaskFile}
+          onEditScene={stableEditScene}
+          onSelectDecorationFile={stableSelectDecorationFile}
           onSelectStingerFile={stableSelectStingerFile}
           onSelectStingerSequence={stableSelectStingerSequence}
           onSelectTickerSourceFile={stableSelectTickerSourceFile}
           onLoadTickerFeed={stableLoadTickerFeed}
           onApplyBroadcastChanges={stableApplyBroadcastChanges}
           onApplyBroadcastTaskToProject={stableApplyBroadcastTaskToProject}
-          onImportBroadcastPreset={stableImportBroadcastPreset}
           onReorder={stableReorderEffects}
           assignedClipCounts={assignedClipCounts}
-          playoutActive={playoutActive}
         />
       ) : null}
 
@@ -2687,6 +2896,82 @@ export function App() {
           scheduleStartItemName={playlist.find(
             (asset) => asset.id === scheduleStartMarker?.assetId,
           )?.name ?? null}
+        />
+      ) : null}
+
+      {titleLibraryOpen && editingScene ? (
+        <TitleLibraryDialog
+          busy={effectsBusy}
+          directoryPath={titleLibrary.directoryPath}
+          issues={titleLibrary.issues}
+          items={titleLibrary.items}
+          onClose={() => setTitleLibraryOpen(false)}
+          onPick={(filePath) => void pickTitleFromLibrary(editingScene.effectId, filePath)}
+          onPickFile={() => void openTitleFile(editingScene.effectId)}
+          onRefresh={() => void refreshTitleLibrary(titleLibrary.directoryPath || undefined)}
+          onSelectFolder={async () => {
+            const picked = await window.gruberDesktop?.selectTitleLibrary();
+            if (picked) void refreshTitleLibrary(picked);
+          }}
+        />
+      ) : null}
+
+      {pendingSceneKind ? (
+        <SceneFormatDialog
+          onCancel={() => setPendingSceneKind(null)}
+          onConfirm={(targets) => {
+            createBroadcastEffectWithTargets(
+              pendingSceneKind, preferredTextFont(systemFonts), targets,
+            );
+            setPendingSceneKind(null);
+          }}
+        />
+      ) : null}
+
+      {editingScene ? (
+        <TitleEditorScreen
+          backdropUrl={editorBackdropUrl}
+          busy={effectsBusy}
+          durationSeconds={editingScene.durationSeconds}
+          fonts={systemFonts}
+          onChange={(scene) => updateBroadcastSettings(editingScene.effectId, (effect) => ({
+            ...effect,
+            broadcast: effect.broadcast && { ...effect.broadcast, scene },
+          }))}
+          onClose={() => setEditingSceneEffectId(null)}
+          onDurationChange={(seconds) => setSceneShowDuration(editingScene.effectId, seconds)}
+          onOpenLibrary={() => {
+            setTitleLibraryOpen(true);
+            void refreshTitleLibrary(titleLibrary.directoryPath || undefined);
+          }}
+          onPickMedia={(nodeId) => void selectSceneMedia(editingScene.effectId, nodeId)}
+          onSaveAs={() => void saveTitleAs(editingScene.effectId)}
+          onSave={() => {
+            setEditingSceneEffectId(null);
+            setEffectsMessage(
+              `${editingScene.effectName}: сцена сохранена. Перенесите настройки в назначенные ролики, чтобы правка ушла в эфир.`,
+            );
+          }}
+          template={editingScene.template}
+        />
+      ) : null}
+
+      {autoResumeIn !== null ? (
+        <div className="auto-resume" role="alert">
+          <div>
+            <strong>Автостарт эфира</strong>
+            <span>Эфир поднимется с прерванного места через {autoResumeIn} с</span>
+          </div>
+          <button onClick={() => setAutoResumeIn(null)} type="button">Отменить</button>
+        </div>
+      ) : null}
+
+      {missingEffectFiles.length > 0 ? (
+        <MissingEffectFilesDialog
+          busy={effectsBusy}
+          items={missingEffectFiles}
+          onClose={() => setMissingEffectFiles([])}
+          onLocate={(filePath) => void locateMissingEffectFile(filePath)}
         />
       ) : null}
 
@@ -2961,6 +3246,9 @@ function buildStartRequest(
         : settings.videoCodec === "MPEG-2 Video"
           ? "mpeg2"
           : "h265",
+      hardware: settings.videoHardware,
+      // Узел рендера VAAPI: у остальных ускорителей устройство выбирает драйвер.
+      vaapiDevice: "/dev/dri/renderD128",
       width: settings.width,
       height: settings.height,
       frameRate: Number.parseFloat(settings.frameRate) || 25,
@@ -3070,8 +3358,8 @@ function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlis
       ? { ...asset.itemLogo, enabled: true }
       : null,
     effects: asset.effects ?? [],
-    textOverlays: asset.textOverlays ?? [],
     audioOverlays: asset.audioOverlays ?? [],
+    scenes: asset.scenes ?? [],
     subtitles: asset.subtitles?.enabled && asset.subtitles.filePath
       ? { enabled: true, filePath: asset.subtitles.filePath }
       : null,
@@ -3245,24 +3533,6 @@ function mergeEffectAssets(
       : effect);
   }
   return [...byId.values()];
-}
-
-function assignEffectTitles(
-  items: MediaAsset[],
-  effectId: string,
-  titlePaths: string[],
-): MediaAsset[] {
-  return items.map((asset) => ({
-    ...asset,
-    effects: asset.effects?.map((layer) => layer.effectId === effectId
-      ? {
-          ...layer,
-          backgroundPath: layer.backgroundPath ?? layer.filePath,
-          filePath: layer.backgroundPath ?? layer.filePath,
-          titlePath: matchingNamedAssetPath(asset.name, titlePaths),
-        }
-      : layer),
-  }));
 }
 
 function normalizeComparablePath(value: string): string {

@@ -10,6 +10,7 @@ import {
   LockKeyhole,
   MapPin,
   Radio,
+  PowerCircle,
   Repeat2,
   Rows3,
   Square,
@@ -125,6 +126,22 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               type="button"
             >
               <Repeat2 size={15} /> {tr("Повтор", "Repeat")}
+            </button>
+            {/* Станция без оператора: машина перезагрузилась, FluxIO стартовал
+                сам, расписание пошло дальше с того места, где оборвалось.
+                Перед подъёмом эфира даётся обратный отсчёт с отменой — иначе
+                машина, перезагруженная ради обслуживания, ушла бы в линию. */}
+            <button
+              aria-pressed={settings.autoResumeOnLaunch}
+              className={`schedule-repeat-button ${settings.autoResumeOnLaunch ? "active" : ""}`}
+              onClick={() => update("autoResumeOnLaunch", !settings.autoResumeOnLaunch)}
+              title={tr(
+                "После запуска программы поднять эфир с того места, где он оборвался. Перед стартом даётся обратный отсчёт с возможностью отменить.",
+                "After the app launches, resume playout where it was interrupted. A countdown with a cancel button runs first.",
+              )}
+              type="button"
+            >
+              <PowerCircle size={15} /> {tr("Автостарт", "Auto-resume")}
             </button>
             <span className={`playout-state state-${playoutState ?? "idle"}`}>
               {playoutState ?? "idle"}
@@ -242,6 +259,20 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             })}
             options={codecOptions(capabilities)}
             value={settings.videoCodec}
+          />
+          {/* Аппаратное кодирование — не оптимизация: на 2160 программный
+              кодировщик не укладывается в реальное время. Список строится по
+              тому, что реально есть в сборке FFmpeg на этой машине. */}
+          <SelectField
+            label={tr("Кодирование", "Encoding")}
+            onChange={(value) => onSettingsChange({
+              ...settings,
+              videoHardware: (hardwareOptions(capabilities)
+                .find((option) => option.label === value)?.value ?? "off") as BroadcastSettings["videoHardware"],
+            })}
+            options={hardwareOptions(capabilities).map((option) => option.label)}
+            value={hardwareOptions(capabilities)
+              .find((option) => option.value === settings.videoHardware)?.label ?? "Программное"}
           />
           <SelectField
             label={tr("Профиль", "Profile")}
@@ -1546,6 +1577,30 @@ function presetLabel(value: number): string {
   if (value < 45) return "Slow";
   if (value < 75) return "Slower";
   return "Veryslow";
+}
+
+/**
+ * Ускорители, которые реально есть в этой сборке FFmpeg.
+ *
+ * Показывать недоступные бессмысленно: оператор выберет, а откажет preflight
+ * уже перед стартом. «Авто» остаётся всегда — он сам найдёт первый доступный.
+ */
+function hardwareOptions(
+  capabilities: FfmpegCapabilities | null,
+): { value: string; label: string }[] {
+  const encoders = new Set(capabilities?.videoEncoders ?? []);
+  const present = (...names: string[]) => names.some((name) => encoders.has(name));
+  const options = [{ value: "off", label: "Программное" }];
+  if (!capabilities) return options;
+  if (present("h264_nvenc", "hevc_nvenc")) options.push({ value: "nvenc", label: "NVIDIA NVENC" });
+  if (present("h264_qsv", "hevc_qsv")) options.push({ value: "qsv", label: "Intel Quick Sync" });
+  if (present("h264_amf", "hevc_amf")) options.push({ value: "amf", label: "AMD AMF" });
+  if (present("h264_vaapi", "hevc_vaapi")) options.push({ value: "vaapi", label: "VAAPI" });
+  if (present("h264_videotoolbox", "hevc_videotoolbox")) {
+    options.push({ value: "videotoolbox", label: "Apple VideoToolbox" });
+  }
+  if (options.length > 1) options.splice(1, 0, { value: "auto", label: "Авто" });
+  return options;
 }
 
 function codecOptions(capabilities: FfmpegCapabilities | null): string[] {

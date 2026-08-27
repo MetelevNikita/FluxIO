@@ -1,4 +1,12 @@
 import { z } from "zod";
+import { sceneTemplateSchema } from "./scene.js";
+
+export * from "./scene.js";
+export * from "./scene-timing.js";
+export * from "./title-file.js";
+export * from "./title-presets.js";
+export * from "./title-presets-export.js";
+
 
 export const serviceHealthSchema = z.object({
   service: z.literal("gruber-media-server"),
@@ -36,8 +44,32 @@ export type NetworkInterfaceInfo = z.infer<typeof networkInterfaceSchema>;
 
 const profileTextSchema = z.string().max(4_096);
 
+/**
+ * Каким ускорителем кодировать. `off` — программный кодировщик, `auto` —
+ * первый доступный из тех, что умеет выбранный кодек.
+ *
+ * Это не оптимизация: на 2160 программный `libx264` не укладывается в реальное
+ * время на разумном железе, и без ускорителя UHD-профиль недостижим.
+ */
+export const videoHardwareSchema = z.enum([
+  "off",
+  "auto",
+  "nvenc",
+  "qsv",
+  "vaapi",
+  "videotoolbox",
+  "amf",
+]);
+
 export const portableEncodingSettingsSchema = z.object({
   videoCodec: z.enum(["H.264", "H.265", "MPEG-2 Video"]),
+  /**
+   * Ускоритель кодирования. Едет в профиле намеренно: он описывает задуманное
+   * кодирование, а не машину. Если на целевой машине такого ускорителя нет,
+   * preflight откажет внятно — это лучше тихого отката на программный, при
+   * котором оператор считал бы, что кодирует UHD аппаратно.
+   */
+  videoHardware: videoHardwareSchema.default("off"),
   profile: z.enum(["Main Profile", "High Profile", "Main 10"]),
   level: z.enum(["4.0", "4.1", "5.0", "5.1", "5.2"]),
   preset: z.number().min(0).max(100),
@@ -239,15 +271,15 @@ export const logoOverlaySchema = z.object({
   margin: z.number().int().min(0).max(500),
   opacity: z.number().min(0.05).max(1),
   /**
-   * Анимированный логотип (mov, webm, gif, отрендеренный Lottie): повторять до
+   * Анимированный логотип (mov, webm, gif): повторять до
    * конца ролика или проиграть один раз и остаться последним кадром. У
    * неподвижной картинки значения не имеет.
    */
   loop: z.boolean().default(true),
 }).refine((logo) => !logo.filePath.toLowerCase().endsWith(".json"), {
-  // FFmpeg не читает Lottie: интерфейс печёт проект в файл при выборе, и в
+  // Логотип обязан быть готовым файлом, а не проектом: в
   // запросе должен оказаться уже он. Иначе эфир падал бы на «Invalid data».
-  message: "A Lottie logo must be rendered to a file before it goes on air",
+  message: "A logo must be a rendered file before it goes on air",
   path: ["filePath"],
 });
 
@@ -267,16 +299,17 @@ export const itemLogoOverlaySchema = logoOverlaySchema.extend({
  *
  * Уровень 1 — служебная графика ролика (логотип, возрастная плашка).
  * Уровень 2 — параметрические эфирные эффекты этого блока: у каждого есть своё
- *   поведение и набор настроек, а Lottie-пресет для них лишь оформление.
- * Уровень 3 — «сырой» Lottie/alpha-оверлей, который оператор кладёт на ролик сам.
+ *   поведение и набор настроек, а сцена или alpha-медиа для них лишь оформление.
+ * Оформление принадлежит эффекту и отдельным элементом библиотеки не является.
  *
  * Эффект второго уровня не рисуется напрямую: перед стартом он *разрешается*
- * в обычные слои (`graphicEffectLayerSchema`), текстовые оверлеи
- * (`broadcastTextOverlaySchema`) и звуковые вставки (`clipAudioOverlaySchema`),
+ * в обычные слои (`graphicEffectLayerSchema`), показы сцен
+ * (`playoutSceneShowSchema`) и звуковые вставки (`clipAudioOverlaySchema`),
  * поэтому эфирный контур ничего не знает про уровни.
  * ------------------------------------------------------------------------- */
 
-export const lottieTextAlignSchema = z.enum(["left", "center", "right"]);
+/** Выключка надписи. */
+export const textAlignSchema = z.enum(["left", "center", "right"]);
 
 export const broadcastEffectKindSchema = z.enum([
   "animation-in-out",
@@ -306,7 +339,7 @@ export const broadcastTextStyleSchema = z.object({
   fontFilePath: z.string().min(1).nullable().default(null),
   fontFamily: z.string().max(256).default(""),
   /** Как `xPercent` относится к надписи: её левый край, центр или правый край. */
-  align: lottieTextAlignSchema.default("left"),
+  align: textAlignSchema.default("left"),
   /** Кегль в процентах от высоты кадра, чтобы SD/FHD/UHD выглядели одинаково. */
   fontSizePercent: z.number().positive().max(40).default(4.2),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
@@ -320,50 +353,6 @@ export const broadcastTextStyleSchema = z.object({
    */
   xPercent: z.number().min(-100).max(200).default(4),
   yPercent: z.number().min(-100).max(200).default(86),
-});
-
-export const broadcastTextOverlayModeSchema = z.enum([
-  "static",
-  "ticker",
-  "clock",
-  "countdown",
-]);
-
-/**
- * Динамическая надпись поверх ролика. В отличие от FX-слоя её содержимое
- * вычисляет сам FFmpeg (`drawtext`), поэтому часы идут по эфирным часам, а
- * скорость бегущей строки не зависит от длины текста.
- */
-export const broadcastTextOverlaySchema = z.object({
-  id: z.string().min(1),
-  effectId: z.string().min(1),
-  name: z.string().min(1),
-  mode: broadcastTextOverlayModeSchema,
-  content: z.string().max(8_000).default(""),
-  style: broadcastTextStyleSchema,
-  startSeconds: z.number().nonnegative().default(0),
-  endSeconds: z.number().positive(),
-  /** ticker: скорость прокрутки в пикселях кадра за секунду. */
-  speedPixelsPerSecond: z.number().positive().max(4_000).default(120),
-  direction: tickerDirectionSchema.default("left"),
-  /** ticker: 0 — крутить непрерывно всё окно эффекта. */
-  repeat: z.number().int().nonnegative().max(999).default(0),
-  /**
-   * ticker: полоса, внутри которой едет строка, в процентах ширины кадра.
-   * По умолчанию — весь кадр. Когда строка привязана к текстовому полю плашки,
-   * полосу сужают по её ширине: иначе текст выезжает за плашку и идёт по всему
-   * экрану. Обрезка настоящая — строка рисуется на отдельном холсте.
-   */
-  regionXPercent: z.number().min(-100).max(200).default(0),
-  regionWidthPercent: z.number().positive().max(100).default(100),
-  clockFormat: clockFormatSchema.default("HH:MM:SS"),
-  /** clock: сдвиг часового пояса относительно UTC. */
-  timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0),
-  /** countdown: сколько секунд осталось в момент `startSeconds`. */
-  countdownFromSeconds: z.number().nonnegative().max(86_400).default(0),
-}).refine((overlay) => overlay.endSeconds > overlay.startSeconds, {
-  message: "Text overlay end must be after its start",
-  path: ["endSeconds"],
 });
 
 /**
@@ -403,7 +392,7 @@ export const dynamicTitleSettingsSchema = z.object({
   taskFilePath: z.string().min(1).nullable().default(null),
   startSeconds: z.number().nonnegative().max(86_400).default(0),
   durationSeconds: z.number().positive().max(86_400).default(5),
-  /** Постоянная подпись, которую можно оставить внутри Lottie-пресета. */
+  /** Постоянная подпись рядом с основной строкой. */
   captionKey: z.string().max(128).default(""),
   captionText: z.string().max(512).default(""),
   /** Text Layer пресета, который очищается и заменяется живым drawtext. */
@@ -418,7 +407,7 @@ export const nextProgramSettingsSchema = z.object({
   source: nextProgramSourceSchema.default("playlist-name"),
   /** Text Layer, который очищается и заменяется живым названием через drawtext. */
   titleKey: z.string().min(1).max(128).default("next_title"),
-  /** Необязательное поле постоянной подписи, запекаемой внутрь Lottie. */
+  /** Необязательная постоянная подпись. */
   subtitleKey: z.string().min(1).max(128).default("next_subtitle"),
   subtitleText: z.string().max(512).default(""),
   /** Текст на случай, когда следующего элемента нет; пустой — эффект пропускается. */
@@ -448,7 +437,7 @@ export const tickerCrawlSettingsSchema = z.object({
   /**
    * Текстовое поле пресета, на место которого встаёт живое значение эффекта.
    * Поле шаблона при этом очищается: значение меняется покадрово и в
-   * отрендеренный один раз Lottie не запекается.
+   * оформление, отрисованное один раз, не запекается.
    */
   dynamicKey: z.string().max(128).default(""),
   style: broadcastTextStyleSchema.default(() => broadcastTextStyleSchema.parse({})),
@@ -532,18 +521,13 @@ export const broadcastEffectSettingsSchema = z.object({
   ),
 });
 
-/**
- * Описание эффекта второго уровня, живущее в библиотеке проекта рядом с
- * Lottie-эффектами. `presetEffectId` — ссылка на Lottie/alpha-пресет уровня 3,
- * который служит этому эффекту оформлением.
- */
+/** Описание эффекта второго уровня. */
 /**
  * Сдвиг графики эффекта относительно того места, куда её поставил дизайнер.
  *
- * У Lottie положение плашки обычно висит на анимированном слое, и в After
- * Effects его руками не подвинешь — а поправить в эфире надо. Сдвиг считается в
- * процентах кадра, поэтому одна и та же настройка одинаково ложится на SD, FHD
- * и UHD. Ноль — «как в пресете».
+ * У готового alpha-медиа положение задано внутри файла, и подвинуть его там
+ * нельзя — а поправить в эфире надо. Сдвиг считается в процентах кадра, поэтому
+ * одна и та же настройка одинаково ложится на SD, FHD и UHD. Ноль — «как в файле».
  */
 export const effectPlacementSchema = z.object({
   offsetXPercent: z.number().min(-100).max(100).default(0),
@@ -581,9 +565,16 @@ export const effectDecorationSchema = z.enum(["file", "plate"]);
 
 export const broadcastEffectDefinitionSchema = z.object({
   kind: broadcastEffectKindSchema,
-  presetEffectId: z.string().min(1).nullable().default(null),
+  /** Файл оформления: alpha-медиа у Animation in/out и Stinger. */
+  decorationFilePath: z.string().min(1).nullable().default(null),
   /** Отсутствует у сессий до v8.0.0 — восстанавливается ниже по `presetEffectId`. */
   decoration: effectDecorationSchema.optional(),
+  /**
+   * Сцена, которой оформлен эффект. Заменяет связку «запечённый шаблон плюс
+   * отдельная живая надпись»: текст стал узлом сцены, поэтому появиться раньше
+   * своей плашки он не может.
+   */
+  scene: sceneTemplateSchema.nullable().default(null),
   settings: broadcastEffectSettingsSchema.default(() => broadcastEffectSettingsSchema.parse({})),
   placement: effectPlacementSchema.default(() => effectPlacementSchema.parse({})),
   dataMapping: broadcastDataMappingSchema.default(() => broadcastDataMappingSchema.parse({})),
@@ -593,7 +584,7 @@ export const broadcastEffectDefinitionSchema = z.object({
   // графика эффекту назначена — значит он оформлен ею, и простой `default`
   // молча погасил бы плашку, которая уже выходит в эфир.
   decoration: definition.decoration
-    ?? (definition.presetEffectId ? ("file" as const) : ("plate" as const)),
+    ?? (definition.decorationFilePath ? ("file" as const) : ("plate" as const)),
 }));
 
 /** Одна сырая запись допускает произвольную структуру; сервер распрямит её в dotted keys. */
@@ -641,93 +632,6 @@ export const tickerSourceContentSchema = z.object({
 
 export const graphicEffectKindSchema = z.enum(["static", "video"]);
 
-export const lottiePropertyTypeSchema = z.enum([
-  "boolean",
-  "number",
-  "vector",
-  "color",
-  "text",
-]);
-
-export const lottiePropertyValueSchema = z.union([
-  z.boolean(),
-  z.number().finite(),
-  z.string().max(4_096),
-  z.array(z.number().finite()).min(2).max(4),
-]);
-
-/**
- * Где и чем нарисован текстовый слой Lottie.
- *
- * Нужно, чтобы живое значение эффекта — часы, отсчёт, бегущая строка — можно
- * было положить на место этого слоя: сам Lottie рендерится один раз в файл, и
- * меняющееся значение в него не запечь. Поэтому поле шаблона очищается, а
- * `drawtext` встаёт на его место и наследует кегль, цвет и выключку.
- *
- * Величины в процентах от кадра композиции: пресет и эфир могут быть разного
- * разрешения. Позиция считается на середине композиции — у слоя или его
- * родителя анимация могла ещё не отыграть в первом кадре.
- */
-export const lottieTextBoxSchema = z.object({
-  xPercent: z.number().finite(),
-  yPercent: z.number().finite(),
-  fontSizePercent: z.number().positive(),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  align: lottieTextAlignSchema,
-});
-
-/**
- * Текст, по которому подгоняется плашка с меткой `fit:` в имени слоя.
- *
- * Нужен там, где само текстовое поле пресета очищается: часы и отсчёт рисует
- * `drawtext` покадрово, в Lottie их не запечь, и мерить в документе нечего.
- * Шрифт и кегль берутся те же, которыми надпись реально выйдет в эфир, иначе
- * плашка сядет по чужой ширине.
- */
-export const lottieFitSampleSchema = z.object({
-  text: z.string().max(512),
-  fontFilePath: z.string().min(1).nullable().default(null),
-  /** Кегль в процентах высоты кадра; null — кегль текстового слоя пресета. */
-  fontSizePercent: z.number().positive().max(40).nullable().default(null),
-});
-
-export const lottieEditablePropertySchema = z.object({
-  id: z.string().min(1).max(128),
-  path: z.string().startsWith("/").max(1_024),
-  group: z.string().min(1).max(256),
-  label: z.string().min(1).max(256),
-  type: lottiePropertyTypeSchema,
-  value: lottiePropertyValueSchema,
-  originalValue: lottiePropertyValueSchema.optional(),
-  animated: z.boolean().default(false),
-  overridden: z.boolean().default(false),
-  min: z.number().finite().optional(),
-  max: z.number().finite().optional(),
-  /** Только у текстовых полей: положение и оформление слоя в композиции. */
-  textBox: lottieTextBoxSchema.nullable().default(null),
-  /** Чем мерить плашку, когда само поле уходит в эфир пустым. */
-  fitSample: lottieFitSampleSchema.nullable().default(null),
-});
-
-export const lottieEffectMetadataSchema = z.object({
-  sourcePath: z.string().min(1),
-  version: z.string().max(64),
-  frameRate: z.number().positive().max(240),
-  inPoint: z.number().finite(),
-  outPoint: z.number().finite(),
-  backgroundColor: z.string().regex(/^(?:transparent|#[0-9a-fA-F]{6})$/),
-  properties: z.array(lottieEditablePropertySchema).max(2_000),
-  /** Text Layer names that have a Shape Layer named `fit:<Text Layer>`. */
-  responsiveTextKeys: z.array(z.string().min(1).max(256)).max(256).default([]),
-  /** Имя JSON-файла, с которым шаблон проверялся в FluxIO Title Studio. */
-  dataSourceName: z.string().max(512).nullable().default(null),
-  /** Рекомендованное поле поиска ролика из Title Studio. */
-  matchSourceKey: z.string().trim().min(1).max(256).nullable().default(null),
-  /** Готовые связи JSON → Text Layer, перенесённые из Title Studio. */
-  dataBindings: z.array(broadcastDataBindingSchema).max(128).default([]),
-  warnings: z.array(z.string().max(512)).max(100).default([]),
-});
-
 export const graphicEffectAssetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -738,8 +642,7 @@ export const graphicEffectAssetSchema = z.object({
   height: z.number().int().nonnegative(),
   titleDirectoryPath: z.string().min(1).nullable().default(null),
   titlePaths: z.array(z.string().min(1)).max(2_000).default([]),
-  lottie: lottieEffectMetadataSchema.nullable().default(null),
-  /** Непусто у эффектов второго уровня; уровень 3 (сырой Lottie/alpha) держит null. */
+  /** Непусто у эффектов второго уровня. */
   broadcast: broadcastEffectDefinitionSchema.nullable().default(null),
 });
 
@@ -831,6 +734,22 @@ export const audioTrackScanSchema = z.object({
   })),
 });
 
+/**
+ * Показ сцены внутри ролика.
+ *
+ * Оператор задаёт только момент и длительность: как титр появляется и уходит —
+ * дело шаблона. Режиссёр укладывает вход и выход внутрь заданной длительности.
+ */
+export const playoutSceneShowSchema = z.object({
+  id: z.string().min(1).max(64),
+  /** Откуда пришёл показ — нужно, чтобы снять его вместе с эффектом. */
+  effectId: z.string().min(1).max(64),
+  template: sceneTemplateSchema,
+  fields: z.record(z.string(), z.string().max(2_000)).default({}),
+  startSeconds: z.number().nonnegative().max(86_400).default(0),
+  durationSeconds: z.number().positive().max(86_400),
+});
+
 export const playoutItemSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -845,10 +764,11 @@ export const playoutItemSchema = z.object({
   ageTitle: ageTitleOverlaySchema.nullable().optional(),
   itemLogo: itemLogoOverlaySchema.nullable().optional(),
   effects: z.array(graphicEffectLayerSchema).max(64).optional(),
-  textOverlays: z.array(broadcastTextOverlaySchema).max(16).optional(),
   audioOverlays: z.array(clipAudioOverlaySchema).max(8).optional(),
   subtitles: subtitleOverlaySchema.nullable().optional(),
   audioTracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks).optional(),
+  /** Сцены второго уровня; пусто — в конвейере ничего не меняется. */
+  scenes: z.array(playoutSceneShowSchema).max(8).optional(),
 });
 
 /**
@@ -951,17 +871,6 @@ export const graphicEffectImportResultSchema = z.object({
   issues: z.array(graphicEffectImportIssueSchema).max(200).default([]),
 });
 
-export const renderLottieEffectRequestSchema = z.object({
-  effect: graphicEffectAssetSchema.refine((effect) => Boolean(effect.lottie), {
-    message: "A Lottie effect is required",
-    path: ["lottie"],
-  }),
-});
-
-export const lottieSourceRequestSchema = z.object({
-  sourcePath: z.string().min(1),
-});
-
 export const parseScheduleRequestSchema = z.object({
   filePath: z.string().min(1),
 });
@@ -992,6 +901,38 @@ export const scheduleGraphicElementSchema = z.object({
   path: ["endOnSeconds"],
 });
 
+
+
+/**
+ * Эфирный эффект в расписании.
+ *
+ * Определение пишется **один раз** заголовком файла, а ролики ссылаются на него
+ * опознавателем. Иначе один титр на двухстах роликах означал бы двести копий
+ * своей сцены в одном текстовом файле.
+ *
+ * Само определение едет в base64: расписание разбирается построчно по фигурным
+ * скобкам, а сцена — это JSON, и в нём скобок полно.
+ */
+export const scheduleBroadcastEffectSchema = z.object({
+  effectId: z.string().min(1).max(64),
+  name: z.string().min(1).max(200),
+  kind: broadcastEffectKindSchema,
+  /** JSON определения эффекта в base64. */
+  data: z.string().min(1).max(4_000_000),
+});
+
+/** Показ эффекта на ролике: ссылка на определение плюс окно и значения полей. */
+export const scheduleBroadcastShowSchema = z.object({
+  effectId: z.string().min(1).max(64),
+  startOnSeconds: z.number().nonnegative(),
+  endOnSeconds: z.number().nonnegative(),
+  /** Значения полей в base64; пусто — брать образцы шаблона. */
+  fields: z.string().max(200_000).default(""),
+});
+
+export type ScheduleBroadcastEffect = z.infer<typeof scheduleBroadcastEffectSchema>;
+export type ScheduleBroadcastShow = z.infer<typeof scheduleBroadcastShowSchema>;
+
 export const parsedScheduleItemSchema = z.object({
   type: scheduleItemTypeSchema,
   declaredDurationSeconds: z.number().positive(),
@@ -1001,6 +942,7 @@ export const parsedScheduleItemSchema = z.object({
   ageTitleDurationSeconds: z.number().int().min(10).max(60).nullable(),
   logoPath: z.string().nullable(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
+  broadcastShows: z.array(scheduleBroadcastShowSchema).max(64).default([]),
   srtPath: z.string().nullable().default(null),
   srtEnabled: z.boolean().default(true),
   audioTracks: z.array(scheduleAudioTrackSchema).max(maximumProgramAudioTracks).default([]),
@@ -1009,6 +951,8 @@ export const parsedScheduleItemSchema = z.object({
 });
 
 export const parsedScheduleSchema = z.object({
+  /** Определения эфирных эффектов из заголовка файла. */
+  broadcastEffects: z.array(scheduleBroadcastEffectSchema).max(200).default([]),
   sourceFilePath: z.string().min(1),
   encoding: z.enum(["utf-8", "windows-1251"]),
   startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
@@ -1040,6 +984,7 @@ export const scheduleExportItemSchema = z.object({
     message: "Logo path must not contain braces or line breaks",
   }).nullable().optional(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
+  broadcastShows: z.array(scheduleBroadcastShowSchema).max(64).default([]),
   srtPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "SRT path must not contain braces or line breaks",
   }).nullable().optional(),
@@ -1047,10 +992,14 @@ export const scheduleExportItemSchema = z.object({
   audioTracks: z.array(scheduleAudioTrackSchema).max(maximumProgramAudioTracks).optional(),
 });
 
+
+
 export const serializeScheduleRequestSchema = z.object({
   extension: scheduleExportExtensionSchema,
   startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
   delaySeconds: z.number().nonnegative(),
+  /** Определения эффектов — заголовком, до первого ролика. */
+  broadcastEffects: z.array(scheduleBroadcastEffectSchema).max(200).default([]),
   items: z.array(scheduleExportItemSchema).min(1),
 });
 
@@ -1059,8 +1008,15 @@ export const serializedScheduleSchema = z.object({
   content: z.string().min(1),
 });
 
+
 export const videoEncodingSchema = z.object({
   codec: z.enum(["h264", "h265", "mpeg2"]),
+  hardware: videoHardwareSchema.default("off"),
+  /**
+   * Узел рендера для VAAPI. У остальных ускорителей устройство выбирается
+   * драйвером, у VAAPI — путь в файловой системе.
+   */
+  vaapiDevice: z.string().min(1).default("/dev/dri/renderD128"),
   width: z.number().int().min(320).max(7680),
   height: z.number().int().min(240).max(4320),
   frameRate: z.number().min(1).max(120),
@@ -1498,7 +1454,6 @@ export const workspaceSessionAssetSchema = z.object({
   ageTitle: ageTitleOverlaySchema.optional(),
   itemLogo: itemLogoOverlaySchema.optional(),
   effects: z.array(graphicEffectLayerSchema).max(64).optional(),
-  textOverlays: z.array(broadcastTextOverlaySchema).max(16).optional(),
   audioOverlays: z.array(clipAudioOverlaySchema).max(8).optional(),
   subtitles: subtitleOverlaySchema.optional(),
 });
@@ -1620,7 +1575,6 @@ export type AnimationInOutSettings = z.infer<typeof animationInOutSettingsSchema
 export type AnimationInOutMode = z.infer<typeof animationInOutModeSchema>;
 export type DynamicTitleSettings = z.infer<typeof dynamicTitleSettingsSchema>;
 export type EffectPlacement = z.infer<typeof effectPlacementSchema>;
-export type LottieFitSample = z.infer<typeof lottieFitSampleSchema>;
 export type NextProgramSettings = z.infer<typeof nextProgramSettingsSchema>;
 export type TickerCrawlSettings = z.infer<typeof tickerCrawlSettingsSchema>;
 export type ClockCountdownSettings = z.infer<typeof clockCountdownSettingsSchema>;
@@ -1628,11 +1582,9 @@ export type StingerTransitionSettings = z.infer<typeof stingerTransitionSettings
 export type StingerBlendMode = z.infer<typeof stingerBlendModeSchema>;
 export type StingerSourceKind = z.infer<typeof stingerSourceKindSchema>;
 export type CountdownSource = z.infer<typeof countdownSourceSchema>;
+export type VideoHardware = z.infer<typeof videoHardwareSchema>;
 export type BroadcastTextStyle = z.infer<typeof broadcastTextStyleSchema>;
-export type BroadcastTextOverlay = z.infer<typeof broadcastTextOverlaySchema>;
-export type LottieTextBox = z.infer<typeof lottieTextBoxSchema>;
-export type LottieTextAlign = z.infer<typeof lottieTextAlignSchema>;
-export type BroadcastTextOverlayMode = z.infer<typeof broadcastTextOverlayModeSchema>;
+export type TextAlign = z.infer<typeof textAlignSchema>;
 export type ClipAudioOverlay = z.infer<typeof clipAudioOverlaySchema>;
 export type BroadcastTaskFileContent = z.infer<typeof broadcastTaskFileContentSchema>;
 export type GraphicEffectVerification = z.infer<typeof graphicEffectVerificationSchema>;
@@ -1642,8 +1594,6 @@ export type SystemFont = z.infer<typeof systemFontSchema>;
 export type TickerSourceContent = z.infer<typeof tickerSourceContentSchema>;
 export type GraphicEffectAsset = z.infer<typeof graphicEffectAssetSchema>;
 export type GraphicEffectLayer = z.infer<typeof graphicEffectLayerSchema>;
-export type LottieEditableProperty = z.infer<typeof lottieEditablePropertySchema>;
-export type LottieEffectMetadata = z.infer<typeof lottieEffectMetadataSchema>;
 export type SubtitleOverlay = z.infer<typeof subtitleOverlaySchema>;
 export type ScheduleGraphicElement = z.infer<typeof scheduleGraphicElementSchema>;
 export type ParsedScheduleItem = z.infer<typeof parsedScheduleItemSchema>;
@@ -1652,6 +1602,7 @@ export type ScheduleExportExtension = z.infer<typeof scheduleExportExtensionSche
 export type SerializeScheduleRequest = z.infer<typeof serializeScheduleRequestSchema>;
 export type SerializedSchedule = z.infer<typeof serializedScheduleSchema>;
 export type PlayoutItem = z.infer<typeof playoutItemSchema>;
+export type PlayoutSceneShow = z.infer<typeof playoutSceneShowSchema>;
 export type ImageSequence = z.infer<typeof imageSequenceSchema>;
 export type AudioTrack = z.infer<typeof audioTrackSchema>;
 export type ProgramAudioTrack = z.infer<typeof programAudioTrackSchema>;

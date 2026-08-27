@@ -5,11 +5,13 @@ import { once } from "node:events";
 import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, type Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type {
   ClipAudioOverlay,
   FfmpegCapabilities,
   GraphicEffectLayer,
   PlayoutStatus,
+  SceneLayoutTarget,
   StartPlayoutRequest,
 } from "@gruber/contracts";
 import {
@@ -18,10 +20,13 @@ import {
   defaultMpegTsOutputSettings,
   isBarsSource,
   playoutStatusSchema,
+  sceneFormatSchema,
 } from "@gruber/contracts";
 import {
   buildFfmpegClipAudioProducerCommand,
   buildFfmpegClipVideoProducerCommand,
+  firstSceneFileDescriptor,
+  type PreparedSceneShow,
   buildFfmpegProgramEncoderCommand,
   clipAudioByteCount,
   clipAudioSource,
@@ -34,6 +39,12 @@ import {
 } from "./command-builder.js";
 import { FfmpegCapabilitiesService } from "./capabilities.js";
 import { probeMedia } from "./probe.js";
+import {
+  hardwareSupportsInterlace,
+  resolveVideoEncoder,
+  type ResolvedVideoEncoder,
+} from "./hardware-encoder.js";
+import { planSceneShow } from "../scene/producer.js";
 import { TsdDuckCapabilitiesService } from "../tsduck/capabilities.js";
 import {
   buildScte35CueXml,
@@ -128,6 +139,11 @@ export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
 
 export class PlayoutSupervisor {
   readonly previewDirectory: string;
+  /**
+   * Точка входа графического процесса. Считается от собственного модуля, а не
+   * от рабочего каталога: службу запускают и из корня репозитория, и юнитом.
+   */
+  readonly #sceneEntryPath = fileURLToPath(new URL("../scene/process-entry.js", import.meta.url));
   readonly capabilities: FfmpegCapabilitiesService;
   readonly tsduckCapabilities: TsdDuckCapabilitiesService;
   readonly gstreamerCapabilities: GstreamerCapabilities;
@@ -138,6 +154,9 @@ export class PlayoutSupervisor {
   #producerChild: ChildProcessWithoutNullStreams | null = null;
   #prefetchedProducerChild: ChildProcessWithoutNullStreams | null = null;
   #producerRuntimes = new Map<ChildProcessWithoutNullStreams, ClipProducerRuntime>();
+  /** Живые графические процессы: их надо гасить вместе с эфиром. */
+  #sceneProducers = new Set<ChildProcessWithoutNullStreams>();
+
   #producerStartupTimer: NodeJS.Timeout | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
   #expectedSubtitleStops = new WeakSet<ChildProcessWithoutNullStreams>();
@@ -150,6 +169,8 @@ export class PlayoutSupervisor {
   #transportPreviewRestartTimer: NodeJS.Timeout | null = null;
   #request: StartPlayoutRequest | null = null;
   #items: PreparedPlayoutItem[] = [];
+  /** Кодировщик, выбранный на старте сессии; `null` — эфир ещё не готовился. */
+  #videoEncoder: ResolvedVideoEncoder | null = null;
   /**
    * Момент, когда ролик `index` реально ушёл в эфир. От него считается эфирное
    * время всех последующих роликов: их рендереры стартуют заранее, поэтому
@@ -364,6 +385,10 @@ export class PlayoutSupervisor {
   async #prepareRequest(request: StartPlayoutRequest): Promise<PreparedRequest> {
     const capabilities = await this.capabilities.get();
     validateCapabilities(capabilities, request);
+    // Кодировщик выбирается один раз на сессию: набор ускорителей за время
+    // эфира не меняется, а пересчитывать его на каждую пересборку команды
+    // значит дёргать FFmpeg посреди выдачи.
+    this.#videoEncoder = resolveVideoEncoder(request.video, capabilities.videoEncoders);
     if (usesTsdDuckTransport(request)) {
       await this.tsduckCapabilities.getVersion();
       if (request.endpoint.protocol === "srt") {
@@ -715,6 +740,7 @@ export class PlayoutSupervisor {
     request: StartPlayoutRequest,
     options: FfmpegCommandOptions,
   ): FfmpegCommand {
+    options = { ...options, videoEncoder: this.#videoEncoder ?? undefined };
     const firstItem = this.#items[0];
     if (!firstItem) throw new Error("Playlist is empty");
     const totalDurationSeconds = this.#items.reduce(
@@ -1178,6 +1204,79 @@ export class PlayoutSupervisor {
     return child;
   }
 
+  /**
+   * Поднимает графический процесс на каждую сцену ролика и заводит его вывод
+   * в трубу FFmpeg.
+   *
+   * Процесс отдельный, потому что рисование покадрово — непрерывная нагрузка,
+   * а служба однопоточная: рисуя внутри неё, мы бы не отвечали ни на один
+   * маршрут всё время показа.
+   *
+   * Падение графики не имеет права уронить эфир. Труба закрывается, FFmpeg
+   * доигрывает ролик без титра — `eof_action=pass` в наложении именно для этого.
+   */
+  /**
+   * Гасит графические процессы. Вызывается вместе с остановкой эфира: висящий
+   * рисовальщик после Stop продолжал бы жечь ядро впустую.
+   */
+  #stopSceneProducers(): void {
+    for (const producer of this.#sceneProducers) {
+      producer.kill("SIGTERM");
+    }
+    this.#sceneProducers.clear();
+  }
+
+  #attachSceneProducers(
+    child: ChildProcessWithoutNullStreams,
+    index: number,
+    scenes: readonly PreparedSceneShow[],
+  ): void {
+    for (const [order, scene] of scenes.entries()) {
+      const target = child.stdio[firstSceneFileDescriptor + order] as Writable | undefined;
+      if (!target) continue;
+
+      const producer = spawn(process.execPath, [this.#sceneEntryPath], {
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      }) as ChildProcessWithoutNullStreams;
+      this.#sceneProducers.add(producer);
+
+      // Описание уходит в stdin: каталог превью очищается при старте сессии,
+      // и файл до запуска рисовальщика не доживал.
+      producer.stdin.end(scene.request);
+      producer.stdout.pipe(target);
+      this.#readSceneProducerLogs(producer, index, order);
+      producer.once("error", (error) => {
+        this.#appendEvent(`Scene ${order + 1} of clip ${index + 1} failed to start: ${error.message}`);
+        target.end();
+      });
+      producer.once("close", (code) => {
+        this.#sceneProducers.delete(producer);
+        if (code !== 0) {
+          this.#appendEvent(`Scene ${order + 1} of clip ${index + 1} exited with code ${code}`);
+        }
+        target.end();
+      });
+    }
+  }
+
+  #readSceneProducerLogs(
+    producer: ChildProcessWithoutNullStreams,
+    index: number,
+    order: number,
+  ): void {
+    let tail = "";
+    producer.stderr.setEncoding("utf8");
+    producer.stderr.on("data", (chunk: string) => {
+      tail = `${tail}${chunk}`.slice(-4_000);
+      for (const line of chunk.split(/\r?\n/)) {
+        const message = line.trim();
+        if (message) this.#appendLog(`Clip ${index + 1} scene ${order + 1}: ${message}`);
+      }
+    });
+    producer.once("close", () => { tail = ""; });
+  }
+
   #spawnClipProducer(index: number): ChildProcessWithoutNullStreams {
     const request = this.#request;
     const item = this.#items[index];
@@ -1187,10 +1286,14 @@ export class PlayoutSupervisor {
       { ...item, airEpochSeconds: this.#clipAirEpochSeconds(index) },
       this.previewDirectory,
     );
+    // Каждая сцена приходит своей трубой: fd 3, 4 и дальше. Без сцен список
+    // остаётся прежним, и в конвейере не меняется вообще ничего.
+    const scenes = item.scenes ?? [];
     const child = spawn(this.capabilities.ffmpegPath, videoCommand.args, {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", ...scenes.map(() => "pipe" as const)],
     }) as ChildProcessWithoutNullStreams;
+    this.#attachSceneProducers(child, index, scenes);
     const videoFrameBytes = Math.ceil(request.video.width * request.video.height * 1.5);
     const runtime: ClipProducerRuntime = {
       audio: [],
@@ -1923,6 +2026,9 @@ export class PlayoutSupervisor {
     this.#producerChild = null;
     this.#prefetchedProducerChild = null;
     this.#clearClipProducerStartupTimer();
+    // Графика умирает вместе с рендерерами: висящий рисовальщик жёг бы ядро
+    // впустую и держал бы трубу открытой.
+    this.#stopSceneProducers();
     for (const child of producers) this.#terminateClipProducer(child);
   }
 
@@ -2051,7 +2157,7 @@ async function resolveLogoOverlay<T extends { filePath: string }>(logo: T): Prom
   if (!isSupportedLogoPath(resolvedPath)) {
     throw new PlayoutPreflightError(
       "Logo must be PNG, WebP, JPEG, GIF, MOV, MP4, M4V, WebM, MKV, AVI or MXF. " +
-        "Lottie JSON must be rendered to MOV before playout.",
+        "A logo must be a rendered file before playout.",
     );
   }
   return { ...logo, filePath: resolvedPath };
@@ -2068,6 +2174,67 @@ async function resolveAgeOverlay<T extends { filePath: string }>(overlay: T): Pr
     throw new PlayoutPreflightError("AGE overlay must be a full-frame PNG or WebP with alpha");
   }
   return { ...overlay, filePath: resolvedPath };
+}
+
+/**
+ * Готовит показы сцен одного ролика.
+ *
+ * Считает полотно на весь показ и кладёт описание на диск: графический процесс
+ * получает путь, а не аргументы командной строки — недельная сетка иначе
+ * упёрлась бы в предельную длину строки запуска.
+ *
+ * Сцена, невидимая на всём показе, отбрасывается здесь: поднимать под неё
+ * процесс и вход FFmpeg незачем.
+ */
+function prepareScenes(
+  item: StartPlayoutRequest["playlist"][number],
+  request: StartPlayoutRequest,
+  durationSeconds: number,
+): PreparedSceneShow[] {
+  const shows = item.scenes ?? [];
+  if (shows.length === 0) return [];
+
+  const format = sceneFormatSchema.parse({
+    layout: sceneLayoutFor(request.video.width, request.video.height),
+    width: request.video.width,
+    height: request.video.height,
+    drawRate: request.video.frameRate,
+  });
+
+  const prepared: PreparedSceneShow[] = [];
+  for (const show of shows) {
+    const visible = Math.min(show.durationSeconds, Math.max(0, durationSeconds - show.startSeconds));
+    if (visible <= 0) continue;
+
+    const showRequest = {
+      template: show.template,
+      format,
+      durationSeconds: visible,
+      fields: show.fields,
+      airEpochSeconds: 0,
+      clipRemainingSeconds: Math.max(0, durationSeconds - show.startSeconds),
+    };
+    const plan = planSceneShow(showRequest);
+    if (!plan) continue;
+
+    prepared.push({
+      x: plan.region.x,
+      y: plan.region.y,
+      width: plan.region.width,
+      height: plan.region.height,
+      startSeconds: show.startSeconds,
+      frameCount: plan.frameCount,
+      request: JSON.stringify(showRequest),
+    });
+  }
+  return prepared;
+}
+
+/** Раскладочная цель по размеру кадра: от неё зависят поправки шаблона. */
+export function sceneLayoutFor(width: number, height: number): SceneLayoutTarget {
+  if (height >= 1_440) return "uhd";
+  if (height >= 720) return "hd";
+  return width / height > 1.5 ? "sd-16x9" : "sd-4x3";
 }
 
 async function prepareItems(
@@ -2129,10 +2296,10 @@ async function prepareItems(
         trimInSeconds: item.trimInSeconds,
         durationSeconds: duration,
         hasAudio,
+        scenes: prepareScenes(item, request, duration),
         ageTitle: item.ageTitle?.enabled ? item.ageTitle : undefined,
         itemLogo: item.itemLogo?.enabled ? item.itemLogo : undefined,
         effects: item.effects,
-        textOverlays: item.textOverlays,
         audioOverlays: await prepareAudioOverlays(item, probeCache, ffprobePath),
         subtitles: item.subtitles?.enabled ? item.subtitles : undefined,
         audioTracks: item.audioTracks,
@@ -2204,6 +2371,31 @@ function validateCapabilities(
   capabilities: FfmpegCapabilities,
   request: StartPlayoutRequest,
 ): void {
+  // Ускоритель проверяем первым: без него UHD-профиль недостижим, и узнавать
+  // об этом посреди эфира пропущенными кадрами — худший из вариантов.
+  // Подмену на программный кодировщик делать нельзя: оператор выбрал ускоритель
+  // именно потому, что программный не тянет.
+  if (request.video.hardware !== "off") {
+    let resolved;
+    try {
+      resolved = resolveVideoEncoder(request.video, capabilities.videoEncoders);
+    } catch (reason) {
+      throw new PlayoutPreflightError(
+        reason instanceof Error ? reason.message : String(reason),
+      );
+    }
+    if (
+      request.video.fieldOrder !== "progressive" &&
+      !hardwareSupportsInterlace(resolved.vendor)
+    ) {
+      // Отдать прогрессив вместо 50i — это не «чуть хуже», а несовпадение
+      // с профилем: головная станция ждёт поля.
+      throw new PlayoutPreflightError(
+        `${resolved.name} cannot encode interlaced video. ` +
+          "Switch the field order to progressive, choose QSV, or turn hardware encoding off.",
+      );
+    }
+  }
   if (request.scte35.enabled && request.endpoint.protocol === "rtmp") {
     throw new PlayoutPreflightError(
       "SCTE-35 injection requires UDP or SRT MPEG-TS output; RTMP/FLV is not supported",
@@ -2227,17 +2419,17 @@ function validateCapabilities(
         "switch Subtitle output to DVB, or turn SRT off for the affected clips.",
     );
   }
-  // Фильтр drawtext живёт только в сборках с libfreetype. Без него обычная
-  // динамическая плашка, бегущая строка, часы и отсчёт роняют граф тем же
-  // невнятным "No such filter".
+  // Фильтр drawtext живёт только в сборках с libfreetype. Плашки рисует сцена
+  // своим растеризатором, а вот возрастная маркировка без картинки — всё ещё
+  // drawtext, и без фильтра она роняет граф невнятным "No such filter".
   if (
     !capabilities.supports.dynamicText &&
-    request.playlist.some((item) => (item.textOverlays?.length ?? 0) > 0)
+    request.playlist.some((item) => item.ageTitle?.enabled && !item.ageTitle.filePath)
   ) {
     throw new PlayoutPreflightError(
-      "This FFmpeg build has no 'drawtext' filter, so dynamic titles, the ticker, " +
-        "on-screen clock and countdown cannot be rendered. Install a libfreetype-enabled build " +
-        "(on macOS: brew install ffmpeg-full), or remove those effects from the playlist.",
+      "This FFmpeg build has no 'drawtext' filter, so the age rating cannot be drawn as text. " +
+        "Install a libfreetype-enabled build (on macOS: brew install ffmpeg-full), " +
+        "or give the age rating an image file.",
     );
   }
   const ffmpegProtocol = usesTsdDuckTransport(request)

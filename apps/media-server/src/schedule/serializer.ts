@@ -11,6 +11,15 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
     `start on ${schedule.startTime} - delay ${formatNumber(schedule.delaySeconds)}`,
   ];
 
+  // Определения эфирных эффектов идут заголовком, до первого ролика: один титр
+  // на двухстах роликах иначе означал бы двести копий своей сцены в файле.
+  for (const effect of schedule.broadcastEffects) {
+    lines.push(
+      `defineBroadcastEffect {${effect.effectId}} ` +
+        `name {${effect.name}} kind {${effect.kind}} data {${effect.data}}`,
+    );
+  }
+
   for (const item of schedule.items) {
     if (item.ageTitle?.enabled) {
       lines.push(
@@ -21,10 +30,10 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
       lines.push(`insertLogoTitle {${item.logoPath}}`);
     }
     for (const element of item.graphicElements) {
-      const lottieTitles = element.titlePaths
+      const namedTitles = element.titlePaths
         .map((value, index) => `titlePath#${index + 1} {${value}} `)
         .join("");
-      // Пустой `titlePath {}` в файл не пишем: у Lottie-эффектов титры живут в
+      // Пустой `titlePath {}` в файл не пишем: у эффектов с папкой титры живут в
       // нумерованных `titlePath#N`, а безымянная директива остаётся пустой
       // всегда и только засоряет расписание.
       const pairedTitle = element.titlePath ? `titlePath {${element.titlePath}} ` : "";
@@ -32,10 +41,19 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
         `insertGraphicElement_{${element.name}} ` +
           `backgroundPath {${element.backgroundPath ?? ""}} ` +
           pairedTitle +
-          lottieTitles +
+          namedTitles +
           `duration {${formatScheduleTimecode(element.durationSeconds)}} ` +
           `startOn {${formatScheduleTimecode(element.startOnSeconds)}} ` +
           `endOn {${formatScheduleTimecode(element.endOnSeconds)}}`,
+      );
+    }
+    // Показ эффекта — ссылка на определение плюс окно и значения полей.
+    for (const show of item.broadcastShows) {
+      lines.push(
+        `insertBroadcastEffect {${show.effectId}} ` +
+          `startOn {${formatScheduleTimecode(show.startOnSeconds)}} ` +
+          `endOn {${formatScheduleTimecode(show.endOnSeconds)}}` +
+          (show.fields ? ` fields {${show.fields}}` : ""),
       );
     }
     if (item.srtPath) {

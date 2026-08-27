@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:web"],
+      "runtimeArgs": ["run", "dev", "-w", "@gruber/web"],
       "port": 5173,
       "url": "http://127.0.0.1:5173"
     }

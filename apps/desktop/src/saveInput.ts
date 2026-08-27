@@ -40,6 +40,16 @@ export function textFileSaveInput(value: unknown): TextFileSaveInput {
   };
 }
 
+/** Проверка полезной нагрузки от renderer: шаблон крупнее профиля настроек. */
+export function titleFileSaveInput(value: unknown): TextFileSaveInput {
+  const candidate = asRecord(value, "Invalid title save request");
+
+  return {
+    content: validContent(candidate.content, 8 * megabyte, "Title content"),
+    defaultName: validFileName(candidate.defaultName, "Invalid title file name"),
+  };
+}
+
 //
 
 function asRecord(value: unknown, message: string): Record<string, unknown> {

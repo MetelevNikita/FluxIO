@@ -47,7 +47,6 @@ import { mediaApiUrl } from "../runtime";
 import { buildScheduleTimeline } from "../schedule-timeline";
 import { assetAudioLanes, assetLanguageLabels, type AudioTrackLane } from "../audio-program";
 import { matchingNamedAssetPath } from "../graphic-title-matching";
-import { lottieTextValues } from "../effect-assignment";
 import { moveEffectLayerWindow, removeEffectLayerById } from "../effect-timeline-math";
 import type {
   BroadcastSettings,
@@ -577,7 +576,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
         startSeconds: 0,
         endSeconds,
         titlePath: findMatchingEffectTitle(asset.name, effect),
-        titlePaths: lottieTextValues(effect),
+        titlePaths: [],
       };
       return { effects: [...(asset.effects ?? []), layer] };
     });
@@ -627,7 +626,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   function removeBroadcastFromItem(assetId: string, effectId: string): void {
     onUpdateItems([assetId], (asset) => ({
       effects: (asset.effects ?? []).filter((layer) => layer.effectId !== effectId),
-      textOverlays: (asset.textOverlays ?? []).filter((overlay) => overlay.effectId !== effectId),
+      scenes: (asset.scenes ?? []).filter((show) => show.effectId !== effectId),
     }));
   }
 
@@ -673,7 +672,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             <button disabled={!onSelectScheduleLogoDirectory || scheduleBusy} onClick={() => void onSelectScheduleLogoDirectory?.()} type="button">
               <FolderOpen size={13} /> Folder
             </button>
-            {/* Анимированный логотип (mov, webm, gif, Lottie) либо крутится до
+            {/* Анимированный логотип (mov, webm, gif) либо крутится до
                 конца ролика, либо играет один раз и остаётся последним кадром.
                 У картинки кнопка ничего не меняет, поэтому и не показывается. */}
             {animatedLogo(scheduleLogoPath) ? (
@@ -1735,7 +1734,7 @@ function EffectTimeline({
           const start = Math.min(duration - 0.04, Math.max(0, span.startSeconds));
           const end = Math.min(duration, Math.max(start + 0.04, span.endSeconds));
           const broadcast = span.layerIds.length === 0 || span.parts.length > 1 ||
-            span.textOverlayIds.length > 0;
+            span.sceneShowIds.length > 0;
           return (
             <div className={`effect-track ${broadcast ? "broadcast-track" : ""}`} key={span.key}>
               <span title={`${span.name} · ${span.parts.join(" + ")}`}>
@@ -1931,9 +1930,9 @@ function formatLayerSeconds(seconds: number): string {
 /**
  * Чипы эфирных эффектов ролика: один эффект — один чип.
  *
- * На ролик эффект второго уровня кладёт до двух сущностей: плашку из пресета
- * (готовый файл) и живое значение (рисуется покадрово). Показывать их двумя
- * записями значило бы выдавать одно применение за два эффекта.
+ * На ролик эффект второго уровня кладёт до двух сущностей: готовое alpha-медиа
+ * и показ сцены. Показывать их двумя записями значило бы выдавать одно
+ * применение за два эффекта.
  */
 function broadcastChips(asset: MediaAsset): {
   effectId: string;
@@ -1948,11 +1947,12 @@ function broadcastChips(asset: MediaAsset): {
     group.plate = true;
     groups.set(layer.effectId, group);
   }
-  for (const overlay of asset.textOverlays ?? []) {
-    const group = groups.get(overlay.effectId) ?? { modes: [], name: overlay.name, plate: false };
-    group.name = overlay.name;
-    if (!group.modes.includes(overlay.mode)) group.modes.push(overlay.mode);
-    groups.set(overlay.effectId, group);
+  for (const show of asset.scenes ?? []) {
+    const name = show.template.name;
+    const group = groups.get(show.effectId) ?? { modes: [], name, plate: false };
+    group.name = name;
+    if (!group.modes.includes("сцена")) group.modes.push("сцена");
+    groups.set(show.effectId, group);
   }
   return [...groups.entries()].map(([effectId, group]) => {
     const parts = [...group.modes.map((mode) => mode.toUpperCase())];
@@ -1962,16 +1962,16 @@ function broadcastChips(asset: MediaAsset): {
       effectId,
       name: group.name,
       title: group.plate && group.modes.length > 0
-        ? `${group.name}: плашка из пресета плюс живое значение`
+        ? `${group.name}: файл оформления плюс сцена`
         : group.plate
-          ? `${group.name}: плашка из пресета`
-          : `${group.name}: живое значение`,
+          ? `${group.name}: файл оформления`
+          : `${group.name}: сцена`,
     };
   });
 }
 
 function fxDensityClass(asset: MediaAsset): string {
-  const total = (asset.effects?.length ?? 0) + (asset.textOverlays?.length ?? 0);
+  const total = (asset.effects?.length ?? 0) + (asset.scenes?.length ?? 0);
   if (total > 8) return "has-many-fx fx-density-high";
   if (total > 4) return "has-many-fx fx-density-medium";
   if (total > 2) return "has-many-fx";
@@ -1984,7 +1984,7 @@ function effectiveClipDuration(asset: MediaAsset): number {
 
 /** Из чего собрана дорожка: оператор должен видеть, что это одна сущность. */
 function spanPartsLabel(span: BroadcastEffectSpan): string {
-  const names: Record<string, string> = { graphics: "графика", text: "надпись", audio: "звук" };
+  const names: Record<string, string> = { graphics: "графика", scene: "сцена", audio: "звук" };
   return span.parts.map((part) => names[part] ?? part).join(" + ");
 }
 

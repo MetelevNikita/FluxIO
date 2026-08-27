@@ -1,4 +1,5 @@
-import { dialog } from "electron";
+import { app, dialog } from "electron";
+import type { Dirent } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -163,4 +164,64 @@ function withExtension(filePath: string, extension: string, keepAnyExtension: bo
 
 function formatBytes(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${bytes / (1024 * 1024)} MB` : `${bytes} bytes`;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Каталог титров.
+ *
+ * Папка на рабочем столе — умолчание, а не жёсткое требование: оператор может
+ * держать титры на общем диске студии, и канал принимает свой путь.
+ * ------------------------------------------------------------------------- */
+
+/** Имя папки титров. Одно на все платформы: её ищут глазами. */
+export const titleLibraryFolderName = "FluxIO Titles";
+
+export function defaultTitleLibraryPath(): string {
+  return path.join(app.getPath("desktop"), titleLibraryFolderName);
+}
+
+/**
+ * Читает все `.fto` каталога.
+ *
+ * Разбирать содержимое здесь нельзя: схема живёт в контрактах, а preload
+ * работает в sandbox и локальные модули в рантайме не подтягивает. Отдаём
+ * текст, разбирает renderer.
+ *
+ * Нечитаемый файл не проглатывается: он попадает в `issues` и виден оператору.
+ * Молча пропущенный титр выглядит как «папка пустая».
+ */
+export async function readTitleLibrary(directoryPath?: string): Promise<{
+  directoryPath: string;
+  files: { filePath: string; content: string }[];
+  issues: { filePath: string; message: string }[];
+}> {
+  const directory = directoryPath && path.isAbsolute(directoryPath)
+    ? directoryPath
+    : defaultTitleLibraryPath();
+  const files: { filePath: string; content: string }[] = [];
+  const issues: { filePath: string; message: string }[] = [];
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    // Папки ещё нет — это не ошибка: её создаёт мастер установки, а до первого
+    // сохранения она может не понадобиться вовсе.
+    return { directoryPath: directory, files: [], issues: [] };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".fto") continue;
+    const filePath = path.join(directory, entry.name);
+    try {
+      files.push({ filePath, content: await readTextFile(filePath, 8 * 1024 * 1024, "Title file") });
+    } catch (reason) {
+      issues.push({
+        filePath,
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+  files.sort((left, right) => left.filePath.localeCompare(right.filePath));
+  return { directoryPath: directory, files, issues };
 }

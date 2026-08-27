@@ -3,14 +3,13 @@ import type {
   BroadcastEffectKind,
   BroadcastEffectSettings,
   BroadcastTextStyle,
-  BroadcastTextOverlay,
   ClipAudioOverlay,
   EffectDecoration,
   GraphicEffectAsset,
-  EffectPlacement,
   GraphicEffectLayer,
-  LottieEditableProperty,
-  LottieFitSample,
+  PlayoutSceneShow,
+  SceneLayoutTarget,
+  SceneTemplate,
   SystemFont,
 } from "@gruber/contracts";
 import type { MediaAsset } from "./types.js";
@@ -25,8 +24,7 @@ import type { MediaAsset } from "./types.js";
  * поведение каждого эффекта проверяется тестом без запуска FFmpeg.
  *
  * Работа идёт в два шага: `planBroadcastEffect` считает, что и куда положить и
- * какие Lottie-варианты нужно отрендерить, а `applyBroadcastPlan` подставляет
- * готовые пути и возвращает новый плейлист.
+ * что и куда положить, а `applyBroadcastPlan` возвращает новый плейлист.
  */
 
 export interface BroadcastTargetClip {
@@ -87,7 +85,7 @@ export function mapBroadcastTaskRecords(
 }
 
 /**
- * Предпросмотр массового назначения до тяжёлого Lottie-рендера.
+ * Предпросмотр массового назначения до применения.
  *
  * `title` в JSON и имя материала сравниваются как имена файлов: без пути,
  * расширения, различий регистра и окружающих пробелов. Поэтому запись
@@ -133,44 +131,33 @@ export function summarizeBroadcastTaskMatches(
   };
 }
 
-/** Один Lottie-рендер: набор переопределений текста, общий для нескольких роликов. */
-export interface BroadcastRenderRequest {
-  key: string;
-  /** id редактируемых текстовых свойств Lottie → новое значение. */
-  overrides: Record<string, string>;
-  /**
-   * Чем мерить плашку `fit:` у полей, которые уходят в эфир пустыми. Часы и
-   * отсчёт рисует drawtext покадрово, в документе мерить нечего.
-   */
-  fitSamples: Record<string, LottieFitSample>;
-}
-
 export interface PlannedEffectLayer {
   assetId: string;
-  /** Какой рендер подставить в `filePath`; null — файл пресета берётся как есть. */
-  renderKey: string | null;
   layer: GraphicEffectLayer;
+}
+
+/** Показ сцены, поставленный на ролик. */
+export interface PlannedSceneShow {
+  assetId: string;
+  show: PlayoutSceneShow;
 }
 
 export interface BroadcastEffectPlan {
   layers: PlannedEffectLayer[];
-  textOverlays: { assetId: string; overlay: BroadcastTextOverlay }[];
+  scenes: PlannedSceneShow[];
   audioOverlays: { assetId: string; overlay: ClipAudioOverlay }[];
-  renders: BroadcastRenderRequest[];
   errors: string[];
   warnings: string[];
 }
 
 export interface PlanBroadcastEffectInput {
   effect: GraphicEffectAsset;
-  /** Пресет уровня 3 — Lottie или alpha-медиа, служащий эффекту оформлением. */
-  preset: GraphicEffectAsset | null;
   clips: BroadcastTargetClip[];
   /** null — «на весь проект»; иначе только выбранные ролики. */
   targetIds: Set<string> | null;
   taskEntries: BroadcastTaskEntry[];
   frameRate: number;
-  /** Размер эфирного кадра, в который FFmpeg вписывает Lottie через contain. */
+  /** Размер эфирного кадра. */
   frameWidth: number;
   frameHeight: number;
   createId?: () => string;
@@ -244,6 +231,36 @@ export function preferredTextFont(fonts: readonly SystemFont[]): SystemFont | nu
  * блок, но эффект можно переключить, и оставлять в остальных пустой шрифт
  * значит откладывать ту же поломку на потом.
  */
+/**
+ * Подставляет шрифт в текстовые узлы сцены.
+ *
+ * Без этого каждая новая сцена начинается с предупреждения, а шрифт по
+ * умолчанию может оказаться без кириллицы — и заметно это только в эфире,
+ * пустыми прямоугольниками вместо букв. Уже выбранный шрифт не трогаем:
+ * это правка дизайнера.
+ */
+export function withSceneFont(
+  scene: SceneTemplate | null,
+  font: SystemFont | null,
+): SceneTemplate | null {
+  if (!scene || !font) return scene;
+  return {
+    ...scene,
+    nodes: scene.nodes.map((node) => (node.kind !== "text" || node.textStyle.fontFilePath
+      ? node
+      : { ...node, textStyle: { ...node.textStyle, fontFilePath: font.filePath, fontFamily: font.family } })),
+  };
+}
+
+/** Заявленные раскладки шаблона. Незаявленная в эфир не пойдёт. */
+export function withSceneTargets(
+  scene: SceneTemplate | null,
+  targets: readonly SceneLayoutTarget[],
+): SceneTemplate | null {
+  if (!scene || targets.length === 0) return scene;
+  return { ...scene, targets: [...targets] };
+}
+
 export function withDefaultTextFont(
   settings: BroadcastEffectSettings,
   font: SystemFont | null,
@@ -288,25 +305,27 @@ export const effectGraphicPolicies: Record<BroadcastEffectKind, EffectGraphicPol
     accepts: "видео или картинку с альфа-каналом",
     template: false,
   },
+  // Виды со сценой файлом не оформляются: подложку рисует сама сцена. Запись
+  // остаётся ради полноты словаря — выбор файла им не предлагается.
   "dynamic-title": {
-    extensions: [".json"],
-    accepts: "шаблон FluxIO Title Studio",
-    template: true,
+    extensions: [],
+    accepts: "оформление сценой, файл не требуется",
+    template: false,
   },
   "next-program": {
-    extensions: [".json"],
-    accepts: "шаблон FluxIO Title Studio",
-    template: true,
+    extensions: [],
+    accepts: "оформление сценой, файл не требуется",
+    template: false,
   },
   "ticker-crawl": {
-    extensions: [".mov", ".webm", ".png"],
-    accepts: "видео или картинку с альфа-каналом для подложки",
+    extensions: [],
+    accepts: "оформление сценой, файл не требуется",
     template: false,
   },
   "clock-countdown": {
-    extensions: [".json"],
-    accepts: "шаблон FluxIO Title Studio",
-    template: true,
+    extensions: [],
+    accepts: "оформление сценой, файл не требуется",
+    template: false,
   },
   "stinger-transition": {
     extensions: [".mov", ".png"],
@@ -359,7 +378,6 @@ function broadcastEffectTitleFor(kind: BroadcastEffectKind): string {
  */
 export function effectBlocker(
   effect: GraphicEffectAsset,
-  library: readonly GraphicEffectAsset[],
 ): string | null {
   const definition = effect.broadcast;
   if (!definition) return null;
@@ -368,11 +386,10 @@ export function effectBlocker(
       ? null
       : "Не выбран файл перехода";
   }
+  // Сцена и есть оформление: файла такому эффекту не нужно.
+  if (definition.scene) return null;
   if (effectDecoration(definition) !== "file") return null;
-  if (!definition.presetEffectId) return "Не выбран файл оформления";
-  return library.some((entry) => entry.id === definition.presetEffectId)
-    ? null
-    : "Файл оформления потерян";
+  return definition.decorationFilePath ? null : "Не выбран файл оформления";
 }
 
 export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastEffectPlan {
@@ -387,10 +404,6 @@ export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastE
     createId: input.createId ?? (() => globalThis.crypto.randomUUID()),
     definition,
     plan,
-    // Оформление выбирает оператор. При «плашке» назначенный файл не
-    // используется, даже если он остался в эффекте: иначе переключение
-    // ничего бы не меняло, а плашку рисовали бы обе стороны сразу.
-    preset: effectDecoration(definition) === "file" ? input.preset : null,
     targets: input.clips.filter((clip) => !input.targetIds || input.targetIds.has(clip.id)),
   };
   if (context.targets.length === 0) {
@@ -422,14 +435,17 @@ const planners: Record<BroadcastEffectKind, (context: PlanContext) => void> = {
  * -------------------------------------------------------------------------- */
 
 /**
- * Универсальная гибридная плашка: Lottie отвечает за декор, а строку рисует
+ * Универсальная плашка: сцена отвечает за декор и за строку, поэтому
  * FFmpeg. Поэтому значение можно менять для каждого ролика без повторной
  * сборки проекта After Effects, а слой `fit:<имя поля>` садится по её ширине.
  */
 function planDynamicTitle(context: PlanContext): void {
   const settings = context.definition.settings.dynamicTitle;
-  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
-  const style = styleFromPreset(context, dynamicField, settings.style);
+  const scene = context.definition.scene;
+  if (!scene) {
+    context.plan.errors.push("У эффекта нет оформления: сцена не задана");
+    return;
+  }
 
   for (const clip of context.targets) {
     const content = resolveDynamicTitleContent(context, clip);
@@ -437,34 +453,11 @@ function planDynamicTitle(context: PlanContext): void {
       context.plan.warnings.push(`"${clip.name}": текст динамической плашки пуст — эффект пропущен`);
       continue;
     }
-    const startSeconds = settings.startSeconds;
-    const endSeconds = startSeconds + settings.durationSeconds;
-    if (context.preset) {
-      pushLayer(context, clip, {
-        endSeconds,
-        name: `${context.effect.name} plate`,
-        renderKey: presetCaptionRender(
-          context,
-          clip.name,
-          settings.captionKey,
-          settings.captionText,
-          dynamicField,
-          {
-            text: content,
-            fontFilePath: style.fontFilePath,
-            fontSizePercent: style.fontSizePercent,
-          },
-        ),
-        startSeconds,
-      });
-    }
-    pushTextOverlay(context, clip, {
-      content,
-      endSeconds,
-      mode: "static",
-      startSeconds,
-      style,
-    });
+    // Плашка и надпись — узлы одной сцены с одним временем: разойтись им нечем.
+    pushScene(context, clip, scene, {
+      title: content,
+      subtitle: settings.captionText,
+    }, settings.startSeconds, settings.durationSeconds);
   }
 }
 
@@ -507,18 +500,14 @@ function resolveDynamicTitleContent(
  */
 function planAnimationInOut(context: PlanContext): void {
   const settings = context.definition.settings.animationInOut;
-  const { plan, preset } = context;
-  if (!preset) {
-    plan.errors.push("Animation in/out needs a Lottie or alpha preset");
+  const filePath = context.definition.decorationFilePath;
+  if (!filePath) {
+    // Сам эффект и есть «показать графику»: без файла показывать нечего.
+    context.plan.errors.push("Animation in/out needs an alpha media file");
     return;
   }
-  const fields = lottieTextFields(preset);
-  const bindings = context.taskEntries.length > 0
-    ? bindTaskEntries(context, fields)
-    : context.targets.map((clip) => ({ clip, overrides: {} as Record<string, string> }));
 
-  for (const { clip, overrides } of bindings) {
-    const renderKey = registerRender(context, overrides);
+  for (const clip of context.targets) {
     const windows: { label: string; startSeconds: number; endSeconds: number }[] = [];
     if (settings.mode === "in" || settings.mode === "in-out") {
       windows.push({
@@ -537,58 +526,13 @@ function planAnimationInOut(context: PlanContext): void {
     }
     for (const window of windows) {
       pushLayer(context, clip, {
+        assetPath: filePath,
         endSeconds: window.endSeconds,
         name: `${context.effect.name} ${window.label}`,
-        renderKey,
         startSeconds: window.startSeconds,
       });
     }
   }
-}
-
-/**
- * Сопоставление записей задания с роликами и ключей задания с текстовыми полями
- * Lottie. Лишний ключ не ломает применение — он лишь попадает в предупреждения,
- * а отсутствующий оставляет полю значение по умолчанию из шаблона.
- */
-function bindTaskEntries(
-  context: PlanContext,
-  fields: Map<string, LottieEditableProperty>,
-): { clip: BroadcastTargetClip; overrides: Record<string, string> }[] {
-  const bindings: { clip: BroadcastTargetClip; overrides: Record<string, string> }[] = [];
-  const entriesByTitle = groupTaskEntriesByTitle(context.taskEntries);
-  const fieldsByNormalizedKey = new Map<string, LottieEditableProperty>();
-  for (const [key, field] of fields) fieldsByNormalizedKey.set(normalizeFieldKey(key), field);
-  const reportedDuplicateTitles = new Set<string>();
-
-  for (const clip of context.targets) {
-    const title = normalizeTaskTitle(clip.name);
-    const matches = title ? entriesByTitle.get(title) ?? [] : [];
-    if (matches.length === 0) continue;
-    if (matches.length > 1) {
-      if (!reportedDuplicateTitles.has(title)) {
-        context.plan.errors.push(
-          `"${matches[0]!.name}": ${matches.length} JSON records share this title, the binding is ambiguous`,
-        );
-        reportedDuplicateTitles.add(title);
-      }
-      continue;
-    }
-    const entry = matches[0]!;
-    const overrides: Record<string, string> = {};
-    for (const [key, value] of Object.entries(entry.values)) {
-      const field = fields.get(key) ?? fieldsByNormalizedKey.get(normalizeFieldKey(key));
-      if (!field) {
-        context.plan.warnings.push(
-          `"${entry.name}": key "${key}" has no matching Lottie text field and is ignored`,
-        );
-        continue;
-      }
-      overrides[field.id] = value;
-    }
-    bindings.push({ clip, overrides });
-  }
-  return bindings;
 }
 
 function groupTaskEntriesByTitle(
@@ -612,10 +556,6 @@ export function normalizeTaskTitle(value: string): string {
   return stem.trim().toLocaleLowerCase();
 }
 
-function normalizeFieldKey(value: string): string {
-  return value.trim().toLocaleLowerCase();
-}
-
 /* -------------------------------------------------------------------------- *
  * Next program
  * -------------------------------------------------------------------------- */
@@ -627,9 +567,12 @@ function normalizeFieldKey(value: string): string {
  */
 function planNextProgram(context: PlanContext): void {
   const settings = context.definition.settings.nextProgram;
+  const scene = context.definition.scene;
+  if (!scene) {
+    context.plan.errors.push("У эффекта нет оформления: сцена не задана");
+    return;
+  }
   const entriesByName = groupTaskEntriesByTitle(context.taskEntries);
-  const dynamicField = resolveDynamicField(context, settings.titleKey, settings.subtitleKey);
-  const style = styleFromPreset(context, dynamicField, settings.style);
 
   for (const clip of context.targets) {
     const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
@@ -645,10 +588,8 @@ function planNextProgram(context: PlanContext): void {
     }
     const nextTitle = next ? clipDisplayTitle(next.name) : "";
     const title = next
-      ? (settings.source === "task-file"
-          ? (nextEntries.length === 1
-              ? nextEntries[0]?.values[settings.titleKey] ?? nextTitle
-              : nextTitle)
+      ? (settings.source === "task-file" && nextEntries.length === 1
+          ? nextEntries[0]?.values[settings.titleKey] ?? nextTitle
           : nextTitle)
       : settings.fallbackTitle;
     if (!title) {
@@ -657,47 +598,10 @@ function planNextProgram(context: PlanContext): void {
       );
       continue;
     }
-    const startSeconds = clip.durationSeconds - settings.startOffsetSeconds;
-    const endSeconds = startSeconds + settings.durationSeconds;
-    if (context.preset) {
-      pushLayer(context, clip, {
-        endSeconds,
-        name: `${context.effect.name} → ${title}`,
-        renderKey: presetCaptionRender(
-          context,
-          next?.name ?? clip.name,
-          settings.subtitleKey,
-          settings.subtitleText,
-          dynamicField,
-          {
-            text: title,
-            fontFilePath: style.fontFilePath,
-            fontSizePercent: style.fontSizePercent,
-          },
-        ),
-        startSeconds,
-      });
-      // Название следующего фильма остаётся настоящей надписью FFmpeg. Lottie
-      // хранит только анимированный декор и подложку, ширина которой считается
-      // по fitSample для конкретного следующего материала.
-      pushTextOverlay(context, clip, {
-        content: title,
-        endSeconds,
-        mode: "static",
-        startSeconds,
-        style,
-      });
-    } else {
-      // Без пресета плашка рисуется штатным drawtext: эффект остаётся рабочим,
-      // даже когда шаблон из After Effects ещё не готов.
-      pushTextOverlay(context, clip, {
-        content: settings.subtitleText ? `${title} — ${settings.subtitleText}` : title,
-        endSeconds,
-        mode: "static",
-        startSeconds,
-        style,
-      });
-    }
+    pushScene(context, clip, scene, {
+      title,
+      subtitle: settings.subtitleText,
+    }, clip.durationSeconds - settings.startOffsetSeconds, settings.durationSeconds);
   }
 }
 
@@ -752,54 +656,25 @@ function nextMovieAfter(
 
 function planTickerCrawl(context: PlanContext): void {
   const settings = context.definition.settings.tickerCrawl;
+  const scene = context.definition.scene;
+  if (!scene) {
+    context.plan.errors.push("У эффекта нет оформления: сцена не задана");
+    return;
+  }
   const content = joinTickerItems(settings.items, settings.separator);
   if (!content) {
     context.plan.errors.push("The ticker has no messages to show");
     return;
   }
-  // Поле разрешается один раз на эффект: иначе предупреждение о нём повторилось
-  // бы столько раз, сколько роликов в расписании.
-  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
+
+  // Строка обрезается по своему узлу сцены, поэтому отдельный прозрачный холст
+  // ради обрезки больше не нужен.
+  const withItems = withTickerItems(scene, settings.items, settings.separator);
   for (const clip of context.targets) {
-    const startSeconds = settings.startSeconds;
-    const endSeconds = startSeconds + settings.durationSeconds;
-    // Подложка под строку — обычный слой из пресета, сам текст всегда рисует
-    // drawtext: только он держит постоянную скорость при любой длине сообщения.
-    if (context.preset) {
-      pushLayer(context, clip, {
-        endSeconds,
-        name: `${context.effect.name} plate`,
-        renderKey: presetCaptionRender(
-          context,
-          clip.name,
-          settings.captionKey,
-          settings.captionText,
-          dynamicField,
-        ),
-        startSeconds,
-      });
-    }
-    // Строка, привязанная к полю плашки, наследует её цвет — часто тёмный, —
-    // и без ограничения полосой едет по всему кадру: за пределами плашки текст
-    // почти не виден, и снаружи это выглядит как «строка не подставилась».
-    if (settings.dynamicKey && settings.regionWidthPercent >= 100) {
-      const warning = "Строка привязана к полю плашки, но полоса задана во весь кадр: " +
-        "текст поедет за пределы плашки и будет почти не виден. Задайте «Полоса: X» " +
-        "и «Полоса: ширина» по размеру плашки.";
-      if (!context.plan.warnings.includes(warning)) context.plan.warnings.push(warning);
-    }
-    pushTextOverlay(context, clip, {
-      content,
-      direction: settings.direction,
-      endSeconds,
-      mode: "ticker",
-      repeat: settings.repeat,
-      regionWidthPercent: settings.regionWidthPercent,
-      regionXPercent: settings.regionXPercent,
-      speedPixelsPerSecond: settings.speedPixelsPerSecond,
-      startSeconds,
-      style: styleFromPreset(context, dynamicField, settings.style),
-    });
+    pushScene(
+      context, clip, withItems, { ticker: content },
+      settings.startSeconds, settings.durationSeconds,
+    );
   }
 }
 
@@ -818,67 +693,18 @@ export function joinTickerItems(items: readonly string[], separator: string): st
 
 function planClockCountdown(context: PlanContext): void {
   const settings = context.definition.settings.clockCountdown;
-  const dynamicField = resolveDynamicField(context, settings.dynamicKey, settings.captionKey);
-  const style = styleFromPreset(context, dynamicField, settings.style);
-  // Часы и отсчёт меняются покадрово, поэтому в документе мерить нечего: плашке
-  // отдаётся самое широкое значение формата тем же шрифтом и кеглем.
-  const fitSample: LottieFitSample = {
-    text: clockSample(settings.format),
-    fontFilePath: style.fontFilePath,
-    fontSizePercent: style.fontSizePercent,
-  };
-  for (const clip of context.targets) {
-    const startSeconds = settings.startSeconds;
-    // Отсчёт «до конца ролика» считается по хронометражу каждого ролика
-    // отдельно: одно и то же назначение на разных роликах даёт разное время.
-    const countdownSeconds = settings.countdownSource === "clip-remaining"
-      ? Math.max(1, clip.durationSeconds - startSeconds)
-      : settings.countdownSeconds;
-    const endSeconds = settings.countdownSource === "clip-remaining"
-      ? clip.durationSeconds
-      : startSeconds + settings.durationSeconds;
-    if (context.preset) {
-      pushLayer(context, clip, {
-        endSeconds,
-        name: `${context.effect.name} plate`,
-        renderKey: presetCaptionRender(
-          context,
-          clip.name,
-          settings.captionKey,
-          settings.captionText,
-          dynamicField,
-          fitSample,
-        ),
-        startSeconds,
-      });
-    }
-    pushTextOverlay(context, clip, {
-      clockFormat: settings.format,
-      content: "",
-      countdownFromSeconds: settings.mode === "countdown" ? countdownSeconds : 0,
-      endSeconds,
-      mode: settings.mode === "countdown" ? "countdown" : "clock",
-      startSeconds,
-      style,
-      timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
-    });
-    if (
-      settings.mode === "countdown" &&
-      settings.countdownSource === "fixed" &&
-      settings.countdownSeconds > settings.durationSeconds
-    ) {
-      context.plan.warnings.push(
-        `"${clip.name}": the window is shorter than the countdown, so it disappears before zero`,
-      );
-    }
+  const scene = context.definition.scene;
+  if (!scene) {
+    context.plan.errors.push("У эффекта нет оформления: сцена не задана");
+    return;
   }
-}
 
-/** Самое широкое значение формата: по нему и садится плашка. */
-function clockSample(format: string): string {
-  if (format === "HH:MM" || format === "MM:SS") return "00:00";
-  if (format === "SS") return "00";
-  return "00:00:00";
+  // Часы идут по эфирному времени ролика, а не по системным: рендерер
+  // следующего ролика запускается заранее и нарисовал бы будущее.
+  const withMode = withClockMode(scene, settings);
+  for (const clip of context.targets) {
+    pushScene(context, clip, withMode, {}, settings.startSeconds, settings.durationSeconds);
+  }
 }
 
 /* -------------------------------------------------------------------------- *
@@ -898,7 +724,7 @@ function clockSample(format: string): string {
  */
 function planStingerTransition(context: PlanContext): void {
   const settings = context.definition.settings.stingerTransition;
-  // Переход берётся только из собственного файла. Lottie-пресет здесь больше
+  // Переход берётся только из собственного файла. Шаблон здесь больше
   // не принимается: у файла ffprobe проверяет альфу, частоту кадров и звук до
   // применения, а у шаблона проверять нечего — несовместимость всплыла бы
   // только на рендере.
@@ -967,7 +793,6 @@ function planStingerTransition(context: PlanContext): void {
       assetPath,
       endSeconds: clip.durationSeconds,
       name: `${context.effect.name} → ${next.name}`,
-      renderKey: null,
       sourceInSeconds: 0,
       startSeconds: clip.durationSeconds - tailSeconds,
     });
@@ -975,7 +800,6 @@ function planStingerTransition(context: PlanContext): void {
       assetPath,
       endSeconds: headSeconds,
       name: `${context.effect.name} ← ${clip.name}`,
-      renderKey: null,
       sourceInSeconds: cutPoint,
       startSeconds: 0,
     });
@@ -1014,6 +838,147 @@ export function snapToFrameGrid(seconds: number, frameRate: number): number {
   return Math.round(seconds * frameRate) / frameRate;
 }
 
+/**
+ * Переносит сообщения бегущей строки в её узел.
+ *
+ * Список живёт в настройках эффекта — оператор правит его там же, где источник
+ * и скорость, — а рисует его узел сцены. Здесь они встречаются.
+ */
+function withTickerItems(
+  scene: SceneTemplate,
+  items: readonly string[],
+  separator: string,
+): SceneTemplate {
+  return {
+    ...scene,
+    nodes: scene.nodes.map((node) => node.text?.kind !== "ticker" ? node : {
+      ...node,
+      text: { ...node.text, items: [...items], separator },
+    }),
+  };
+}
+
+/** Переносит режим часов и формат из настроек эффекта в узел сцены. */
+function withClockMode(
+  scene: SceneTemplate,
+  settings: BroadcastEffectSettings["clockCountdown"],
+): SceneTemplate {
+  return {
+    ...scene,
+    nodes: scene.nodes.map((node) => {
+      if (node.text?.kind !== "clock" && node.text?.kind !== "countdown") return node;
+      return {
+        ...node,
+        text: settings.mode === "clock"
+          ? {
+              kind: "clock" as const,
+              format: settings.format,
+              timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
+            }
+          : {
+              kind: "countdown" as const,
+              format: settings.format,
+              source: settings.countdownSource,
+              seconds: settings.countdownSeconds,
+            },
+      };
+    }),
+  };
+}
+
+/**
+ * Ставит показ сцены на ролик.
+ *
+ * Оператор задаёт момент и длительность; как титр появляется и уходит — дело
+ * шаблона. Поэтому окна показа здесь нет: режиссёр укладывает вход и выход
+ * внутрь длительности сам, и текст с плашкой разойтись не могут.
+ */
+function pushScene(
+  context: PlanContext,
+  clip: BroadcastTargetClip,
+  scene: SceneTemplate,
+  fields: Record<string, string>,
+  startSeconds: number,
+  durationSeconds: number,
+): void {
+  const start = Math.max(0, startSeconds);
+  const available = clip.durationSeconds - start;
+  if (available <= minimumWindowSeconds) {
+    context.plan.warnings.push(
+      `"${clip.name}": показ не помещается в ролик — пропущен`,
+    );
+    return;
+  }
+  if (durationSeconds > available) {
+    context.plan.warnings.push(
+      `"${clip.name}": показ обрезан по концу ролика`,
+    );
+  }
+  const shown = Math.min(durationSeconds, available);
+  context.plan.scenes.push({
+    assetId: clip.id,
+    show: {
+      id: `scene-${context.createId()}`,
+      effectId: context.effect.id,
+      template: scene,
+      fields,
+      startSeconds: start,
+      durationSeconds: shown,
+    },
+  });
+  pushSceneMedia(context, clip, scene, start, shown);
+}
+
+/**
+ * Медиа-узлы сцены — отдельными FX-слоями.
+ *
+ * Растеризатор сцены их не рисует: декодировать видео покадрово в том же
+ * однопоточном процессе, что считает титр, — верный способ не успеть к кадру.
+ * Слои кладутся **до** показа сцены, поэтому текст ложится поверх подложки.
+ */
+function pushSceneMedia(
+  context: PlanContext,
+  clip: BroadcastTargetClip,
+  scene: SceneTemplate,
+  startSeconds: number,
+  durationSeconds: number,
+): void {
+  for (const node of scene.nodes) {
+    if (node.kind !== "video" && node.kind !== "image") continue;
+    const filePath = node.media.filePath;
+    if (!filePath) continue;
+    if (!node.media.hasAlpha) {
+      context.plan.warnings.push(
+        `"${clip.name}": подложка «${node.name}» без альфа-канала закроет собой всё, что под ней`,
+      );
+    }
+    context.plan.layers.push({
+      assetId: clip.id,
+      layer: {
+        id: `fx-${context.createId()}`,
+        effectId: context.effect.id,
+        name: node.name,
+        filePath,
+        kind: node.kind === "video" ? "video" : "static",
+        sourceDurationSeconds: node.media.durationSeconds,
+        sourceInSeconds: 0,
+        startSeconds,
+        endSeconds: startSeconds + durationSeconds,
+        blendMode: "alpha",
+        lumaThreshold: 0.08,
+        sequenceFrameRate: node.media.sequenceFrameRate,
+        sequenceStartNumber: node.media.sequenceStartNumber,
+        // Медиа-узел стоит там же, где стоял бы нарисованный: положение
+        // задаётся сценой, а слой накрывает кадр целиком со сдвигом.
+        offsetXPercent: context.definition.placement.offsetXPercent,
+        offsetYPercent: context.definition.placement.offsetYPercent,
+        tier: 2,
+        titlePaths: [],
+      },
+    });
+  }
+}
+
 /* -------------------------------------------------------------------------- *
  * Общие помощники планирования
  * -------------------------------------------------------------------------- */
@@ -1025,13 +990,14 @@ function pushLayer(
     assetPath?: string;
     endSeconds: number;
     name: string;
-    renderKey: string | null;
     sourceInSeconds?: number;
     startSeconds: number;
   },
 ): void {
   const settings = context.definition.settings.stingerTransition;
-  const filePath = options.assetPath ?? context.preset?.filePath ?? context.effect.filePath;
+  const filePath = options.assetPath
+    ?? context.definition.decorationFilePath
+    ?? context.effect.filePath;
   const startSeconds = clampStart(options.startSeconds, clip.durationSeconds);
   const endSeconds = clampEnd(options.endSeconds, startSeconds, clip.durationSeconds);
   if (endSeconds - startSeconds < minimumWindowSeconds) {
@@ -1042,7 +1008,6 @@ function pushLayer(
   const isStinger = context.definition.kind === "stinger-transition";
   context.plan.layers.push({
     assetId: clip.id,
-    renderKey: options.renderKey,
     layer: {
       backgroundPath: filePath,
       blendMode: isStinger ? settings.blendMode : "alpha",
@@ -1059,7 +1024,7 @@ function pushLayer(
       offsetYPercent: isStinger ? 0 : context.definition.placement.offsetYPercent,
       sourceDurationSeconds: isStinger
         ? settings.durationSeconds
-        : context.preset?.durationSeconds ?? context.effect.durationSeconds,
+        : context.effect.durationSeconds,
       // Переход из пронумерованных кадров: частота задана оператором, в самих
       // .png её нет. Признаком служит именно она — по ней command-builder
       // отличает шаблон от одиночной картинки.
@@ -1078,284 +1043,6 @@ function pushLayer(
   });
 }
 
-/**
- * Кириллица без выбранного шрифта — самая частая причина «пустых прямоугольников»
- * в эфире: шрифт FFmpeg по умолчанию её может не содержать, и узнаётся это уже
- * на выходе. Предупреждаем на этапе применения.
- */
-function warnAboutCyrillicFont(context: PlanContext, style: { fontFilePath: string | null }, text: string): void {
-  if (style.fontFilePath || !/[А-Яа-яЁё]/.test(text)) return;
-  const warning = "В тексте есть кириллица, но шрифт не выбран. Шрифт FFmpeg по умолчанию " +
-    "может её не содержать — выберите системный шрифт с кириллицей в блоке «Оформление надписи».";
-  if (!context.plan.warnings.includes(warning)) context.plan.warnings.push(warning);
-}
-
-function pushTextOverlay(
-  context: PlanContext,
-  clip: BroadcastTargetClip,
-  overlay: Pick<BroadcastTextOverlay, "content" | "mode" | "style"> &
-    Partial<BroadcastTextOverlay> & { endSeconds: number; startSeconds: number },
-): void {
-  const startSeconds = clampStart(overlay.startSeconds, clip.durationSeconds);
-  const endSeconds = clampEnd(overlay.endSeconds, startSeconds, clip.durationSeconds);
-  warnAboutCyrillicFont(context, overlay.style, overlay.content);
-  const placement = context.definition.placement;
-  const shifted = placeOverlay(overlay, placement);
-  context.plan.textOverlays.push({
-    assetId: clip.id,
-    overlay: {
-      clockFormat: "HH:MM:SS",
-      countdownFromSeconds: 0,
-      direction: "left",
-      regionWidthPercent: 100,
-      regionXPercent: 0,
-      repeat: 0,
-      speedPixelsPerSecond: 120,
-      timezoneOffsetMinutes: 0,
-      ...shifted,
-      effectId: context.effect.id,
-      endSeconds,
-      id: `text-${clip.id}-${context.effect.id}-${context.createId()}`,
-      name: context.effect.name,
-      startSeconds,
-    },
-  });
-}
-
-/**
- * Тот же сдвиг, что у графики эффекта, но для надписи.
- *
- * Плашка и живое значение обязаны ехать вместе: слой двигает `overlay` в
- * FFmpeg, а надпись рисуется отдельным `drawtext` по своим процентам кадра.
- * Полоса бегущей строки сдвигается вместе с ней, иначе текст поедет мимо
- * плашки.
- */
-function placeOverlay<T extends Pick<BroadcastTextOverlay, "style"> & Partial<BroadcastTextOverlay>>(
-  overlay: T,
-  placement: EffectPlacement,
-): T {
-  if (placement.offsetXPercent === 0 && placement.offsetYPercent === 0) return overlay;
-  const shifted: T = {
-    ...overlay,
-    style: {
-      ...overlay.style,
-      xPercent: roundPercent(overlay.style.xPercent + placement.offsetXPercent),
-      yPercent: roundPercent(overlay.style.yPercent + placement.offsetYPercent),
-    },
-  };
-  return overlay.regionXPercent == null
-    ? shifted
-    : { ...shifted, regionXPercent: roundPercent(overlay.regionXPercent + placement.offsetXPercent) };
-}
-
-function roundPercent(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-/**
- * Постоянная подпись на подложке: текст уходит в выбранное текстовое поле
- * пресета так же, как у Next program. Живое значение — бегущая строка, часы,
- * отсчёт — по-прежнему рисует drawtext: оно меняется покадрово, и в
- * запечённый Lottie его не положить.
- */
-function presetCaptionRender(
-  context: PlanContext,
-  dataRecordName: string,
-  captionKey: string,
-  captionText: string,
-  dynamicField: LottieEditableProperty | null = null,
-  fitSample: LottieFitSample | null = null,
-): string | null {
-  if (!context.preset) return null;
-  const fields = lottieTextFields(context.preset);
-  const overrides: Record<string, string> = {};
-  const fitSamples: Record<string, LottieFitSample> = {};
-
-  // Все дополнительные связи из JSON Parser запекаются в соответствующие
-  // поля пользовательского шаблона. Поле с живым значением ниже очищается и
-  // поверх него рисуется drawtext, поэтому часы/строка остаются покадровыми.
-  const record = context.taskEntries.find((entry) => entry.name.trim() === dataRecordName.trim());
-  for (const [key, value] of Object.entries(record?.values ?? {})) {
-    const field = fields.get(key);
-    if (field) overrides[field.id] = value;
-  }
-
-  if (captionKey && captionText) {
-    const field = fields.get(captionKey);
-    if (field) overrides[field.id] = captionText;
-    else {
-      context.plan.warnings.push(
-        `В пресете нет текстового поля "${captionKey}" — подпись не подставлена`,
-      );
-    }
-  }
-  // Поле под живое значение очищается: Lottie рендерится один раз, и меняющиеся
-  // часы или бегущая строка в него не запекаются. Шаблонный текст обязан
-  // исчезнуть, иначе он останется в кадре под живой надписью.
-  if (dynamicField) {
-    overrides[dynamicField.id] = "";
-    // Плашке с меткой `fit:` мерить в документе будет нечего, поэтому ширину
-    // задаёт образец: тот же шрифт и кегль, которыми выйдет живая надпись.
-    if (fitSample) fitSamples[dynamicField.id] = fitSample;
-  }
-  return Object.keys(overrides).length > 0 ? registerRender(context, overrides, fitSamples) : null;
-}
-
-/**
- * Текстовое поле пресета, на место которого встаёт живое значение эффекта.
- *
- * Ключ выбирает оператор, но пустой ключ — не «ничего не делать»: шаблонный
- * текст остался бы в кадре и читался бы вторым слоем под живой надписью. Когда
- * поле в пресете одно, выбирать не из чего — оно и берётся; когда их несколько,
- * молча угадывать нельзя, и остаётся предупредить.
- */
-function resolveDynamicField(
-  context: PlanContext,
-  dynamicKey: string,
-  captionKey: string,
-): LottieEditableProperty | null {
-  if (!context.preset) return null;
-  const fields = lottieTextFields(context.preset);
-  if (dynamicKey) {
-    const field = fields.get(dynamicKey);
-    if (field) return field;
-    context.plan.warnings.push(
-      `В пресете нет текстового поля "${dynamicKey}" — значение эффекта не привязано`,
-    );
-    return null;
-  }
-  const candidates = [...fields].filter(([key]) => key !== captionKey);
-  const single = candidates.length === 1 ? candidates[0] : null;
-  if (single) {
-    context.plan.warnings.push(
-      `Поле под живое значение не выбрано — взято единственное поле пресета "${single[0]}"`,
-    );
-    return single[1];
-  }
-  if (candidates.length > 1) {
-    context.plan.warnings.push(
-      "Поле под живое значение не выбрано: шаблонный текст пресета останется в кадре под надписью",
-    );
-  }
-  return null;
-}
-
-/**
- * Оформление надписи, снятое с текстового слоя пресета: положение, кегль, цвет
- * и выключка. Живое значение встаёт ровно на место слоя шаблона и выглядит его
- * частью, а не наклейкой поверх. Подложка при этом не нужна — её роль играет
- * сама плашка.
- */
-function styleFromPreset(
-  context: PlanContext,
-  dynamicField: LottieEditableProperty | null,
-  style: BroadcastTextStyle,
-): BroadcastTextStyle {
-  if (!dynamicField || !context.preset) return style;
-  const sourceBox = dynamicField.textBox;
-  const box = sourceBox && containTextBox(
-    sourceBox,
-    context.preset.width,
-    context.preset.height,
-    context.frameWidth,
-    context.frameHeight,
-  );
-  if (!box) return style;
-  return {
-    ...style,
-    align: box.align,
-    boxEnabled: false,
-    color: box.color,
-    fontSizePercent: box.fontSizePercent,
-    xPercent: box.xPercent,
-    yPercent: box.yPercent,
-  };
-}
-
-/**
- * Переносит геометрию Text Layer из холста Lottie в эфирный кадр тем же
- * `contain`, которым command-builder масштабирует и дополняет прозрачными
- * полями сам MOV. Без этого у узкой композиции, например 1080×200, плашка
- * оказывалась по центру 16:9, а drawtext сохранял проценты исходного холста:
- * текст уезжал вниз и становился в несколько раз крупнее.
- */
-export function containTextBox(
-  box: NonNullable<LottieEditableProperty["textBox"]>,
-  sourceWidth: number,
-  sourceHeight: number,
-  frameWidth: number,
-  frameHeight: number,
-): NonNullable<LottieEditableProperty["textBox"]> {
-  if (
-    sourceWidth <= 0 || sourceHeight <= 0 || frameWidth <= 0 || frameHeight <= 0 ||
-    !Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) ||
-    !Number.isFinite(frameWidth) || !Number.isFinite(frameHeight)
-  ) return box;
-  // Кроме сохранения точных значений это не даёт плавающей арифметике
-  // превратить, например, 48 в 47.99999999999999 у обычного 16:9 пресета.
-  if (sourceWidth * frameHeight === frameWidth * sourceHeight) return box;
-  const scale = Math.min(frameWidth / sourceWidth, frameHeight / sourceHeight);
-  const fittedWidth = sourceWidth * scale;
-  const fittedHeight = sourceHeight * scale;
-  const left = (frameWidth - fittedWidth) / 2;
-  const top = (frameHeight - fittedHeight) / 2;
-  return {
-    ...box,
-    xPercent: ((left + (box.xPercent / 100) * fittedWidth) / frameWidth) * 100,
-    yPercent: ((top + (box.yPercent / 100) * fittedHeight) / frameHeight) * 100,
-    fontSizePercent: ((box.fontSizePercent / 100) * sourceHeight * scale / frameHeight) * 100,
-  };
-}
-
-/**
- * Регистрирует Lottie-рендер и возвращает его ключ. Одинаковые наборы значений
- * склеиваются: недельная сетка на сотни роликов иначе заказала бы сотни
- * одинаковых рендеров.
- */
-function registerRender(
-  context: PlanContext,
-  overrides: Record<string, string>,
-  fitSamples: Record<string, LottieFitSample> = {},
-): string | null {
-  if (!context.preset?.lottie) return null;
-  if (Object.keys(overrides).length === 0) return null;
-  // Образец входит в ключ: под разную ширину нужен разный рендер плашки.
-  const key = JSON.stringify([
-    Object.fromEntries(Object.entries(overrides).sort(([left], [right]) =>
-      left.localeCompare(right))),
-    Object.fromEntries(Object.entries(fitSamples).sort(([left], [right]) =>
-      left.localeCompare(right))),
-  ]);
-  if (!context.plan.renders.some((render) => render.key === key)) {
-    context.plan.renders.push({ key, overrides, fitSamples });
-  }
-  return key;
-}
-
-/**
- * Ключи редактируемых текстовых полей Lottie. Ключ — это имя текстового слоя из
- * After Effects, а для Essential Graphics — идентификатор слота; именно они
- * пишутся в файл задания. Сравнение точное и с учётом регистра.
- */
-export function lottieTextFields(
-  preset: GraphicEffectAsset,
-): Map<string, LottieEditableProperty> {
-  const fields = new Map<string, LottieEditableProperty>();
-  for (const property of preset.lottie?.properties ?? []) {
-    if (property.type !== "text") continue;
-    const key = lottieTextFieldKey(property);
-    if (key && !fields.has(key)) fields.set(key, property);
-  }
-  return fields;
-}
-
-export function lottieTextFieldKey(property: LottieEditableProperty): string {
-  const segments = property.group.split("·").map((segment) => segment.trim());
-  const last = segments.at(-1) ?? "";
-  const slot = /^Slot\s+(.+)$/.exec(last);
-  return slot?.[1]?.trim() ?? last;
-}
-
 function clampStart(value: number, clipDuration: number): number {
   return Math.min(Math.max(0, value), Math.max(0, clipDuration - minimumWindowSeconds));
 }
@@ -1365,46 +1052,40 @@ function clampEnd(value: number, startSeconds: number, clipDuration: number): nu
 }
 
 function emptyPlan(): BroadcastEffectPlan {
-  return { audioOverlays: [], errors: [], layers: [], renders: [], textOverlays: [], warnings: [] };
+  return {
+    audioOverlays: [], errors: [], layers: [], scenes: [], warnings: [],
+  };
 }
 
 /* -------------------------------------------------------------------------- *
  * Применение плана к плейлисту
  * -------------------------------------------------------------------------- */
 
-/**
- * Кладёт рассчитанный план в плейлист. `renderedPathByKey` — готовые рендеры
- * Lottie: их заказывает вызывающий код, потому что рендер идёт на сервере, а сам
- * план обязан оставаться чистым.
- */
+/** Кладёт рассчитанный план в плейлист. */
 export function applyBroadcastPlan(
   assets: readonly MediaAsset[],
   plan: BroadcastEffectPlan,
-  renderedPathByKey: ReadonlyMap<string, string> = new Map(),
 ): { items: MediaAsset[]; touched: number } {
   const layersByAsset = groupBy(plan.layers, (entry) => entry.assetId);
-  const textByAsset = groupBy(plan.textOverlays, (entry) => entry.assetId);
   const audioByAsset = groupBy(plan.audioOverlays, (entry) => entry.assetId);
+  const scenesByAsset = groupBy(plan.scenes, (entry) => entry.assetId);
   let touched = 0;
   const items = assets.map((asset) => {
     const layers = layersByAsset.get(asset.id) ?? [];
-    const texts = textByAsset.get(asset.id) ?? [];
     const audio = audioByAsset.get(asset.id) ?? [];
-    if (layers.length === 0 && texts.length === 0 && audio.length === 0) return asset;
+    const scenes = scenesByAsset.get(asset.id) ?? [];
+    if (
+      layers.length === 0 && audio.length === 0 && scenes.length === 0
+    ) return asset;
     touched += 1;
     return {
       ...asset,
       effects: [
         ...(asset.effects ?? []),
-        ...layers.map(({ layer, renderKey }) => {
-          const renderedPath = renderKey ? renderedPathByKey.get(renderKey) : undefined;
-          return renderedPath
-            ? { ...layer, backgroundPath: renderedPath, filePath: renderedPath }
-            : layer;
-        }),
+        ...layers.map((entry) => entry.layer),
       ],
-      textOverlays: [...(asset.textOverlays ?? []), ...texts.map((entry) => entry.overlay)],
       audioOverlays: [...(asset.audioOverlays ?? []), ...audio.map((entry) => entry.overlay)],
+      scenes: [...(asset.scenes ?? []), ...scenes.map((entry) => entry.show)],
     };
   });
   return { items, touched };
@@ -1418,8 +1099,8 @@ export function removeBroadcastEffect(
   return assets.map((asset) => ({
     ...asset,
     effects: asset.effects?.filter((layer) => layer.effectId !== effectId),
-    textOverlays: asset.textOverlays?.filter((overlay) => overlay.effectId !== effectId),
     audioOverlays: asset.audioOverlays?.filter((overlay) => overlay.effectId !== effectId),
+    scenes: asset.scenes?.filter((show) => show.effectId !== effectId),
   }));
 }
 
@@ -1449,15 +1130,15 @@ export interface BroadcastEffectSpan {
   startSeconds: number;
   endSeconds: number;
   layerIds: string[];
-  textOverlayIds: string[];
+  sceneShowIds: string[];
   audioOverlayIds: string[];
   /** Из чего собрана дорожка — показывается оператору в подписи. */
-  parts: ("graphics" | "text" | "audio")[];
+  parts: ("graphics" | "scene" | "audio")[];
 }
 
 interface BroadcastSpanSource {
   effects?: GraphicEffectLayer[] | undefined;
-  textOverlays?: BroadcastTextOverlay[] | undefined;
+  scenes?: PlayoutSceneShow[] | undefined;
   audioOverlays?: ClipAudioOverlay[] | undefined;
 }
 
@@ -1504,7 +1185,7 @@ export function broadcastEffectSpans(asset: BroadcastSpanSource): BroadcastEffec
         startSeconds: start,
         endSeconds: end,
         layerIds: [],
-        textOverlayIds: [],
+        sceneShowIds: [],
         audioOverlayIds: [],
         parts: [],
       };
@@ -1525,13 +1206,17 @@ export function broadcastEffectSpans(asset: BroadcastSpanSource): BroadcastEffec
     if (!span.parts.includes("graphics")) span.parts.push("graphics");
   }
 
-  for (const overlay of asset.textOverlays ?? []) {
-    const group = windowGroup(overlay.effectId, overlay.startSeconds, overlay.endSeconds);
+  // Показ сцены — такая же часть эффекта, как FX-слой: без него у эффекта со
+  // сценой не было бы дорожки вовсе, и оператор не смог бы его ни подвинуть,
+  // ни подрезать.
+  for (const show of asset.scenes ?? []) {
+    const end = show.startSeconds + show.durationSeconds;
+    const group = windowGroup(show.effectId, show.startSeconds, end);
     const span = ensure(
-      group, overlay.id, overlay.effectId, overlay.name, overlay.startSeconds, overlay.endSeconds,
+      group, show.id, show.effectId, show.template.name, show.startSeconds, end,
     );
-    span.textOverlayIds.push(overlay.id);
-    if (!span.parts.includes("text")) span.parts.push("text");
+    span.sceneShowIds.push(show.id);
+    if (!span.parts.includes("scene")) span.parts.push("scene");
   }
 
   for (const overlay of asset.audioOverlays ?? []) {
@@ -1557,17 +1242,19 @@ export function retimeBroadcastEffectSpan(
   endSeconds: number,
 ): {
   effects: GraphicEffectLayer[];
-  textOverlays: BroadcastTextOverlay[];
+  scenes: PlayoutSceneShow[];
   audioOverlays: ClipAudioOverlay[];
 } {
   const layerIds = new Set(span.layerIds);
-  const textIds = new Set(span.textOverlayIds);
+  const sceneIds = new Set(span.sceneShowIds);
   const audioIds = new Set(span.audioOverlayIds);
   return {
     effects: (asset.effects ?? []).map((layer) =>
       layerIds.has(layer.id) ? { ...layer, startSeconds, endSeconds } : layer),
-    textOverlays: (asset.textOverlays ?? []).map((overlay) =>
-      textIds.has(overlay.id) ? { ...overlay, startSeconds, endSeconds } : overlay),
+    scenes: (asset.scenes ?? []).map((show) =>
+      sceneIds.has(show.id)
+        ? { ...show, startSeconds, durationSeconds: Math.max(0.04, endSeconds - startSeconds) }
+        : show),
     audioOverlays: (asset.audioOverlays ?? []).map((overlay) =>
       audioIds.has(overlay.id)
         ? { ...overlay, startSeconds, durationSeconds: Math.max(0.04, endSeconds - startSeconds) }
@@ -1581,15 +1268,15 @@ export function removeBroadcastEffectSpan(
   span: BroadcastEffectSpan,
 ): {
   effects: GraphicEffectLayer[];
-  textOverlays: BroadcastTextOverlay[];
+  scenes: PlayoutSceneShow[];
   audioOverlays: ClipAudioOverlay[];
 } {
   const layerIds = new Set(span.layerIds);
-  const textIds = new Set(span.textOverlayIds);
+  const sceneIds = new Set(span.sceneShowIds);
   const audioIds = new Set(span.audioOverlayIds);
   return {
     effects: (asset.effects ?? []).filter((layer) => !layerIds.has(layer.id)),
-    textOverlays: (asset.textOverlays ?? []).filter((overlay) => !textIds.has(overlay.id)),
+    scenes: (asset.scenes ?? []).filter((show) => !sceneIds.has(show.id)),
     audioOverlays: (asset.audioOverlays ?? []).filter((overlay) => !audioIds.has(overlay.id)),
   };
 }

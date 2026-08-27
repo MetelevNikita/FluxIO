@@ -39,8 +39,9 @@ export function collectMissingGraphics(
   for (const playlist of playlists) {
     for (const asset of playlist) {
       for (const layer of asset.effects ?? []) {
-        // Эффект второго уровня оформлен пресетом и своего файла не имеет:
-        // его потерю показывает пресет, а не сам слой.
+        // Слой второго уровня приходит из библиотеки, и его файл проверяется
+        // отдельно — по самому эффекту. Здесь его пропускаем, чтобы одна
+        // пропажа не показалась оператору дважды.
         if (layer.tier === 2) continue;
         const fileMissing = missingPaths.has(layer.filePath);
         const notInLibrary = !libraryIds.has(layer.effectId) &&
@@ -126,4 +127,108 @@ export function dropMissingGraphics(
 
 function normalizePath(value: string): string {
   return value.replaceAll("\\", "/").toLocaleLowerCase();
+}
+
+
+/* -------------------------------------------------------------------------- *
+ * Файлы библиотеки эффектов.
+ *
+ * Расписание хранит абсолютные пути, а не файлы, и это верно не только для
+ * FX-слоёв. У эффекта второго уровня свои файлы: оформление Animation in/out,
+ * файл перехода стингера и подложки узлов сцены. После переноса проекта или
+ * переустановки их может не быть, и раньше это всплывало отказом на Start.
+ * ------------------------------------------------------------------------- */
+
+/** Что за файл потерян и у какого эффекта. */
+export interface MissingEffectFile {
+  filePath: string;
+  effectId: string;
+  effectName: string;
+  /** Чем этот файл был для эффекта — по этому оператор его и узнаёт. */
+  role: "decoration" | "stinger" | "scene-media";
+  /** Имя узла сцены, если пропала подложка. */
+  nodeName?: string;
+}
+
+/** Все пути, которые библиотека держит на диске: их и проверяет сервер. */
+export function effectLibraryPaths(
+  effectLibrary: readonly GraphicEffectAsset[],
+): string[] {
+  const paths = new Set<string>();
+  for (const { filePath } of describeEffectFiles(effectLibrary)) paths.add(filePath);
+  return [...paths];
+}
+
+/** Потерянные файлы библиотеки — по списку отсутствующих путей от сервера. */
+export function collectMissingEffectFiles(
+  effectLibrary: readonly GraphicEffectAsset[],
+  missingPaths: ReadonlySet<string>,
+): MissingEffectFile[] {
+  return describeEffectFiles(effectLibrary)
+    .filter((entry) => missingPaths.has(entry.filePath))
+    .sort((left, right) => left.effectName.localeCompare(right.effectName));
+}
+
+function describeEffectFiles(
+  effectLibrary: readonly GraphicEffectAsset[],
+): MissingEffectFile[] {
+  const found: MissingEffectFile[] = [];
+  for (const effect of effectLibrary) {
+    const definition = effect.broadcast;
+    if (!definition) continue;
+    const base = { effectId: effect.id, effectName: effect.name };
+
+    if (definition.decorationFilePath) {
+      found.push({ ...base, filePath: definition.decorationFilePath, role: "decoration" });
+    }
+    const stinger = definition.settings.stingerTransition.assetPath;
+    // Последовательность записана шаблоном нумерации: проверять её как файл
+    // бессмысленно, такого пути на диске нет.
+    if (stinger && definition.settings.stingerTransition.sourceKind !== "sequence") {
+      found.push({ ...base, filePath: stinger, role: "stinger" });
+    }
+    for (const node of definition.scene?.nodes ?? []) {
+      const filePath = node.media.filePath;
+      if (!filePath || node.media.sequenceFrameRate != null) continue;
+      found.push({ ...base, filePath, role: "scene-media", nodeName: node.name });
+    }
+  }
+  return found;
+}
+
+/** Подставляет найденный файл вместо потерянного во всех его местах. */
+export function applyEffectFileReplacement(
+  effectLibrary: readonly GraphicEffectAsset[],
+  fromPath: string,
+  toPath: string,
+): GraphicEffectAsset[] {
+  return effectLibrary.map((effect) => {
+    const definition = effect.broadcast;
+    if (!definition) return effect;
+    const settings = definition.settings.stingerTransition.assetPath === fromPath
+      ? {
+          ...definition.settings,
+          stingerTransition: { ...definition.settings.stingerTransition, assetPath: toPath },
+        }
+      : definition.settings;
+    const scene = definition.scene
+      ? {
+          ...definition.scene,
+          nodes: definition.scene.nodes.map((node) => (node.media.filePath === fromPath
+            ? { ...node, media: { ...node.media, filePath: toPath } }
+            : node)),
+        }
+      : definition.scene;
+    return {
+      ...effect,
+      broadcast: {
+        ...definition,
+        decorationFilePath: definition.decorationFilePath === fromPath
+          ? toPath
+          : definition.decorationFilePath,
+        settings,
+        scene,
+      },
+    };
+  });
 }

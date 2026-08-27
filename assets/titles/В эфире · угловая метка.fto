@@ -1,0 +1,488 @@
+{
+  "format": "fluxio-title",
+  "formatVersion": 1,
+  "applicationVersion": "8.0.0",
+  "savedAt": "2026-01-01T00:00:00.000Z",
+  "author": "FluxIO",
+  "description": "Угловая метка «В эфире» с городом",
+  "template": {
+    "id": "preset-live-badge",
+    "name": "В эфире · угловая метка",
+    "targets": [
+      "hd"
+    ],
+    "director": {
+      "inSeconds": 0.4,
+      "outSeconds": 0.35
+    },
+    "fields": [
+      {
+        "key": "location",
+        "label": "Город",
+        "type": "text",
+        "sample": "МОСКВА"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "ellipse-37",
+        "name": "Точка",
+        "kind": "ellipse",
+        "transform": {
+          "x": {
+            "value": 0.79,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "y": {
+            "value": 0.072,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "width": {
+            "value": 0.008,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "height": {
+            "value": 0.014,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "anchorX": 0,
+          "anchorY": 0,
+          "scale": {
+            "value": 1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "rotationDegrees": {
+            "value": 0,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "opacity": {
+            "value": 1,
+            "inKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.4,
+                "value": 1,
+                "easing": "out"
+              }
+            ],
+            "outKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 1,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.24499999999999997,
+                "value": 0,
+                "easing": "linear"
+              }
+            ]
+          }
+        },
+        "blend": "normal",
+        "shadow": {
+          "enabled": false,
+          "color": "#000000",
+          "opacity": 0.55,
+          "blur": 0.02,
+          "offsetY": 0.006
+        },
+        "fitToText": null,
+        "overrides": {},
+        "text": null,
+        "textStyle": {
+          "fontFilePath": null,
+          "fontFamily": "",
+          "size": 0.05,
+          "lineHeight": 1.2,
+          "letterSpacing": 0,
+          "color": "#FFFFFF",
+          "align": "left",
+          "strokeWidth": 0,
+          "strokeColor": "#000000"
+        },
+        "rectStyle": {
+          "fill": "#C0392B",
+          "fillOpacity": 1,
+          "cornerRadius": 0,
+          "strokeWidth": 0,
+          "strokeColor": "#FFFFFF"
+        },
+        "media": {
+          "filePath": null,
+          "fit": "contain",
+          "loop": true,
+          "durationSeconds": 0,
+          "hasAlpha": false,
+          "sequenceFrameRate": null,
+          "sequenceStartNumber": null
+        },
+        "parentId": null
+      },
+      {
+        "id": "text-38",
+        "name": "В ЭФИРЕ",
+        "kind": "text",
+        "transform": {
+          "x": {
+            "value": 0.804,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "y": {
+            "value": 0.062,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "width": {
+            "value": 0.14,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "height": {
+            "value": 0.06,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "anchorX": 0,
+          "anchorY": 0,
+          "scale": {
+            "value": 1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "rotationDegrees": {
+            "value": 0,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "opacity": {
+            "value": 1,
+            "inKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.12,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.4,
+                "value": 1,
+                "easing": "out"
+              }
+            ],
+            "outKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 1,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.24499999999999997,
+                "value": 0,
+                "easing": "linear"
+              }
+            ]
+          }
+        },
+        "blend": "normal",
+        "shadow": {
+          "enabled": false,
+          "color": "#000000",
+          "opacity": 0.55,
+          "blur": 0.02,
+          "offsetY": 0.006
+        },
+        "fitToText": null,
+        "overrides": {},
+        "text": {
+          "kind": "static",
+          "text": "В ЭФИРЕ"
+        },
+        "textStyle": {
+          "fontFilePath": null,
+          "fontFamily": "",
+          "size": 0.055,
+          "lineHeight": 1.2,
+          "letterSpacing": 0.006,
+          "color": "#FFFFFF",
+          "align": "left",
+          "strokeWidth": 0,
+          "strokeColor": "#000000"
+        },
+        "rectStyle": {
+          "fill": "#000000",
+          "fillOpacity": 0.7,
+          "cornerRadius": 0,
+          "strokeWidth": 0,
+          "strokeColor": "#FFFFFF"
+        },
+        "media": {
+          "filePath": null,
+          "fit": "contain",
+          "loop": true,
+          "durationSeconds": 0,
+          "hasAlpha": false,
+          "sequenceFrameRate": null,
+          "sequenceStartNumber": null
+        },
+        "parentId": null
+      },
+      {
+        "id": "rect-39",
+        "name": "Плашка города",
+        "kind": "rect",
+        "transform": {
+          "x": {
+            "value": 0.804,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "y": {
+            "value": 0.124,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "width": {
+            "value": 0.1,
+            "inKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 0,
+                "easing": "bezier",
+                "bezier": {
+                  "x1": 0,
+                  "y1": 0,
+                  "x2": 0.35,
+                  "y2": 1
+                }
+              },
+              {
+                "atSeconds": 0.4,
+                "value": 0.1,
+                "easing": "bezier",
+                "bezier": {
+                  "x1": 0,
+                  "y1": 0,
+                  "x2": 0.35,
+                  "y2": 1
+                }
+              }
+            ],
+            "outKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 0.1,
+                "easing": "in"
+              },
+              {
+                "atSeconds": 0.35,
+                "value": 0,
+                "easing": "in"
+              }
+            ]
+          },
+          "height": {
+            "value": 0.028,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "anchorX": 0,
+          "anchorY": 0,
+          "scale": {
+            "value": 1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "rotationDegrees": {
+            "value": 0,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "opacity": {
+            "value": 1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          }
+        },
+        "blend": "normal",
+        "shadow": {
+          "enabled": false,
+          "color": "#000000",
+          "opacity": 0.55,
+          "blur": 0.02,
+          "offsetY": 0.006
+        },
+        "fitToText": {
+          "nodeId": "text-40",
+          "padX": 0.02,
+          "padY": 0.012,
+          "axis": "x",
+          "anchor": "grow"
+        },
+        "overrides": {},
+        "text": null,
+        "textStyle": {
+          "fontFilePath": null,
+          "fontFamily": "",
+          "size": 0.05,
+          "lineHeight": 1.2,
+          "letterSpacing": 0,
+          "color": "#FFFFFF",
+          "align": "left",
+          "strokeWidth": 0,
+          "strokeColor": "#000000"
+        },
+        "rectStyle": {
+          "fill": "#C0392B",
+          "fillOpacity": 1,
+          "cornerRadius": 0,
+          "strokeWidth": 0,
+          "strokeColor": "#FFFFFF"
+        },
+        "media": {
+          "filePath": null,
+          "fit": "contain",
+          "loop": true,
+          "durationSeconds": 0,
+          "hasAlpha": false,
+          "sequenceFrameRate": null,
+          "sequenceStartNumber": null
+        },
+        "parentId": null
+      },
+      {
+        "id": "text-40",
+        "name": "Город",
+        "kind": "text",
+        "transform": {
+          "x": {
+            "value": 0.804,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "y": {
+            "value": 0.126,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "width": {
+            "value": 0.1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "height": {
+            "value": 0.024,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "anchorX": 0,
+          "anchorY": 0,
+          "scale": {
+            "value": 1,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "rotationDegrees": {
+            "value": 0,
+            "inKeyframes": [],
+            "outKeyframes": []
+          },
+          "opacity": {
+            "value": 1,
+            "inKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.2,
+                "value": 0,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.4,
+                "value": 1,
+                "easing": "out"
+              }
+            ],
+            "outKeyframes": [
+              {
+                "atSeconds": 0,
+                "value": 1,
+                "easing": "linear"
+              },
+              {
+                "atSeconds": 0.24499999999999997,
+                "value": 0,
+                "easing": "linear"
+              }
+            ]
+          }
+        },
+        "blend": "normal",
+        "shadow": {
+          "enabled": false,
+          "color": "#000000",
+          "opacity": 0.55,
+          "blur": 0.02,
+          "offsetY": 0.006
+        },
+        "fitToText": null,
+        "overrides": {},
+        "text": {
+          "kind": "field",
+          "fieldKey": "location"
+        },
+        "textStyle": {
+          "fontFilePath": null,
+          "fontFamily": "",
+          "size": 0.018,
+          "lineHeight": 1.2,
+          "letterSpacing": 0.006,
+          "color": "#FFFFFF",
+          "align": "center",
+          "strokeWidth": 0,
+          "strokeColor": "#000000"
+        },
+        "rectStyle": {
+          "fill": "#000000",
+          "fillOpacity": 0.7,
+          "cornerRadius": 0,
+          "strokeWidth": 0,
+          "strokeColor": "#FFFFFF"
+        },
+        "media": {
+          "filePath": null,
+          "fit": "contain",
+          "loop": true,
+          "durationSeconds": 0,
+          "hasAlpha": false,
+          "sequenceFrameRate": null,
+          "sequenceStartNumber": null
+        },
+        "parentId": null
+      }
+    ]
+  }
+}

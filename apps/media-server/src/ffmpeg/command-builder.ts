@@ -2,7 +2,6 @@ import path from "node:path";
 import type {
   AgeTitleOverlay,
   AudioTrack,
-  BroadcastTextOverlay,
   ClipAudioOverlay,
   GraphicEffectLayer,
   ItemLogoOverlay,
@@ -14,12 +13,36 @@ import type {
   VideoEncoding,
 } from "@gruber/contracts";
 import { defaultMpegTsOutputSettings, isBarsSource } from "@gruber/contracts";
-import { buildTextOverlayFilter, tickerCanvasColor, tickerRegion } from "./text-overlay.js";
 import {
   ffmpegMpegTsMuxDelaySeconds,
   ffmpegMpegTsMuxPreloadSeconds,
   ffmpegMpegTsOutputOffsetSeconds,
 } from "../transport-clock.js";
+import {
+  hardwareEncoderArgs,
+  softwareEncoder,
+  type ResolvedVideoEncoder,
+} from "./hardware-encoder.js";
+
+/**
+ * Показ сцены, врезанный в ролик.
+ *
+ * Полотно фиксировано на весь показ: наложение принимает одно смещение на вход,
+ * двигать его покадрово нечем. Кадры приходят сырым RGBA из отдельного
+ * процесса — так же, как звук приходит сырым PCM.
+ */
+export interface PreparedSceneShow {
+  /** Куда положить полотно и какого оно размера. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** С какой секунды ролика показывать. */
+  startSeconds: number;
+  frameCount: number;
+  /** Описание показа для графического процесса — передаётся ему в stdin. */
+  request: string;
+}
 
 export interface PreparedPlayoutItem {
   id: string;
@@ -31,10 +54,11 @@ export interface PreparedPlayoutItem {
   ageTitle?: AgeTitleOverlay;
   itemLogo?: ItemLogoOverlay;
   effects?: GraphicEffectLayer[];
-  textOverlays?: BroadcastTextOverlay[];
   audioOverlays?: ClipAudioOverlay[];
   subtitles?: SubtitleOverlay;
   audioTracks?: AudioTrack[];
+  /** Сцены второго уровня; пусто — ничего не меняется в конвейере. */
+  scenes?: PreparedSceneShow[];
   /**
    * UNIX-время первого кадра ролика в эфире. Заполняет supervisor в момент
    * запуска рендерера; нужно экранным часам, чтобы предзапущенный рендерер
@@ -99,13 +123,27 @@ export interface FfmpegCommand {
   totalDurationSeconds: number;
 }
 
+
 export interface FfmpegCommandOptions {
+  /**
+   * Кодировщик, выбранный до сборки команды. Сборщик команд ничего не знает
+   * про наличие ускорителя на машине — это выясняет preflight и передаёт
+   * готовый ответ сюда.
+   */
+  videoEncoder?: ResolvedVideoEncoder;
   embedInputSourcesInFilterGraph?: boolean;
   filterComplexScriptPath?: string;
   forceKeyFramesSeconds?: number[];
   programEndpoint?: PlayoutEndpoint;
   transportMuxRateBps?: number;
 }
+
+/**
+ * Номер файлового дескриптора, с которого начинаются трубы сцен.
+ *
+ * 0, 1 и 2 заняты стандартными потоками, поэтому первая сцена приходит на 3.
+ */
+export const firstSceneFileDescriptor = 3;
 
 export function buildFfmpegClipVideoProducerCommand(
   request: StartPlayoutRequest,
@@ -117,12 +155,48 @@ export function buildFfmpegClipVideoProducerCommand(
   const args = base.args.slice(0, firstMap);
   const progressIndex = args.indexOf("-progress");
   if (progressIndex >= 0) args.splice(progressIndex, 2);
-  const filterIndex = args.indexOf("-filter_complex");
-  const filterGraph = `${buildFilterGraph(request, [item], false, false, false)};` +
+
+  // Сцены дописываются последними входами, чтобы не сдвинуть номера уже
+  // посчитанных: логотип, возраст и FX-слои ссылаются на свои по порядку.
+  const scenes = item.scenes ?? [];
+  const sceneInputs: string[] = [];
+  let inputIndex = args.reduce((count, value) => (value === "-i" ? count + 1 : count), 0);
+  const sceneLabels: { label: string; scene: PreparedSceneShow }[] = [];
+  for (const [order, scene] of scenes.entries()) {
+    sceneInputs.push(
+      "-f", "rawvideo",
+      "-pix_fmt", "rgba",
+      "-s", `${scene.width}x${scene.height}`,
+      "-r", decimal(request.video.frameRate),
+      "-i", `pipe:${firstSceneFileDescriptor + order}`,
+    );
+    sceneLabels.push({ label: `${inputIndex}:v:0`, scene });
+    inputIndex += 1;
+  }
+
+  let filterGraph = `${buildFilterGraph(request, [item], false, false, false)};` +
     "[aprogram]anullsink";
-  if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
+  let source = "vprogram";
+  for (const [order, entry] of sceneLabels.entries()) {
+    const painted = `vscene${order}`;
+    const shifted = `vscenein${order}`;
+    // Показ начинается не с начала ролика: сдвигаем метки времени входа, иначе
+    // сцена отыграет свой вход в первую секунду и застынет.
+    filterGraph += `;[${entry.label}]format=yuva420p,` +
+      `setpts=PTS-STARTPTS+${decimal(entry.scene.startSeconds)}/TB[${shifted}]`;
+    filterGraph += `;[${source}][${shifted}]overlay=${Math.round(entry.scene.x)}:` +
+      `${Math.round(entry.scene.y)}:eof_action=pass:format=auto[${painted}]`;
+    source = painted;
+  }
+  if (sceneLabels.length > 0) filterGraph += `;[${source}]format=yuv420p[vout]`;
+
+  const filterIndex = args.indexOf("-filter_complex");
+  if (filterIndex >= 0) {
+    args.splice(filterIndex, 0, ...sceneInputs);
+    args[args.indexOf("-filter_complex") + 1] = filterGraph;
+  }
   args.push(
-    "-map", "[vprogram]",
+    "-map", sceneLabels.length > 0 ? "[vout]" : "[vprogram]",
     "-pix_fmt", "yuv420p",
     "-f", "rawvideo",
     "pipe:1",
@@ -339,7 +413,12 @@ export function buildFfmpegCompositePreviewCommand(
   item: PreparedPlayoutItem,
   previewDirectory: string,
 ): FfmpegCommand {
-  const base = buildFfmpegCommand(previewSizedRequest(request), [item], previewDirectory);
+  // Предпросмотр кодируется параллельно эфиру. Ускоритель у машины обычно один,
+  // и предпросмотр, взяв его, отбирал бы ресурс у эфира — поэтому здесь всегда
+  // программный кодировщик, независимо от настроек.
+  const base = buildFfmpegCommand(previewSizedRequest(request), [item], previewDirectory, {
+    videoEncoder: softwareEncoder(request.video.codec),
+  });
   const firstMap = base.args.indexOf("-map");
   const previewMap = base.args.findIndex(
     (value, index) => value === "-map" && base.args[index + 1] === "[vpreview]",
@@ -456,7 +535,16 @@ export function buildFfmpegCommand(
     }
   }
 
-  const filterGraph = buildFilterGraph(request, items, inputSourcesEmbedded);
+  // VAAPI кодирует кадры в памяти ускорителя, поэтому перед кодировщиком их
+  // надо туда загрузить. Ступень дописывается **в тот же граф**: второй
+  // `-filter_complex` в команде FFmpeg не принимает — он молча заменяет первый.
+  const uploadsToHardware = options.videoEncoder?.needsHardwareUpload === true;
+  const videoLabel = uploadsToHardware ? "[vhw]" : "[vprogram]";
+  const filterGraph = buildFilterGraph(request, items, inputSourcesEmbedded) +
+    (uploadsToHardware ? ";[vprogram]format=nv12,hwupload[vhw]" : "");
+  if (uploadsToHardware) {
+    args.push("-vaapi_device", request.video.vaapiDevice);
+  }
   if (options.filterComplexScriptPath) {
     args.push("-filter_complex_script", options.filterComplexScriptPath);
   } else {
@@ -464,7 +552,7 @@ export function buildFfmpegCommand(
   }
 
   const audioTracks = programAudioTracks(request);
-  args.push("-map", "[vprogram]", "-map", "[aprogram]");
+  args.push("-map", videoLabel, "-map", "[aprogram]");
   for (let index = 1; index < audioTracks.length; index += 1) {
     args.push("-map", `[${audioLabel(index)}]`);
   }
@@ -472,7 +560,7 @@ export function buildFfmpegCommand(
     args.push(`-metadata:s:a:${index}`, `language=${track.languageCode}`);
     args.push(`-metadata:s:a:${index}`, `title=${track.label}`);
   });
-  args.push(...videoEncoderArgs(request.video));
+  args.push(...videoEncoderArgs(request.video, options.videoEncoder));
   if (options.forceKeyFramesSeconds?.length) {
     args.push(
       "-force_key_frames",
@@ -586,12 +674,10 @@ function buildFilterGraph(
     const duration = decimal(item.durationSeconds);
     const burnSubtitles = request.subtitleOutput.mode === "burn-in" &&
       item.subtitles?.enabled && Boolean(item.subtitles.filePath);
-    const textOverlays = item.textOverlays ?? [];
     const requiresItemOverlay = Boolean(
       item.ageTitle?.enabled ||
       item.itemLogo?.enabled ||
       (item.effects?.length ?? 0) > 0 ||
-      textOverlays.length > 0 ||
       burnSubtitles,
     );
     const normalizedLabel = requiresItemOverlay ? `vbase${index}` : `v${index}`;
@@ -607,9 +693,7 @@ function buildFilterGraph(
 
     let itemVideoSource = normalizedLabel;
     if (item.ageTitle?.enabled) {
-      const ageLabel = item.itemLogo?.enabled ||
-        (item.effects?.length ?? 0) > 0 ||
-        textOverlays.length > 0
+      const ageLabel = item.itemLogo?.enabled || (item.effects?.length ?? 0) > 0
         ? `vage${index}`
         : `v${index}`;
       const displayDuration = Math.min(item.durationSeconds, item.ageTitle.durationSeconds);
@@ -654,7 +738,7 @@ function buildFilterGraph(
         Math.round(request.video.width * (item.itemLogo.widthPercent / 100)),
       );
       const [x, y] = logoPosition(item.itemLogo.position, item.itemLogo.margin);
-      const logoOutputLabel = (item.effects?.length ?? 0) > 0 || textOverlays.length > 0
+      const logoOutputLabel = (item.effects?.length ?? 0) > 0
         ? `vlogo${index}`
         : `v${index}`;
       filters.push(
@@ -683,9 +767,7 @@ function buildFilterGraph(
           : `${nextOverlayInput++}:v:0`;
         const effectLabel = `fxasset${index}_${effectIndex}_${sourceIndex}`;
         const isLastSource = sourceIndex === sources.length - 1;
-        const outputLabel = effectIndex === effects.length - 1 &&
-          isLastSource &&
-          textOverlays.length === 0
+        const outputLabel = effectIndex === effects.length - 1 && isLastSource
           ? `v${index}`
           : `vfx${index}_${effectIndex}_${sourceIndex}`;
         // Стингер берёт вторую половину перехода из середины файла, поэтому
@@ -707,7 +789,7 @@ function buildFilterGraph(
           ? `,lumakey=threshold=${decimal(effect.lumaThreshold)}:tolerance=0.05:softness=0.02`
           : "";
         // Слой рисуется во весь кадр, поэтому «подвинуть плашку» — это сдвинуть
-        // сам слой: в Lottie её положение обычно висит на анимированном слое, и
+        // сам слой: в готовом файле положение задано внутри него, и
         // в After Effects руками его не поправишь.
         const offsetX = Math.round((request.video.width * effect.offsetXPercent) / 100);
         const offsetY = Math.round((request.video.height * effect.offsetYPercent) / 100);
@@ -722,40 +804,6 @@ function buildFilterGraph(
         );
         itemVideoSource = outputLabel;
       });
-    });
-    // Надписи ложатся поверх всей остальной графики: Dynamic title, бегущая
-    // строка и часы всегда должны оставаться читаемыми.
-    textOverlays.forEach((overlay, overlayIndex) => {
-      const outputLabel = `vtext${index}_${overlayIndex}`;
-      const frame = {
-        airEpochSeconds: item.airEpochSeconds ?? Date.now() / 1_000,
-        height: request.video.height,
-        width: request.video.width,
-      };
-      const region = tickerRegion(overlay, frame);
-      if (!region) {
-        filters.push(
-          `[${itemVideoSource}]${buildTextOverlayFilter(overlay, frame)},` +
-            `format=yuv420p[${outputLabel}]`,
-        );
-        itemVideoSource = outputLabel;
-        return;
-      }
-      // Строка ограничена полосой: рисуем её на отдельном холсте нужного
-      // размера и накладываем. Обрезка получается настоящей — сам `drawtext`
-      // рисовать «до края и не дальше» не умеет. Если у надписи включена
-      // плашка, этот же холст ею и служит: он залит цветом и не едет вместе
-      // с текстом.
-      const canvas = `vtickerbg${index}_${overlayIndex}`;
-      const painted = `vticker${index}_${overlayIndex}`;
-      filters.push(
-        `color=c=${tickerCanvasColor(overlay.style)}:s=${region.width}x${region.height}:` +
-          `r=${decimal(request.video.frameRate)}:d=${decimal(item.durationSeconds)}[${canvas}]`,
-        `[${canvas}]${buildTextOverlayFilter(overlay, frame, true)}[${painted}]`,
-        `[${itemVideoSource}][${painted}]overlay=x=${region.x}:y=${region.y}:` +
-          `eof_action=pass:format=auto,format=yuv420p[${outputLabel}]`,
-      );
-      itemVideoSource = outputLabel;
     });
     if (itemVideoSource !== `v${index}`) {
       filters.push(`[${itemVideoSource}]null[v${index}]`);
@@ -836,7 +884,7 @@ function buildFilterGraph(
 const logoImageExtensions = new Set([".png", ".webp", ".jpg", ".jpeg"]);
 const animatedLogoExtensions = new Set([".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mxf"]);
 
-/** Форматы, которые FFmpeg получает напрямую; Lottie до этой точки уже отрендерен в MOV. */
+/** Форматы, которые FFmpeg получает напрямую. */
 export function isSupportedLogoPath(filePath: string): boolean {
   const extension = path.extname(filePath).toLowerCase();
   return logoImageExtensions.has(extension) || extension === ".gif" || animatedLogoExtensions.has(extension);
@@ -934,8 +982,12 @@ function escapeFilterPath(value: string): string {
     .replaceAll("]", "\\]");
 }
 
-function videoEncoderArgs(video: VideoEncoding): string[] {
+function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEncoder): string[] {
   const gop = video.gopSize;
+  // Ускоритель выбирается заранее: сборщик команд не умеет спрашивать FFmpeg,
+  // что есть на машине, и не должен уметь. Без переданного выбора собираем
+  // программный — это единственный вариант, который заведомо есть везде.
+  const encoder = chosen ?? softwareEncoder(video.codec);
   const sceneChangeThreshold = video.codec === "mpeg2" && video.closedGop
     ? "1000000000"
     : "0";
@@ -954,6 +1006,17 @@ function videoEncoderArgs(video: VideoEncoding): string[] {
     String(video.bFrames),
   ];
   let codecArgs: string[];
+
+  if (encoder.vendor !== "off") {
+    // У ускорителей своё управление скоростью и свои пресеты: параметры x264
+    // они не понимают, а `-sc_threshold` из общего набора игнорируют.
+    return [
+      ...hardwareEncoderArgs(video, encoder),
+      "-g", String(gop),
+      "-keyint_min", String(gop),
+      "-bf", String(video.bFrames),
+    ];
+  }
 
   if (video.codec === "h264") {
     const profile = ["baseline", "main", "high"].includes(video.profile.toLowerCase())

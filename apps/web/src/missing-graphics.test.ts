@@ -46,7 +46,6 @@ function libraryEffect(overrides: Partial<GraphicEffectAsset> = {}): GraphicEffe
     height: 1_080,
     id: "fx-lower",
     kind: "video",
-    lottie: null,
     name: "lower",
     titleDirectoryPath: null,
     titlePaths: [],

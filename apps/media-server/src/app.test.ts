@@ -10,11 +10,16 @@ import {
   defaultSubtitleOutput,
   playoutStatusSchema,
   serviceHealthSchema,
+  sceneFormatSchema,
+  sceneNodeSchema,
+  sceneTemplateSchema,
+  sceneTrack,
   startPlayoutRequestSchema,
   systemMetricsSchema,
   workspaceSessionSnapshotSchema,
   type StartPlayoutRequest,
-} from "@gruber/contracts";
+
+  videoEncodingSchema,} from "@gruber/contracts";
 import { buildApp } from "./app.js";
 import {
   buildDailyReport,
@@ -29,7 +34,6 @@ import {
   parseTickerSourceDocument,
 } from "./effects/broadcast-task.js";
 import { readFontFamily, supportsCyrillic } from "./effects/system-fonts.js";
-import { buildTextOverlayFilter } from "./ffmpeg/text-overlay.js";
 import {
   buildFfmpegClipAudioProducerCommand,
   clipAudioByteCount,
@@ -73,6 +77,8 @@ import {
   sequencePattern,
 } from "./effects/image-sequence.js";
 import { runCommand } from "./ffmpeg/process.js";
+import { SceneRenderer } from "./scene/surface.js";
+import { planSceneShow, produceSceneShow } from "./scene/producer.js";
 import {
   checkpointFromStatus,
   DatabaseService,
@@ -81,11 +87,6 @@ import {
 } from "./database/database.js";
 import { calculateCpuPercent } from "./system-metrics.js";
 import { listNetworkInterfaces } from "./network-interfaces.js";
-import {
-  applyLottieProperties,
-  fitPlatesToText,
-  inspectLottieDocument,
-} from "./effects/lottie.js";
 import {
   decodeScheduleBuffer,
   parseScheduleText,
@@ -100,8 +101,11 @@ import {
   pcrInsertionThresholdMs,
 } from "./tsduck/command-builder.js";
 import { buildGstreamerDvbSubtitleCommand } from "./subtitles/gstreamer.js";
-import { measureTextWidth, readFontMetrics } from "./effects/font-metrics.js";
-import { fitRectangleToText } from "./effects/lottie.js";
+import {
+  hardwareEncoderArgs,
+  hardwareSupportsInterlace,
+  resolveVideoEncoder,
+} from "./ffmpeg/hardware-encoder.js";
 import {
   buildDvbSubtitleProject,
   buildSubtitleTimeline,
@@ -134,239 +138,6 @@ test("GET /api/health returns the shared service contract", async () => {
   } finally {
     await app.close();
   }
-});
-
-test("a plain Bodymovin export is refused with the reason, not accepted half-working", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 50,
-    w: 1920,
-    h: 1080,
-    layers: [{ ty: 5, nm: "Title", ks: {}, t: { d: { k: [{ s: { t: "Hello" } }] } } }],
-  };
-
-  // Без блока meta.flux неизвестно, какие слои дизайнер объявил редактируемыми
-  // и с какими полями JSON они связаны. Принять такой файл значит показать
-  // оператору все слои подряд и заставить набирать имена руками.
-  assert.throws(
-    () => inspectLottieDocument(document, "/templates/plain.json"),
-    /FluxIO Title Studio/,
-  );
-});
-
-test("a Title Studio export that declares no fields still shows its text layers", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 50,
-    w: 1920,
-    h: 1080,
-    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-    layers: [{ ty: 5, nm: "Title", ks: {}, t: { d: { k: [{ s: { t: "Hello" } }] } } }],
-  };
-
-  // Пустой список полей значит «не объявлено», а не «редактировать нечего»:
-  // иначе экспорт без выбранных слоёв прятал бы весь текст шаблона.
-  const metadata = inspectLottieDocument(document, "/templates/blank-fields.json");
-  assert.equal(metadata.properties.filter((property) => property.type === "text").length, 1);
-});
-
-test("Lottie inspector exposes operator properties and preserves animation until override", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 50,
-    w: 1920,
-    h: 1080,
-    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-    layers: [
-      {
-        ty: 1,
-        nm: "fit:Title",
-        hd: false,
-        sc: "#112233",
-        ks: {
-          o: { a: 1, k: [{ t: 0, s: [0] }, { t: 10, s: [100] }] },
-          p: { a: 0, k: [960, 900, 0] },
-          s: { a: 0, k: [100, 100, 100] },
-          r: { a: 0, k: 0 },
-        },
-        shapes: [{ ty: "fl", nm: "Accent", c: { a: 0, k: [1, 0.5, 0, 1] } }],
-      },
-      {
-        ty: 5,
-        nm: "Title",
-        ks: {
-          o: { a: 0, k: 100 },
-          p: { a: 0, k: [100, 100, 0] },
-          s: { a: 0, k: [100, 100, 100] },
-          r: { a: 0, k: 0 },
-        },
-        t: { d: { k: [{ s: { t: "Original title" } }] } },
-      },
-    ],
-  };
-
-  const metadata = inspectLottieDocument(document, "/graphics/lower-third.json");
-  assert.equal(metadata.frameRate, 25);
-  assert.equal(metadata.outPoint - metadata.inPoint, 50);
-  assert.ok(metadata.properties.some((property) =>
-    property.label === "Opacity" && property.animated && !property.overridden));
-  assert.ok(metadata.properties.some((property) =>
-    property.label === "Fill · Accent" && property.value === "#FF8000"));
-  assert.ok(metadata.properties.some((property) =>
-    property.label === "Text" && property.value === "Original title"));
-  assert.deepEqual(metadata.responsiveTextKeys, ["Title"]);
-  const scale = metadata.properties.find((property) => property.label === "Scale");
-  assert.deepEqual(scale?.originalValue, [100, 100, 100]);
-  assert.match(metadata.warnings.join(" "), /Animated properties are preserved/);
-});
-
-test("Flux Title Exporter metadata exposes only fields selected in After Effects", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 50,
-    w: 1920,
-    h: 1080,
-    meta: {
-      generator: "Flux Title Exporter 0.1.0",
-      flux: {
-        schemaVersion: 1,
-        fields: [{ key: "title", layerName: "Title", type: "text" }],
-        dataSourceName: "rundown.json",
-        matchSourceKey: "media.name",
-        dataBindings: [{ sourceKey: "programme.title", targetKey: "Title" }],
-        warnings: ["Glow is not part of the safe Lottie subset"],
-      },
-    },
-    layers: [
-      {
-        ty: 5,
-        nm: "Title",
-        t: { d: { k: [{ s: { t: "Editable" }, t: 0 }] } },
-      },
-      {
-        ty: 5,
-        nm: "Permanent caption",
-        t: { d: { k: [{ s: { t: "Baked into design" }, t: 0 }] } },
-      },
-    ],
-  };
-
-  const metadata = inspectLottieDocument(document, "/graphics/exported-title.json");
-  const textProperties = metadata.properties.filter((property) => property.type === "text");
-  assert.equal(textProperties.length, 1);
-  assert.equal(textProperties[0]?.value, "Editable");
-  assert.equal(metadata.dataSourceName, "rundown.json");
-  assert.equal(metadata.matchSourceKey, "media.name");
-  assert.deepEqual(metadata.dataBindings, [
-    { sourceKey: "programme.title", targetKey: "Title" },
-  ]);
-  assert.match(metadata.warnings.join(" "), /Glow is not part/);
-});
-
-test("Lottie operator overrides update visibility, text and animated values", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 25,
-    w: 640,
-    h: 360,
-    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-    layers: [{
-      nm: "Title",
-      hd: false,
-      ks: { o: { a: 1, k: [{ t: 0, s: [0] }, { t: 10, s: [100] }] } },
-      t: { d: { k: [{ s: { t: "Before" } }] } },
-    }],
-  };
-  const metadata = inspectLottieDocument(document, "/graphics/title.json");
-  const properties = metadata.properties.map((property) => {
-    if (property.label === "Visible") return { ...property, value: false, overridden: true };
-    if (property.label === "Opacity") return { ...property, value: 72, overridden: true };
-    if (property.label === "Text") return { ...property, value: "After", overridden: true };
-    return property;
-  });
-  const result = applyLottieProperties(document, properties);
-  const layer = (result.layers as Array<Record<string, unknown>>)[0]!;
-  const opacity = (layer.ks as Record<string, Record<string, unknown>>).o;
-  const text = (((layer.t as Record<string, unknown>).d as Record<string, unknown>).k as Array<{
-    s: { t: string };
-  }>)[0]!.s.t;
-
-  assert.equal(layer.hd, true);
-  assert.deepEqual(opacity, { a: 0, k: 72 });
-  assert.equal(text, "After");
-});
-
-test("Lottie Essential Graphics text slots are editable and override the rendered title", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 25,
-    w: 640,
-    h: 360,
-    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-    slots: {
-      "Programme/Title": {
-        p: { k: [{ s: { f: "ArialMT", t: "Slot title" }, t: 0 }] },
-        t: 99,
-      },
-    },
-    layers: [{
-      ty: 5,
-      nm: "Title",
-      t: {
-        d: {
-          k: [{ s: { f: "ArialMT", t: "Inline fallback" }, t: 0 }],
-          sid: "Programme/Title",
-        },
-      },
-    }],
-  };
-
-  const metadata = inspectLottieDocument(document, "/graphics/slot-title.json");
-  const textProperty = metadata.properties.find((property) => property.type === "text");
-  assert.ok(textProperty);
-  assert.equal(textProperty.value, "Slot title");
-  assert.equal(textProperty.path, "/slots/Programme~1Title/p/k/0/s/t");
-  assert.match(textProperty.group, /Slot Programme\/Title/);
-  assert.equal(metadata.properties.filter((property) => property.type === "text").length, 1);
-
-  const result = applyLottieProperties(document, metadata.properties.map((property) =>
-    property.id === textProperty.id
-      ? { ...property, value: "Edited title", overridden: true }
-      : property));
-  const slotText = (((((result.slots as Record<string, unknown>)["Programme/Title"] as Record<string, unknown>)
-    .p as Record<string, unknown>).k as Array<{ s: { t: string } }>)[0]!.s.t);
-  const layerText = (((((result.layers as Array<Record<string, unknown>>)[0]!.t as Record<string, unknown>)
-    .d as Record<string, unknown>).k as Array<{ s: { t: string } }>)[0]!.s.t);
-  assert.equal(slotText, "Edited title");
-  assert.equal(layerText, "Inline fallback");
-});
-
-test("Lottie text metadata warns when the export embeds a limited glyph set", () => {
-  const document = {
-    v: "5.12.2",
-    fr: 25,
-    ip: 0,
-    op: 25,
-    w: 640,
-    h: 360,
-    meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-    chars: [{ ch: "A" }],
-    layers: [{ ty: 5, nm: "Title", t: { d: { k: [{ s: { t: "A" } }] } } }],
-  };
-  const metadata = inspectLottieDocument(document, "/graphics/glyph-title.json");
-  assert.match(metadata.warnings.join(" "), /embeds font glyphs/i);
 });
 
 test(
@@ -759,6 +530,7 @@ test("POST /api/schedule/parse reads .air schedule files", async () => {
 test("schedule serializer preserves reordered items, graphics and subtitle markup", () => {
   const serialized = serializeSchedule({
     extension: "txt",
+    broadcastEffects: [],
     startTime: "12:00:00.00",
     delaySeconds: 5,
     items: [
@@ -768,6 +540,7 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
         filePath: "\\\\utv2\\clips\\Trip [16+].mp4",
         ageTitle: { durationSeconds: 25, enabled: true, text: "16+" },
         logoPath: "C:\\FluxIO\\logo.png",
+        broadcastShows: [],
         graphicElements: [{
           backgroundPath: "C:\\FluxIO\\fx\\lower-third.mov",
           durationSeconds: 5,
@@ -784,6 +557,7 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
         declaredDurationSeconds: 10,
         filePath: "C:\\media\\ident.mp4",
         ageTitle: { durationSeconds: 10, enabled: false, text: "6+" },
+        broadcastShows: [],
         graphicElements: [{
           backgroundPath: "C:\\FluxIO\\fx\\bug.png",
           durationSeconds: 10,
@@ -997,38 +771,6 @@ test("a renderer that stops early is topped up with silence, never truncated", (
   assert.equal(clipAudioSilenceBytes(expected, expected - 96_000), 96_000);
   // Лишние байты encoder уже забрал — обрезать нечего.
   assert.equal(clipAudioSilenceBytes(expected, expected + 96_000), 0);
-});
-
-test("an animated channel logo loops by input, a still one by a held frame", () => {
-  assert.equal(isSupportedLogoPath("/brand/bug.mov"), true);
-  assert.equal(isSupportedLogoPath("/brand/bug.gif"), true);
-  assert.equal(isSupportedLogoPath("/brand/bug.webp"), true);
-  // JSON не должен попасть в FFmpeg: UI сначала печатает Lottie в alpha-MOV.
-  assert.equal(isSupportedLogoPath("/brand/bug.json"), false);
-  assert.equal(logoSourceKind("/brand/bug.png"), "image");
-  assert.equal(logoSourceKind("/brand/bug.GIF"), "gif");
-  assert.equal(logoSourceKind("/brand/bug.mov"), "video");
-  // Отрендеренный Lottie приходит сюда уже файлом, а не проектом.
-  assert.equal(logoSourceKind("/cache/bug-lottie.mov"), "video");
-
-  // Картинка разворачивается в бесконечный поток одним кадром.
-  assert.deepEqual(
-    logoInputArgs({ filePath: "/brand/bug.png", loop: true }, 25),
-    ["-loop", "1", "-framerate", "25", "-i", "/brand/bug.png"],
-  );
-  // У анимации повторяется сам файл: gif — своим циклом, остальные — потоком.
-  assert.deepEqual(
-    logoInputArgs({ filePath: "/brand/bug.mov", loop: true }, 25),
-    ["-stream_loop", "-1", "-i", "/brand/bug.mov"],
-  );
-  assert.deepEqual(
-    logoInputArgs({ filePath: "/brand/bug.gif", loop: true }, 25),
-    ["-ignore_loop", "0", "-i", "/brand/bug.gif"],
-  );
-  assert.deepEqual(
-    logoInputArgs({ filePath: "/brand/bug.mov", loop: false }, 25),
-    ["-i", "/brand/bug.mov"],
-  );
 });
 
 test("a logo that plays once still outlives the clip, or overlay would cut the programme", () => {
@@ -1595,153 +1337,6 @@ test("DVB subtitle pre-roll is clamped to preserve an early first cue PTS", asyn
  * в репозиторий настоящий шрифт незачем — проверяются ширины, а не глифы.
  * Глифы: 0 — .notdef (500), 1 — «A» (600), 2 — «B» (300), при em в 1000 единиц.
  */
-function buildTestFont(): Buffer {
-  const advances = [500, 600, 300];
-  const head = Buffer.alloc(54);
-  head.writeUInt16BE(1_000, 18);
-  const hhea = Buffer.alloc(36);
-  hhea.writeUInt16BE(advances.length, 34);
-  const maxp = Buffer.alloc(6);
-  maxp.writeUInt16BE(advances.length, 4);
-  const hmtx = Buffer.alloc(advances.length * 4);
-  advances.forEach((advance, index) => hmtx.writeUInt16BE(advance, index * 4));
-
-  const groups = [
-    { start: 0x41, end: 0x41, glyph: 1 },
-    { start: 0x42, end: 0x42, glyph: 2 },
-  ];
-  const subtable = Buffer.alloc(16 + groups.length * 12);
-  subtable.writeUInt16BE(12, 0);
-  subtable.writeUInt32BE(subtable.length, 4);
-  subtable.writeUInt32BE(groups.length, 12);
-  groups.forEach((group, index) => {
-    const at = 16 + index * 12;
-    subtable.writeUInt32BE(group.start, at);
-    subtable.writeUInt32BE(group.end, at + 4);
-    subtable.writeUInt32BE(group.glyph, at + 8);
-  });
-  const cmap = Buffer.concat([Buffer.alloc(12), subtable]);
-  cmap.writeUInt16BE(1, 2);
-  cmap.writeUInt16BE(3, 4);
-  cmap.writeUInt16BE(10, 6);
-  cmap.writeUInt32BE(12, 8);
-
-  const tables: [string, Buffer][] = [
-    ["cmap", cmap], ["head", head], ["hhea", hhea], ["hmtx", hmtx], ["maxp", maxp],
-  ];
-  const header = Buffer.alloc(12 + tables.length * 16);
-  header.writeUInt32BE(0x00010000, 0);
-  header.writeUInt16BE(tables.length, 4);
-  let offset = header.length;
-  tables.forEach(([tag, data], index) => {
-    const record = 12 + index * 16;
-    header.write(tag, record, "latin1");
-    header.writeUInt32BE(offset, record + 8);
-    header.writeUInt32BE(data.length, record + 12);
-    offset += data.length;
-  });
-  return Buffer.concat([header, ...tables.map(([, data]) => data)]);
-}
-
-test("Font metrics measure a line by the glyph widths of the font itself", () => {
-  const metrics = readFontMetrics(buildTestFont());
-  assert.ok(metrics, "минимальный шрифт должен разбираться");
-  assert.equal(metrics.unitsPerEm, 1_000);
-  assert.equal(metrics.capHeight, 700, "без OS/2 берётся 0.7 em");
-  assert.equal(measureTextWidth(metrics, "AB", 100), 90);
-  // Многострочный текст меряется по самой длинной строке: плашка обязана
-  // вместить её целиком.
-  assert.equal(measureTextWidth(metrics, "A\nAB", 100), 90);
-  // Трекинг Lottie — тысячные доли em между символами.
-  assert.equal(measureTextWidth(metrics, "AB", 100, 100), 100);
-  // Символа нет в шрифте — берётся ширина .notdef, а не ноль.
-  assert.equal(measureTextWidth(metrics, "Я", 100), 50);
-});
-
-test("A plate grows to the side its text is set from", () => {
-  const rectangle = () => ({ s: { a: 0, k: [300, 100] }, p: { a: 0, k: [0, 0] } });
-
-  const leftAligned = rectangle();
-  assert.equal(fitRectangleToText(leftAligned, 80, 0), true);
-  assert.deepEqual(leftAligned.s.k, [380, 100]);
-  // Левый край остался на месте: центр уехал на половину прибавки вправо.
-  assert.deepEqual(leftAligned.p.k, [40, 0]);
-
-  const rightAligned = rectangle();
-  fitRectangleToText(rightAligned, 80, 1);
-  assert.deepEqual(rightAligned.p.k, [-40, 0]);
-
-  const centered = rectangle();
-  fitRectangleToText(centered, 80, 2);
-  assert.deepEqual(centered.s.k, [380, 100]);
-  assert.deepEqual(centered.p.k, [0, 0]);
-
-  // Текст стал короче — плашка сжимается, но не в ноль.
-  const shrunk = rectangle();
-  fitRectangleToText(shrunk, -500, 0);
-  assert.deepEqual(shrunk.s.k, [1, 100]);
-
-  const animated = { s: { a: 1, k: [] }, p: { a: 0, k: [0, 0] } };
-  assert.equal(fitRectangleToText(animated, 80, 0), false, "анимированный размер не трогаем");
-});
-
-test("Flux Title Exporter plate follows the actual replacement text width", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-title-font-"));
-  const fontFilePath = path.join(directory, "TestTitle.ttf");
-  await writeFile(fontFilePath, buildTestFont());
-  try {
-    const template = {
-      v: "5.12.2",
-      fr: 25,
-      ip: 0,
-      op: 50,
-      w: 1920,
-      h: 1080,
-      meta: { generator: "Flux Title Exporter 0.1.0", flux: { schemaVersion: 1, fields: [] } },
-      fonts: { list: [{ fName: "TestTitle", fFamily: "Test Title", fStyle: "Regular" }] },
-      layers: [
-        {
-          ty: 4,
-          nm: "fit:Title",
-          shapes: [{
-            ty: "rc",
-            s: { a: 0, k: [300, 100] },
-            p: { a: 0, k: [0, 0] },
-          }],
-        },
-        {
-          ty: 5,
-          nm: "Title",
-          t: { d: { k: [{ s: { f: "TestTitle", s: 100, t: "AB", tr: 0, j: 0 } }] } },
-        },
-      ],
-    };
-    const metadata = inspectLottieDocument(template, "/graphics/exported-title.json");
-    const properties = metadata.properties.map((property) => property.type === "text"
-      ? {
-          ...property,
-          value: "ABAB",
-          overridden: true,
-          fitSample: { fontFilePath, fontSizePercent: null, text: "ABAB" },
-        }
-      : property);
-    const rendered = applyLottieProperties(template, properties);
-    const warnings = await fitPlatesToText(rendered, template, properties);
-    assert.deepEqual(warnings, []);
-
-    const plate = (rendered.layers as Array<{ shapes: Array<{
-      p: { k: number[] };
-      s: { k: number[] };
-    }> }>)[0]!.shapes[0]!;
-    // Test font: AB = 90 px, ABAB = 180 px. The plate therefore grows by
-    // exactly 90 px, while the left edge stays fixed for left-aligned text.
-    assert.deepEqual(plate.s.k, [390, 100]);
-    assert.deepEqual(plate.p.k, [45, 0]);
-  } finally {
-    await rm(directory, { force: true, recursive: true });
-  }
-});
-
 test("Subtitle cue text drops what subparse leaves visible and keeps what it escapes itself", () => {
   // subparse отдаёт pango-markup и сам превращает & в &amp;, поэтому экранировать
   // здесь нельзя — в эфир ушло бы «&amp;». А ASS-разметку он пропускает как текст.
@@ -3096,147 +2691,177 @@ test(
  * Эфирные эффекты второго уровня
  * -------------------------------------------------------------------------- */
 
-function textStyle() {
-  return {
-    boxColor: "#000000",
-    boxEnabled: true,
-    boxOpacity: 0.6,
-    boxPaddingPercent: 1,
-    align: "left" as const,
-    color: "#FFFFFF",
-    fontFamily: "",
-    fontFilePath: null,
-    fontSizePercent: 5,
-    xPercent: 4,
-    yPercent: 80,
-  };
-}
+/* -------------------------------------------------------------------------- *
+ * Эфирные эффекты в расписании
+ * ------------------------------------------------------------------------- */
 
-function textOverlay(overrides: Record<string, unknown> = {}) {
-  return {
-    clockFormat: "HH:MM:SS" as const,
-    content: "",
-    countdownFromSeconds: 0,
-    direction: "left" as const,
-    effectId: "fx-2",
-    endSeconds: 30,
-    id: "text-1",
-    mode: "static" as const,
-    name: "Ticker",
-    regionWidthPercent: 100,
-    regionXPercent: 0,
-    repeat: 0,
-    speedPixelsPerSecond: 120,
-    startSeconds: 0,
-    style: textStyle(),
-    timezoneOffsetMinutes: 0,
+test("a broadcast effect is written once and referenced by every clip that uses it", () => {
+  // Один титр на двухстах роликах иначе означал бы двести копий его сцены
+  // в одном текстовом файле.
+  const data = Buffer.from(JSON.stringify({ kind: "dynamic-title" })).toString("base64");
+  const serialized = serializeSchedule({
+    extension: "txt",
+    startTime: "06:00:00",
+    delaySeconds: 0,
+    broadcastEffects: [{ effectId: "fx2-title", name: "Нижняя треть", kind: "dynamic-title", data }],
+    items: [
+      {
+        type: "movie", declaredDurationSeconds: 60, filePath: "/media/a.mp4",
+        graphicElements: [],
+        broadcastShows: [{ effectId: "fx2-title", startOnSeconds: 5, endOnSeconds: 12, fields: "" }],
+      },
+      {
+        type: "movie", declaredDurationSeconds: 60, filePath: "/media/b.mp4",
+        graphicElements: [],
+        broadcastShows: [{ effectId: "fx2-title", startOnSeconds: 3, endOnSeconds: 9, fields: "" }],
+      },
+    ],
+  });
+
+  const defines = serialized.content.split("\r\n").filter((line) => line.startsWith("defineBroadcastEffect"));
+  const inserts = serialized.content.split("\r\n").filter((line) => line.startsWith("insertBroadcastEffect"));
+  assert.equal(defines.length, 1, "определение продублировалось");
+  assert.equal(inserts.length, 2);
+  // Определение обязано стоять до первого ролика: разбор идёт построчно, и
+  // ссылка вперёд не разрешится.
+  assert.ok(
+    serialized.content.indexOf("defineBroadcastEffect") < serialized.content.indexOf("movie "),
+  );
+});
+
+test("a schedule round-trips its broadcast effects back into place", () => {
+  const definition = { kind: "dynamic-title", settings: { text: "Гость" } };
+  const data = Buffer.from(JSON.stringify(definition)).toString("base64");
+  const fields = Buffer.from(JSON.stringify({ title: "Пётр" })).toString("base64");
+  const serialized = serializeSchedule({
+    extension: "txt",
+    startTime: "06:00:00",
+    delaySeconds: 0,
+    broadcastEffects: [{ effectId: "fx2-title", name: "Нижняя треть", kind: "dynamic-title", data }],
+    items: [{
+      type: "movie", declaredDurationSeconds: 60, filePath: "/media/a.mp4",
+      graphicElements: [],
+      broadcastShows: [{ effectId: "fx2-title", startOnSeconds: 5, endOnSeconds: 12, fields }],
+    }],
+  });
+
+  const parsed = parseScheduleText(serialized.content, "/tmp/schedule.txt");
+  assert.equal(parsed.broadcastEffects.length, 1);
+  assert.equal(parsed.broadcastEffects[0]?.name, "Нижняя треть");
+  assert.deepEqual(
+    JSON.parse(Buffer.from(parsed.broadcastEffects[0]!.data, "base64").toString("utf8")),
+    definition,
+  );
+
+  const show = parsed.items[0]?.broadcastShows[0];
+  assert.equal(show?.effectId, "fx2-title");
+  assert.equal(show?.startOnSeconds, 5);
+  assert.equal(show?.endOnSeconds, 12);
+  assert.deepEqual(
+    JSON.parse(Buffer.from(show!.fields, "base64").toString("utf8")),
+    { title: "Пётр" },
+  );
+});
+
+test("a show pointing at an undefined effect is refused, not skipped", () => {
+  // Молча пропущенный показ снаружи выглядит как «титр не вышел в эфир».
+  const content = [
+    "start on 06:00:00 - delay 0",
+    "insertBroadcastEffect {fx2-missing} startOn {00:00:05.00} endOn {00:00:12.00}",
+    "movie 00:01:00.00 /media/a.mp4",
+  ].join("\r\n");
+  assert.throws(() => parseScheduleText(content, "/tmp/schedule.txt"), /undefined effect/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Аппаратное кодирование
+ * ------------------------------------------------------------------------- */
+
+function video(overrides: Record<string, unknown> = {}) {
+  return videoEncodingSchema.parse({
+    codec: "h264", width: 1_920, height: 1_080, frameRate: 25,
+    rateControl: "cbr", targetBitrateKbps: 8_000, maxBitrateKbps: 9_000,
+    bufferSizeKbps: 16_000, crf: 23, preset: "fast",
     ...overrides,
-  };
+  });
 }
 
-test("ticker drawtext keeps a constant speed and hides itself after the last loop", () => {
-  const frame = { airEpochSeconds: 1_700_000_000, height: 720, width: 1_280 };
-  const endless = buildTextOverlayFilter(
-    textOverlay({ content: "Срочные новости • ", mode: "ticker", startSeconds: 2 }),
-    frame,
-  );
-  // Позиция зависит от tw — ширины уже отрисованной надписи, поэтому длинный и
-  // короткий текст едут одинаково быстро, а круг замыкается за (w+tw)/speed.
-  assert.match(endless, /x='w-mod\(\(max\(0,t-2\)\*120\),\(w\+tw\)\)'/);
-  assert.match(endless, /fontsize=36/);
-  assert.match(endless, /enable='between\(t,2,30\)'/);
-
-  const twice = buildTextOverlayFilter(
-    textOverlay({ content: "Котировки", direction: "right", mode: "ticker", repeat: 2 }),
-    frame,
-  );
-  assert.match(twice, /if\(gte\(\(max\(0,t-0\)\*120\),2\*\(w\+tw\)\),0-tw-16,/);
-  assert.match(twice, /-tw\+mod\(/);
+test("hardware off keeps the software encoder, whatever the machine has", () => {
+  const chosen = resolveVideoEncoder(video(), ["h264_nvenc", "h264_qsv"]);
+  assert.equal(chosen.name, "libx264");
+  assert.equal(chosen.vendor, "off");
 });
 
-test("a ticker bound to a plate is clipped to its own canvas, not the whole frame", () => {
-  const request = baseRequest();
-  const overlay = textOverlay({
-    content: "TEST TEST TEST",
-    mode: "ticker",
-    regionWidthPercent: 40,
-    regionXPercent: 18,
-    style: { ...textStyle(), yPercent: 88 },
-  });
-  const command = buildFfmpegCommand(
-    request,
-    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
-    "/tmp/preview",
+test("auto takes the first accelerator that can encode this codec", () => {
+  // NVENC первым намеренно: он единственный из списка даёт предсказуемый CBR
+  // собственными средствами.
+  assert.equal(resolveVideoEncoder(video({ hardware: "auto" }), ["h264_qsv", "h264_nvenc"]).name, "h264_nvenc");
+  assert.equal(resolveVideoEncoder(video({ hardware: "auto" }), ["h264_qsv"]).name, "h264_qsv");
+  assert.equal(
+    resolveVideoEncoder(video({ hardware: "auto", codec: "h265" }), ["h264_nvenc", "hevc_videotoolbox"]).name,
+    "hevc_videotoolbox",
   );
-
-  // Строка рисуется на своём холсте шириной 40% кадра…
-  assert.match(command.filterGraph, /color=c=#000000@0\.6:s=512x65:r=25:d=2\[vtickerbg0_0\]/);
-  // …внутри него координата считается от его же ширины…
-  assert.match(command.filterGraph, /\[vtickerbg0_0\]drawtext=.*x='w-mod/);
-  assert.match(command.filterGraph, /y='\(h-th\)\/2'/);
-  // …и холст накладывается на кадр ровно в заданную полосу.
-  assert.match(command.filterGraph, /\[vticker0_0\]overlay=x=230:y=601/);
 });
 
-test("the plate of a banded ticker is the canvas itself, so it does not ride along", () => {
-  const request = baseRequest();
-  const overlay = textOverlay({
-    content: "TEST",
-    mode: "ticker",
-    regionWidthPercent: 40,
-    regionXPercent: 18,
-    style: { ...textStyle(), boxColor: "#101820", boxOpacity: 0.75 },
-  });
-  const command = buildFfmpegCommand(
-    request,
-    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
-    "/tmp/preview",
+test("auto without any accelerator refuses instead of falling back silently", () => {
+  // Подмена на программный кодировщик вылезла бы в эфире пропущенными кадрами:
+  // оператор выбрал ускоритель именно потому, что программный не тянет.
+  assert.throws(
+    () => resolveVideoEncoder(video({ hardware: "auto" }), ["libx264"]),
+    /No hardware encoder/,
   );
-
-  // Холст залит цветом плашки и стоит на месте, пока текст едет.
-  assert.match(command.filterGraph, /color=c=#101820@0\.75:s=512x65/);
-  // Собственная плашка drawtext при этом выключена: иначе прямоугольник ползал
-  // бы по неподвижной плашке вместе с надписью.
-  assert.doesNotMatch(command.filterGraph, /\[vtickerbg0_0\]drawtext=[^;]*box=1/);
 });
 
-test("a banded ticker without a plate keeps its canvas transparent", () => {
-  const request = baseRequest();
-  const overlay = textOverlay({
-    content: "TEST",
-    mode: "ticker",
-    regionWidthPercent: 40,
-    regionXPercent: 18,
-    style: { ...textStyle(), boxEnabled: false },
-  });
-  const command = buildFfmpegCommand(
-    request,
-    [{ ...preparedItems()[0]!, textOverlays: [overlay] }],
-    "/tmp/preview",
+test("a named accelerator that cannot do the codec says so by name", () => {
+  assert.throws(
+    () => resolveVideoEncoder(video({ hardware: "nvenc", codec: "mpeg2" }), ["h264_nvenc"]),
+    /nvenc cannot encode mpeg2/,
   );
-
-  // Холст нужен только ради обрезки по краю полосы, рисовать он ничего не должен.
-  assert.match(command.filterGraph, /color=c=black@0:s=512x65/);
+  assert.throws(
+    () => resolveVideoEncoder(video({ hardware: "qsv" }), ["h264_nvenc"]),
+    /no 'h264_qsv' encoder/,
+  );
 });
 
-test("a full-width ticker still draws its own plate around the text", () => {
-  const filter = buildTextOverlayFilter(
-    textOverlay({ content: "NEWS", mode: "ticker" }),
-    { airEpochSeconds: 0, height: 720, width: 1_280 },
-  );
-  // Полосы нет — холста тоже, поэтому плашку рисует сам drawtext по ширине текста.
-  assert.match(filter, /box=1/);
-  assert.match(filter, /boxcolor=#000000@0\.6/);
+test("only VAAPI needs frames uploaded to the accelerator", () => {
+  assert.equal(resolveVideoEncoder(video({ hardware: "vaapi" }), ["h264_vaapi"]).needsHardwareUpload, true);
+  assert.equal(resolveVideoEncoder(video({ hardware: "nvenc" }), ["h264_nvenc"]).needsHardwareUpload, false);
 });
 
-test("a full-width ticker needs no separate canvas", () => {
-  const request = baseRequest();
-  const command = buildFfmpegCommand(
-    request,
-    [{ ...preparedItems()[0]!, textOverlays: [textOverlay({ content: "NEWS", mode: "ticker" })] }],
-    "/tmp/preview",
-  );
-  assert.doesNotMatch(command.filterGraph, /vtickerbg/);
+test("interlaced output is refused by accelerators that cannot produce fields", () => {
+  // Отдать прогрессив вместо 50i — не «чуть хуже», а несовпадение с профилем:
+  // головная станция ждёт поля.
+  assert.equal(hardwareSupportsInterlace("nvenc"), false);
+  assert.equal(hardwareSupportsInterlace("videotoolbox"), false);
+  assert.equal(hardwareSupportsInterlace("qsv"), true);
+  assert.equal(hardwareSupportsInterlace("off"), true);
+});
+
+test("NVENC gets its own preset scale and forced IDR, not x264 parameters", () => {
+  const chosen = resolveVideoEncoder(video({ hardware: "nvenc" }), ["h264_nvenc"]);
+  const args = hardwareEncoderArgs(video({ hardware: "nvenc" }), chosen);
+  const joined = args.join(" ");
+  assert.match(joined, /-c:v h264_nvenc/);
+  // Пресеты x264 NVENC не понимает вовсе.
+  assert.match(joined, /-preset p4/);
+  assert.equal(joined.includes("-x264-params"), false);
+  // Без принудительного IDR врезка SCTE-35 не находит рядом ключевой кадр.
+  assert.match(joined, /-forced-idr 1/);
+  assert.match(joined, /-rc cbr/);
+});
+
+test("VideoToolbox keeps a software fallback: the accelerator can be busy", () => {
+  const chosen = resolveVideoEncoder(video({ hardware: "videotoolbox" }), ["h264_videotoolbox"]);
+  const joined = hardwareEncoderArgs(video({ hardware: "videotoolbox" }), chosen).join(" ");
+  assert.match(joined, /-allow_sw 1/);
+  assert.match(joined, /-realtime 1/);
+});
+
+test("variable rate control does not ask an accelerator for CBR", () => {
+  const settings = video({ hardware: "nvenc", rateControl: "vbr" });
+  const chosen = resolveVideoEncoder(settings, ["h264_nvenc"]);
+  const joined = hardwareEncoderArgs(settings, chosen).join(" ");
+  assert.match(joined, /-rc vbr/);
 });
 
 test("an empty schedule starts on colour bars instead of refusing to go on air", () => {
@@ -3342,40 +2967,6 @@ test("a stinger built from frames sets the rate FFmpeg cannot read from .png", (
   // поправки к нему приклеился бы -loop 1, и обе половины перехода взяли бы
   // один и тот же кадр.
   assert.doesNotMatch(joined, /-loop 1 -framerate [\d.]+ -i \/fx\/wipe/);
-});
-
-test("clock drawtext follows on-air time, not the renderer's own wall clock", () => {
-  const filter = buildTextOverlayFilter(
-    textOverlay({ mode: "clock", timezoneOffsetMinutes: 180 }),
-    { airEpochSeconds: 1_700_000_000, height: 1_080, width: 1_920 },
-  );
-  // gmtime со сдвигом пояса вместо localtime: результат одинаков в любой TZ
-  // сервера, а смещение равно эфирному времени первого кадра ролика.
-  assert.match(filter, /%\{pts\\:gmtime\\:1700010800\\:%H\}\\:%\{pts\\:gmtime\\:1700010800\\:%M\}/);
-  assert.doesNotMatch(filter, /localtime/);
-});
-
-test("countdown drawtext reaches zero without accumulating error", () => {
-  const filter = buildTextOverlayFilter(
-    textOverlay({
-      clockFormat: "MM:SS",
-      countdownFromSeconds: 90,
-      endSeconds: 120,
-      mode: "countdown",
-      startSeconds: 10,
-    }),
-    { airEpochSeconds: 0, height: 720, width: 1_280 },
-  );
-  assert.match(filter, /%\{eif\\:trunc\(mod\(max\(0,90-\(t-10\)\)\/60,60\)\)\\:d\\:2\}/);
-  assert.match(filter, /%\{eif\\:trunc\(mod\(max\(0,90-\(t-10\)\),60\)\)\\:d\\:2\}/);
-});
-
-test("static drawtext escapes an operator percent sign instead of expanding it", () => {
-  const filter = buildTextOverlayFilter(
-    textOverlay({ content: "Скидка 20% в 12:00" }),
-    { airEpochSeconds: 0, height: 720, width: 1_280 },
-  );
-  assert.match(filter, /text='Скидка 20\\% в 12\\:00'/);
 });
 
 test("stinger halves come from one file: the tail at zero, the head from the cut point", () => {
@@ -3645,6 +3236,8 @@ function baseRequest(): StartPlayoutRequest {
     nextPlaylist: [],
     video: {
       codec: "h264",
+      hardware: "off" as const,
+      vaapiDevice: "/dev/dri/renderD128",
       width: 1280,
       height: 720,
       frameRate: 25,
@@ -3886,4 +3479,231 @@ function median(values: number[]): number {
   const middle = Math.floor(sorted.length / 2);
   if (sorted.length % 2 === 1) return sorted[middle] ?? 0;
   return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+}
+
+/* ------------------------- рисовальщик сцены ----------------------------- */
+
+test("an animated channel logo loops by input, a still one by a held frame", () => {
+  assert.equal(isSupportedLogoPath("/brand/bug.mov"), true);
+  assert.equal(isSupportedLogoPath("/brand/bug.gif"), true);
+  assert.equal(isSupportedLogoPath("/brand/bug.webp"), true);
+  // JSON в FFmpeg попасть не должен: логотип — это готовый файл, а не проект.
+  assert.equal(isSupportedLogoPath("/brand/bug.json"), false);
+  assert.equal(logoSourceKind("/brand/bug.png"), "image");
+  assert.equal(logoSourceKind("/brand/bug.GIF"), "gif");
+  assert.equal(logoSourceKind("/brand/bug.mov"), "video");
+
+  // Картинка разворачивается в бесконечный поток одним кадром.
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.png", loop: true }, 25),
+    ["-loop", "1", "-framerate", "25", "-i", "/brand/bug.png"],
+  );
+  // У анимации повторяется сам файл: gif — своим циклом, остальные — потоком.
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.mov", loop: true }, 25),
+    ["-stream_loop", "-1", "-i", "/brand/bug.mov"],
+  );
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.gif", loop: true }, 25),
+    ["-ignore_loop", "0", "-i", "/brand/bug.gif"],
+  );
+  assert.deepEqual(
+    logoInputArgs({ filePath: "/brand/bug.mov", loop: false }, 25),
+    ["-i", "/brand/bug.mov"],
+  );
+});
+
+test("the scene renderer draws only its own region, not the whole frame", () => {
+  const renderer = new SceneRenderer(sceneFixture(), sceneFormatFixture(), 5);
+  const frame = renderer.render(50, sceneInputFixture());
+
+  assert.ok(frame, "сцена ничего не нарисовала");
+  // Разведка Ф0: полный кадр 2160 не проходит через трубу в реальном времени,
+  // а область нижней трети проходит с многократным запасом.
+  assert.ok(frame.width < 1_920 && frame.height < 1_080);
+  assert.equal(frame.pixels.length, frame.width * frame.height * 4);
+  assert.ok(frame.x >= 0 && frame.y >= 0);
+  assert.ok(frame.x + frame.width <= 1_920);
+  assert.ok(frame.y + frame.height <= 1_080);
+});
+
+test("a moment with nothing visible asks for no pixels at all", () => {
+  const renderer = new SceneRenderer(sceneFixture(), sceneFormatFixture(), 5);
+  // Нулевой кадр: прозрачность ещё в нуле, занимать трубу незачем.
+  assert.equal(renderer.render(0, sceneInputFixture()), null);
+});
+
+test("the scene renderer paints something inside the region it asked for", () => {
+  const renderer = new SceneRenderer(sceneFixture(), sceneFormatFixture(), 5);
+  const frame = renderer.render(50, sceneInputFixture())!;
+  let opaque = 0;
+  for (let index = 3; index < frame.pixels.length; index += 4) {
+    if (frame.pixels[index]! > 0) opaque += 1;
+  }
+  // Пустая область означала бы, что координаты и отрисовка разошлись.
+  assert.ok(opaque > frame.width, `непрозрачных точек всего ${opaque}`);
+});
+
+test("a plate bound to text is wider for a longer name", () => {
+  const renderer = new SceneRenderer(sceneFixture(), sceneFormatFixture(), 5);
+  const short = renderer.render(50, sceneInputFixture({ title: "Иван" }))!;
+  const long = renderer.render(50, sceneInputFixture({ title: "Александр Константинопольский" }))!;
+  assert.ok(long.width > short.width, "плашка не выросла под длинный текст");
+});
+
+function sceneFormatFixture() {
+  return sceneFormatSchema.parse({ layout: "hd", width: 1_920, height: 1_080, drawRate: 25 });
+}
+
+function sceneInputFixture(fields: Record<string, string> = { title: "Александр Петров" }) {
+  return { fields, images: {}, airEpochSeconds: 0, clipRemainingSeconds: 300 };
+}
+
+function sceneFixture() {
+  const track = (value: number) => sceneTrack(value);
+  const fade = {
+    value: 0,
+    inKeyframes: [
+      { atSeconds: 0, value: 0, easing: "out" as const },
+      { atSeconds: 0.6, value: 1, easing: "out" as const },
+    ],
+    outKeyframes: [],
+  };
+  const base = {
+    parentId: null,
+    transform: {
+      x: track(0.06), y: track(0.76), width: track(0.3), height: track(0.12),
+      anchorX: 0, anchorY: 0, scale: track(1), rotationDegrees: track(0), opacity: fade,
+    },
+  };
+  return sceneTemplateSchema.parse({
+    id: "fixture",
+    name: "Нижняя треть",
+    targets: ["hd"],
+    director: { inSeconds: 0.6, outSeconds: 0.5 },
+    fields: [{ key: "title", label: "Заголовок", type: "text", sample: "" }],
+    nodes: [
+      sceneNodeSchema.parse({
+        ...base,
+        id: "plate",
+        name: "плашка",
+        kind: "rect",
+        fitToText: { nodeId: "title", padX: 0.03, padY: 0.012, axis: "x" },
+        rectStyle: {
+          fill: "#233742", fillOpacity: 1, cornerRadius: 0.02,
+          strokeWidth: 0, strokeColor: "#FFFFFF",
+        },
+      }),
+      sceneNodeSchema.parse({
+        ...base,
+        id: "title",
+        name: "заголовок",
+        kind: "text",
+        text: { kind: "field", fieldKey: "title" },
+        textStyle: {
+          fontFilePath: "/System/Library/Fonts/Supplemental/Arial.ttf",
+          size: 0.048, color: "#FFFFFF", align: "left",
+        },
+      }),
+    ],
+  });
+}
+
+/* --------------------------- выдача кадров ------------------------------- */
+
+test("a show renders exactly as many frames as its duration asks for", async () => {
+  const request = sceneShowFixture();
+  const plan = planSceneShow(request)!;
+  const chunks: Buffer[] = [];
+  const written = await produceSceneShow(request, plan, {
+    write: async (chunk) => { chunks.push(chunk); },
+  });
+
+  // Недостача остановила бы конвейер: FFmpeg считает кадры по порядку и ждёт
+  // ровно столько, сколько обещала длительность.
+  assert.equal(written, 25 * 2);
+  assert.equal(chunks.length, written);
+});
+
+test("every frame is exactly the size of the canvas the pipeline was told about", async () => {
+  const request = sceneShowFixture();
+  const plan = planSceneShow(request)!;
+  const expected = plan.region.width * plan.region.height * 4;
+  const sizes = new Set<number>();
+  await produceSceneShow(request, plan, {
+    write: async (chunk) => { sizes.add(chunk.length); },
+  });
+  // Кадр другого размера сдвинул бы всю дорожку: сырой поток не несёт границ.
+  assert.deepEqual([...sizes], [expected]);
+});
+
+test("invisible moments still emit a transparent frame instead of being skipped", async () => {
+  const request = sceneShowFixture();
+  const plan = planSceneShow(request)!;
+  const frames: Buffer[] = [];
+  await produceSceneShow(request, plan, {
+    write: async (chunk) => { frames.push(Buffer.from(chunk)); },
+  });
+
+  const opaque = (frame: Buffer) => {
+    let count = 0;
+    for (let index = 3; index < frame.length; index += 4) if (frame[index]! > 0) count += 1;
+    return count;
+  };
+  // Нулевой кадр прозрачен — сцена ещё не появилась, — но он есть.
+  assert.equal(opaque(frames[0]!), 0);
+  assert.ok(opaque(frames[25]!) > 0, "к середине показа сцена обязана быть видна");
+});
+
+test("the canvas holds the whole entrance, so a sliding plate is never clipped", () => {
+  const request = sceneShowFixture();
+  const slid = {
+    ...request,
+    template: {
+      ...request.template,
+      nodes: request.template.nodes.map((node) => node.id !== "plate" ? node : {
+        ...node,
+        transform: {
+          ...node.transform,
+          x: {
+            value: 0.06,
+            inKeyframes: [
+              { atSeconds: 0, value: -0.3, easing: "linear" as const },
+              { atSeconds: 0.6, value: 0.06, easing: "linear" as const },
+            ],
+            outKeyframes: [],
+          },
+        },
+      }),
+    },
+  };
+  // Наложение принимает одно смещение на весь вход: полотно обязано вмещать
+  // и выехавшее, и приехавшее состояние.
+  assert.ok(planSceneShow(slid)!.region.width > planSceneShow(request)!.region.width);
+});
+
+test("a show that is never visible needs no process at all", () => {
+  const request = sceneShowFixture();
+  const hidden = {
+    ...request,
+    template: {
+      ...request.template,
+      nodes: request.template.nodes.map((node) => ({
+        ...node,
+        transform: { ...node.transform, opacity: sceneTrack(0) },
+      })),
+    },
+  };
+  assert.equal(planSceneShow(hidden), null);
+});
+
+function sceneShowFixture() {
+  return {
+    template: sceneFixture(),
+    format: sceneFormatFixture(),
+    durationSeconds: 2,
+    fields: { title: "Александр Петров" },
+    airEpochSeconds: 0,
+    clipRemainingSeconds: 300,
+  };
 }

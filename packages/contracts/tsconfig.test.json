@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist-test",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": [
+    "src/scene.ts",
+    "src/scene-timing.ts",
+    "src/scene-timing.test.ts",
+    "src/title-presets.ts",
+    "src/title-presets.test.ts"
+  ]
+}

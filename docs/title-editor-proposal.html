@@ -1,0 +1,730 @@
+<title>Редактор титров FluxIO</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+
+<style>
+  :root {
+    --paper: #EDF0F3;
+    --surface: #FFFFFF;
+    --surface-2: #E1E6EB;
+    --surface-3: #D3DAE1;
+    --ink: #16212B;
+    --ink-2: #485966;
+    --ink-3: #788994;
+    --line: #C0C9D1;
+    --line-strong: #8E9CA8;
+    --tally: #B93E33;
+    --tally-soft: #F6E5E3;
+    --data: #1B6675;
+    --data-soft: #DCEAED;
+    --bake: #8F6115;
+    --bake-soft: #F4E8D2;
+    --ok: #35704A;
+    --ok-soft: #DFEDE4;
+    --shadow: 0 1px 2px rgba(22, 33, 43, .07), 0 8px 24px -14px rgba(22, 33, 43, .3);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0E1720;
+      --surface: #16212B;
+      --surface-2: #1D2A36;
+      --surface-3: #263542;
+      --ink: #E2E9EE;
+      --ink-2: #A6B5C0;
+      --ink-3: #7A8B97;
+      --line: #31414D;
+      --line-strong: #506270;
+      --tally: #E97A6D;
+      --tally-soft: #35211F;
+      --data: #5CB4C3;
+      --data-soft: #14282D;
+      --bake: #DDA85C;
+      --bake-soft: #2C2417;
+      --ok: #78BC8E;
+      --ok-soft: #16281D;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 28px -16px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #0E1720;
+    --surface: #16212B;
+    --surface-2: #1D2A36;
+    --surface-3: #263542;
+    --ink: #E2E9EE;
+    --ink-2: #A6B5C0;
+    --ink-3: #7A8B97;
+    --line: #31414D;
+    --line-strong: #506270;
+    --tally: #E97A6D;
+    --tally-soft: #35211F;
+    --data: #5CB4C3;
+    --data-soft: #14282D;
+    --bake: #DDA85C;
+    --bake-soft: #2C2417;
+    --ok: #78BC8E;
+    --ok-soft: #16281D;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 28px -16px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1220px; margin: 0 auto; padding: 0 28px 96px; }
+  .col { max-width: 780px; }
+
+  .masthead {
+    padding: 60px 0 36px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 44px;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700; font-size: 12px;
+    letter-spacing: .14em; text-transform: uppercase;
+    color: var(--tally); margin: 0 0 14px;
+  }
+
+  h1 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    font-size: clamp(38px, 6vw, 62px);
+    line-height: 1.02; letter-spacing: -.02em;
+    margin: 0 0 20px; text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 19px; line-height: 1.55;
+    color: var(--ink-2); max-width: 40em; margin: 0 0 26px;
+  }
+
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 10px 28px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px; color: var(--ink-3);
+  }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  section { margin-bottom: 60px; }
+
+  h2 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700; font-size: 30px; line-height: 1.15;
+    letter-spacing: -.01em; margin: 0 0 8px; text-wrap: balance;
+  }
+  .h2-num { color: var(--ink-3); font-variant-numeric: tabular-nums; margin-right: 12px; }
+
+  h3 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 600; font-size: 20px; margin: 36px 0 8px; text-wrap: balance;
+  }
+
+  p { margin: 0 0 16px; max-width: 40em; }
+  .lede { color: var(--ink-2); margin-bottom: 26px; }
+
+  code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .875em;
+         background: var(--surface-2); border-radius: 3px; padding: .1em .35em; }
+  strong { font-weight: 600; }
+
+  figure { margin: 28px 0 32px; }
+
+  .figbox {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+    padding: 20px;
+  }
+
+  .figbox svg { display: block; min-width: 700px; width: 100%; height: auto; }
+
+  figcaption {
+    margin-top: 14px; font-size: 14px; line-height: 1.5;
+    color: var(--ink-2); max-width: 46em;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* svg vocabulary */
+  .node { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+  .node-new { fill: var(--surface); stroke: var(--ok); stroke-width: 2; }
+  .node-risk { fill: var(--bake-soft); stroke: var(--bake); stroke-width: 1.4; }
+  .node-data { fill: var(--data-soft); stroke: var(--data); stroke-width: 1.2; }
+  .node-live { fill: var(--tally-soft); stroke: var(--tally); stroke-width: 2; }
+  .node-ghost { fill: none; stroke: var(--line-strong); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .band { fill: var(--surface-2); stroke: none; }
+
+  .n-title {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 14.5px; font-weight: 700; fill: var(--ink);
+  }
+  .n-sub { font-size: 11.5px; fill: var(--ink-2); }
+  .n-mono { font-family: "IBM Plex Mono", monospace; font-size: 11px; fill: var(--ink-2); }
+  .n-accent { fill: var(--tally); }
+  .n-okf { fill: var(--ok); }
+  .n-dataf { fill: var(--data); }
+  .n-bakef { fill: var(--bake); }
+  .n-mute { fill: var(--ink-3); }
+
+  .flow { stroke: var(--line-strong); stroke-width: 1.8; fill: none; }
+  .flow-ok { stroke: var(--ok); stroke-width: 2; fill: none; }
+  .flow-shared { stroke: var(--ok); stroke-width: 2; fill: none; stroke-dasharray: 6 5; }
+  .flow-ghost { stroke: var(--line-strong); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+  .ah { fill: var(--line-strong); }
+  .ah-ok { fill: var(--ok); }
+
+  .e-label { font-size: 10.5px; fill: var(--ink-3); }
+  .sect-name {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; fill: var(--ink-3);
+  }
+  .rule-dash { stroke: var(--tally); stroke-width: 1.2; stroke-dasharray: 4 4; }
+  .sect-rule { stroke: var(--line); stroke-width: 1; }
+
+  /* tables */
+  .tablebox {
+    overflow-x: auto; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); box-shadow: var(--shadow); margin: 26px 0;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 14px; }
+  thead th {
+    text-align: left;
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding: 14px 16px; border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+  }
+  tbody td {
+    padding: 13px 16px; border-bottom: 1px solid var(--line);
+    vertical-align: top; line-height: 1.45; color: var(--ink-2);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { color: var(--ink); font-weight: 600; }
+  tbody td b { color: var(--ink); font-weight: 600; }
+  .dies { color: var(--ink-3); text-decoration: line-through; }
+
+  .callout {
+    border-left: 3px solid var(--tally); background: var(--surface);
+    border-radius: 0 6px 6px 0; padding: 18px 22px; margin: 26px 0; max-width: 46em;
+  }
+  .callout-ok { border-left-color: var(--ok); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-h {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-weight: 700; font-size: 15px; margin: 0 0 8px; color: var(--ink);
+  }
+
+  .split { display: grid; gap: 20px; grid-template-columns: 1fr 1fr; margin: 26px 0; }
+  @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 20px 22px; box-shadow: var(--shadow);
+  }
+  .card h4 {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 15px; font-weight: 700; margin: 0 0 12px;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .card.yes h4 { color: var(--ok); }
+  .card.no h4 { color: var(--ink-3); }
+  .card ul { margin: 0; padding-left: 18px; }
+  .card li { margin-bottom: 7px; color: var(--ink-2); font-size: 14.5px; line-height: 1.45; }
+  .card li:last-child { margin-bottom: 0; }
+
+  .risks { list-style: none; counter-reset: r; padding: 0; margin: 24px 0 0; }
+  .risks li {
+    counter-increment: r; position: relative;
+    padding: 0 0 20px 46px; margin-bottom: 20px;
+    border-bottom: 1px solid var(--line); max-width: 52em;
+  }
+  .risks li:last-child { border-bottom: none; }
+  .risks li::before {
+    content: counter(r, decimal-leading-zero);
+    position: absolute; left: 0; top: 1px;
+    font-family: "IBM Plex Mono", monospace; font-size: 13px;
+    color: var(--tally); font-variant-numeric: tabular-nums;
+  }
+  .r-h { font-weight: 600; display: block; margin-bottom: 4px; }
+  .r-b { color: var(--ink-2); font-size: 15px; }
+
+  footer {
+    border-top: 1px solid var(--line); padding-top: 24px;
+    color: var(--ink-3); font-size: 13.5px;
+  }
+
+  :focus-visible { outline: 2px solid var(--tally); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Предложение · архитектура графики</p>
+    <h1>Редактор титров</h1>
+    <p class="standfirst">
+      Шаблон перестаёт быть чужим файлом и становится сценой внутри приложения.
+      Редактор и эфир делят один код отрисовки, поэтому предпросмотр не может
+      разойтись с выходом, а текст не может появиться раньше своей плашки.
+    </p>
+    <div class="meta">
+      <span><b>Статус</b> предложение, не принято</span>
+      <span><b>Заменяет</b> импорт Lottie из After Effects</span>
+      <span><b>Не заменяет</b> alpha-медиа для оформления без данных</span>
+    </div>
+  </header>
+
+  <!-- ============ 01 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">01</span>Конвейер</h2>
+      <p class="lede">
+        Сверху вниз — от холста редактора до кадра в эфире. Зелёным отмечено новое.
+        Обратите внимание на пунктирную связь слева: она и есть смысл всей затеи.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1120 1030" role="img" aria-label="Конвейер: редактор титров, сцена, эффект, план, графический процесс на Skia, кадры RGBA, FFmpeg, эфир">
+          <defs>
+            <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah"/>
+            </marker>
+            <marker id="mo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah-ok"/>
+            </marker>
+          </defs>
+
+          <text class="sect-name" x="0" y="46">1 · проектирование</text>
+
+          <rect class="node-new" x="380" y="60" width="440" height="94" rx="4"/>
+          <text class="n-title n-okf" x="400" y="86">Редактор титров</text>
+          <text class="n-sub" x="400" y="108">холст на реальном кадре из плейлиста</text>
+          <text class="n-sub" x="400" y="128">узлы, ключи анимации, привязки</text>
+          <text class="n-sub" x="400" y="146">поля объявляет сам шаблон — промахнуться нечем</text>
+          <line class="flow" x1="600" y1="154" x2="600" y2="184" marker-end="url(#m)"/>
+
+          <rect class="node-new" x="380" y="190" width="440" height="102" rx="4"/>
+          <text class="n-title n-okf" x="400" y="216">Шаблон — это сцена</text>
+          <text class="n-sub" x="400" y="238">дерево узлов · список полей · режиссёр</text>
+          <text class="n-sub" x="400" y="258">координаты в процентах кадра: SD, FHD и UHD одинаково</text>
+          <text class="n-sub" x="400" y="278">хранится в сессии, а не файлом на диске</text>
+
+          <rect class="node-ghost" x="850" y="196" width="250" height="76" rx="4"/>
+          <text class="n-sub" x="866" y="220">Терять нечего: шаблон</text>
+          <text class="n-sub" x="866" y="238">переезжает вместе с проектом,</text>
+          <text class="n-sub" x="866" y="256">проверять пути не нужно</text>
+          <line class="flow-ghost" x1="820" y1="234" x2="844" y2="234"/>
+
+          <line class="flow" x1="600" y1="292" x2="600" y2="322" marker-end="url(#m)"/>
+
+          <text class="sect-name" x="0" y="352">2 · настройка эфира</text>
+
+          <rect class="node" x="380" y="328" width="440" height="94" rx="4"/>
+          <text class="n-title" x="400" y="354">Эффект</text>
+          <text class="n-sub" x="400" y="376">выбрать шаблон · заполнить поля из файла задания</text>
+          <text class="n-sub" x="400" y="396">задать момент показа и длительность</text>
+          <text class="n-sub n-mute" x="400" y="414">когда — решает оператор, как — решает шаблон</text>
+          <line class="flow" x1="600" y1="422" x2="600" y2="452" marker-end="url(#m)"/>
+
+          <rect class="node" x="380" y="458" width="440" height="76" rx="4"/>
+          <text class="n-title" x="400" y="484">План — чистая функция</text>
+          <text class="n-sub" x="400" y="506">остаётся как есть: очередь Current + Future, ошибки до применения</text>
+          <text class="n-sub n-mute" x="400" y="524">меняется только то, чем оформлен эффект</text>
+          <line class="flow" x1="600" y1="534" x2="600" y2="564" marker-end="url(#m)"/>
+
+          <text class="sect-name" x="0" y="594">3 · рисование</text>
+
+          <rect class="node-new" x="380" y="570" width="440" height="116" rx="4"/>
+          <text class="n-title n-okf" x="400" y="596">Графический процесс</text>
+          <text class="n-sub" x="400" y="618">вход · сцена, значения полей, номер кадра, частота</text>
+          <text class="n-sub" x="400" y="638">маски, размытие, тени, скругления — родные возможности</text>
+          <text class="n-sub" x="400" y="658">отдельный процесс: службу не блокирует</text>
+          <text class="n-mono n-mute" x="400" y="678">кадр номер N, а не системные часы</text>
+
+          <rect class="node-ghost" x="850" y="580" width="250" height="96" rx="4"/>
+          <text class="n-sub" x="866" y="604">Рендерер следующего ролика</text>
+          <text class="n-sub" x="866" y="622">запускается заранее. Рисование</text>
+          <text class="n-sub" x="866" y="640">по номеру кадра — единственный</text>
+          <text class="n-sub" x="866" y="658">способ не нарисовать будущее</text>
+          <line class="flow-ghost" x1="820" y1="628" x2="844" y2="628"/>
+
+          <line class="flow" x1="600" y1="686" x2="600" y2="716" marker-end="url(#m)"/>
+
+          <rect class="node-new" x="380" y="722" width="440" height="70" rx="4"/>
+          <text class="n-title n-okf" x="400" y="748">Кадры RGBA в трубу</text>
+          <text class="n-sub" x="400" y="770">так же, как рендереры звуковых дорожек отдают сырой PCM</text>
+          <line class="flow" x1="600" y1="792" x2="600" y2="822" marker-end="url(#m)"/>
+
+          <text class="sect-name" x="0" y="852">4 · эфир</text>
+
+          <rect class="node" x="380" y="828" width="440" height="76" rx="4"/>
+          <text class="n-title" x="400" y="854">FFmpeg</text>
+          <text class="n-sub" x="400" y="876">берёт кадры обычным входом и накладывает слоем</text>
+          <text class="n-sub n-mute" x="400" y="894">supervisor и TSDuck ничего нового не узнают</text>
+          <line class="flow" x1="600" y1="904" x2="600" y2="934" marker-end="url(#m)"/>
+
+          <rect class="node-live" x="500" y="940" width="200" height="48" rx="24"/>
+          <text class="n-title n-accent" x="600" y="970" text-anchor="middle">ЭФИР</text>
+
+          <!-- общий код отрисовки -->
+          <polyline class="flow-shared" points="380,107 200,107 200,628 374,628" marker-end="url(#mo)"/>
+          <circle cx="200" cy="107" r="4" class="ah-ok"/>
+          <text class="n-title n-okf" x="212" y="352">Один код отрисовки</text>
+          <text class="n-sub" x="212" y="372">редактор и эфир исполняют</text>
+          <text class="n-sub" x="212" y="390">одну и ту же функцию —</text>
+          <text class="n-sub" x="212" y="408">предпросмотр не может</text>
+          <text class="n-sub" x="212" y="426">разойтись с выходом</text>
+
+          <line class="sect-rule" x1="0" y1="1006" x2="1120" y2="1006"/>
+          <text class="e-label" x="0" y="1024">Ничего не запекается: файлов-вариантов нет, кэша нет, склеивать по ключу нечего.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Пунктирная связь — это всё предложение в одной линии.</b> Сегодня предпросмотр
+        рисует Lottie-проигрыватель в браузере, а эфир — FFmpeg по запечённому файлу: два разных
+        рисовальщика, и расхождение между ними неизбежно. Здесь это одна функция, вызванная из
+        двух мест.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ 02 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">02</span>Что такое сцена</h2>
+      <p class="lede">
+        Дерево узлов со свойствами. Не кадры анимации, а описание того, из чего титр состоит
+        и как себя ведёт.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1040 430" role="img" aria-label="Дерево узлов нижней трети и результат: плашка растёт по тексту, текстовый узел объявлен полем">
+          <defs>
+            <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah"/>
+            </marker>
+          </defs>
+
+          <text class="sect-name" x="20" y="28">Дерево узлов</text>
+
+          <rect class="node" x="20" y="44" width="500" height="42" rx="4"/>
+          <text class="n-title" x="38" y="70">Группа «Нижняя треть»</text>
+
+          <line class="flow" x1="44" y1="86" x2="44" y2="320"/>
+
+          <rect class="node-risk" x="60" y="100" width="460" height="56" rx="4"/>
+          <line class="flow" x1="44" y1="128" x2="54" y2="128"/>
+          <text class="n-title n-bakef" x="78" y="124">Прямоугольник «плашка»</text>
+          <text class="n-sub" x="78" y="144">заливка · скругление · ширина ← по тексту заголовка</text>
+
+          <rect class="node" x="60" y="168" width="460" height="42" rx="4"/>
+          <line class="flow" x1="44" y1="189" x2="54" y2="189"/>
+          <text class="n-sub" x="78" y="194">Круг «маркер» — заливка, ключи масштаба</text>
+
+          <rect class="node-data" x="60" y="222" width="460" height="56" rx="4"/>
+          <line class="flow" x1="44" y1="250" x2="54" y2="250"/>
+          <text class="n-title n-dataf" x="78" y="246">Текст «заголовок»</text>
+          <text class="n-mono" x="78" y="266">поле: title · шрифт, кегль, цвет, выключка</text>
+
+          <rect class="node" x="60" y="290" width="460" height="42" rx="4"/>
+          <line class="flow" x1="44" y1="311" x2="54" y2="311"/>
+          <text class="n-sub" x="78" y="316">Текст «подпись» — постоянная строка</text>
+
+          <text class="sect-name" x="580" y="28">Что выходит в кадр</text>
+          <rect class="node-ghost" x="580" y="44" width="440" height="248" rx="5"/>
+          <text class="e-label" x="800" y="70" text-anchor="middle">кадр 16:9</text>
+
+          <circle cx="640" cy="215" r="26" fill="#E97F2C"/>
+          <rect x="676" y="192" width="300" height="46" rx="12" fill="#233742"/>
+          <text class="n-sub" x="694" y="220" fill="#FFFFFF">Александр Петров</text>
+          <text class="n-sub n-mute" x="694" y="262">режиссёр</text>
+
+          <line class="rule-dash" x1="676" y1="180" x2="976" y2="180"/>
+          <text class="e-label n-accent" x="826" y="172" text-anchor="middle">ширина посчитана по тексту, а не задана</text>
+
+          <polyline class="flow" points="520,128 550,128 550,196 574,196" marker-end="url(#m2)"/>
+          <polyline class="flow" points="520,250 550,250 550,210 574,210" marker-end="url(#m2)"/>
+
+          <text class="e-label" x="20" y="360">Привязка ширины — свойство узла, а не соглашение об имени слоя. Мерить шрифт снаружи не нужно:</text>
+          <text class="e-label" x="20" y="378">текст раскладывает тот же рисовальщик, который рисует плашку.</text>
+          <text class="e-label" x="20" y="406">Поле объявляет редактор. В инспекторе эффекта оно приходит списком — набрать имя руками нельзя,</text>
+          <text class="e-label" x="20" y="424">а значит и промахнуться в нём нельзя.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Два места, где сегодня стоят подпорки, здесь становятся свойствами.</b> Соглашение
+        <code>fit:</code> с промером таблиц шрифта превращается в привязку ширины. Имена
+        текстовых слоёв из After Effects — в объявленные поля.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ 03 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">03</span>Режиссёр вместо окна</h2>
+      <p class="lede">
+        Самая важная часть, и та, что убирает сегодняшний баг не починкой, а устройством.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1080 440" role="img" aria-label="Сравнение: сейчас две независимые шкалы расходятся, со сценой один режиссёр играет вход, удержание и выход">
+          <defs>
+            <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="ah"/>
+            </marker>
+          </defs>
+
+          <text class="sect-name" x="20" y="28">Сейчас — две шкалы</text>
+          <rect class="band" x="20" y="44" width="490" height="230" rx="7"/>
+
+          <text class="n-sub" x="38" y="76">запечённый MOV</text>
+          <path d="M38,120 L118,92 L490,92 L490,120 Z" fill="none" stroke="currentColor" class="node-risk"/>
+          <text class="e-label" x="46" y="112">вход 1.6 с</text>
+
+          <text class="n-sub" x="38" y="164">живая надпись</text>
+          <rect class="node-live" x="38" y="176" width="452" height="28" rx="3"/>
+          <text class="e-label n-accent" x="48" y="195">включается сразу, про анимацию не знает</text>
+
+          <rect x="38" y="88" width="80" height="120" fill="none" class="rule-dash"/>
+          <text class="e-label n-accent" x="38" y="230">текст висит без плашки</text>
+          <text class="e-label n-accent" x="38" y="248">1.6 секунды в эфире</text>
+
+          <text class="sect-name" x="570" y="28">Со сценой — один режиссёр</text>
+          <rect class="band" x="570" y="44" width="490" height="230" rx="7"/>
+
+          <text class="n-sub" x="588" y="76">сцена целиком</text>
+          <rect class="node-new" x="588" y="88" width="120" height="34" rx="3"/>
+          <text class="e-label n-okf" x="648" y="110" text-anchor="middle">вход</text>
+          <rect class="node-new" x="708" y="88" width="212" height="34" rx="3"/>
+          <text class="e-label n-okf" x="814" y="110" text-anchor="middle">удержание</text>
+          <rect class="node-new" x="920" y="88" width="120" height="34" rx="3"/>
+          <text class="e-label n-okf" x="980" y="110" text-anchor="middle">выход</text>
+
+          <text class="n-sub" x="588" y="164">оператор задаёт только</text>
+          <rect class="node" x="588" y="176" width="452" height="28" rx="3"/>
+          <text class="e-label" x="598" y="195">момент показа T и длительность D — удержание растягивается на остаток</text>
+
+          <text class="e-label n-okf" x="588" y="230">текст — узел этой же сцены,</text>
+          <text class="e-label n-okf" x="588" y="248">поэтому разойтись им не с чем</text>
+
+          <line class="sect-rule" x1="20" y1="300" x2="1060" y2="300"/>
+          <text class="e-label" x="20" y="326">Дизайнер отвечает за то, КАК титр появляется и уходит. Оператор — за то, КОГДА и НАСКОЛЬКО.</text>
+          <text class="e-label" x="20" y="348">Сегодня оператор задаёт окно, а анимация живёт отдельно внутри файла — и они не связаны ничем.</text>
+          <text class="e-label" x="20" y="382">Побочно исчезает целый класс отказов: «ролик короче половины перехода», «окно меньше анимации»,</text>
+          <text class="e-label" x="20" y="404">«надпись пережила плашку». Режиссёр укладывает вход и выход внутрь заданной длительности сам.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Сегодняшний баг здесь не чинится — его негде разместить.</b> Текст и плашка суть узлы
+        одной сцены с одним временем; чтобы они разошлись, нужно две шкалы, а второй нет.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ 04 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">04</span>Что перестаёт быть нужным</h2>
+      <p class="lede">
+        Девять механизмов существуют только потому, что рисовальщик и эфирный движок — разные
+        программы. Ни один из них не про эфир.
+      </p>
+    </div>
+
+    <div class="tablebox">
+      <table>
+        <thead>
+          <tr>
+            <th>Механизм сегодня</th>
+            <th>Зачем он был</th>
+            <th>Что вместо него</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="dies">Запекание в alpha-MOV</td>
+            <td>FFmpeg не читает Lottie</td>
+            <td>Рисование покадрово в отдельном процессе</td>
+          </tr>
+          <tr>
+            <td class="dies">Ключ рендера и склейка вариантов</td>
+            <td>Недельная сетка заказала бы сотни файлов</td>
+            <td><b>Нечего склеивать</b> — файлов-вариантов нет</td>
+          </tr>
+          <tr>
+            <td class="dies">Уступка цикла событий во время рендера</td>
+            <td>Рендер блокировал однопоточную службу</td>
+            <td>Рисует отдельный процесс</td>
+          </tr>
+          <tr>
+            <td class="dies">Очистка текстового слоя шаблона</td>
+            <td>Меняющееся значение не запечь</td>
+            <td>Текст — обычный узел сцены</td>
+          </tr>
+          <tr>
+            <td class="dies">Снятие геометрии <code>textBox</code></td>
+            <td>Надо было узнать, где стоял текст</td>
+            <td>Координаты и так в сцене</td>
+          </tr>
+          <tr>
+            <td class="dies">Пересчёт <code>containTextBox</code></td>
+            <td>У шаблона другое соотношение сторон</td>
+            <td>Сцена задана в процентах кадра</td>
+          </tr>
+          <tr>
+            <td class="dies">Соглашение <code>fit:</code> и промер шрифта</td>
+            <td>Плашку под текст никто не считал</td>
+            <td>Привязка ширины — свойство узла</td>
+          </tr>
+          <tr>
+            <td class="dies">Метка <code>meta.flux</code> и отказ Bodymovin</td>
+            <td>Иначе неизвестно, что редактируется</td>
+            <td><b>Импорта нет</b> — нечего проверять</td>
+          </tr>
+          <tr>
+            <td class="dies">Две временные шкалы</td>
+            <td>Побочный итог запекания</td>
+            <td>Один режиссёр сцены</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <div class="callout callout-ok">
+        <p class="callout-h">Что остаётся без изменений</p>
+        <p>
+          План эффекта — чистая функция с очередью Current + Future и ошибками до применения.
+          Файл задания и сопоставление полей. Порядок эффектов как порядок наложения слоёв.
+          Supervisor, TSDuck, транспорт. Всё это про эфир, а не про формат графики, и потому
+          переделки не требует.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">05</span>Границы редактора</h2>
+      <p class="lede">
+        Главный риск проекта — начать писать After Effects. Эфирному титру нужен узкий набор.
+      </p>
+    </div>
+
+    <div class="split">
+      <div class="card yes">
+        <h4>Строим</h4>
+        <ul>
+          <li>Узлы: группа, прямоугольник, круг, текст, изображение, видео, маска</li>
+          <li>Трансформация в процентах кадра, прозрачность, режим наложения</li>
+          <li>Ключи на числовые свойства со сглаживанием</li>
+          <li>Три отрезка режиссёра: вход, удержание, выход</li>
+          <li>Привязка ширины и высоты к тексту с отступами</li>
+          <li>Источник текста: строка, поле, часы, отсчёт, бегущая строка</li>
+          <li>Эффекты узла: размытие, тень, цветокоррекция</li>
+          <li>Направляющие, прилипание, безопасные зоны</li>
+          <li>Предпросмотр на реальном кадре из плейлиста</li>
+        </ul>
+      </div>
+      <div class="card no">
+        <h4>Не строим</h4>
+        <ul>
+          <li>Произвольные кривые и перо</li>
+          <li>Выражения и скрипты</li>
+          <li>Трёхмерную сцену и камеры</li>
+          <li>Частицы и симуляции</li>
+          <li>Вложенные композиции</li>
+          <li>Работу со звуком</li>
+          <li>Корректирующие слои</li>
+          <li>Motion blur на сложном движении</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="callout">
+        <p class="callout-h">Сложная графика остаётся за After Effects — и это правильно</p>
+        <p>
+          Открывашки, отбивки, переходы, брендинг — всё, где нет живых данных, — дизайнер
+          рендерит целиком и отдаёт alpha-видео или последовательность <code>.png</code>. Там
+          доступно всё: маски, размытие, motion blur, любые эффекты. Парсить нечего, терять
+          при переносе нечего.
+        </p>
+        <p>
+          Разделение выходит чистое и объяснимое любому дизайнеру: <b>есть внутри
+          подставляемые данные — это шаблон редактора; нет — это готовое видео.</b>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 06 ============ -->
+  <section>
+    <div class="col">
+      <h2><span class="h2-num">06</span>Чего это стоит</h2>
+      <p class="lede">Честно, чтобы решение принималось с открытыми глазами.</p>
+
+      <ol class="risks">
+        <li>
+          <span class="r-h">Это самая крупная работа за историю проекта</span>
+          <span class="r-b">Редактор, модель сцены, рисовальщик и переезд эффектов на новую
+          основу. Не месяц. Отдельные части можно выпускать по очереди, но полезной ценности
+          до готового редактора почти нет.</span>
+        </li>
+        <li>
+          <span class="r-h">Новая зависимость в поставке</span>
+          <span class="r-b">Рисовальщик приносит нативную библиотеку — сборка под каждую
+          платформу и архитектуру, офлайн-установка тяжелеет. Меньше, чем от браузера, но
+          не бесплатно.</span>
+        </li>
+        <li>
+          <span class="r-h">Переходный период с двумя механизмами</span>
+          <span class="r-b">Пока редактора нет, эфир должен работать на нынешнем пути. Значит
+          какое-то время в дереве живут оба — старый не развивая.</span>
+        </li>
+        <li>
+          <span class="r-h">Существующие шаблоны придётся пересобрать</span>
+          <span class="r-b">Автоматический перенос из Lottie возможен только для простых
+          случаев — то есть ровно для тех, которые быстрее собрать заново. Сложные не
+          переносятся по определению: в них есть то, чего редактор не умеет.</span>
+        </li>
+        <li>
+          <span class="r-h">Потолок оформления живых титров задаёт рисовальщик</span>
+          <span class="r-b">Он высокий — маски, размытие, тени, приличная типографика — но
+          конечный. Если однажды понадобится титр, который нельзя ни запечь, ни собрать из
+          узлов, ответом будет браузерный рантайм, и это уже другая работа.</span>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <footer class="col">
+    <p>
+      Предложение к обсуждению, версия дерева 8.0.0. Смежные документы:
+      <code>docs/effects-flow-map.html</code> — как работает список эффектов сегодня;
+      <code>docs/broadcast-effects-engineer-runbook.md</code> — инструкция оператора.
+    </p>
+  </footer>
+
+</div>

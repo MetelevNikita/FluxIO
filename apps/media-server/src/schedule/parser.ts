@@ -6,6 +6,8 @@ import {
   type ParsedScheduleItem,
   type ScheduleGraphicElement,
   type ScheduleItemType,
+  type ScheduleBroadcastEffect,
+  type ScheduleBroadcastShow,
 } from "@gruber/contracts";
 
 const targetDurationSeconds = 7 * 24 * 60 * 60;
@@ -14,6 +16,13 @@ const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*del
 const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
 const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
+// Определение эфирного эффекта: заголовок файла. `data` — base64, поэтому
+// фигурных скобок внутри быть не может и разбор по ним безопасен.
+const broadcastDefinePattern =
+  /^defineBroadcastEffect\s*\{([^}]*)\}\s+name\s*\{([^}]*)\}\s+kind\s*\{([^}]*)\}\s+data\s*\{([^}]*)\}\s*$/i;
+const broadcastShowPattern =
+  /^insertBroadcastEffect\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}\s+endOn\s*\{([^}]*)\}(?:\s+fields\s*\{([^}]*)\})?\s*$/i;
+
 const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+((?:titlePath(?:#\d+)?\s*\{[^}]*\}\s*)*)duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}(?:\s+endOn\s*\{([^}]*)\})?\s*$/i;
 const graphicTitlePattern = /titlePath(?:#(\d+))?\s*\{([^}]*)\}/gi;
 const srtPattern = /^insertSRT\s*\{([^}]*)\}(?:\s*state\s*\{(on|off)\})?\s*$/i;
@@ -68,6 +77,10 @@ export function parseScheduleText(
   let pendingAgeTitleDurationSeconds: number | null = null;
   let pendingLogoPath: string | null = null;
   let pendingGraphicElements: ScheduleGraphicElement[] = [];
+  // Определения эфирных эффектов и их показы. Определения общие для файла,
+  // показы копятся до строки ролика — как и остальная графика.
+  const broadcastEffects: ScheduleBroadcastEffect[] = [];
+  let pendingBroadcastShows: ScheduleBroadcastShow[] = [];
   let pendingSrtPath: string | null = null;
   let pendingSrtEnabled = true;
   const items: ParsedScheduleItem[] = [];
@@ -98,6 +111,35 @@ export function parseScheduleText(
     const logo = line.match(logoPattern);
     if (logo) {
       pendingLogoPath = requiredDirectiveValue(logo[1], "insertLogoTitle", entry.lineNumber);
+      continue;
+    }
+    const defined = line.match(broadcastDefinePattern);
+    if (defined) {
+      broadcastEffects.push({
+        effectId: requiredDirectiveValue(defined[1], "defineBroadcastEffect", entry.lineNumber),
+        name: requiredDirectiveValue(defined[2], "defineBroadcastEffect", entry.lineNumber),
+        kind: requiredDirectiveValue(defined[3], "defineBroadcastEffect", entry.lineNumber) as
+          ScheduleBroadcastEffect["kind"],
+        data: requiredDirectiveValue(defined[4], "defineBroadcastEffect", entry.lineNumber),
+      });
+      continue;
+    }
+    const show = line.match(broadcastShowPattern);
+    if (show) {
+      const effectId = requiredDirectiveValue(show[1], "insertBroadcastEffect", entry.lineNumber);
+      // Показ без определения — потерянная ссылка. Молча пропустить нельзя:
+      // снаружи это выглядит как «титр не вышел в эфир».
+      if (!broadcastEffects.some((effect) => effect.effectId === effectId)) {
+        throw new ScheduleParseError(
+          `Line ${entry.lineNumber}: insertBroadcastEffect references an undefined effect ${effectId}`,
+        );
+      }
+      pendingBroadcastShows.push({
+        effectId,
+        startOnSeconds: parseClock(show[2] ?? "", true, `Line ${entry.lineNumber}`),
+        endOnSeconds: parseClock(show[3] ?? "", true, `Line ${entry.lineNumber}`),
+        fields: optionalDirectiveValue(show[4]) ?? "",
+      });
       continue;
     }
     const graphic = line.match(graphicPattern);
@@ -209,6 +251,7 @@ export function parseScheduleText(
         declaredDurationSeconds,
         filePath,
         graphicElements: pendingGraphicElements,
+        broadcastShows: pendingBroadcastShows,
         lineNumber: entry.lineNumber,
         logoPath: pendingLogoPath,
         srtPath: pendingSrtPath,
@@ -222,6 +265,7 @@ export function parseScheduleText(
       pendingAgeTitleDurationSeconds = null;
       pendingLogoPath = null;
       pendingGraphicElements = [];
+      pendingBroadcastShows = [];
       pendingSrtPath = null;
       pendingSrtEnabled = true;
       continue;
@@ -246,6 +290,7 @@ export function parseScheduleText(
     0,
   );
   return parsedScheduleSchema.parse({
+    broadcastEffects,
     delaySeconds,
     encoding,
     items,

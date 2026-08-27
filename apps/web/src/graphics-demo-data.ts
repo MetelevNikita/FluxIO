@@ -15,47 +15,6 @@ const demoPreset = graphicEffectAssetSchema.parse({
   durationSeconds: 4,
   width: 1920,
   height: 1080,
-  lottie: {
-    sourcePath: "/tmp/fluxio-demo-lower-third.json",
-    version: "5.12.2",
-    frameRate: 25,
-    inPoint: 0,
-    outPoint: 100,
-    backgroundColor: "transparent",
-    responsiveTextKeys: ["main_title"],
-    properties: [
-      {
-        id: "demo-main-title",
-        path: "/layers/1/t/d/k/0/s/t",
-        group: "Main composition · main_title",
-        label: "Text",
-        type: "text",
-        value: "Вечерние новости",
-        textBox: {
-          xPercent: 8,
-          yPercent: 78,
-          fontSizePercent: 4.2,
-          color: "#FFFFFF",
-          align: "left",
-        },
-      },
-      {
-        id: "demo-kicker",
-        path: "/layers/2/t/d/k/0/s/t",
-        group: "Main composition · kicker",
-        label: "Text",
-        type: "text",
-        value: "ПРЯМОЙ ЭФИР",
-        textBox: {
-          xPercent: 8,
-          yPercent: 72,
-          fontSizePercent: 1.8,
-          color: "#5FE1D2",
-          align: "left",
-        },
-      },
-    ],
-  },
 });
 
 const demoDynamicTitle = graphicEffectAssetSchema.parse({

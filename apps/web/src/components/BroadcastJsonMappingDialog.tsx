@@ -151,7 +151,7 @@ export function BroadcastJsonMappingDialog({
             </div>
             <div className="json-binding-list">
               {targets.length === 0 ? (
-                <div className="json-empty-targets">{tr("Подгрузите Lottie-шаблон с редактируемыми Text Layer.", "Load a Lottie template with editable Text Layers.")}</div>
+                <div className="json-empty-targets">{tr("У сцены этого эффекта нет объявленных полей.", "This effect\u2019s scene declares no fields.")}</div>
               ) : targets.map((target) => {
                 const sourceKey = sourceByTarget[target.key] ?? "";
                 const sample = fieldSample(fields, firstRecord, sourceKey, tr("нет значения", "no value"));
@@ -227,7 +227,6 @@ export function BroadcastJsonMappingDialog({
             </div>
             <div className="json-fit-explainer">
               <Maximize2 size={14} />
-              <div><strong>{tr("Отзывчивая подложка", "Responsive plate")}</strong><p><b>FIT READY</b> {tr("означает, что в Lottie найден Shape Layer", "means that Lottie contains a Shape Layer")} <code>fit:&lt;Text Layer&gt;</code>. {tr("Его ширина автоматически пересчитывается под каждое значение JSON.", "Its width is recalculated automatically for every JSON value.")}</p></div>
             </div>
             {sourceKeys.length === 0 ? (
               <div className="json-parser-warnings"><p>{tr("JSON не содержит доступных строковых, числовых или boolean-полей.", "JSON has no usable string, number, or boolean fields.")}</p></div>
