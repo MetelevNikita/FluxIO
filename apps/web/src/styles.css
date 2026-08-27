@@ -1194,6 +1194,23 @@ p {
   justify-content: space-between;
 }
 
+/* Панель ресурсов расписания растянута на обе колонки экрана: без этого она
+   занимает только левую, справа остаётся пустая полоса во весь экран, а
+   плейлист и превью сплющиваются в остаток высоты. */
+.schedule-resource-toolbar {
+  min-height: 136px;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(270px, 1.6fr) minmax(145px, 0.75fr) 155px minmax(165px, 0.8fr) 175px 185px minmax(225px, 1.15fr);
+  gap: 10px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  background: #090b0d;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
 .schedule-resource-toolbar button,
 .schedule-resource-toolbar select {
   min-height: 24px;
