@@ -127,9 +127,49 @@ export const sceneTransformSchema = z.object({
   /** Точка привязки внутри собственного прямоугольника: 0 — левый верх, 1 — правый низ. */
   anchorX: z.number().min(0).max(1).default(0),
   anchorY: z.number().min(0).max(1).default(0),
+  /** Масштаб по горизонтали. Раздельные оси нужны для «растяжек» и сжатий. */
   scale: sceneTrackSchema,
+  /**
+   * Масштаб по вертикали. Отрицательное значение — не ошибка: так делают
+   * отражение, и запрещать его незачем.
+   */
+  scaleY: sceneTrackSchema.default(() => ({ value: 1, inKeyframes: [], outKeyframes: [] })),
   rotationDegrees: sceneTrackSchema,
+  /** Наклон в градусах — тот самый «курсив» у выезжающей плашки. */
+  skewDegrees: sceneTrackSchema.default(() => ({ value: 0, inKeyframes: [], outKeyframes: [] })),
+  /**
+   * Размытие в долях высоты кадра.
+   *
+   * Самое частое «дожатие» у входов: узел приезжает из размытия в резкость.
+   * Доля от высоты, а не пиксели: два пикселя на 576 заметны, на 2160 — нет.
+   */
+  blur: sceneTrackSchema.default(() => ({ value: 0, inKeyframes: [], outKeyframes: [] })),
   opacity: sceneTrackSchema,
+  /**
+   * Доля раскрытия маской: 0 — узел закрыт целиком, 1 — виден весь.
+   *
+   * Это **обрезка**, а не изменение размера. Анимировать ширину у текста
+   * нельзя: буквы поедут и сожмутся, а раскрытие обязано открывать уже
+   * готовую надпись, не трогая её.
+   */
+  reveal: sceneTrackSchema.default(() => ({ value: 1, inKeyframes: [], outKeyframes: [] })),
+  /**
+   * Откуда раскрывается маска: 0 — от левого края и от верха, 1 — от правого
+   * и от низа, 0.5 — от середины в обе стороны.
+   */
+  /**
+   * Чем открывается маска: шириной, высотой или обеими сторонами сразу.
+   *
+   * «Из точки» — раскрытие выезжает из точки среза, и по умолчанию она стоит
+   * там же, где привязка: дизайнер выбрал точку отсчёта узла, и ждать, что
+   * появление пойдёт из другого места, ему неоткуда. Полосу плашки при этом
+   * по-прежнему надо открывать по ширине во всю высоту — это и есть «по
+   * ширине».
+   */
+  revealAxis: z.enum(["x", "y", "point"]).default("point"),
+  revealOriginX: z.number().min(0).max(1).default(0),
+  /** По умолчанию совпадает с привязкой — раскрытие выезжает из её точки. */
+  revealOriginY: z.number().min(0).max(1).default(0),
 });
 
 /**
@@ -189,6 +229,31 @@ export const sceneTextSourceSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+/**
+ * Появление текста по частям — то, что в After Effects называется аниматором.
+ *
+ * Строка разбирается на буквы, слова или строки, и каждая часть отыгрывает
+ * свой вход со сдвигом по времени. Без этого титр может только целиком
+ * проявиться, а «печатная машинка» и «буквы снизу» — половина эфирной
+ * типографики.
+ */
+export const sceneTextAnimatorSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** По чему разбивать строку. */
+  unit: z.enum(["character", "word", "line"]).default("character"),
+  /** Что происходит с каждой частью. */
+  effect: z.enum(["fade", "fade-up", "slide", "typewriter", "scale"]).default("fade-up"),
+  /**
+   * Насколько части разнесены по времени: 0 — все сразу, 1 — строго по очереди.
+   *
+   * Это доля, а не секунды: длительность входа задаёт режиссёр, и волна
+   * обязана укладываться в неё при любой длине текста.
+   */
+  stagger: z.number().min(0).max(1).default(0.6),
+  /** Откуда идёт волна. */
+  direction: z.enum(["forward", "backward", "center"]).default("forward"),
+});
+
 export const sceneTextStyleSchema = z.object({
   /** Файл шрифта, а не семейство: `drawtext` рисует конкретным файлом, и подстановка семейства уже дважды приводила к пустым прямоугольникам вместо кириллицы. */
   fontFilePath: z.string().min(1).nullable().default(null),
@@ -203,9 +268,44 @@ export const sceneTextStyleSchema = z.object({
   strokeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#000000"),
 });
 
+/**
+ * Точка перехода градиента.
+ *
+ * Прозрачность у каждой точки своя: заливка, уходящая в ноль, — половина
+ * эфирных плашек, и без неё пришлось бы городить второй узел с маской.
+ */
+export const sceneGradientStopSchema = z.object({
+  /** Доля пути от начала к концу. */
+  offset: z.number().min(0).max(1),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  opacity: z.number().min(0).max(1).default(1),
+});
+
+/**
+ * Градиентная заливка узла.
+ *
+ * Точки заданы **долями коробки узла**, а не кадра: градиент принадлежит узлу
+ * и обязан ехать вместе с ним при смене раскладки. У линейного это начало и
+ * конец, у радиального — центр и точка на внешнем круге: одна пара точек на
+ * оба вида, чтобы переключение не сбрасывало настройку.
+ */
+export const sceneGradientSchema = z.object({
+  fromX: z.number().min(-1).max(2).default(0),
+  fromY: z.number().min(-1).max(2).default(0),
+  toX: z.number().min(-1).max(2).default(1),
+  toY: z.number().min(-1).max(2).default(0),
+  stops: z.array(sceneGradientStopSchema).min(2).max(8).default([
+    { offset: 0, color: "#000000", opacity: 1 },
+    { offset: 1, color: "#000000", opacity: 0 },
+  ]),
+});
+
 export const sceneRectStyleSchema = z.object({
   fill: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#000000"),
   fillOpacity: z.number().min(0).max(1).default(0.7),
+  /** Чем залит узел. `solid` — цветом `fill`, остальное — градиентом. */
+  fillKind: z.enum(["solid", "linear", "radial"]).default("solid"),
+  gradient: sceneGradientSchema.default(() => sceneGradientSchema.parse({})),
   cornerRadius: z.number().min(0).max(0.5).default(0),
   strokeWidth: z.number().min(0).max(0.05).default(0),
   strokeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#FFFFFF"),
@@ -263,10 +363,27 @@ const sceneNodeBase = {
   blend: sceneBlendSchema.default("normal"),
   shadow: sceneShadowSchema.default(() => sceneShadowSchema.parse({})),
   fitToText: sceneFitToTextSchema.nullable().default(null),
+  /**
+   * Группа берёт размер от этого узла — обычно от подложки.
+   *
+   * Иначе у контейнера нет собственных границ, и прятать за ними нечего:
+   * раскрытие группы должно резать содержимое по краю плашки, а не по краю
+   * кадра.
+   */
+  fitToNodeId: z.string().min(1).max(64).nullable().default(null),
+  /**
+   * Резать ли детей по границам узла.
+   *
+   * У группы это и делает её контейнером: раскрытие прячет содержимое за
+   * краем, а не рисует его поверх всего.
+   */
+  clipsChildren: z.boolean().default(false),
   /** Поправки по раскладочным целям; ключи — значения `sceneLayoutTargetSchema`. */
   overrides: z.partialRecord(sceneLayoutTargetSchema, sceneOverrideSchema).default({}),
   text: sceneTextSourceSchema.nullable().default(null),
   textStyle: sceneTextStyleSchema.default(() => sceneTextStyleSchema.parse({})),
+  /** Появление текста по частям; читается только у текстовых узлов. */
+  textAnimator: sceneTextAnimatorSchema.default(() => sceneTextAnimatorSchema.parse({})),
   rectStyle: sceneRectStyleSchema.default(() => sceneRectStyleSchema.parse({})),
   media: sceneMediaStyleSchema.default(() => sceneMediaStyleSchema.parse({})),
 };
@@ -310,6 +427,7 @@ export type SceneTrack = z.infer<typeof sceneTrackSchema>;
 export type SceneDirector = z.infer<typeof sceneDirectorSchema>;
 export type SceneTransform = z.infer<typeof sceneTransformSchema>;
 export type SceneTextSource = z.infer<typeof sceneTextSourceSchema>;
+export type SceneTextAnimator = z.infer<typeof sceneTextAnimatorSchema>;
 export type SceneTextStyle = z.infer<typeof sceneTextStyleSchema>;
 export type SceneOverride = z.infer<typeof sceneOverrideSchema>;
 export type SceneNodeKind = z.infer<typeof sceneNodeKindSchema>;
@@ -318,6 +436,8 @@ export type SceneBlend = z.infer<typeof sceneBlendSchema>;
 export type SceneShadow = z.infer<typeof sceneShadowSchema>;
 export type SceneFitToText = z.infer<typeof sceneFitToTextSchema>;
 export type SceneRectStyle = z.infer<typeof sceneRectStyleSchema>;
+export type SceneGradient = z.infer<typeof sceneGradientSchema>;
+export type SceneGradientStop = z.infer<typeof sceneGradientStopSchema>;
 export type SceneMediaStyle = z.infer<typeof sceneMediaStyleSchema>;
 export type SceneNode = z.infer<typeof sceneNodeSchema>;
 export type SceneField = z.infer<typeof sceneFieldSchema>;

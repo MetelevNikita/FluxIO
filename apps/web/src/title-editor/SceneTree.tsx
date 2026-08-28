@@ -1,6 +1,6 @@
 import type { SceneNode, SceneNodeKind, SceneTemplate } from "@gruber/contracts";
 import {
-  Circle, Copy, Eye, EyeOff, Image as ImageIcon,
+  ChevronDown, ChevronRight, Circle, Copy, Eye, EyeOff, Image as ImageIcon,
   Square, Trash2, Type, Video,
 } from "lucide-react";
 import { useState, type DragEvent } from "react";
@@ -30,8 +30,10 @@ const kindIcons: Record<SceneNodeKind, typeof Square> = {
 interface SceneTreeProps {
   template: SceneTemplate;
   selectedId: string | null;
+  /** Весь набор выбранного, включая активный узел. */
+  selectedIds: readonly string[];
   hiddenIds: ReadonlySet<string>;
-  onSelect: (nodeId: string) => void;
+  onSelect: (nodeId: string, additive?: boolean) => void;
   onReorder: (movedId: string, beforeId: string | null) => void;
   onToggleHidden: (nodeId: string) => void;
   onDuplicate: (nodeId: string) => void;
@@ -40,15 +42,49 @@ interface SceneTreeProps {
 }
 
 export function SceneTree({
-  template, selectedId, hiddenIds,
+  template, selectedId, selectedIds, hiddenIds,
   onSelect, onReorder, onToggleHidden, onDuplicate, onRemove, onRename,
 }: SceneTreeProps) {
   const { tr } = useI18n();
   const [dragged, setDragged] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  // Свёрнутые группы. Группа собирается ради того, чтобы её содержимое ехало
+  // одним целым, и после сборки читать её по слоям обычно уже не нужно.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+
+  const byId = new Map(template.nodes.map((node) => [node.id, node]));
+
+  /** Глубина вложенности: она же величина сдвига строки вправо. */
+  function depthOf(node: SceneNode): number {
+    let depth = 0;
+    let parentId = node.parentId;
+    for (let step = 0; parentId && step < 8; step += 1) {
+      depth += 1;
+      parentId = byId.get(parentId)?.parentId ?? null;
+    }
+    return depth;
+  }
+
+  /** Прячет ли узел свёрнутый родитель — на любом уровне вложенности. */
+  function hiddenByCollapse(node: SceneNode): boolean {
+    let parentId = node.parentId;
+    for (let step = 0; parentId && step < 8; step += 1) {
+      if (collapsed.has(parentId)) return true;
+      parentId = byId.get(parentId)?.parentId ?? null;
+    }
+    return false;
+  }
+
+  function toggleCollapsed(nodeId: string) {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (!next.delete(nodeId)) next.add(nodeId);
+      return next;
+    });
+  }
 
   // Сверху вниз — от верхнего слоя к нижнему: так его видит человек в кадре.
-  const ordered = [...template.nodes].reverse();
+  const ordered = [...template.nodes].reverse().filter((node) => !hiddenByCollapse(node));
 
   function handleDrop(event: DragEvent, beforeId: string | null) {
     event.preventDefault();
@@ -82,17 +118,34 @@ export function SceneTree({
           // Перетаскивание в списке идёт сверху вниз, а порядок наложения —
           // снизу вверх: цель вставки берём из исходного массива.
           const below = ordered[index + 1];
+          const depth = depthOf(node);
+          const isOpenGroup = node.kind === "group" && !collapsed.has(node.id);
           return (
             <li
               key={node.id}
-              className={`${node.id === selectedId ? "selected" : ""} ${hidden ? "hidden-node" : ""}`}
+              style={{ paddingLeft: 10 + depth * 14 }}
+              className={`${node.id === selectedId ? "selected" : ""} ${
+                selectedIds.includes(node.id) && node.id !== selectedId ? "co-selected" : ""
+              } ${hidden ? "hidden-node" : ""} ${node.parentId ? "in-group" : ""}`}
               draggable
               onDragStart={() => setDragged(node.id)}
               onDragEnd={() => setDragged(null)}
               onDrop={(event) => { event.stopPropagation(); handleDrop(event, below ? below.id : null); }}
-              onClick={() => onSelect(node.id)}
+              onClick={(event) => onSelect(node.id, event.ctrlKey || event.metaKey)}
               onDoubleClick={() => setRenaming(node.id)}
             >
+              {node.kind === "group" ? (
+                <button
+                  className="scene-tree-twist"
+                  onClick={(event) => { event.stopPropagation(); toggleCollapsed(node.id); }}
+                  title={isOpenGroup
+                    ? tr("Свернуть группу", "Collapse group")
+                    : tr("Раскрыть группу", "Expand group")}
+                  type="button"
+                >
+                  {isOpenGroup ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </button>
+              ) : <span className="scene-tree-twist" />}
               <Icon size={13} />
               {renaming === node.id ? (
                 <input

@@ -1,5 +1,6 @@
 import {
   sceneNodeSchema,
+  sceneRectStyleSchema,
   sceneTemplateSchema,
   sceneTrack,
   type BroadcastEffectKind,
@@ -98,12 +99,14 @@ function node(shape: NodeShape): SceneNode {
   });
 }
 
+/** Заливка по умолчанию: остальное дописывает схема, а не эта таблица. */
+const defaultRectStyle = sceneRectStyleSchema.parse({});
+
 const plateFill = {
+  ...defaultRectStyle,
   fill: "#1E2C38",
   fillOpacity: 0.92,
   cornerRadius: 0.018,
-  strokeWidth: 0,
-  strokeColor: "#FFFFFF",
 };
 
 /** Подложка, которая растёт по тексту, с мягкой тенью. */
@@ -192,10 +195,7 @@ function lowerThird(title: string, subtitleLabel: string): SceneTemplate {
         anchorY: 0.5,
         scale: grow(),
         extra: {
-          rectStyle: {
-            fill: "#E97F2C", fillOpacity: 1, cornerRadius: 0,
-            strokeWidth: 0, strokeColor: "#FFFFFF",
-          },
+          rectStyle: { ...defaultRectStyle, fill: "#E97F2C", fillOpacity: 1 },
         },
       }),
       textNode(sceneFieldKeys.title, "Заголовок", sceneFieldKeys.title, x, 0.788, 0.046, "#FFFFFF"),

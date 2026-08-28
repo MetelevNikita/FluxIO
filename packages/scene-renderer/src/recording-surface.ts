@@ -1,4 +1,4 @@
-import type { SceneSurface, TextMetricsLike } from "./surface.js";
+import type { SceneGradientHandle, SceneSurface, TextMetricsLike } from "./surface.js";
 
 /* -------------------------------------------------------------------------- *
  * Поверхность, которая ничего не рисует, а записывает вызовы.
@@ -21,6 +21,29 @@ export interface RecordedCall {
   alpha?: number;
 }
 
+/**
+ * Записанный градиент: точки перехода видно тесту без растеризатора.
+ *
+ * Строковое представление нужно тому же тесту, что проверяет цвет заливки:
+ * `fillStyle` у сплошного узла — строка, и сравнивать их удобнее одинаково.
+ */
+export class RecordedGradient implements SceneGradientHandle {
+  readonly stops: { offset: number; color: string }[] = [];
+
+  constructor(readonly kind: "linear" | "radial", readonly args: number[]) {}
+
+  addColorStop(offset: number, color: string): void {
+    this.stops.push({ offset, color });
+  }
+
+  toString(): string {
+    // Разделитель — `;`: в самом цвете `rgba(…)` есть и запятые, и пробелы, и
+    // разбор записи по ним разваливал бы цвет на части.
+    const stops = this.stops.map((stop) => `${stop.offset}:${stop.color}`).join(";");
+    return `${this.kind}(${this.args.join(",")});${stops}`;
+  }
+}
+
 /** Во сколько раз средняя буква уже кегля. Модель, а не метрика шрифта. */
 const averageGlyphRatio = 0.52;
 
@@ -29,7 +52,8 @@ export class RecordingSurface implements SceneSurface {
 
   globalAlpha = 1;
   globalCompositeOperation = "source-over";
-  fillStyle = "#000000";
+  filter = "none";
+  fillStyle: string | SceneGradientHandle = "#000000";
   strokeStyle = "#000000";
   lineWidth = 1;
   lineJoin = "miter";
@@ -44,11 +68,26 @@ export class RecordingSurface implements SceneSurface {
     this.calls.push({ op, args, ...extra });
   }
 
+  createLinearGradient(x0: number, y0: number, x1: number, y1: number): SceneGradientHandle {
+    this.#record("createLinearGradient", [x0, y0, x1, y1]);
+    return new RecordedGradient("linear", [x0, y0, x1, y1]);
+  }
+
+  createRadialGradient(
+    x0: number, y0: number, r0: number, x1: number, y1: number, r1: number,
+  ): SceneGradientHandle {
+    this.#record("createRadialGradient", [x0, y0, r0, x1, y1, r1]);
+    return new RecordedGradient("radial", [x0, y0, r0, x1, y1, r1]);
+  }
+
   save(): void { this.#record("save", []); }
   restore(): void { this.#record("restore", []); }
   translate(x: number, y: number): void { this.#record("translate", [x, y]); }
   rotate(radians: number): void { this.#record("rotate", [radians]); }
   scale(x: number, y: number): void { this.#record("scale", [x, y]); }
+  transform(a: number, b: number, c: number, d: number, e: number, f: number): void {
+    this.#record("transform", [a, b, c, d, e, f]);
+  }
   clearRect(x: number, y: number, w: number, h: number): void { this.#record("clearRect", [x, y, w, h]); }
   fillRect(x: number, y: number, w: number, h: number): void { this.#record("fillRect", [x, y, w, h]); }
   beginPath(): void { this.#record("beginPath", []); }
@@ -66,13 +105,13 @@ export class RecordingSurface implements SceneSurface {
   clip(): void { this.#record("clip", []); }
 
   fill(): void {
-    this.#record("fill", [], { style: this.fillStyle, alpha: this.globalAlpha });
+    this.#record("fill", [], { style: String(this.fillStyle), alpha: this.globalAlpha });
   }
   stroke(): void {
     this.#record("stroke", [], { style: this.strokeStyle, alpha: this.globalAlpha });
   }
   fillText(text: string, x: number, y: number): void {
-    this.#record("fillText", [x, y], { text, style: this.fillStyle, font: this.font, alpha: this.globalAlpha });
+    this.#record("fillText", [x, y], { text, style: String(this.fillStyle), font: this.font, alpha: this.globalAlpha });
   }
   strokeText(text: string, x: number, y: number): void {
     this.#record("strokeText", [x, y], { text, style: this.strokeStyle, font: this.font });

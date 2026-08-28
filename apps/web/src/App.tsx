@@ -82,9 +82,11 @@ import {
   graphicFileRejection,
   mapBroadcastTaskRecords,
   planBroadcastEffect,
+  preferredMatchKey,
   preferredTextFont,
   withDefaultTextFont,
   removeBroadcastEffect,
+  sceneShowDurationSeconds,
   summarizeBroadcastTaskMatches,
   type BroadcastTargetClip,
   withSceneFont,
@@ -280,11 +282,7 @@ export function App() {
     const effect = effectLibrary.find((entry) => entry.id === editingSceneEffectId);
     const definition = effect?.broadcast;
     if (!effect || !definition?.scene) return null;
-    const settings = definition.settings;
-    const durationSeconds = definition.kind === "next-program" ? settings.nextProgram.durationSeconds
-      : definition.kind === "ticker-crawl" ? settings.tickerCrawl.durationSeconds
-        : definition.kind === "clock-countdown" ? settings.clockCountdown.durationSeconds
-          : settings.dynamicTitle.durationSeconds;
+    const durationSeconds = sceneShowDurationSeconds(definition);
     return {
       effectId: effect.id,
       effectName: effect.name,
@@ -1456,6 +1454,11 @@ export function App() {
           dataMapping: {
             ...effect.broadcast.dataMapping,
             filePath: content.filePath,
+            matchSourceKey: preferredMatchKey(
+              content.records,
+              [...playlist, ...futurePlaylist].map((asset) => asset.name),
+              effect.broadcast.dataMapping.matchSourceKey,
+            ),
           },
           settings: {
             ...effect.broadcast.settings,
@@ -1544,10 +1547,13 @@ export function App() {
    * Остальные эфирные эффекты и ручные FX не затрагиваются.
    */
   async function applyBroadcastTaskToProject(effect: GraphicEffectAsset) {
-    if (effect.broadcast?.kind !== "animation-in-out") return;
+    // Раскладка по файлу задания больше не привилегия Animation in/out: титр со
+    // сценой берёт значения по именам своих же полей, и запрет оставлял бы
+    // оператора без единственного способа расставить плашки разом.
+    if (!effect.broadcast) return;
     const taskContent = broadcastTaskContents[effect.id];
     if (!taskContent || !effect.broadcast.dataMapping.filePath) {
-      setOperationError(`${effect.name}: сначала загрузите JSON и настройте JSON Parser.`);
+      setOperationError(`${effect.name}: сначала выберите файл задания .json.`);
       return;
     }
     const taskEntries = mapBroadcastTaskRecords(
@@ -3490,7 +3496,7 @@ function pixelFormatHasAlpha(pixelFormat: string): boolean {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "8.0.0";
+const applicationVersion = "8.0.1";
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

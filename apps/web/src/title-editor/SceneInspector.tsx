@@ -1,9 +1,12 @@
 import type {
-  SceneField, SceneLayoutTarget, SceneNode, SceneTemplate, SystemFont,
+  SceneField, SceneGradient, SceneLayoutTarget, SceneNode, SceneTemplate, SystemFont,
 } from "@gruber/contracts";
-import { FolderOpen, KeyRound, Link2, Link2Off, RotateCcw } from "lucide-react";
+import { Diamond, FolderOpen, KeyRound, Link2, Link2Off, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { clearLayoutOverride, nodeKindTitle } from "../scene-edit";
+import {
+  clearLayoutOverride, groupChildren, nodeKindTitle, setGroupContainer, setNodeAnchor,
+  setRevealOrigin, textAnimatorPresets,
+} from "../scene-edit";
 import { useI18n } from "../i18n";
 
 /* -------------------------------------------------------------------------- *
@@ -21,14 +24,37 @@ interface SceneInspectorProps {
   target: SceneLayoutTarget | null;
   fonts: SystemFont[];
   onChange: (node: SceneNode) => void;
+  /** Правка, затрагивающая весь шаблон: контейнер группы меняет и её детей. */
+  onChangeTemplate: (template: SceneTemplate) => void;
   onDeclareField: (nodeId: string, label: string) => void;
   onRemoveField: (key: string) => void;
   onFieldChange: (key: string, patch: Partial<SceneField>) => void;
   onPickMedia: (nodeId: string) => void;
+  /** Нарисованная коробка узла в долях кадра — нужна для переноса привязки. */
+  drawnBox: { width: number; height: number } | null;
+  /**
+   * Ключи прямо у свойства.
+   *
+   * Дорожка внизу показывает уже поставленное, а ставить ключ удобнее там же,
+   * где правится значение: иначе приходится держать в голове, какая строка
+   * дорожки какому полю соответствует.
+   */
+  keyframes: {
+    /** Есть ли ключ у этой дорожки в текущий момент. */
+    at: (track: KeyableTrack) => "here" | "animated" | "none";
+    /** Можно ли сейчас ставить ключ: в удержании их не бывает. */
+    enabled: boolean;
+    toggle: (track: KeyableTrack) => void;
+  };
 }
 
+/** Дорожки, у которых имеет смысл ставить ключи из инспектора. */
+export type KeyableTrack =
+  | "x" | "y" | "width" | "height"
+  | "opacity" | "rotationDegrees" | "scale" | "reveal";
+
 export function SceneInspector({
-  template, node, target, fonts, onChange, onDeclareField, onRemoveField, onFieldChange, onPickMedia,
+  template, node, target, fonts, onChange, onChangeTemplate, onDeclareField, onRemoveField, onFieldChange, onPickMedia, drawnBox, keyframes,
 }: SceneInspectorProps) {
   const { tr } = useI18n();
   if (!node) {
@@ -50,6 +76,16 @@ export function SceneInspector({
       transform: { ...node.transform, [key]: { ...node.transform[key], value } },
     });
   };
+
+  /** Кнопка ключа для дорожки — одна и та же во всех строках свойств. */
+  const keyed = (track: KeyableTrack) => (
+    <KeyButton
+      disabled={!keyframes.enabled}
+      onToggle={() => keyframes.toggle(track)}
+      state={keyframes.at(track)}
+      tr={tr}
+    />
+  );
 
   const boundKey = node.text?.kind === "field" ? node.text.fieldKey : null;
   const field = boundKey
@@ -82,15 +118,17 @@ export function SceneInspector({
         </div>
       ) : null}
 
+      {/* Ключ ставится там же, где правится значение: держать в голове, какая
+          строка дорожки какому полю соответствует, — лишняя работа. */}
       <Section title={tr("Положение", "Position")}>
         <Grid>
-          <Num label="X" value={override?.x ?? node.transform.x.value} unit="%"
+          <Num keyed={keyed("x")} label="X" value={override?.x ?? node.transform.x.value} unit="%"
             onCommit={(v) => patchTransform("x", v)} />
-          <Num label="Y" value={override?.y ?? node.transform.y.value} unit="%"
+          <Num keyed={keyed("y")} label="Y" value={override?.y ?? node.transform.y.value} unit="%"
             onCommit={(v) => patchTransform("y", v)} />
-          <Num label={tr("Ширина", "Width")} value={override?.width ?? node.transform.width.value} unit="%"
+          <Num keyed={keyed("width")} label={tr("Ширина", "Width")} value={override?.width ?? node.transform.width.value} unit="%"
             onCommit={(v) => patchTransform("width", v)} />
-          <Num label={tr("Высота", "Height")} value={override?.height ?? node.transform.height.value} unit="%"
+          <Num keyed={keyed("height")} label={tr("Высота", "Height")} value={override?.height ?? node.transform.height.value} unit="%"
             onCommit={(v) => patchTransform("height", v)} />
         </Grid>
         <p className="scene-hint">
@@ -101,17 +139,65 @@ export function SceneInspector({
         </p>
       </Section>
 
+      <Section title={tr("Точка привязки", "Anchor point")}>
+        {/* От неё считаются поворот, масштаб и положение. Перенос привязки
+            не двигает узел: дизайнер выбирает точку отсчёта, а не элемент. */}
+        <div className="anchor-grid">
+          {[0, 0.5, 1].map((ay) => [0, 0.5, 1].map((ax) => {
+            const active = Math.abs(node.transform.anchorX - ax) < 0.01 &&
+              Math.abs(node.transform.anchorY - ay) < 0.01;
+            return (
+              <button
+                className={active ? "active" : ""}
+                key={`${ax}-${ay}`}
+                onClick={() => onChange(setNodeAnchor(
+                  node, ax, ay,
+                  drawnBox ?? { width: node.transform.width.value, height: node.transform.height.value },
+                ))}
+                title={anchorTitle(ax, ay, tr)}
+                type="button"
+              >
+                <i />
+              </button>
+            );
+          }))}
+        </div>
+        <Grid>
+          <Num label="X" value={node.transform.anchorX} unit="%"
+            onCommit={(v) => onChange(setNodeAnchor(
+              node, clamp(v, 0, 1), node.transform.anchorY,
+              drawnBox ?? { width: node.transform.width.value, height: node.transform.height.value },
+            ))} />
+          <Num label="Y" value={node.transform.anchorY} unit="%"
+            onCommit={(v) => onChange(setNodeAnchor(
+              node, node.transform.anchorX, clamp(v, 0, 1),
+              drawnBox ?? { width: node.transform.width.value, height: node.transform.height.value },
+            ))} />
+        </Grid>
+        <p className="scene-hint">
+          {tr(
+            "От неё считаются поворот и масштаб. Перенос привязки не двигает узел: положение правится ровно настолько, чтобы картинка не изменилась.",
+            "Rotation and scale are measured from it. Moving the anchor does not move the node.",
+          )}
+        </p>
+      </Section>
+
       <Section title={tr("Вид", "Appearance")}>
         <Grid>
-          <Num label={tr("Прозрачность", "Opacity")} value={node.transform.opacity.value} unit="%"
+          <Num keyed={keyed("opacity")} label={tr("Прозрачность", "Opacity")} value={node.transform.opacity.value} unit="%"
             onCommit={(v) => onChange({
               ...node,
               transform: { ...node.transform, opacity: { ...node.transform.opacity, value: clamp(v, 0, 1) } },
             })} />
-          <Num label={tr("Поворот", "Rotation")} value={node.transform.rotationDegrees.value} unit="°" raw
+          <Num keyed={keyed("rotationDegrees")} label={tr("Поворот", "Rotation")} value={node.transform.rotationDegrees.value} unit="°" raw
             onCommit={(v) => onChange({
               ...node,
               transform: { ...node.transform, rotationDegrees: { ...node.transform.rotationDegrees, value: v } },
+            })} />
+          <Num keyed={keyed("scale")} label={tr("Масштаб", "Scale")} value={node.transform.scale.value} unit="%"
+            onCommit={(v) => onChange({
+              ...node,
+              transform: { ...node.transform, scale: { ...node.transform.scale, value: Math.max(0, v) } },
             })} />
         </Grid>
       </Section>
@@ -128,6 +214,39 @@ export function SceneInspector({
             <Num label={tr("Обводка", "Stroke")} value={node.rectStyle.strokeWidth} unit="%"
               onCommit={(v) => onChange({ ...node, rectStyle: { ...node.rectStyle, strokeWidth: clamp(v, 0, 0.05) } })} />
           </Grid>
+
+          {/* Вид заливки. Точки градиента заданы долями коробки узла, а не
+              кадра: градиент принадлежит узлу и обязан ехать вместе с ним при
+              смене раскладки. */}
+          <label className="scene-row">
+            <span>{tr("Чем залито", "Fill type")}</span>
+            <select
+              onChange={(event) => onChange({
+                ...node,
+                rectStyle: {
+                  ...node.rectStyle,
+                  fillKind: event.target.value as "solid" | "linear" | "radial",
+                },
+              })}
+              value={node.rectStyle.fillKind}
+            >
+              <option value="solid">{tr("Цветом", "Solid")}</option>
+              <option value="linear">{tr("Линейный градиент", "Linear gradient")}</option>
+              <option value="radial">{tr("Радиальный градиент", "Radial gradient")}</option>
+            </select>
+          </label>
+
+          {node.rectStyle.fillKind !== "solid" ? (
+            <GradientEditor
+              kind={node.rectStyle.fillKind}
+              onChange={(gradient) => onChange({
+                ...node,
+                rectStyle: { ...node.rectStyle, gradient },
+              })}
+              tr={tr}
+              value={node.rectStyle.gradient}
+            />
+          ) : null}
         </Section>
       ) : null}
 
@@ -188,6 +307,203 @@ export function SceneInspector({
           ) : null}
         </Section>
       ) : null}
+
+      {node.kind === "text" ? (
+        <Section title={tr("Появление текста", "Text animate in")}>
+          {/* Готовые наборы, как в After Effects: собирать «печатную машинку»
+              по одному ключу дизайнер не станет, а без неё титр умеет только
+              проявиться целиком. */}
+          <div className="animator-presets">
+            {textAnimatorPresets.map((preset) => {
+              const current = node.textAnimator;
+              const active = current.enabled &&
+                current.unit === preset.animator.unit &&
+                current.effect === preset.animator.effect &&
+                current.direction === preset.animator.direction;
+              return (
+                <button
+                  className={active ? "active" : ""}
+                  key={preset.nameEn}
+                  onClick={() => onChange({ ...node, textAnimator: preset.animator })}
+                  type="button"
+                >
+                  {tr(preset.name, preset.nameEn)}
+                </button>
+              );
+            })}
+          </div>
+          <label className="scene-row scene-row-check">
+            <input
+              checked={node.textAnimator.enabled}
+              onChange={(event) => onChange({
+                ...node,
+                textAnimator: { ...node.textAnimator, enabled: event.target.checked },
+              })}
+              type="checkbox"
+            />
+            <span>{tr("Разбирать текст на части", "Animate text by parts")}</span>
+          </label>
+          {node.textAnimator.enabled ? (
+            <>
+              <Grid>
+                <label className="scene-row">
+                  <span>{tr("По чему", "Split by")}</span>
+                  <select
+                    onChange={(event) => onChange({
+                      ...node,
+                      textAnimator: {
+                        ...node.textAnimator,
+                        unit: event.target.value as "character" | "word" | "line",
+                      },
+                    })}
+                    value={node.textAnimator.unit}
+                  >
+                    <option value="character">{tr("Буквы", "Characters")}</option>
+                    <option value="word">{tr("Слова", "Words")}</option>
+                    <option value="line">{tr("Строки", "Lines")}</option>
+                  </select>
+                </label>
+                <label className="scene-row">
+                  <span>{tr("Как", "Effect")}</span>
+                  <select
+                    onChange={(event) => onChange({
+                      ...node,
+                      textAnimator: {
+                        ...node.textAnimator,
+                        effect: event.target.value as "fade" | "fade-up" | "slide" | "typewriter" | "scale",
+                      },
+                    })}
+                    value={node.textAnimator.effect}
+                  >
+                    <option value="fade">{tr("Проявление", "Fade")}</option>
+                    <option value="fade-up">{tr("Снизу с проявлением", "Fade up")}</option>
+                    <option value="slide">{tr("Выезд сбоку", "Slide in")}</option>
+                    <option value="typewriter">{tr("Печатная машинка", "Typewriter")}</option>
+                    <option value="scale">{tr("Из точки", "Scale")}</option>
+                  </select>
+                </label>
+                <label className="scene-row">
+                  <span>{tr("Откуда", "Direction")}</span>
+                  <select
+                    onChange={(event) => onChange({
+                      ...node,
+                      textAnimator: {
+                        ...node.textAnimator,
+                        direction: event.target.value as "forward" | "backward" | "center",
+                      },
+                    })}
+                    value={node.textAnimator.direction}
+                  >
+                    <option value="forward">{tr("С начала", "From start")}</option>
+                    <option value="backward">{tr("С конца", "From end")}</option>
+                    <option value="center">{tr("От середины", "From centre")}</option>
+                  </select>
+                </label>
+                <Num label={tr("Разнос", "Stagger")} value={node.textAnimator.stagger} unit="%"
+                  onCommit={(v) => onChange({
+                    ...node,
+                    textAnimator: { ...node.textAnimator, stagger: clamp(v, 0, 1) },
+                  })} />
+              </Grid>
+              <p className="scene-hint">
+                {tr(
+                  "Разнос — доля, а не секунды: волна укладывается в длину входа при любой длине текста. 0 % — все части сразу, 100 % — строго по очереди.",
+                  "Stagger is a fraction, not seconds: the wave fits the in-segment at any text length.",
+                )}
+              </p>
+            </>
+          ) : null}
+        </Section>
+      ) : null}
+
+      {node.kind === "group" ? (
+        <Section title={tr("Контейнер", "Container")}>
+          {/* Группа без собственных границ ничего не прячет: раскрытие должно
+              резать содержимое по краю плашки, а не по краю кадра. */}
+          <label className="scene-row">
+            <span>{tr("Размер по узлу", "Size from node")}</span>
+            <select
+              onChange={(event) => onChangeTemplate(setGroupContainer(
+                template, node.id, event.target.value ? event.target.value : null,
+              ))}
+              value={node.fitToNodeId ?? ""}
+            >
+              <option value="">{tr("— по содержимому —", "— from contents —")}</option>
+              {groupChildren(template, node.id).map((child) => (
+                <option key={child.id} value={child.id}>{child.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="scene-row scene-row-check">
+            <input
+              checked={node.clipsChildren}
+              onChange={(event) => onChange({ ...node, clipsChildren: event.target.checked })}
+              type="checkbox"
+            />
+            <span>{tr("Резать содержимое по границам", "Clip contents to bounds")}</span>
+          </label>
+          <p className="scene-hint">
+            {tr(
+              "Возьми размер от подложки — и раскрытие группы спрячет за её краем весь текст разом, одним ключом вместо ключа на каждый слой.",
+              "Take the size from the plate and one reveal key hides every layer at once.",
+            )}
+          </p>
+        </Section>
+      ) : null}
+
+      <Section title={tr("Раскрытие маской", "Reveal mask")}>
+        {/* Обрезка, а не изменение размера: анимировать ширину у текста нельзя,
+            буквы поедут и сожмутся. Маска открывает уже готовую картинку. */}
+        <Grid>
+          <Num keyed={keyed("reveal")} label={tr("Раскрыто", "Revealed")}
+            value={node.transform.reveal.value} unit="%"
+            onCommit={(v) => onChange({
+              ...node,
+              transform: { ...node.transform, reveal: { ...node.transform.reveal, value: clamp(v, 0, 1) } },
+            })} />
+        </Grid>
+        <label className="scene-row">
+          <span>{tr("Чем открывается", "Opens by")}</span>
+          <select
+            onChange={(event) => onChange({
+              ...node,
+              transform: {
+                ...node.transform,
+                revealAxis: event.target.value as "x" | "y" | "point",
+              },
+            })}
+            value={node.transform.revealAxis}
+          >
+            <option value="point">{tr("Из точки", "From the point")}</option>
+            <option value="x">{tr("По ширине", "By width")}</option>
+            <option value="y">{tr("По высоте", "By height")}</option>
+          </select>
+        </label>
+        <span className="scene-row-label">{tr("Откуда раскрывается", "Reveal origin")}</span>
+        <div className="anchor-grid">
+          {[0, 0.5, 1].map((oy) => [0, 0.5, 1].map((ox) => {
+            const active = Math.abs(node.transform.revealOriginX - ox) < 0.01 &&
+              Math.abs(node.transform.revealOriginY - oy) < 0.01;
+            return (
+              <button
+                className={active ? "active" : ""}
+                key={`r-${ox}-${oy}`}
+                onClick={() => onChange(setRevealOrigin(node, ox, oy))}
+                title={anchorTitle(ox, oy, tr)}
+                type="button"
+              >
+                <i />
+              </button>
+            );
+          }))}
+        </div>
+        <p className="scene-hint">
+          {tr(
+            "Точка среза едет за привязкой: раскрытие выезжает из точки отсчёта узла. Увести её отдельно можно — сеткой ниже, уже после переноса привязки. Раскрытие ставится ключами: 0 % в начале входа, 100 % в конце.",
+            "The cut point sits at the anchor and follows it, so the reveal emerges from the node's own origin.",
+          )}
+        </p>
+      </Section>
 
       <Section title={tr("Привязка к тексту", "Bind to text")}>
         <label className="scene-row">
@@ -482,6 +798,41 @@ function TextSection({
 
 /* ------------------------------- примитивы -------------------------------- */
 
+/**
+ * Кнопка ключа у свойства.
+ *
+ * Три состояния, и различать их обязательно: залитый ромб — ключ стоит именно
+ * здесь, пустой — дорожка анимирована, но в этот момент ключа нет, тусклый —
+ * анимации нет вовсе. Без этого непонятно, что сделает нажатие.
+ */
+function KeyButton({
+  state, disabled, onToggle, tr,
+}: {
+  state: "here" | "animated" | "none";
+  disabled: boolean;
+  onToggle: () => void;
+  tr: (ru: string, en: string) => string;
+}) {
+  return (
+    <button
+      className={`scene-key-toggle ${state}`}
+      disabled={disabled}
+      onClick={onToggle}
+      title={disabled
+        ? tr(
+          "Ключей в удержании не бывает: оно растягивается под длительность показа. Встаньте на вход или выход.",
+          "Hold takes no keyframes: it stretches with the duration. Move to the entrance or the exit.",
+        )
+        : state === "here"
+          ? tr("Убрать ключ в этой точке", "Remove the keyframe here")
+          : tr("Поставить ключ в этой точке", "Add a keyframe here")}
+      type="button"
+    >
+      <Diamond fill={state === "here" ? "currentColor" : "none"} size={10} />
+    </button>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="scene-section">
@@ -503,13 +854,15 @@ function Grid({ children }: { children: React.ReactNode }) {
  * дробное значение становится невозможно.
  */
 function Num({
-  label, value, unit, raw, onCommit,
+  label, value, unit, raw, keyed, onCommit,
 }: {
   label: string;
   value: number;
   unit?: string;
   /** Показывать как есть, а не долей в процентах. */
   raw?: boolean;
+  /** Кнопка ключа рядом с подписью. */
+  keyed?: React.ReactNode;
   onCommit: (value: number) => void;
 }) {
   const shown = raw ? value : value * 100;
@@ -524,7 +877,7 @@ function Num({
 
   return (
     <label className="scene-row scene-row-num">
-      <span>{label}</span>
+      <span>{label}{keyed}</span>
       <input
         inputMode="decimal"
         onBlur={commit}
@@ -557,10 +910,182 @@ function shortPath(filePath: string): string {
   return parts.slice(-2).join("/");
 }
 
+/** Подпись точки привязки — по ней её и выбирают. */
+function anchorTitle(ax: number, ay: number, tr: (ru: string, en: string) => string): string {
+  const vertical = ay === 0 ? tr("верх", "top") : ay === 1 ? tr("низ", "bottom") : tr("середина", "middle");
+  const horizontal = ax === 0 ? tr("слева", "left") : ax === 1 ? tr("справа", "right") : tr("по центру", "centre");
+  return `${vertical} · ${horizontal}`;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/* ------------------------------- градиент --------------------------------- */
+
+/**
+ * Правка градиента: направление и точки перехода.
+ *
+ * Направление задаётся готовыми кнопками, а не углом: угол приходится
+ * пересчитывать в голове, а «слева направо» и «сверху вниз» — то, чем плашка
+ * заливается в девяти случаях из десяти. Точная пара точек остаётся полями
+ * ниже — у радиального это центр и точка на внешнем круге.
+ */
+function GradientEditor({
+  kind, value, onChange, tr,
+}: {
+  kind: "linear" | "radial";
+  value: SceneGradient;
+  onChange: (gradient: SceneGradient) => void;
+  tr: (ru: string, en: string) => string;
+}) {
+  const directions: { ru: string; en: string; from: [number, number]; to: [number, number] }[] = [
+    { ru: "→", en: "→", from: [0, 0.5], to: [1, 0.5] },
+    { ru: "←", en: "←", from: [1, 0.5], to: [0, 0.5] },
+    { ru: "↓", en: "↓", from: [0.5, 0], to: [0.5, 1] },
+    { ru: "↑", en: "↑", from: [0.5, 1], to: [0.5, 0] },
+    { ru: "↘", en: "↘", from: [0, 0], to: [1, 1] },
+    { ru: "↗", en: "↗", from: [0, 1], to: [1, 0] },
+  ];
+
+  const stops = [...value.stops].sort((a, b) => a.offset - b.offset);
+  const preview = `${kind === "linear" ? "linear-gradient(90deg" : "radial-gradient(circle"}, ${
+    stops.map((stop) => `${withAlpha(stop.color, stop.opacity)} ${(stop.offset * 100).toFixed(0)}%`).join(", ")
+  })`;
+
+  const patchStop = (index: number, patch: Partial<SceneGradient["stops"][number]>) => {
+    onChange({
+      ...value,
+      stops: value.stops.map((stop, at) => (at === index ? { ...stop, ...patch } : stop)),
+    });
+  };
+
+  return (
+    <div className="gradient-editor">
+      <div className="gradient-bar" style={{ backgroundImage: preview }} />
+
+      {kind === "linear" ? (
+        <div className="gradient-directions">
+          {directions.map((direction) => {
+            const active = Math.abs(value.fromX - direction.from[0]) < 0.01 &&
+              Math.abs(value.fromY - direction.from[1]) < 0.01 &&
+              Math.abs(value.toX - direction.to[0]) < 0.01 &&
+              Math.abs(value.toY - direction.to[1]) < 0.01;
+            return (
+              <button
+                className={active ? "active" : ""}
+                key={direction.en}
+                onClick={() => onChange({
+                  ...value,
+                  fromX: direction.from[0], fromY: direction.from[1],
+                  toX: direction.to[0], toY: direction.to[1],
+                })}
+                type="button"
+              >
+                {tr(direction.ru, direction.en)}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <Grid>
+        <Num label={kind === "radial" ? tr("Центр X", "Centre X") : tr("Начало X", "From X")}
+          value={value.fromX} unit="%"
+          onCommit={(v) => onChange({ ...value, fromX: clamp(v, -1, 2) })} />
+        <Num label={kind === "radial" ? tr("Центр Y", "Centre Y") : tr("Начало Y", "From Y")}
+          value={value.fromY} unit="%"
+          onCommit={(v) => onChange({ ...value, fromY: clamp(v, -1, 2) })} />
+        <Num label={kind === "radial" ? tr("Край X", "Edge X") : tr("Конец X", "To X")}
+          value={value.toX} unit="%"
+          onCommit={(v) => onChange({ ...value, toX: clamp(v, -1, 2) })} />
+        <Num label={kind === "radial" ? tr("Край Y", "Edge Y") : tr("Конец Y", "To Y")}
+          value={value.toY} unit="%"
+          onCommit={(v) => onChange({ ...value, toY: clamp(v, -1, 2) })} />
+      </Grid>
+
+      <span className="scene-row-label">{tr("Точки перехода", "Colour stops")}</span>
+      {stops.map((stop) => {
+        const index = value.stops.indexOf(stop);
+        return (
+          <div className="gradient-stop" key={index}>
+            <input
+              onChange={(event) => patchStop(index, { color: event.target.value })}
+              type="color"
+              value={stop.color}
+            />
+            <label>
+              <span>{tr("Место", "At")}</span>
+              <input
+                max={100} min={0}
+                onChange={(event) => patchStop(index, { offset: Number(event.target.value) / 100 })}
+                type="range"
+                value={Math.round(stop.offset * 100)}
+              />
+            </label>
+            <label>
+              <span>{tr("Прозр.", "Alpha")}</span>
+              <input
+                max={100} min={0}
+                onChange={(event) => patchStop(index, { opacity: Number(event.target.value) / 100 })}
+                type="range"
+                value={Math.round(stop.opacity * 100)}
+              />
+            </label>
+            <button
+              className="gradient-stop-remove"
+              disabled={value.stops.length <= 2}
+              onClick={() => onChange({
+                ...value,
+                stops: value.stops.filter((_, at) => at !== index),
+              })}
+              title={tr("Убрать точку", "Remove stop")}
+              type="button"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        );
+      })}
+
+      <button
+        className="scene-declare"
+        disabled={value.stops.length >= 8}
+        onClick={() => {
+          // Новая точка встаёт в самый широкий промежуток: там она и нужна,
+          // а поставленная в конец слипается с крайней и выглядит потерянной.
+          let at = 0.5;
+          let widest = 0;
+          const sorted = [...value.stops].sort((a, b) => a.offset - b.offset);
+          for (let index = 1; index < sorted.length; index += 1) {
+            const gap = sorted[index]!.offset - sorted[index - 1]!.offset;
+            if (gap > widest) {
+              widest = gap;
+              at = sorted[index - 1]!.offset + gap / 2;
+            }
+          }
+          onChange({
+            ...value,
+            stops: [...value.stops, { offset: at, color: sorted[0]?.color ?? "#000000", opacity: 1 }],
+          });
+        }}
+        type="button"
+      >
+        {tr("Добавить точку", "Add stop")}
+      </button>
+    </div>
+  );
+}
+
+/** Цвет с прозрачностью для предпросмотра полосы в интерфейсе. */
+function withAlpha(hex: string, alpha: number): string {
+  const value = hex.replace("#", "");
+  const r = Number.parseInt(value.slice(0, 2), 16);
+  const g = Number.parseInt(value.slice(2, 4), 16);
+  const b = Number.parseInt(value.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
 }

@@ -20,6 +20,9 @@ import {
   sceneShowRegion,
   sceneTiming,
   trackValueAt,
+  revealClip,
+  splitUnits,
+  textUnits,
 } from "./scene-timing.js";
 
 /* ------------------------------- режиссёр -------------------------------- */
@@ -383,4 +386,139 @@ test("keyframes interpolate along the curve of the key they run to", () => {
   };
   // Кривая описывает путь **к** ключу, поэтому берётся у второго.
   assert.ok(trackValueAt(track, timing, 0.25) > 0.25, "кривая второго ключа не применилась");
+});
+
+/* ---------------------------- маска раскрытия ----------------------------- */
+
+test("a fully revealed node is not clipped at all", () => {
+  // Лишний clip() в графе отрисовки ни к чему: он стоит времени на каждом кадре.
+  const template = lowerThird();
+  const timing = sceneTiming(template.director, 5);
+  assert.equal(
+    revealClip(template.nodes[0]!, { x: 0, y: 0, width: 100, height: 20 }, timing, 3),
+    null,
+  );
+});
+
+test("the mask grows from the chosen edge, not always from the left", () => {
+  const template = lowerThird();
+  const timing = sceneTiming(template.director, 5);
+  const box = { x: 100, y: 50, width: 200, height: 40 };
+  const half = (originX: number) => {
+    const node = {
+      ...template.nodes[0]!,
+      transform: { ...template.nodes[0]!.transform, reveal: sceneTrack(0.5), revealOriginX: originX },
+    };
+    return revealClip(node, box, timing, 3)!;
+  };
+
+  // Слева направо: левый край на месте.
+  assert.equal(half(0).x, 100);
+  // Справа налево: правый край на месте.
+  assert.equal(half(1).x + half(1).width, 300);
+  // Из середины: поровну с обеих сторон.
+  assert.equal(half(0.5).x, 150);
+  assert.equal(half(0.5).width, 100);
+});
+
+test("a closed mask has zero width, which the renderer must skip", () => {
+  const template = lowerThird();
+  const timing = sceneTiming(template.director, 5);
+  const node = {
+    ...template.nodes[0]!,
+    transform: { ...template.nodes[0]!.transform, reveal: sceneTrack(0) },
+  };
+  const clip = revealClip(node, { x: 0, y: 0, width: 200, height: 40 }, timing, 3)!;
+  assert.equal(clip.width, 0);
+});
+
+test("reveal follows its keyframes like any other track", () => {
+  // Раскрытие — обычная дорожка: ключи на ней ставятся так же, как на
+  // прозрачности, и режиссёр растягивает удержание одинаково.
+  const template = lowerThird();
+  const node = {
+    ...template.nodes[0]!,
+    transform: {
+      ...template.nodes[0]!.transform,
+      reveal: {
+        value: 1,
+        inKeyframes: [
+          { atSeconds: 0, value: 0, easing: "linear" as const },
+          { atSeconds: 1, value: 1, easing: "linear" as const },
+        ],
+        outKeyframes: [],
+      },
+    },
+  };
+  const timing = sceneTiming({ inSeconds: 1, outSeconds: 0 }, 4);
+  const box = { x: 0, y: 0, width: 200, height: 40 };
+  assert.equal(revealClip(node, box, timing, 0.5)!.width, 100);
+  // В удержании маска уже открыта — обрезать нечего.
+  assert.equal(revealClip(node, box, timing, 3), null);
+});
+
+/* ------------------------- появление текста по частям ---------------------- */
+
+function animator(patch: Partial<Parameters<typeof textUnits>[1]> = {}) {
+  return {
+    enabled: true, unit: "character" as const, effect: "fade-up" as const,
+    stagger: 0.6, direction: "forward" as const, ...patch,
+  };
+}
+
+test("hold shows the whole string: the wave belongs to the entrance and the exit", () => {
+  const units = textUnits("Гость", animator(), "hold", 0.5);
+  assert.equal(units.length, 5);
+  assert.ok(units.every((unit) => unit.progress === 1));
+});
+
+test("the wave fits the segment whatever the text length", () => {
+  // Иначе длинный заголовок не успевал бы дописаться до конца входа, а
+  // короткий отыгрывал бы за десятую его долю.
+  for (const text of ["Да", "Александр Петрович Иванов-Задунайский"]) {
+    const done = textUnits(text, animator(), "in", 1);
+    assert.ok(done.every((unit) => unit.progress === 1), `${text}: не дописалось к концу входа`);
+    const start = textUnits(text, animator(), "in", 0);
+    assert.ok(start.every((unit) => unit.progress === 0), `${text}: началось раньше входа`);
+  }
+});
+
+test("stagger zero makes every part appear together", () => {
+  const units = textUnits("Гость", animator({ stagger: 0 }), "in", 0.5);
+  assert.equal(new Set(units.map((unit) => unit.progress)).size, 1);
+});
+
+test("the first character leads the last one when the wave runs forward", () => {
+  const units = textUnits("Гость", animator({ stagger: 1 }), "in", 0.5);
+  assert.ok(units[0]!.progress > units[4]!.progress);
+});
+
+test("a backward wave reverses the order, a centred one starts from the middle", () => {
+  const back = textUnits("Гость", animator({ stagger: 1, direction: "backward" }), "in", 0.5);
+  assert.ok(back[4]!.progress > back[0]!.progress);
+
+  const centre = textUnits("Гость", animator({ stagger: 1, direction: "center" }), "in", 0.5);
+  assert.ok(centre[2]!.progress > centre[0]!.progress);
+  assert.ok(centre[2]!.progress > centre[4]!.progress);
+  // Обе половины идут одновременно.
+  assert.equal(centre[1]!.progress, centre[3]!.progress);
+});
+
+test("the exit runs the wave backwards through the same units", () => {
+  const early = textUnits("Гость", animator(), "out", 0.1);
+  const late = textUnits("Гость", animator(), "out", 0.9);
+  assert.ok(early[0]!.progress > late[0]!.progress, "выход не убирает буквы");
+});
+
+test("words keep their trailing space, otherwise they run together", () => {
+  // Рисуются части по отдельности, и потерянный пробел уже ничем не вернуть.
+  const words = splitUnits("Александр Петров", "word");
+  assert.deepEqual(words, ["Александр ", "Петров"]);
+  assert.equal(words.join(""), "Александр Петров");
+});
+
+test("lines keep their break so the next one starts where it should", () => {
+  const lines = splitUnits("Первая\nВторая", "line");
+  assert.equal(lines.length, 2);
+  assert.equal(lines.join(""), "Первая\nВторая");
 });

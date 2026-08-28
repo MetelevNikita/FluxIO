@@ -1,5 +1,6 @@
 import type {
   SceneBezier,
+  SceneTextAnimator,
   SceneEasing,
   SceneFormat,
   SceneKeyframe,
@@ -256,6 +257,26 @@ export function resolveNodeBox(
   let height = pick(override?.height, trackValueAt(node.transform.height, timing, timeSeconds)) *
     format.height;
 
+  // Группа берёт размер от узла-подложки: без собственных границ контейнер
+  // нечем резать, и раскрытие пряталось бы за краем кадра, а не плашки.
+  if (node.fitToNodeId && depth < 4) {
+    const source = template.nodes.find((entry) => entry.id === node.fitToNodeId);
+    if (source) {
+      const sourceBox = resolveNodeBox(
+        source, template, format, timing, timeSeconds, textWidths, depth + 1,
+      );
+      return {
+        nodeId: node.id,
+        x: sourceBox.x,
+        y: sourceBox.y,
+        width: sourceBox.width,
+        height: sourceBox.height,
+        opacity: trackValueAt(node.transform.opacity, timing, timeSeconds),
+        hidden: override?.hidden === true,
+      };
+    }
+  }
+
   // Привязка к тексту — то, ради чего сейчас живёт соглашение `fit:`.
   let followOffset = 0;
   if (node.fitToText) {
@@ -302,13 +323,32 @@ export function resolveNodeBox(
   const y = pick(override?.y, trackValueAt(node.transform.y, timing, timeSeconds)) * format.height -
     height * node.transform.anchorY;
 
+  // Группа складывается с ребёнком: её сдвиг и прозрачность действуют на всех
+  // детей сразу. Ради этого группа и нужна — чтобы плашка с текстом и маркером
+  // ехала как одно целое, а не тремя одинаковыми наборами ключей, которые
+  // рано или поздно разъедутся.
+  let opacity = trackValueAt(node.transform.opacity, timing, timeSeconds);
+  let x2 = x;
+  let y2 = y;
+  let parentId = node.parentId;
+  for (let step = 0; parentId && step < 8; step += 1) {
+    const parent: SceneNode | undefined = template.nodes.find((entry) => entry.id === parentId);
+    if (!parent) break;
+    const parentOverride = parent.overrides[format.layout];
+    x2 += pick(parentOverride?.x, trackValueAt(parent.transform.x, timing, timeSeconds)) * format.width;
+    y2 += pick(parentOverride?.y, trackValueAt(parent.transform.y, timing, timeSeconds)) * format.height;
+    opacity *= trackValueAt(parent.transform.opacity, timing, timeSeconds);
+    if (parentOverride?.hidden === true) opacity = 0;
+    parentId = parent.parentId;
+  }
+
   return {
     nodeId: node.id,
-    x,
-    y,
+    x: x2,
+    y: y2,
     width,
     height,
-    opacity: trackValueAt(node.transform.opacity, timing, timeSeconds),
+    opacity,
     hidden: override?.hidden === true,
   };
 }
@@ -437,4 +477,158 @@ export function sceneShowRegion(
     width: Math.min(format.width - x, Math.ceil(right) - x),
     height: Math.min(format.height - y, Math.ceil(bottom) - y),
   };
+}
+
+/* -------------------------------------------------------------------------- *
+ * Маска раскрытия.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Прямоугольник, которым узел обрезан в этот момент.
+ *
+ * `null` — обрезать нечего: узел виден целиком, и лишний `clip()` в графе
+ * отрисовки ни к чему.
+ *
+ * Раскрытие идёт **от точки среза**: при `originX = 0` маска растёт слева
+ * направо, при `1` — справа налево, при `0.5` — из середины в обе стороны.
+ * Точка среза по умолчанию стоит там же, где привязка узла, и едет вместе с
+ * ней: дизайнер выбрал точку отсчёта, и появление обязано идти оттуда же.
+ *
+ * `revealAxis` решает, чем маска открывается. «Из точки» открывает обе стороны
+ * сразу — так узел действительно выезжает из своей точки. «По ширине»
+ * оставляет высоту целой: полоса плашки уезжает вбок во всю высоту, и это
+ * по-прежнему нужно чаще всего остального.
+ *
+ * Это обрезка готовой картинки, а не изменение размера: анимировать ширину у
+ * текста нельзя, буквы поедут и сожмутся.
+ */
+export function revealClip(
+  node: SceneNode,
+  box: { x: number; y: number; width: number; height: number },
+  timing: SceneTiming,
+  timeSeconds: number,
+): { x: number; y: number; width: number; height: number } | null {
+  const amount = Math.min(1, Math.max(0, trackValueAt(node.transform.reveal, timing, timeSeconds)));
+  if (amount >= 1) return null;
+  const axis = node.transform.revealAxis;
+  const width = axis === "y" ? box.width : box.width * amount;
+  const height = axis === "x" ? box.height : box.height * amount;
+  return {
+    x: box.x + (box.width - width) * node.transform.revealOriginX,
+    y: box.y + (box.height - height) * node.transform.revealOriginY,
+    width,
+    height,
+  };
+}
+
+/**
+ * Обрезка, которую накладывают контейнеры-предки узла.
+ *
+ * Группа с `clipsChildren` режет детей по своим границам — с учётом своей же
+ * маски раскрытия. Ради этого группа и становится контейнером: «спрятать
+ * содержимое за краем плашки» иначе выразить нечем.
+ *
+ * `null` — резать нечего.
+ */
+export function containerClip(
+  node: SceneNode,
+  template: SceneTemplate,
+  format: SceneFormat,
+  timing: SceneTiming,
+  timeSeconds: number,
+  textWidths: Readonly<Record<string, number>> = {},
+): { x: number; y: number; width: number; height: number } | null {
+  let result: { x: number; y: number; width: number; height: number } | null = null;
+  let parentId = node.parentId;
+  for (let step = 0; parentId && step < 8; step += 1) {
+    const parent: SceneNode | undefined = template.nodes.find((entry) => entry.id === parentId);
+    if (!parent) break;
+    if (parent.clipsChildren) {
+      const box = resolveNodeBox(parent, template, format, timing, timeSeconds, textWidths);
+      const clip = revealClip(parent, box, timing, timeSeconds) ?? box;
+      result = result ? intersect(result, clip) : clip;
+    }
+    parentId = parent.parentId;
+  }
+  return result;
+}
+
+function intersect(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): { x: number; y: number; width: number; height: number } {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x),
+    height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y),
+  };
+}
+
+/* -------------------------------------------------------------------------- *
+ * Появление текста по частям.
+ * ------------------------------------------------------------------------- */
+
+/** Одна часть строки: сама подстрока и её собственная доля отыгранности. */
+export interface TextUnit {
+  text: string;
+  /** 0 — часть ещё не появилась, 1 — отыграла целиком. */
+  progress: number;
+}
+
+/**
+ * Разбирает строку на части и раздаёт каждой её долю отыгранности.
+ *
+ * Волна укладывается в длину отрезка при любом числе частей: доля, а не
+ * секунды. Иначе длинный заголовок не успевал бы дописаться до конца входа, а
+ * короткий отыгрывал бы за десятую его долю.
+ */
+export function textUnits(
+  text: string,
+  animator: SceneTextAnimator,
+  segment: "in" | "hold" | "out",
+  segmentProgress: number,
+): TextUnit[] {
+  const parts = splitUnits(text, animator.unit);
+  if (parts.length === 0) return [];
+  // В удержании текст стоит целиком: волна принадлежит входу и выходу.
+  if (segment === "hold") return parts.map((part) => ({ text: part, progress: 1 }));
+
+  const wave = Math.min(1, Math.max(0, segment === "out" ? 1 - segmentProgress : segmentProgress));
+  const count = parts.length;
+  const spread = animator.stagger * (count - 1);
+
+  return parts.map((part, index) => {
+    const order = unitOrder(index, count, animator.direction);
+    // Форма записи без деления туда-обратно: последняя часть обязана дойти
+    // ровно до единицы к концу отрезка. Через ширину окна ошибка округления
+    // оставляла её на 0,9999999, и длинный заголовок не дописывался.
+    const local = wave * (1 + spread) - order * animator.stagger;
+    return { text: part, progress: Math.min(1, Math.max(0, local)) };
+  });
+}
+
+/** Порядковый номер части в волне: он и решает, кто появится первым. */
+function unitOrder(index: number, count: number, direction: SceneTextAnimator["direction"]): number {
+  if (direction === "backward") return count - 1 - index;
+  if (direction === "center") {
+    // От середины к краям: обе половины идут одновременно.
+    const middle = (count - 1) / 2;
+    return Math.abs(index - middle);
+  }
+  return index;
+}
+
+/**
+ * Делит строку, сохраняя пробелы внутри частей.
+ *
+ * Пробел обязан ехать вместе со словом, иначе слова слипаются: рисуются они
+ * по отдельности, и потерянный пробел уже ничем не вернуть.
+ */
+export function splitUnits(text: string, unit: SceneTextAnimator["unit"]): string[] {
+  if (unit === "character") return [...text];
+  if (unit === "line") return text.split("\n").map((line, index, all) => (index < all.length - 1 ? `${line}\n` : line));
+  return text.split(/(?<=\s)/);
 }

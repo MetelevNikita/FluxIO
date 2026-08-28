@@ -25,7 +25,7 @@ const envBackupsToKeep = 2;
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
   ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "8.0.0";
+const applicationVersion = "8.0.1";
 
 export function buildDatabaseUrl({
   database,

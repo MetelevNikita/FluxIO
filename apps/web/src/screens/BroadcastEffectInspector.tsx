@@ -151,9 +151,14 @@ export function BroadcastEffectInspector({
   // Правило простое и объяснимое: если сцена объявила поля — их можно
   // заполнить из JSON. Раньше список видов был зашит, и собранный титр с
   // полями всё равно не принимал файл задания.
-  const usesTaskData =
-    definition.kind === "animation-in-out" ||
-    (definition.scene?.fields.length ?? 0) > 0;
+  /**
+   * Нужен ли файл задания **здесь**.
+   *
+   * У титра со сценой файл выбирается внизу, среди способов применения: там же,
+   * где по нему раскладывают. Два места выбора одного и того же файла — верный
+   * способ выбрать его не там, где потом ищут.
+   */
+  const usesTaskData = definition.kind === "animation-in-out";
 
   const updateSettings = <K extends keyof BroadcastEffectSettings>(
     key: K,
@@ -323,11 +328,6 @@ export function BroadcastEffectInspector({
         </button>
       </div>
 
-      <BroadcastEffectPreview
-        disabled={busy || definition.kind === "stinger-transition"}
-        effect={effect}
-        onPlacementChange={updatePlacement}
-      />
       <div className="broadcast-workflow-rail" aria-label={tr("Настройка эффекта", "Effect setup")}>
         <span className={definition.scene || definition.decorationFilePath ? "done" : "active"}>
           <b>01</b> {tr("Оформление", "Design")}
@@ -423,10 +423,15 @@ export function BroadcastEffectInspector({
             </>
           ) : (
             <p className="broadcast-hint">
-              {tr(
-                "Этот эффект получает данные из собственных настроек; общий файл задания ему не нужен.",
-                "This effect reads data from its own settings and does not need a shared task file.",
-              )}
+              {definition.scene && definition.scene.fields.length > 0
+                ? tr(
+                    "Значения полей задаются ниже. Файл задания подключается там же, где по нему раскладывают, — в «Применении».",
+                    "Field values are set below. The task file is chosen where it is used — in “Assignment”.",
+                  )
+                : tr(
+                    "Этот эффект получает данные из собственных настроек; общий файл задания ему не нужен.",
+                    "This effect reads data from its own settings and does not need a shared task file.",
+                  )}
             </p>
           )}
           {definition.kind === "animation-in-out" ? (
@@ -566,49 +571,38 @@ export function BroadcastEffectInspector({
 
         {definition.kind === "dynamic-title" ? (
           <>
+            {/* Значения полей — по одному на поле, объявленное сценой. Пара
+                «строка плюс подпись» перестала описывать титр, как только
+                плашку стало можно собрать самому. Откуда значения возьмутся,
+                решает не селектор, а кнопка применения внизу: лишний
+                переключатель оператор забывает переставить. */}
+            {definition.scene && definition.scene.fields.length > 0 ? (
+              <div className="broadcast-grid">
+                {definition.scene.fields.map((field) => (
+                  <TextField
+                    disabled={busy}
+                    hint={settings.dynamicTitle.source === "task-file"
+                      ? tr("резерв, если в записи нет ключа", "fallback when the record lacks the key")
+                      : field.key}
+                    key={field.key}
+                    label={field.label || field.key}
+                    onChange={(value) => updateSettings("dynamicTitle", {
+                      fieldValues: { ...settings.dynamicTitle.fieldValues, [field.key]: value },
+                    })}
+                    value={settings.dynamicTitle.fieldValues[field.key]
+                      ?? legacyFieldValue(field.key, settings.dynamicTitle)}
+                  />
+                ))}
+              </div>
+            ) : definition.scene ? (
+              <p className="broadcast-hint">
+                {tr(
+                  "В сцене нет полей: подставлять в неё нечего. Объявите поля в редакторе титров.",
+                  "The scene declares no fields. Declare them in the title editor.",
+                )}
+              </p>
+            ) : null}
             <div className="broadcast-grid">
-              <label className="broadcast-field">
-                <span>{tr("Источник текста", "Text source")}</span>
-                <select
-                  disabled={busy}
-                  onChange={(event) =>
-                    updateSettings("dynamicTitle", {
-                      source: event.target.value as "manual" | "task-file",
-                    })
-                  }
-                  value={settings.dynamicTitle.source}
-                >
-                  <option value="manual">{tr("Вручную", "Manual")}</option>
-                  <option value="task-file">{tr("Файл задания", "Task file")}</option>
-                </select>
-              </label>
-              <TextField
-                disabled={busy}
-                hint={
-                  settings.dynamicTitle.source === "task-file"
-                    ? tr(
-                        "используется, если в файле нет значения",
-                        "used when the file has no value",
-                      )
-                    : undefined
-                }
-                label={
-                  settings.dynamicTitle.source === "task-file"
-                    ? tr("Резервный текст", "Fallback text")
-                    : tr("Текст", "Text")
-                }
-                onChange={(text) => updateSettings("dynamicTitle", { text })}
-                value={settings.dynamicTitle.text}
-              />
-              {settings.dynamicTitle.source === "task-file" ? (
-                <TextField
-                  disabled={busy}
-                  hint={tr("ключ рядом с name в JSON", "key next to name in JSON")}
-                  label={tr("Ключ значения", "Value key")}
-                  onChange={(taskKey) => updateSettings("dynamicTitle", { taskKey })}
-                  value={settings.dynamicTitle.taskKey}
-                />
-              ) : null}
               <NumberField
                 disabled={busy}
                 hint={tr("от начала ролика", "from clip start")}
@@ -1545,7 +1539,7 @@ function TaskFileField({
  * а сглаживание и кернинг могут отличаться. Смысл в том, чтобы оператор увидел
  * поведение эффекта — куда он встанет и как поедет — не запуская эфир.
  */
-function BroadcastEffectPreview({
+export function BroadcastEffectPreview({
   disabled,
   effect,
   onPlacementChange,
@@ -2230,4 +2224,20 @@ const TextField = memo(function TextField({
 function shortPath(value: string): string {
   const parts = value.replaceAll("\\", "/").split("/").filter(Boolean);
   return parts.length <= 2 ? value : `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * Значение поля из настроек прежних версий.
+ *
+ * До v8.0.2 у плашки было ровно два ключа — строка и подпись. Пустой `default`
+ * погасил бы титр, который уже выходит в эфир, поэтому старые поля читаются,
+ * пока оператор не задаст значение заново.
+ */
+function legacyFieldValue(
+  key: string,
+  settings: BroadcastEffectSettings["dynamicTitle"],
+): string {
+  if (key === "title" || key === settings.dynamicKey) return settings.text;
+  if (key === "subtitle" || key === settings.captionKey) return settings.captionText;
+  return "";
 }

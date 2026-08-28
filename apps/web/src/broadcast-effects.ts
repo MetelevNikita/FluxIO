@@ -1,5 +1,6 @@
 import type {
   BroadcastDataMapping,
+  BroadcastEffectDefinition,
   BroadcastEffectKind,
   BroadcastEffectSettings,
   BroadcastTextStyle,
@@ -369,6 +370,63 @@ function broadcastEffectTitleFor(kind: BroadcastEffectKind): string {
 }
 
 /**
+ * Ключ, по которому запись задания находит свой ролик.
+ *
+ * Выбирается **по значениям, а не по имени ключа**. Имя ничего не гарантирует:
+ * в реальной выгрузке `name` — это имя гостя, а имя ролика лежит в `title`, и
+ * выбор по знакомому слову молча давал ноль совпадений. Поэтому каждый ключ
+ * проверяется расписанием: побеждает тот, чьи значения совпали с наибольшим
+ * числом роликов.
+ *
+ * Если не совпало ничего — расписание пустое или файл не от этого проекта, —
+ * остаются привычные имена, а за ними уже выбранный ключ.
+ */
+export function preferredMatchKey(
+  records: readonly Record<string, string>[],
+  clipNames: readonly string[],
+  current: string,
+): string {
+  const schedule = new Set(clipNames.map(normalizeTaskTitle).filter(Boolean));
+  const keys = [...new Set(records.flatMap((record) => Object.keys(record)))];
+
+  let best = "";
+  let bestHits = 0;
+  for (const key of keys) {
+    let hits = 0;
+    for (const record of records) {
+      const value = record[key];
+      if (value && schedule.has(normalizeTaskTitle(value))) hits += 1;
+    }
+    if (hits > bestHits) {
+      best = key;
+      bestHits = hits;
+    }
+  }
+  if (bestHits > 0) return best;
+
+  for (const candidate of ["title", "name", "file", "filename", "clip"]) {
+    if (keys.includes(candidate)) return candidate;
+  }
+  return keys.includes(current) ? current : keys[0] ?? current;
+}
+
+/**
+ * Сколько длится показ титра.
+ *
+ * От неё режиссёр считает удержание, поэтому одно и то же число обязаны видеть
+ * редактор, предпросмотр в библиотеке и эфир: разойдись они — вход и выход
+ * в предпросмотре шли бы не там, где выйдут в кадр. Длительность живёт в
+ * настройках своего вида эффекта, общего поля у неё нет.
+ */
+export function sceneShowDurationSeconds(definition: BroadcastEffectDefinition): number {
+  const settings = definition.settings;
+  if (definition.kind === "next-program") return settings.nextProgram.durationSeconds;
+  if (definition.kind === "ticker-crawl") return settings.tickerCrawl.durationSeconds;
+  if (definition.kind === "clock-countdown") return settings.clockCountdown.durationSeconds;
+  return settings.dynamicTitle.durationSeconds;
+}
+
+/**
  * Чего эффекту не хватает, чтобы его можно было применить, — или `null`, если
  * он готов.
  *
@@ -448,43 +506,84 @@ function planDynamicTitle(context: PlanContext): void {
   }
 
   for (const clip of context.targets) {
-    const content = resolveDynamicTitleContent(context, clip);
-    if (!content) {
-      context.plan.warnings.push(`"${clip.name}": текст динамической плашки пуст — эффект пропущен`);
-      continue;
-    }
+    const values = resolveSceneFieldValues(context, clip, scene);
+    if (!values) continue;
     // Плашка и надпись — узлы одной сцены с одним временем: разойтись им нечем.
-    pushScene(context, clip, scene, {
-      title: content,
-      subtitle: settings.captionText,
-    }, settings.startSeconds, settings.durationSeconds);
+    pushScene(context, clip, scene, values, settings.startSeconds, settings.durationSeconds);
   }
 }
 
-function resolveDynamicTitleContent(
+/**
+ * Значения полей сцены для конкретного ролика — или `null`, если титру нечего
+ * показать и ставить его на ролик не надо.
+ *
+ * Ключи объявляет **сцена**, а не эффект: пара «строка плюс подпись» перестала
+ * описывать титр, как только плашку стало можно собрать самому. В режиме файла
+ * задания запись ищется по имени ролика, а значения берутся по **тем же
+ * ключам**, что объявлены в сцене: совпадение имён и есть вся связка, отдельный
+ * маппинг для этого не нужен.
+ *
+ * Ролик, которому записи не нашлось, титра не получает — молча пропустить его
+ * нельзя только в одном случае: когда оператор задал резервные значения сам.
+ */
+function resolveSceneFieldValues(
   context: PlanContext,
   clip: BroadcastTargetClip,
-): string {
+  scene: SceneTemplate,
+): Record<string, string> | null {
   const settings = context.definition.settings.dynamicTitle;
-  if (settings.source === "manual") return settings.text.trim();
+  const fallback = (key: string): string => {
+    const value = settings.fieldValues[key];
+    if (value != null) return value.trim();
+    // Сессии до v8.0.2 знали только два ключа. Пустой `default` погасил бы
+    // титр, который уже выходит в эфир.
+    if (key === "title" || key === settings.dynamicKey) return settings.text.trim();
+    if (key === "subtitle" || key === settings.captionKey) return settings.captionText.trim();
+    return "";
+  };
+
+  if (settings.source === "manual") {
+    const values: Record<string, string> = {};
+    for (const field of scene.fields) values[field.key] = fallback(field.key);
+    if (Object.values(values).every((value) => !value)) {
+      context.plan.warnings.push(`"${clip.name}": поля титра пусты — эффект пропущен`);
+      return null;
+    }
+    return values;
+  }
+
   const clipKey = normalizeTaskTitle(clip.name);
   const matches = context.taskEntries.filter((entry) => normalizeTaskTitle(entry.name) === clipKey);
   if (matches.length > 1) {
     context.plan.warnings.push(
-      `"${clip.name}": в файле задания несколько записей с таким идентификатором — ` +
-        "использован резервный текст",
+      `"${clip.name}": в файле задания несколько записей с этим именем — ролик пропущен`,
     );
-    return settings.text.trim();
+    return null;
   }
-  const value = matches[0]?.values[settings.dynamicKey]?.trim()
-    ?? matches[0]?.values[settings.taskKey]?.trim()
-    ?? "";
-  if (!value && settings.text.trim()) {
+  const record = matches[0];
+  if (!record) {
+    context.plan.warnings.push(`"${clip.name}": записи в файле задания нет — ролик пропущен`);
+    return null;
+  }
+
+  const values: Record<string, string> = {};
+  const missing: string[] = [];
+  for (const field of scene.fields) {
+    const value = record.values[field.key]?.trim() ?? "";
+    if (!value) missing.push(field.key);
+    values[field.key] = value || fallback(field.key);
+  }
+  if (missing.length > 0) {
     context.plan.warnings.push(
-      `"${clip.name}": ключ "${settings.taskKey}" не найден — использован резервный текст`,
+      `"${clip.name}": в записи нет ${missing.map((key) => `"${key}"`).join(", ")} — ` +
+        "подставлены резервные значения",
     );
   }
-  return value || settings.text.trim();
+  if (Object.values(values).every((value) => !value)) {
+    context.plan.warnings.push(`"${clip.name}": поля титра пусты — эффект пропущен`);
+    return null;
+  }
+  return values;
 }
 
 /* -------------------------------------------------------------------------- *

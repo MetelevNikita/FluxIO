@@ -11,6 +11,7 @@ import {
   broadcastEffectSpans,
   clipDisplayTitle,
   planBroadcastEffect,
+  preferredMatchKey,
   removeBroadcastEffectSpan,
   retimeBroadcastEffectSpan,
   preferredTextFont,
@@ -82,6 +83,7 @@ function broadcastEffect(
           captionText: "",
           durationSeconds: 5,
           dynamicKey: "",
+          fieldValues: {},
           source: "manual",
           startSeconds: 0,
           style: style(),
@@ -810,4 +812,138 @@ test("stinger snaps to the frame grid and rejects a cut outside the transition",
   });
   assert.match(snapped.warnings[0]!, /snapped to the 25 fps grid/);
   assert.equal(snapped.layers[0]!.layer.startSeconds, 99.48);
+});
+
+/* --------------------- поля титра из файла задания ------------------------ */
+
+/** Сцена с произвольным набором полей — как её собрал бы оператор. */
+function titleWithFields(keys: readonly string[]): GraphicEffectAsset {
+  const effect = sceneEffect("dynamic-title", {
+    dynamicTitle: {
+      ...broadcastEffect("dynamic-title", {}).broadcast!.settings.dynamicTitle,
+      source: "task-file",
+      durationSeconds: 5,
+    },
+  });
+  const scene = effect.broadcast!.scene!;
+  return {
+    ...effect,
+    broadcast: {
+      ...effect.broadcast!,
+      scene: {
+        ...scene,
+        fields: keys.map((key) => ({ key, label: key, type: "text" as const, sample: "" })),
+      },
+    },
+  };
+}
+
+test("a title takes its values from the record by the scene's own field names", () => {
+  // Ключей может быть сколько угодно и называться они могут как угодно —
+  // связка держится на совпадении имён, отдельного маппинга для неё нет.
+  const effect = titleWithFields(["name", "age"]);
+  const result = plan({
+    effect,
+    targetIds: null,
+    taskEntries: [
+      { name: "Инзерские зубчатки", values: { name: "Иван Петров", age: "38" } },
+      { name: "Вечерние новости", values: { name: "Мария Ким", age: "29" } },
+    ],
+  });
+  assert.equal(result.scenes.length, 2);
+  assert.deepEqual(result.scenes[0]!.show.fields, { name: "Иван Петров", age: "38" });
+  assert.deepEqual(result.scenes[1]!.show.fields, { name: "Мария Ким", age: "29" });
+});
+
+test("a clip with no record in the task file gets no title at all", () => {
+  const effect = titleWithFields(["name", "age"]);
+  const result = plan({
+    effect,
+    targetIds: null,
+    taskEntries: [{ name: "Вечерние новости", values: { name: "Мария Ким", age: "29" } }],
+  });
+  assert.equal(result.scenes.length, 1, "титр поставлен ролику, которого нет в задании");
+  assert.equal(result.scenes[0]!.assetId, "b");
+  assert.match(result.warnings.join(" "), /записи в файле задания нет/);
+});
+
+test("a key missing from the record falls back to the value the operator typed", () => {
+  const effect = titleWithFields(["name", "age"]);
+  const withFallback: GraphicEffectAsset = {
+    ...effect,
+    broadcast: {
+      ...effect.broadcast!,
+      settings: {
+        ...effect.broadcast!.settings,
+        dynamicTitle: {
+          ...effect.broadcast!.settings.dynamicTitle,
+          fieldValues: { age: "—" },
+        },
+      },
+    },
+  };
+  const result = plan({
+    effect: withFallback,
+    targetIds: new Set(["a"]),
+    taskEntries: [{ name: "Инзерские зубчатки", values: { name: "Иван Петров" } }],
+  });
+  assert.deepEqual(result.scenes[0]!.show.fields, { name: "Иван Петров", age: "—" });
+  assert.match(result.warnings.join(" "), /"age"/);
+});
+
+test("without a task file the same values go on every clip", () => {
+  const effect = titleWithFields(["name", "age"]);
+  const manual: GraphicEffectAsset = {
+    ...effect,
+    broadcast: {
+      ...effect.broadcast!,
+      settings: {
+        ...effect.broadcast!.settings,
+        dynamicTitle: {
+          ...effect.broadcast!.settings.dynamicTitle,
+          source: "manual",
+          fieldValues: { name: "Прямой эфир", age: "12+" },
+        },
+      },
+    },
+  };
+  const result = plan({ effect: manual, targetIds: null, taskEntries: [] });
+  assert.equal(result.scenes.length, 2);
+  for (const scene of result.scenes) {
+    assert.deepEqual(scene.show.fields, { name: "Прямой эфир", age: "12+" });
+  }
+});
+
+test("two records claiming the same clip leave it alone instead of guessing", () => {
+  const effect = titleWithFields(["name"]);
+  const result = plan({
+    effect,
+    targetIds: new Set(["a"]),
+    taskEntries: [
+      { name: "Инзерские зубчатки", values: { name: "Первый" } },
+      { name: "инзерские зубчатки.mp4", values: { name: "Второй" } },
+    ],
+  });
+  assert.deepEqual(result.scenes, []);
+  assert.match(result.warnings.join(" "), /несколько записей/);
+});
+
+test("the clip-name key is picked by what the values are, not by what the key is called", () => {
+  // В настоящей выгрузке `name` — имя гостя, а имя ролика лежит в `title`.
+  // Выбор по знакомому слову молча давал ноль совпадений.
+  const records = [
+    { id: "1", title: "Инзерские зубчатки.mp4", name: "Иван Петров", age: "38" },
+    { id: "2", title: "Вечерние новости.mp4", name: "Мария Ким", age: "29" },
+  ];
+  const schedule = ["Инзерские зубчатки", "Вечерние новости"];
+  assert.equal(preferredMatchKey(records, schedule, "name"), "title");
+
+  // Ключ может называться как угодно — решают значения.
+  const odd = [{ media_ref: "Инзерские зубчатки.mp4", headline: "Гость" }];
+  assert.equal(preferredMatchKey(odd, schedule, "name"), "media_ref");
+
+  // Расписание пустое: остаются привычные имена.
+  assert.equal(preferredMatchKey(records, [], "name"), "title");
+  assert.equal(preferredMatchKey([{ media_id: "x", eng: "y" }], [], "name"), "media_id");
+  assert.equal(preferredMatchKey([], [], "name"), "name");
 });

@@ -5,6 +5,7 @@ import type {
 } from "@gruber/contracts";
 import {
   CheckCircle2,
+  FileJson,
   Layers3,
   Radio,
   LoaderCircle,
@@ -14,13 +15,18 @@ import {
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { effectBlocker, preferredTextFont } from "../broadcast-effects";
+import {
+  effectBlocker, mapBroadcastTaskRecords, preferredTextFont, sceneShowDurationSeconds,
+  summarizeBroadcastTaskMatches,
+} from "../broadcast-effects";
 import {
   BroadcastEffectInspector,
+  BroadcastEffectPreview,
   broadcastEffectCatalog,
   broadcastEffectTitle,
   type BroadcastTaskSummary,
 } from "./BroadcastEffectInspector";
+import { ScenePreview } from "../title-editor/ScenePreview";
 import { useI18n } from "../i18n";
 
 export interface EffectTargetClip {
@@ -96,6 +102,8 @@ export const EffectsScreen = memo(function EffectsScreen({
 }: EffectsScreenProps) {
   const { tr } = useI18n();
   const [draggedEffectId, setDraggedEffectId] = useState<string | null>(null);
+  /** Эффект, имя которого правят прямо в списке. */
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [selectedEffectId, setSelectedEffectId] = useState("");
   const [draftEffect, setDraftEffect] = useState<GraphicEffectAsset | null>(null);
@@ -133,7 +141,7 @@ export const EffectsScreen = memo(function EffectsScreen({
     }
     if (selectedEffect.id !== selectedEffectId) setSelectedEffectId(selectedEffect.id);
     setDraftEffect(selectedEffect);
-  }, [selectedEffect?.id, selectedEffect?.filePath, selectedEffect?.broadcast]);
+  }, [selectedEffect?.id, selectedEffect?.name, selectedEffect?.filePath, selectedEffect?.broadcast]);
 
   useEffect(() => () => {
     if (renderNoticeTimer.current != null) window.clearTimeout(renderNoticeTimer.current);
@@ -169,7 +177,55 @@ export const EffectsScreen = memo(function EffectsScreen({
    * ощутимо запаздывал. На экране сразу виден локальный черновик, поэтому
    * задержка оператору не заметна.
    */
+  const taskSummary = draftEffect ? broadcastTaskSummaries[draftEffect.id] ?? null : null;
+  /**
+   * Сколько роликов расписания найдёт себе запись в файле задания.
+   *
+   * Считается до применения: «разложить по расписанию» — операция на весь
+   * проект, и узнавать, что не совпало ничего, после неё уже поздно.
+   */
+  const taskMatch = useMemo(() => {
+    const mapping = draftEffect?.broadcast?.dataMapping;
+    if (!taskSummary || !mapping) return null;
+    return summarizeBroadcastTaskMatches(
+      mapBroadcastTaskRecords(taskSummary.records, mapping),
+      clips.map((clip) => ({ id: clip.id, name: clip.name })),
+    );
+  }, [taskSummary, draftEffect?.broadcast?.dataMapping, clips]);
+
   const commitTimer = useRef<number | null>(null);
+  /**
+   * Применяет черновик выбранным способом.
+   *
+   * Откуда брать значения — решает нажатая кнопка, а не отдельный селектор
+   * «источник текста»: лишний переключатель оператор забывает переставить, и
+   * титр выходит в эфир с резервным значением вместо данных задания. Черновик
+   * при этом переносится в библиотеку немедленно, не дожидаясь задержки, —
+   * иначе применились бы прежние настройки.
+   */
+  const applyNow = useCallback((
+    run: (effect: GraphicEffectAsset) => void,
+    source: "manual" | "task-file",
+  ) => {
+    if (!draftEffect?.broadcast) return;
+    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
+    const ready: GraphicEffectAsset = draftEffect.broadcast.kind === "dynamic-title"
+      ? {
+          ...draftEffect,
+          broadcast: {
+            ...draftEffect.broadcast,
+            settings: {
+              ...draftEffect.broadcast.settings,
+              dynamicTitle: { ...draftEffect.broadcast.settings.dynamicTitle, source },
+            },
+          },
+        }
+      : draftEffect;
+    setDraftEffect(ready);
+    onChangeBroadcastEffect(ready);
+    run(ready);
+  }, [draftEffect, onChangeBroadcastEffect]);
+
   const changeBroadcastDraft = useCallback((next: GraphicEffectAsset) => {
     setDraftEffect(next);
     if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
@@ -286,7 +342,42 @@ export const EffectsScreen = memo(function EffectsScreen({
                   <Radio size={22} />
                 </div>
                 <div className="effect-card-summary">
-                  <strong title={effect.name}>{effect.name}</strong>
+                  {/* Имя набирает оператор: «Динамическая плашка (2)» ничего не
+                      говорит о том, что это за титр, а в списке из двух
+                      десятков эффектов различать их больше нечем. */}
+                  {renaming === effect.id ? (
+                    <input
+                      autoFocus
+                      className="effect-rename"
+                      defaultValue={effect.name}
+                      onBlur={(event) => {
+                        const name = event.target.value.trim();
+                        if (name && name !== effect.name) {
+                          onChangeBroadcastEffect({ ...effect, name });
+                        }
+                        setRenaming(null);
+                      }}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") setRenaming(null);
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    />
+                  ) : (
+                    <strong
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        setRenaming(effect.id);
+                      }}
+                      title={tr(
+                        `${effect.name} — двойной щелчок переименует`,
+                        `${effect.name} — double-click to rename`,
+                      )}
+                    >
+                      {effect.name}
+                    </strong>
+                  )}
                   <span>
                     {`${tr("УРОВЕНЬ 2", "TIER 2")} · ${broadcastEffectTitle(effect.broadcast!.kind, tr)}`}
                   </span>
@@ -334,7 +425,27 @@ export const EffectsScreen = memo(function EffectsScreen({
                 <div className="effect-inspector-heading">
                   <div>
                     <span className="eyebrow">{tr("Выбранный эффект", "Selected effect")}</span>
-                    <strong title={draftEffect.name}>{draftEffect.name}</strong>
+                    <input
+                      className="effect-name-field"
+                      key={`${draftEffect.id}:${draftEffect.name}`}
+                      defaultValue={draftEffect.name}
+                      onBlur={(event) => {
+                        const name = event.target.value.trim();
+                        if (name && name !== draftEffect.name) {
+                          onChangeBroadcastEffect({ ...draftEffect, name });
+                        } else {
+                          event.target.value = draftEffect.name;
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") {
+                          event.currentTarget.value = draftEffect.name;
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      title={tr("Имя эффекта", "Effect name")}
+                    />
                   </div>
                   <div className="effect-inspector-heading-actions">
                     <button
@@ -348,16 +459,34 @@ export const EffectsScreen = memo(function EffectsScreen({
                   </div>
                 </div>
 
+                {/* Превью одно на весь экран эффекта. Двух не бывает: у сцены
+                    и макета положения разная правда о кадре, и оператор
+                    доверял бы тому, что видит первым. Сцену рисует та же
+                    функция, что и эфир, — макет остаётся только там, где
+                    оформление задано файлом и рисовать нечего. */}
                 {!previewCollapsed ? (
-                  <div className="effect-raster-preview">
-                    <Radio size={36} />
-                    <span>
-                      {tr(
-                        "Предпросмотр сцены появится вместе с редактором титров.",
-                        "Scene preview arrives together with the title editor.",
-                      )}
-                    </span>
-                  </div>
+                  draftEffect.broadcast?.scene ? (
+                    <ScenePreview
+                      durationSeconds={sceneShowDurationSeconds(draftEffect.broadcast)}
+                      template={draftEffect.broadcast.scene}
+                    />
+                  ) : draftEffect.broadcast ? (
+                    <BroadcastEffectPreview
+                      disabled={busy || draftEffect.broadcast.kind === "stinger-transition"}
+                      effect={draftEffect}
+                      onPlacementChange={(placement) => changeBroadcastDraft({
+                        ...draftEffect,
+                        broadcast: { ...draftEffect.broadcast!, placement },
+                      })}
+                    />
+                  ) : (
+                    <div className="effect-raster-preview">
+                      <Radio size={36} />
+                      <span>
+                        {tr("Оформление не задано.", "No design yet.")}
+                      </span>
+                    </div>
+                  )
                 ) : null}
               </div>
 
@@ -399,6 +528,10 @@ export const EffectsScreen = memo(function EffectsScreen({
                 <p className="broadcast-warning" role="alert">{fontLoadError}</p>
               ) : null}
 
+              {/* Три способа применения в одном месте и в конце — после того,
+                  как эффект собран и время задано. Раньше «применить по файлу
+                  задания» жило отдельно, внутри шага «Данные», и его находили
+                  не все: снаружи это выглядело как «JSON не работает». */}
               <section className="effect-assignment-panel">
                 <div className="effect-assignment-heading">
                   <strong>{tr("Применение", "Assignment")}</strong>
@@ -408,39 +541,130 @@ export const EffectsScreen = memo(function EffectsScreen({
                       : broadcastDraftPending ? tr("черновик", "draft") : tr("актуально", "up to date")}
                   </span>
                 </div>
-                <button
-                  disabled={busy || clips.length === 0 || Boolean(draftBlocker)}
-                  onClick={() => {
-                    if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
-                    if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
-                    onAddToEntireProject(draftEffect);
-                  }}
-                  title={draftBlocker ?? (undefined)}
-                  type="button"
-                >
-                  <Layers3 size={13} /> {tr("Применить ко всему проекту", "Apply to entire project")}
-                </button>
-                <div>
-                  <select aria-label={tr("Целевой ролик", "Target clip")} onChange={(event) => setTargetClipId(event.target.value)} value={targetClipId}>
-                    {clips.map((clip) => <option key={clip.id} value={clip.id}>{clip.schedule} · {clip.name}</option>)}
+
+                <div className="assignment-way">
+                  <div className="assignment-way-head">
+                    <b>{tr("На один ролик", "On one clip")}</b>
+                    <small>{tr("значения полей — те, что заданы выше", "field values as typed above")}</small>
+                  </div>
+                  <select
+                    aria-label={tr("Целевой ролик", "Target clip")}
+                    onChange={(event) => setTargetClipId(event.target.value)}
+                    value={targetClipId}
+                  >
+                    {clips.map((clip) => (
+                      <option key={clip.id} value={clip.id}>{clip.schedule} · {clip.name}</option>
+                    ))}
                   </select>
                   <button
                     disabled={busy || !targetClipId || Boolean(draftBlocker)}
-                    onClick={() => {
-                      if (commitTimer.current != null) window.clearTimeout(commitTimer.current);
-                      if (draftEffect.broadcast) onChangeBroadcastEffect(draftEffect);
-                      onAddToClip(draftEffect, targetClipId);
-                    }}
-                    title={draftBlocker ?? (undefined)}
+                    onClick={() => applyNow((effect) => onAddToClip(effect, targetClipId), "manual")}
+                    title={draftBlocker ?? undefined}
                     type="button"
                   >
-                    <Send size={13} /> {tr("Применить к ролику", "Apply to clip")}
+                    <Send size={13} /> {tr("Применить", "Apply")}
                   </button>
                 </div>
+
+                <div className="assignment-way">
+                  <div className="assignment-way-head">
+                    <b>{tr("На весь проект", "On the whole project")}</b>
+                    <small>
+                      {tr(
+                        `одни и те же значения на все ролики — ${clips.length}`,
+                        `the same values on every clip — ${clips.length}`,
+                      )}
+                    </small>
+                  </div>
+                  <button
+                    className="assignment-way-wide"
+                    disabled={busy || clips.length === 0 || Boolean(draftBlocker)}
+                    onClick={() => applyNow(onAddToEntireProject, "manual")}
+                    title={draftBlocker ?? undefined}
+                    type="button"
+                  >
+                    <Layers3 size={13} /> {tr("Применить ко всему проекту", "Apply to entire project")}
+                  </button>
+                </div>
+
+                {draftEffect.broadcast?.scene ? (
+                  <div className="assignment-way">
+                    <div className="assignment-way-head">
+                      <b>{tr("По файлу задания", "From a task file")}</b>
+                      <small>
+                        {taskMatch
+                          ? tr(
+                              `совпало ${taskMatch.matchedClipCount} из ${clips.length} роликов`,
+                              `${taskMatch.matchedClipCount} of ${clips.length} clips matched`,
+                            )
+                          : tr("свои значения каждому ролику", "its own values for every clip")}
+                      </small>
+                    </div>
+                    <button
+                      className="assignment-way-file"
+                      disabled={busy}
+                      onClick={() => void onSelectBroadcastTaskFile(draftEffect.id)}
+                      type="button"
+                    >
+                      <FileJson size={12} />
+                      {taskSummary ? shortPath(taskSummary.filePath) : tr("Выбрать .json", "Choose .json")}
+                    </button>
+                    {taskSummary ? (
+                      <label className="assignment-match-key">
+                        <span>{tr("Имя ролика в ключе", "Clip name key")}</span>
+                        <select
+                          onChange={(event) => changeBroadcastDraft({
+                            ...draftEffect,
+                            broadcast: {
+                              ...draftEffect.broadcast!,
+                              dataMapping: {
+                                ...draftEffect.broadcast!.dataMapping,
+                                matchSourceKey: event.target.value,
+                              },
+                            },
+                          })}
+                          value={draftEffect.broadcast.dataMapping.matchSourceKey}
+                        >
+                          {taskSummary.fields.map((field) => (
+                            <option key={field.key} value={field.key}>{field.key}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    <button
+                      className="assignment-way-wide"
+                      disabled={busy || !taskSummary || !taskMatch || taskMatch.matchedClipCount === 0
+                        || Boolean(draftBlocker)}
+                      onClick={() => applyNow(
+                        (effect) => void onApplyBroadcastTaskToProject(effect),
+                        "task-file",
+                      )}
+                      title={draftBlocker ?? undefined}
+                      type="button"
+                    >
+                      <FileJson size={13} /> {tr("Разложить по расписанию", "Lay out across the schedule")}
+                    </button>
+                    {taskSummary && taskMatch ? (
+                      <p className="assignment-way-note">
+                        {taskMatch.duplicateTitles.length > 0
+                          ? tr(
+                              `Повторы в ключе «${draftEffect.broadcast.dataMapping.matchSourceKey}»: ${taskMatch.duplicateTitles.slice(0, 3).join(", ")}. Такие ролики пропускаются.`,
+                              `Duplicates in “${draftEffect.broadcast.dataMapping.matchSourceKey}”: ${taskMatch.duplicateTitles.slice(0, 3).join(", ")}. Those clips are skipped.`,
+                            )
+                          : tr(
+                              `Записей вне расписания: ${taskMatch.unmatchedRecordCount}; роликов без записи: ${taskMatch.unmatchedClipCount}. Значения берутся по тем же именам, что у полей титра.`,
+                              `Records outside the schedule: ${taskMatch.unmatchedRecordCount}; clips without a record: ${taskMatch.unmatchedClipCount}. Values are read by the title's own field names.`,
+                            )}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <small>
-                  {draftEffect.broadcast
-                    ? tr("Эффект рассчитает окна показа и текст. Точную подгонку по кадрам делайте в Плейлист → Монтаж таймлайна.", "The effect calculates display windows and text. Fine-tune frames in Playlist → Timeline Trimming.")
-                    : tr("После назначения задайте точный диапазон IN/OUT в Плейлист → Монтаж таймлайна.", "After assignment, set the exact IN/OUT range in Playlist → Timeline Trimming.")}
+                  {tr(
+                    "Эффект рассчитает окна показа и текст. Точную подгонку по кадрам делайте в Плейлист → Монтаж таймлайна.",
+                    "The effect calculates display windows and text. Fine-tune frames in Playlist → Timeline Trimming.",
+                  )}
                 </small>
               </section>
               </div>

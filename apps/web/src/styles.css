@@ -972,6 +972,26 @@ p {
 }
 .effect-render-notice button:hover { background: rgba(34, 197, 94, 0.14); }
 
+/* Рамка и шахматка предпросмотра. Сплошной чёрный не даёт понять, где у
+   эффекта прозрачность, а графика второго уровня почти всегда светлая. */
+.effect-raster-preview {
+  width: 100%;
+  position: relative;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: #080a0c;
+  background-image:
+    linear-gradient(45deg, #14181c 25%, transparent 25%),
+    linear-gradient(-45deg, #14181c 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #14181c 75%),
+    linear-gradient(-45deg, transparent 75%, #14181c 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+  overflow: hidden;
+}
+
 .effect-raster-preview {
   min-height: 150px;
   display: flex;
@@ -987,7 +1007,16 @@ p {
   object-fit: contain;
 }
 
-.effect-assignment-panel,
+.effect-assignment-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #0d1013;
+}
+
 .effect-assignment-panel {
   position: sticky;
   z-index: 2;
@@ -1014,9 +1043,24 @@ p {
 .effect-assignment-heading > span.pending { color: var(--warning); border-color: rgba(245, 158, 11, 0.38); }
 .effect-assignment-heading > span.dirty { color: var(--danger); border-color: rgba(239, 68, 68, 0.38); }
 
-.effect-assignment-panel > strong,
+.effect-assignment-panel > strong { font-size: 11px; }
+
 .effect-assignment-panel > button,
-.effect-assignment-panel > div button,
+.effect-assignment-panel > div button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 211, 77, 0.45);
+  border-radius: 4px;
+  padding: 0 10px;
+  color: #111;
+  background: var(--accent);
+  font-size: 9px;
+  font-weight: 850;
+}
+
 .effect-assignment-panel > div {
   min-width: 0;
   display: grid;
@@ -5202,7 +5246,11 @@ input[type="range"] {
 
 .title-editor-left {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  /* Список слоёв тянется, всё остальное прижато к низу. Число строк обязано
+     совпадать с числом блоков: лишний блок иначе отбирает высоту у списка. */
+  /* Список не схлопывается ниже рабочего минимума: он — основная навигация,
+     и одна видимая строка делает редактор неуправляемым на низком окне. */
+  grid-template-rows: minmax(140px, 1fr) auto auto auto;
   border-right: 1px solid var(--border);
   background: var(--surface-deep);
 }
@@ -5241,7 +5289,7 @@ input[type="range"] {
 
 .scene-tree li {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto auto repeat(3, 20px);
+  grid-template-columns: 12px 14px minmax(0, 1fr) auto auto repeat(3, 20px);
   gap: 7px;
   align-items: center;
   padding: 5px 10px;
@@ -6315,3 +6363,561 @@ input[type="range"] {
 }
 
 .auto-resume button:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Дорожки без выбранного слоя: полоса остаётся на месте, просто приглушена.
+   Исчезающая панель внизу дезориентирует — экран «прыгает», и оператор
+   перестаёт понимать, где вообще живёт анимация. */
+.scene-tracks-idle { opacity: 0.42; pointer-events: none; }
+.scene-tracks-idle .scene-tracks-owner { color: var(--muted-dark); }
+
+/* ------------------------------- группы ----------------------------------- */
+
+.scene-group-row {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 8px;
+}
+
+.scene-group-row button {
+  flex: 1 1 0;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.scene-group-row button:hover:not(:disabled) { color: var(--tier2); border-color: var(--tier2-border); }
+.scene-group-row button:disabled { opacity: 0.35; }
+
+.scene-group-row i {
+  font-style: normal;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--tier2);
+  color: #08111f;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* Ctrl-выбор: узел в наборе, но правится не он. Отличать обязательно —
+   иначе непонятно, к чему относятся свойства справа. */
+.scene-tree li.co-selected {
+  background: rgba(77, 141, 253, 0.06);
+  border-left-color: var(--tier2-border);
+}
+
+.scene-hit.co-selected { border-color: var(--tier2-border); border-style: dashed; }
+
+/* Узел внутри группы сдвинут вправо на всю строку — сдвиг одного имени читался
+   как случайный отступ, а не как вложенность. Величину сдвига задаёт глубина,
+   поэтому она проставляется в разметке, а не здесь. */
+.scene-tree li.in-group { color: var(--muted-dark); }
+.scene-tree li.in-group:hover, .scene-tree li.in-group.selected { color: var(--text); }
+
+/* Треугольник свёртки: у не-групп на его месте пустая клетка, иначе строки
+   разъезжаются по столбцам. */
+.scene-tree-twist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-dark);
+}
+
+button.scene-tree-twist:hover { color: var(--text); }
+
+/* ---------------------------- точка привязки ------------------------------ */
+
+/* Крестик на элементе: от него считаются поворот и масштаб. Без него
+   непонятно, вокруг чего узел повернётся. */
+.scene-anchor {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.scene-anchor::before,
+.scene-anchor::after {
+  content: "";
+  position: absolute;
+  background: var(--accent);
+}
+
+.scene-anchor::before { left: 50%; top: -4px; width: 1px; height: 18px; margin-left: -0.5px; }
+.scene-anchor::after { top: 50%; left: -4px; height: 1px; width: 18px; margin-top: -0.5px; }
+
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  width: 92px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+.anchor-grid button {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.anchor-grid button:hover { border-color: var(--border-strong); }
+.anchor-grid button.active { border-color: var(--accent); background: var(--accent-soft); }
+
+.anchor-grid i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted-dark);
+}
+
+.anchor-grid button.active i { background: var(--accent); }
+
+/* ------------------------------ шкала времени ----------------------------- */
+
+/* Без шкалы ключ ставится «на глаз», и повторить тот же момент на другом слое
+   нечем. */
+.scene-ruler {
+  position: relative;
+  height: 14px;
+  margin-bottom: 2px;
+}
+
+.scene-ruler i {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background: var(--border-strong);
+}
+
+.scene-ruler i.major { height: 8px; background: var(--muted-dark); }
+
+.scene-ruler b {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  transform: translateX(-50%);
+  font-size: 8.5px;
+  font-weight: 500;
+  color: var(--muted-dark);
+  white-space: nowrap;
+}
+
+/* --------------------------- ключ у свойства ------------------------------ */
+
+/* Три состояния, и различать их обязательно: залитый ромб — ключ стоит именно
+   здесь, пустой — дорожка анимирована, но в этот момент ключа нет, тусклый —
+   анимации нет вовсе. Без этого непонятно, что сделает нажатие. */
+.scene-row-num > span,
+.scene-row > span { display: inline-flex; align-items: center; gap: 5px; }
+
+.scene-key-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted-dark);
+}
+
+.scene-key-toggle.animated { color: var(--tier2); }
+.scene-key-toggle.here { color: var(--accent); }
+.scene-key-toggle:hover:not(:disabled) { background: var(--surface-strong); color: var(--text); }
+.scene-key-toggle:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.scene-row-label {
+  display: block;
+  margin: 7px 0 4px;
+  font-size: 9.5px;
+  color: var(--muted-dark);
+}
+
+/* --------------------------- слои на таймлайне ---------------------------- */
+
+/* Все слои сразу, а не только выбранный: понять «где вообще что-то
+   происходит» иначе нечем. Свойства раскрываются — при большом числе ключей
+   слой сворачивается. */
+.scene-layers {
+  margin-top: 8px;
+  display: grid;
+  gap: 2px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.scene-layer { border-left: 2px solid transparent; }
+.scene-layer.current { border-left-color: var(--tier2); background: rgba(77, 141, 253, 0.04); }
+
+.scene-layer-head {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 92px) auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.scene-layer-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted-dark);
+}
+
+.scene-layer-toggle:hover:not(:disabled) { color: var(--text); background: var(--surface-strong); }
+.scene-layer-toggle:disabled { opacity: 0.3; }
+
+.scene-layer-name {
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-layer.current .scene-layer-name { color: var(--text); font-weight: 500; }
+.scene-layer-name:hover { color: var(--tier2); }
+
+.scene-layer-head em {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--tier2);
+  font-size: 9px;
+  font-style: normal;
+}
+
+/* Сводная полоса свёрнутого слоя: видно, где ключи, не раскрывая его. */
+.scene-layer-strip { position: relative; height: 14px; }
+
+.scene-layer-strip i {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.scene-layer-strip i.seg-in { background: #6ee7b7; }
+.scene-layer-strip i.seg-out { background: #f472b6; }
+
+.scene-layer .scene-track { grid-template-columns: 20px 92px minmax(0, 1fr) 22px; padding-left: 0; }
+.scene-layer .scene-track .scene-track-name { grid-column: 2; }
+.scene-layer .scene-track .scene-track-rail { grid-column: 3; }
+
+/* Готовые появления текста: список коротких кнопок, а не селектор — выбор
+   делается глазами, и видеть весь набор сразу важнее компактности. */
+.animator-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.animator-presets button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.animator-presets button:hover { border-color: var(--tier2); color: var(--text); }
+
+.animator-presets button.active {
+  border-color: var(--tier2);
+  background: rgba(77, 141, 253, 0.16);
+  color: var(--text);
+}
+
+/* Правка текста прямо в кадре: поле встаёт на место надписи, поэтому у него
+   нет ни рамки в полный тон, ни своего фона — иначе оно закрывает картинку,
+   ради которой дизайнер сюда и смотрит. */
+.scene-text-edit {
+  position: absolute;
+  z-index: 6;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--tier2);
+  border-radius: 2px;
+  background: rgba(8, 12, 20, 0.72);
+  color: #fff;
+  font-family: inherit;
+  font-weight: 700;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+}
+
+/* Имя эффекта правится там же, где читается: в шапке инспектора полем, в
+   списке — двойным щелчком. Поле держим неотличимым от заголовка, пока в него
+   не вошли: рамка на каждой строке списка превратила бы его в форму. */
+.effect-name-field {
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.effect-name-field:hover { border-color: var(--border); }
+
+.effect-name-field:focus {
+  outline: none;
+  border-color: var(--tier2);
+  background: var(--surface-deep);
+}
+
+.effect-rename {
+  width: 100%;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--tier2);
+  border-radius: 3px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ------------------------- предпросмотр собранного ------------------------ */
+
+/* Одно превью на весь экран эффекта: сцену рисует та же функция, что и эфир. */
+.scene-preview {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+/* Высоту задаёт кадр, а не панель: превью, растянутое на всю колонку,
+   отжимает настройки за нижний край и они перестают приниматься. */
+.scene-preview-stage {
+  height: 190px;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  background: var(--surface-deep);
+  overflow: hidden;
+}
+
+/* Шахматка под кадром: у титра прозрачный фон, и на сплошном тёмном не видно,
+   где кончается плашка, а где начинается пустота. */
+.scene-preview-checker {
+  background-image:
+    linear-gradient(45deg, #15181c 25%, transparent 25%),
+    linear-gradient(-45deg, #15181c 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #15181c 75%),
+    linear-gradient(-45deg, transparent 75%, #15181c 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-color: #0b0d10;
+}
+
+.scene-preview-transport {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.scene-preview-transport button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.scene-preview-transport button:hover { color: var(--tier2); border-color: var(--tier2-border); }
+.scene-preview-transport input { width: 100%; accent-color: var(--tier2); }
+.scene-preview-transport span { color: var(--muted-dark); font-size: 9.5px; white-space: nowrap; }
+
+/* -------------------------------- градиент -------------------------------- */
+
+.gradient-editor {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+/* Полоса предпросмотра поверх шахматки: у градиента, уходящего в ноль,
+   на сплошном фоне не видно, где он кончился. */
+.gradient-bar {
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background-color: #0b0d10;
+  background-blend-mode: normal;
+  box-shadow: inset 0 0 0 100px transparent;
+}
+
+.gradient-directions { display: flex; gap: 4px; }
+
+.gradient-directions button {
+  flex: 1 1 0;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gradient-directions button:hover { color: var(--text); border-color: var(--tier2-border); }
+.gradient-directions button.active { border-color: var(--tier2); color: var(--tier2); }
+
+.gradient-stop {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 20px;
+  gap: 6px;
+  align-items: center;
+}
+
+.gradient-stop > input[type="color"] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: transparent;
+}
+
+.gradient-stop label { display: grid; gap: 1px; min-width: 0; }
+.gradient-stop label span { color: var(--muted-dark); font-size: 8.5px; }
+.gradient-stop input[type="range"] { width: 100%; accent-color: var(--tier2); }
+
+.gradient-stop-remove {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted-dark);
+}
+
+.gradient-stop-remove:hover:not(:disabled) { color: var(--danger); background: var(--surface-strong); }
+.gradient-stop-remove:disabled { opacity: 0.25; }
+
+/* --------------------------- способы применения --------------------------- */
+
+/* Три способа в одном месте и в конце — после того, как эффект собран и время
+   задано. Раньше раскладка по файлу задания жила внутри шага «Данные», и её
+   находили не все: снаружи это выглядело как «JSON не работает». */
+.assignment-way {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+.assignment-way-head { grid-column: 1 / -1; display: grid; gap: 1px; }
+.assignment-way-head b { color: var(--text); font-size: 11px; }
+.assignment-way-head small { color: var(--muted-dark); font-size: 9px; }
+
+.assignment-way > select,
+.assignment-way > button { min-width: 0; }
+.assignment-way-wide { grid-column: 1 / -1; }
+
+/* Специфичность выше правила панели: иначе выбор файла красится в жёлтый и
+   читается как кнопка применения, которой он не является. */
+.effect-assignment-panel .assignment-way-file {
+  grid-column: 1 / -1;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-assignment-panel .assignment-way-file:hover:not(:disabled) {
+  border-color: var(--tier2);
+  color: var(--text);
+}
+
+.assignment-match-key { grid-column: 1 / -1; display: grid; gap: 2px; }
+.assignment-match-key span { color: var(--muted-dark); font-size: 9px; }
+
+.assignment-way-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted-dark);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+/* Недоступный способ обязан выглядеть недоступным: жёлтая кнопка «применить»
+   без выбранного файла читалась как готовая к нажатию. */
+.assignment-way button:disabled,
+.effect-assignment-panel > button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

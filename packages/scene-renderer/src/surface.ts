@@ -14,7 +14,21 @@ export interface TextMetricsLike {
   width: number;
 }
 
+/**
+ * Градиент полотна.
+ *
+ * И у канвы браузера, и у `@napi-rs/canvas` он устроен одинаково: объект с
+ * точками перехода, который кладётся в `fillStyle` вместо строки цвета.
+ */
+export interface SceneGradientHandle {
+  addColorStop(offset: number, color: string): void;
+}
+
 export interface SceneSurface {
+  createLinearGradient(x0: number, y0: number, x1: number, y1: number): SceneGradientHandle;
+  createRadialGradient(
+    x0: number, y0: number, r0: number, x1: number, y1: number, r1: number,
+  ): SceneGradientHandle;
   save(): void;
   restore(): void;
   translate(x: number, y: number): void;
@@ -40,10 +54,15 @@ export interface SceneSurface {
   strokeText(text: string, x: number, y: number): void;
   measureText(text: string): TextMetricsLike;
   drawImage(image: unknown, x: number, y: number, width: number, height: number): void;
+  /**
+   * Произвольное преобразование. Нужно наклону: своего вызова у канвы для него
+   * нет, и он выражается сдвигом по горизонтали от высоты.
+   */
+  transform(a: number, b: number, c: number, d: number, e: number, f: number): void;
 
   globalAlpha: number;
   globalCompositeOperation: string;
-  fillStyle: string;
+  fillStyle: string | SceneGradientHandle;
   strokeStyle: string;
   lineWidth: number;
   lineJoin: string;
@@ -53,6 +72,8 @@ export interface SceneSurface {
   shadowBlur: number;
   shadowOffsetX: number;
   shadowOffsetY: number;
+  /** Фильтр канвы — им делается размытие. */
+  filter: string;
 }
 
 /** Готовые растры, которые сцена не умеет доставать сама. */

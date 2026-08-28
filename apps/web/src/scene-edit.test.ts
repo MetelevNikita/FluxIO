@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   sceneFormatSchema,
+  resolveNodeBox,
   sceneTemplateSchema,
+  containerClip,
+  revealClip,
+  sceneTiming,
   sceneTrack,
   type SceneFormat,
   type SceneTemplate,
@@ -17,19 +21,26 @@ import {
   declareField,
   duplicateNode,
   fieldKeyFromLabel,
+  groupChildren,
+  groupNodes,
   moveKeyframe,
   removeField,
   removeKeyframe,
   removeNode,
   reorderNode,
+  setGroupContainer,
+  setNodeAnchor,
+  setRevealOrigin,
   sampleFieldValues,
   sceneGuides,
   sceneIssues,
   setKeyframe,
   snapCoordinate,
   snapThreshold,
+  textAnimatorPresets,
   titleSafeInset,
   trackIsAnimated,
+  ungroupNode,
   updateNode,
 } from "./scene-edit.js";
 
@@ -110,6 +121,86 @@ test("reordering moves a node in the stack without touching the rest", () => {
   assert.deepEqual(reorderNode(template, c.id, a.id).nodes.map((n) => n.id), [c.id, a.id, b.id]);
   assert.deepEqual(reorderNode(template, a.id, null).nodes.map((n) => n.id), [b.id, c.id, a.id]);
   assert.deepEqual(reorderNode(template, a.id, a.id).nodes.map((n) => n.id), [a.id, b.id, c.id]);
+});
+
+/* -------------------------------- группы --------------------------------- */
+
+test("grouping needs at least two nodes: a group of one is not a group", () => {
+  let template = blank();
+  const node = createSceneNode(template, "rect");
+  template = addNode(template, node);
+  assert.equal(groupNodes(template, [node.id]).groupId, null);
+  assert.equal(groupNodes(template, []).groupId, null);
+});
+
+test("a group takes the place of the topmost member, not the top of the stack", () => {
+  // Порядок в списке — порядок наложения. Всплытие группы наверх переставило
+  // бы слои и изменило картинку.
+  let template = blank();
+  const bottom = createSceneNode(template, "rect"); template = addNode(template, bottom);
+  const middle = createSceneNode(template, "text"); template = addNode(template, middle);
+  const top = createSceneNode(template, "rect"); template = addNode(template, top);
+
+  const { template: grouped, groupId } = groupNodes(template, [bottom.id, middle.id]);
+  const order = grouped.nodes.map((entry) => entry.id);
+  assert.equal(order.indexOf(groupId!), order.indexOf(middle.id) + 1);
+  assert.ok(order.indexOf(groupId!) < order.indexOf(top.id), "группа всплыла выше верхнего слоя");
+});
+
+test("members point at the group and non-members are untouched", () => {
+  let template = blank();
+  const a = createSceneNode(template, "rect"); template = addNode(template, a);
+  const b = createSceneNode(template, "text"); template = addNode(template, b);
+  const c = createSceneNode(template, "rect"); template = addNode(template, c);
+
+  const { template: grouped, groupId } = groupNodes(template, [a.id, b.id]);
+  assert.equal(grouped.nodes.find((n) => n.id === a.id)?.parentId, groupId);
+  assert.equal(grouped.nodes.find((n) => n.id === b.id)?.parentId, groupId);
+  assert.equal(grouped.nodes.find((n) => n.id === c.id)?.parentId, null);
+  assert.deepEqual(groupChildren(grouped, groupId!).map((n) => n.id), [a.id, b.id]);
+});
+
+test("ungrouping keeps the children and their order", () => {
+  let template = blank();
+  const a = createSceneNode(template, "rect"); template = addNode(template, a);
+  const b = createSceneNode(template, "text"); template = addNode(template, b);
+  const { template: grouped, groupId } = groupNodes(template, [a.id, b.id]);
+
+  const loose = ungroupNode(grouped, groupId!);
+  assert.equal(loose.nodes.length, 2);
+  assert.deepEqual(loose.nodes.map((n) => n.id), [a.id, b.id]);
+  assert.equal(loose.nodes[0]?.parentId, null);
+});
+
+test("removing a group takes its children with it", () => {
+  // Иначе дети остались бы сиротами со ссылкой на несуществующего родителя,
+  // и их положение считалось бы от него.
+  let template = blank();
+  const a = createSceneNode(template, "rect"); template = addNode(template, a);
+  const b = createSceneNode(template, "text"); template = addNode(template, b);
+  const { template: grouped, groupId } = groupNodes(template, [a.id, b.id]);
+  assert.deepEqual(removeNode(grouped, groupId!).nodes, []);
+});
+
+test("a group moves its children, which is the whole point of it", () => {
+  let template = blank();
+  const a = createSceneNode(template, "rect"); template = addNode(template, a);
+  const b = createSceneNode(template, "text"); template = addNode(template, b);
+  const { template: grouped, groupId } = groupNodes(template, [a.id, b.id]);
+
+  const format = hd();
+  const timing = sceneTiming(grouped.director, 5);
+  const before = resolveNodeBox(grouped.nodes.find((n) => n.id === a.id)!, grouped, format, timing, 2);
+
+  const moved = updateNode(grouped, groupId!, (node) => ({
+    ...node,
+    transform: { ...node.transform, x: sceneTrack(0.1), opacity: sceneTrack(0.5) },
+  }));
+  const after = resolveNodeBox(moved.nodes.find((n) => n.id === a.id)!, moved, format, timing, 2);
+
+  assert.ok(Math.abs(after.x - (before.x + 0.1 * format.width)) < 1e-6, "ребёнок не поехал за группой");
+  // Прозрачности перемножаются: группа притеняет всех детей сразу.
+  assert.ok(Math.abs(after.opacity - before.opacity * 0.5) < 1e-9);
 });
 
 /* ----------------------------- направляющие ------------------------------ */
@@ -312,6 +403,50 @@ test("a resize drag carries width and height the same way", () => {
   );
 });
 
+/* --------------------------- точка привязки ------------------------------- */
+
+test("moving the anchor does not move the node on screen", () => {
+  // Дизайнер выбирает точку отсчёта, а не двигает элемент. Узел, уехавший
+  // от смены привязки, — это не то, чего он ждёт.
+  const node = createSceneNode(blank(), "rect");
+  const format = hd();
+  const timing = sceneTiming(blank().director, 5);
+  const before = resolveNodeBox(node, { ...blank(), nodes: [node] }, format, timing, 2);
+
+  const box = { width: node.transform.width.value, height: node.transform.height.value };
+  const moved = setNodeAnchor(node, 0.5, 0.5, box);
+  const after = resolveNodeBox(moved, { ...blank(), nodes: [moved] }, format, timing, 2);
+
+  assert.ok(Math.abs(after.x - before.x) < 1e-9, "узел уехал по горизонтали");
+  assert.ok(Math.abs(after.y - before.y) < 1e-9, "узел уехал по вертикали");
+  assert.equal(moved.transform.anchorX, 0.5);
+  assert.equal(moved.transform.anchorY, 0.5);
+});
+
+test("the anchor compensation follows the drawn width, not the base value", () => {
+  // У плашки, привязанной к тексту, ширина считается по тексту: поправка от
+  // базового значения увела бы её тем дальше, чем длиннее заголовок.
+  const node = createSceneNode(blank(), "rect");
+  const wide = setNodeAnchor(node, 1, 0, { width: 0.8, height: 0.14 });
+  const narrow = setNodeAnchor(node, 1, 0, { width: 0.2, height: 0.14 });
+  assert.ok(
+    wide.transform.x.value - node.transform.x.value >
+    narrow.transform.x.value - node.transform.x.value,
+  );
+});
+
+test("moving the anchor of an animated node carries the whole track", () => {
+  const node = applyPreset(createSceneNode(blank(), "text"), "slide-left", 0.6, 0.5);
+  const keys = node.transform.x.inKeyframes.map((key) => key.value);
+  const moved = setNodeAnchor(node, 0.5, 0, { width: 0.36, height: 0.08 });
+  const shift = moved.transform.x.value - node.transform.x.value;
+  assert.deepEqual(
+    moved.transform.x.inKeyframes.map((key) => key.value),
+    keys.map((value) => value + shift),
+    "ключи не поехали за привязкой — анимация оторвалась",
+  );
+});
+
 /* ------------------------------- проверки -------------------------------- */
 
 test("a binding to a deleted node is an error, not a silent no-op", () => {
@@ -376,4 +511,198 @@ test("a clean template reports nothing", () => {
   const node = createSceneNode(template, "rect");
   template = addNode(template, node);
   assert.deepEqual(sceneIssues(template, hd()), []);
+});
+
+/* ------------------------------ контейнер --------------------------------- */
+
+test("a container takes its size from the plate, not from the frame", () => {
+  let template = blank();
+  const plate = { ...createSceneNode(template, "rect"), id: "plate", name: "Подложка" };
+  const label = { ...createSceneNode(template, "text"), id: "label", name: "Надпись" };
+  template = addNode(addNode(template, plate), label);
+  const grouped = groupNodes(template, ["plate", "label"]);
+  assert.ok(grouped.groupId, "группа не создана");
+  template = setGroupContainer(grouped.template, grouped.groupId, "plate");
+  const container = template.nodes.find((node) => node.id === grouped.groupId);
+  assert.equal(container?.fitToNodeId, "plate");
+  assert.equal(container?.clipsChildren, true, "контейнер обязан резать содержимое");
+
+  const timing = sceneTiming(template.director, 4);
+  const plateBox = resolveNodeBox(
+    template.nodes.find((node) => node.id === "plate")!, template, hd(), timing, 2,
+  );
+  const clip = containerClip(
+    template.nodes.find((node) => node.id === "label")!, template, hd(), timing, 2,
+  );
+  assert.ok(clip, "ребёнок не получил обрезки");
+  assert.ok(Math.abs(clip.width - plateBox.width) < 1e-6, "ширина не с подложки");
+  assert.ok(Math.abs(clip.height - plateBox.height) < 1e-6, "высота не с подложки");
+});
+
+test("revealing the container hides its children, not just itself", () => {
+  let template = blank();
+  const plate = { ...createSceneNode(template, "rect"), id: "plate", name: "Подложка" };
+  const label = { ...createSceneNode(template, "text"), id: "label", name: "Надпись" };
+  template = addNode(addNode(template, plate), label);
+  const grouped = groupNodes(template, ["plate", "label"]);
+  const groupId = grouped.groupId!;
+  template = setGroupContainer(grouped.template, groupId, "plate");
+  template = updateNode(template, groupId, (node) => ({
+    ...node,
+    transform: {
+      ...node.transform,
+      reveal: {
+        value: 1,
+        inKeyframes: [
+          { atSeconds: 0, value: 0, easing: "linear" },
+          { atSeconds: 1, value: 1, easing: "linear" },
+        ],
+        outKeyframes: [],
+      },
+      revealOriginX: 0,
+    },
+  }));
+
+  const timing = sceneTiming(template.director, 4);
+  const child = template.nodes.find((node) => node.id === "label")!;
+  const closed = containerClip(child, template, hd(), timing, 0);
+  const open = containerClip(child, template, hd(), timing, timing.inSeconds);
+  assert.ok(closed, "закрытый контейнер не режет");
+  assert.ok(open, "раскрытый контейнер не режет");
+  assert.ok(closed.width < open.width, "раскрытие не расширяет окно для детей");
+  assert.ok(closed.width < 1e-6, "в начале входа контейнер обязан быть закрыт");
+});
+
+test("dropping the source node makes the group stop clipping", () => {
+  let template = blank();
+  const plate = { ...createSceneNode(template, "rect"), id: "plate", name: "Подложка" };
+  const label = { ...createSceneNode(template, "text"), id: "label", name: "Надпись" };
+  template = addNode(addNode(template, plate), label);
+  const grouped = groupNodes(template, ["plate", "label"]);
+  const groupId = grouped.groupId!;
+  template = setGroupContainer(grouped.template, groupId, "plate");
+  template = setGroupContainer(template, groupId, null);
+  const after = template.nodes.find((node) => node.id === groupId);
+  assert.equal(after?.fitToNodeId, null);
+  assert.equal(after?.clipsChildren, false, "без источника резать нечем");
+});
+
+/* --------------------------- появления текста ----------------------------- */
+
+test("every text preset is switched on and distinct", () => {
+  assert.ok(textAnimatorPresets.length >= 5, "набор слишком мал, чтобы им пользоваться");
+  const seen = new Set<string>();
+  for (const preset of textAnimatorPresets) {
+    assert.equal(preset.animator.enabled, true, `${preset.nameEn} выключён`);
+    const signature = [
+      preset.animator.unit, preset.animator.effect, preset.animator.direction,
+    ].join("/");
+    assert.ok(!seen.has(signature), `${preset.nameEn} повторяет другой набор`);
+    seen.add(signature);
+    assert.ok(preset.animator.stagger > 0, `${preset.nameEn} без разноса — это не волна`);
+  }
+});
+
+/* ------------------------------ точка среза ------------------------------- */
+
+test("the reveal cut point rides along with the anchor", () => {
+  const node = createSceneNode(blank(), "rect");
+  const moved = setNodeAnchor(node, 1, 0.5, { width: 0.4, height: 0.1 });
+  assert.equal(moved.transform.revealOriginX, 1, "срез не поехал за привязкой");
+  assert.equal(moved.transform.revealOriginY, 0.5);
+});
+
+test("moving the anchor re-syncs a cut point left over from an older template", () => {
+  // У шаблонов прежних версий срез стоит по старому умолчанию, а не на
+  // привязке. Проверка «не увели ли его вручную» молча не сработала бы ровно
+  // там, где перенос привязки и нужен.
+  const node = createSceneNode(blank(), "rect");
+  const legacy = setRevealOrigin(node, 0, 0.5);
+  const moved = setNodeAnchor(legacy, 1, 1, { width: 0.4, height: 0.1 });
+  assert.equal(moved.transform.revealOriginX, 1);
+  assert.equal(moved.transform.revealOriginY, 1);
+});
+
+test("the cut point can still be moved on its own after the anchor", () => {
+  const node = createSceneNode(blank(), "rect");
+  const moved = setNodeAnchor(node, 1, 1, { width: 0.4, height: 0.1 });
+  const bespoke = setRevealOrigin(moved, 0.5, 0);
+  assert.equal(bespoke.transform.revealOriginX, 0.5);
+  assert.equal(bespoke.transform.revealOriginY, 0);
+  assert.equal(bespoke.transform.anchorX, 1, "привязку трогать не должно");
+  assert.equal(bespoke.transform.anchorY, 1);
+});
+
+test("a reveal from the point opens both sides at once", () => {
+  let node = createSceneNode(blank(), "rect");
+  node = setRevealOrigin(node, 0.5, 0.5);
+  node = {
+    ...node,
+    transform: {
+      ...node.transform,
+      revealAxis: "point",
+      reveal: {
+        value: 1,
+        inKeyframes: [
+          { atSeconds: 0, value: 0, easing: "linear" },
+          { atSeconds: 1, value: 1, easing: "linear" },
+        ],
+        outKeyframes: [],
+      },
+    },
+  };
+  const timing = sceneTiming({ inSeconds: 1, outSeconds: 1 }, 4);
+  const box = { x: 0.2, y: 0.4, width: 0.4, height: 0.2 };
+  const half = revealClip(node, box, timing, 0.5);
+  assert.ok(half, "маска не наложилась");
+  assert.ok(Math.abs(half.width - 0.2) < 1e-6, "ширина не половинная");
+  assert.ok(Math.abs(half.height - 0.1) < 1e-6, "высота обязана открываться тоже");
+  // Из середины — в обе стороны: центр маски совпадает с центром узла.
+  assert.ok(Math.abs(half.x + half.width / 2 - (box.x + box.width / 2)) < 1e-6);
+  assert.ok(Math.abs(half.y + half.height / 2 - (box.y + box.height / 2)) < 1e-6);
+});
+
+test("a reveal by width keeps the full height", () => {
+  let node = createSceneNode(blank(), "rect");
+  node = setRevealOrigin(node, 0, 0);
+  node = {
+    ...node,
+    transform: {
+      ...node.transform,
+      revealAxis: "x",
+      reveal: {
+        value: 1,
+        inKeyframes: [
+          { atSeconds: 0, value: 0, easing: "linear" },
+          { atSeconds: 1, value: 1, easing: "linear" },
+        ],
+        outKeyframes: [],
+      },
+    },
+  };
+  const timing = sceneTiming({ inSeconds: 1, outSeconds: 1 }, 4);
+  const box = { x: 0.2, y: 0.4, width: 0.4, height: 0.2 };
+  const half = revealClip(node, box, timing, 0.5);
+  assert.ok(half);
+  assert.ok(Math.abs(half.height - box.height) < 1e-6, "полоса плашки обязана остаться во всю высоту");
+  assert.ok(Math.abs(half.x - box.x) < 1e-6, "маска растёт не от левого края");
+});
+
+test("moving a group anchor does not drag its contents across the frame", () => {
+  let template = blank();
+  const plate = { ...createSceneNode(template, "rect"), id: "plate", name: "Подложка" };
+  const label = { ...createSceneNode(template, "text"), id: "label", name: "Надпись" };
+  template = addNode(addNode(template, plate), label);
+  const grouped = groupNodes(template, ["plate", "label"]);
+  const groupId = grouped.groupId!;
+  template = setGroupContainer(grouped.template, groupId, "plate");
+  const group = template.nodes.find((node) => node.id === groupId)!;
+
+  const before = { x: group.transform.x.value, y: group.transform.y.value };
+  const moved = setNodeAnchor(group, 1, 1, { width: 0.4, height: 0.1 });
+  assert.equal(moved.transform.anchorX, 1, "привязка не переехала");
+  assert.equal(moved.transform.revealOriginX, 1, "срез не поехал за привязкой");
+  // Сдвиг группы складывается с детьми: поправка утащила бы всё содержимое.
+  assert.equal(moved.transform.x.value, before.x, "группа уехала по горизонтали");
+  assert.equal(moved.transform.y.value, before.y, "группа уехала по вертикали");
 });

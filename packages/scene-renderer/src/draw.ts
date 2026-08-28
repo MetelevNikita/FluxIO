@@ -1,15 +1,18 @@
 import {
   atLeastOnePixel,
   fromHeight,
+  containerClip,
   resolveNodeBox,
+  revealClip,
   sceneSegmentAt,
+  textUnits,
   trackValueAt,
   type SceneFormat,
   type SceneNode,
   type SceneTemplate,
   type SceneTiming,
 } from "@gruber/contracts";
-import type { SceneDrawInput, SceneSurface } from "./surface.js";
+import type { SceneDrawInput, SceneGradientHandle, SceneSurface } from "./surface.js";
 import { fitSampleText, fontSpec, measureNodeText, resolveText, singleLine } from "./text.js";
 
 /* -------------------------------------------------------------------------- *
@@ -25,6 +28,42 @@ import { fitSampleText, fontSpec, measureNodeText, resolveText, singleLine } fro
  * ------------------------------------------------------------------------- */
 
 /** Цвет с прозрачностью в том виде, в каком его понимает Canvas 2D. */
+/**
+ * Заливка узла: цвет или градиент.
+ *
+ * Точки градиента заданы долями коробки узла, а не кадра, — он принадлежит
+ * узлу и обязан ехать вместе с ним при смене раскладки. У радиального центр
+ * берётся из первой точки, а радиус — расстоянием до второй: одна пара точек
+ * на оба вида, чтобы переключение вида не сбрасывало настройку.
+ */
+function fillStyleFor(
+  surface: SceneSurface,
+  node: SceneNode,
+  box: { x: number; y: number; width: number; height: number },
+): string | SceneGradientHandle {
+  const style = node.rectStyle;
+  if (style.fillKind === "solid") return rgba(style.fill, style.fillOpacity);
+
+  const fromX = box.x + box.width * style.gradient.fromX;
+  const fromY = box.y + box.height * style.gradient.fromY;
+  const toX = box.x + box.width * style.gradient.toX;
+  const toY = box.y + box.height * style.gradient.toY;
+
+  const gradient = style.fillKind === "linear"
+    ? surface.createLinearGradient(fromX, fromY, toX, toY)
+    : surface.createRadialGradient(
+        fromX, fromY, 0,
+        fromX, fromY, Math.max(1, Math.hypot(toX - fromX, toY - fromY)),
+      );
+
+  // Точки идут по возрастанию доли: канва не сортирует их сама, и точка,
+  // поставленная раньше своей очереди, у части реализаций просто теряется.
+  for (const stop of [...style.gradient.stops].sort((a, b) => a.offset - b.offset)) {
+    gradient.addColorStop(stop.offset, rgba(stop.color, stop.opacity * style.fillOpacity));
+  }
+  return gradient;
+}
+
 function rgba(hex: string, alpha: number): string {
   const value = hex.replace("#", "");
   const r = Number.parseInt(value.slice(0, 2), 16);
@@ -93,6 +132,8 @@ function drawText(
   format: SceneFormat,
   input: SceneDrawInput,
   box: { x: number; y: number; width: number; height: number },
+  timing?: SceneTiming,
+  baseAlpha = 1,
 ): void {
   if (!node.text) return;
   const raw = resolveText(node.text, input);
@@ -141,16 +182,74 @@ function drawText(
     surface.clip();
   }
 
-  if (node.textStyle.strokeWidth > 0) {
-    surface.lineWidth = atLeastOnePixel(fromHeight(node.textStyle.strokeWidth, format) * 2);
-    surface.lineJoin = "round";
-    surface.strokeStyle = node.textStyle.strokeColor;
-    surface.strokeText(content, x, y);
+  const stroke = node.textStyle.strokeWidth > 0
+    ? atLeastOnePixel(fromHeight(node.textStyle.strokeWidth, format) * 2)
+    : 0;
+
+  const paint = (piece: string, atX: number, atY: number) => {
+    if (stroke > 0) {
+      surface.lineWidth = stroke;
+      surface.lineJoin = "round";
+      surface.strokeStyle = node.textStyle.strokeColor;
+      surface.strokeText(piece, atX, atY);
+    }
+    surface.fillStyle = node.textStyle.color;
+    surface.fillText(piece, atX, atY);
+  };
+
+  // Появление по частям. Бегущую строку не трогаем: она едет целиком, и
+  // разбирать её на буквы значит сломать саму механику прокрутки.
+  if (node.textAnimator.enabled && !isTicker && timing) {
+    const at = sceneSegmentAt(timing, input.timeSeconds);
+    const length = at.segment === "in" ? timing.inSeconds
+      : at.segment === "out" ? timing.outSeconds : 1;
+    const progress = length > 0 ? at.localSeconds / length : 1;
+    const units = textUnits(content, node.textAnimator, at.segment, progress);
+
+    let cursor = x;
+    for (const unit of units) {
+      const unitWidth = surface.measureText(unit.text).width;
+      if (unit.progress > 0) {
+        const shift = animatorShift(node.textAnimator.effect, unit.progress, size);
+        surface.save();
+        surface.globalAlpha = baseAlpha * shift.alpha;
+        if (shift.scale !== 1) {
+          // Масштаб части — вокруг её собственной середины, иначе буквы
+          // разъезжаются по строке вместо того, чтобы расти на месте.
+          const pivotX = cursor + unitWidth / 2;
+          surface.translate(pivotX, y);
+          surface.scale(shift.scale, shift.scale);
+          surface.translate(-pivotX, -y);
+        }
+        paint(unit.text, cursor + shift.dx, y + shift.dy);
+        surface.restore();
+      }
+      cursor += unitWidth;
+    }
+    if (isTicker) surface.restore();
+    return;
   }
-  surface.fillStyle = node.textStyle.color;
-  surface.fillText(content, x, y);
+
+  paint(content, x, y);
 
   if (isTicker) surface.restore();
+}
+
+/** Сдвиг и прозрачность одной части по её доле отыгранности. */
+function animatorShift(
+  effect: SceneNode["textAnimator"]["effect"],
+  progress: number,
+  size: number,
+): { alpha: number; dx: number; dy: number; scale: number } {
+  const rest = 1 - progress;
+  if (effect === "typewriter") {
+    // Резкий выход: печатная машинка не проявляет букву, она её ставит.
+    return { alpha: progress >= 1 ? 1 : 0, dx: 0, dy: 0, scale: 1 };
+  }
+  if (effect === "fade-up") return { alpha: progress, dx: 0, dy: rest * size * 0.55, scale: 1 };
+  if (effect === "slide") return { alpha: progress, dx: rest * size * 0.9, dy: 0, scale: 1 };
+  if (effect === "scale") return { alpha: progress, dx: 0, dy: 0, scale: 0.4 + progress * 0.6 };
+  return { alpha: progress, dx: 0, dy: 0, scale: 1 };
 }
 
 function drawNode(
@@ -170,6 +269,48 @@ function drawNode(
   surface.save();
   surface.globalAlpha = box.opacity;
   surface.globalCompositeOperation = blendOperations[node.blend] ?? "source-over";
+
+  // Контейнер режет содержимое по своим границам: ради этого группа и нужна —
+  // «спрятать текст за краем плашки» иначе выразить нечем. Обрезка предков
+  // идёт первой: она ограничивает всё, что узел нарисует дальше.
+  const container = containerClip(node, template, format, timing, input.timeSeconds, widths);
+  if (container) {
+    if (container.width <= 0 || container.height <= 0) { surface.restore(); return; }
+    surface.beginPath();
+    surface.rect(container.x, container.y, container.width, container.height);
+    surface.clip();
+  }
+
+  // Маска раскрытия. Обрезка идёт до всего остального: она открывает уже
+  // готовую картинку узла, а не меняет его размер.
+  const clip = revealClip(node, box, timing, input.timeSeconds);
+  if (clip) {
+    if (clip.width <= 0 || clip.height <= 0) { surface.restore(); return; }
+    surface.beginPath();
+    surface.rect(clip.x, clip.y, clip.width, clip.height);
+    surface.clip();
+  }
+
+  // Наклон и раздельный масштаб по осям — вокруг точки привязки, как поворот:
+  // иначе узел уезжает тем дальше, чем он крупнее.
+  const skew = trackValueAt(node.transform.skewDegrees, timing, input.timeSeconds);
+  const scaleY = trackValueAt(node.transform.scaleY, timing, input.timeSeconds);
+  if (skew !== 0 || scaleY !== 1) {
+    const pivotX = box.x + box.width * node.transform.anchorX;
+    const pivotY = box.y + box.height * node.transform.anchorY;
+    surface.translate(pivotX, pivotY);
+    if (scaleY !== 1) surface.scale(1, scaleY);
+    if (skew !== 0) {
+      // Наклон — сдвиг по горизонтали, пропорциональный высоте. Своего вызова
+      // у канвы для него нет, поэтому считаем через тангенс.
+      surface.transform(1, 0, Math.tan((skew * Math.PI) / 180), 1, 0, 0);
+    }
+    surface.translate(-pivotX, -pivotY);
+  }
+
+  // Размытие. Доля от высоты кадра: два пикселя на 576 заметны, на 2160 — нет.
+  const blur = fromHeight(trackValueAt(node.transform.blur, timing, input.timeSeconds), format);
+  if (blur > 0.5) surface.filter = `blur(${blur.toFixed(2)}px)`;
 
   const rotation = trackValueAt(node.transform.rotationDegrees, timing, input.timeSeconds);
   if (rotation !== 0) {
@@ -194,7 +335,7 @@ function drawNode(
       surface, box.x, box.y, box.width, box.height,
       fromHeight(node.rectStyle.cornerRadius, format),
     );
-    surface.fillStyle = rgba(node.rectStyle.fill, node.rectStyle.fillOpacity);
+    surface.fillStyle = fillStyleFor(surface, node, box);
     surface.fill();
     if (node.rectStyle.strokeWidth > 0) {
       surface.lineWidth = atLeastOnePixel(fromHeight(node.rectStyle.strokeWidth, format));
@@ -208,7 +349,7 @@ function drawNode(
       box.width / 2, box.height / 2, 0, 0, Math.PI * 2,
     );
     surface.closePath();
-    surface.fillStyle = rgba(node.rectStyle.fill, node.rectStyle.fillOpacity);
+    surface.fillStyle = fillStyleFor(surface, node, box);
     surface.fill();
     if (node.rectStyle.strokeWidth > 0) {
       surface.lineWidth = atLeastOnePixel(fromHeight(node.rectStyle.strokeWidth, format));
@@ -236,7 +377,7 @@ function drawNode(
     // Тень на тексте отдельно от плашки: включённая тень плашки размазала бы
     // и буквы, а это разные решения дизайнера.
     if (!node.shadow.enabled) surface.shadowBlur = 0;
-    drawText(surface, node, format, input, box);
+    drawText(surface, node, format, input, box, timing, box.opacity);
   }
 
   surface.restore();

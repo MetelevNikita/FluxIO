@@ -133,7 +133,7 @@ test("GET /api/health returns the shared service contract", async () => {
 
     const health = serviceHealthSchema.parse(response.json());
     assert.equal(health.service, "gruber-media-server");
-    assert.equal(health.version, "8.0.0");
+    assert.equal(health.version, "8.0.1");
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
@@ -3040,6 +3040,48 @@ test("stinger audio mixes into every track before the length tail, not after it"
   const padIndex = command.filterGraph.indexOf(`apad=whole_len=${sampleCount}`);
   assert.ok(mixIndex > 0 && padIndex > mixIndex);
   assert.match(command.filterGraph, new RegExp(`atrim=end_sample=${sampleCount}`));
+});
+
+test("a task file wrapped in a block name is read as its list of records", () => {
+  // Выгрузки эфирных систем почти всегда обёрнуты именем блока. Без снятия
+  // обёртки весь файл — одна запись с ключами `lower.0.title`, и совпасть с
+  // именем ролика ей нечем: снаружи это выглядит как «JSON не подхватился».
+  const wrapped = parseBroadcastTaskDocument({
+    lower: [
+      { id: 1, title: "A Day as a Tech Startup CEO.mp4", name: "Иван Петров", age: "38" },
+      { id: 2, title: "I built the hybrid PC setup.mp4", name: "Мария Ким", age: "29" },
+    ],
+  });
+  assert.equal(wrapped.records.length, 2);
+  assert.equal(wrapped.records[0]?.title, "A Day as a Tech Startup CEO.mp4");
+  assert.equal(wrapped.records[1]?.age, "29");
+  assert.deepEqual(wrapped.entries.map((entry) => entry.name), ["Иван Петров", "Мария Ким"]);
+});
+
+test("the wrapper key may be named anything, and metadata beside it is ignored", () => {
+  // Имя блока у каждой эфирной системы своё, поэтому оно не проверяется вовсе.
+  const rundown = parseBroadcastTaskDocument({
+    exportedAt: "2026-08-28T09:00:00Z",
+    version: 3,
+    rundown: [{ title: "Ролик.mp4", name: "Иван Петров", age: "38" }],
+  });
+  assert.equal(rundown.records.length, 1);
+  assert.equal(rundown.records[0]?.title, "Ролик.mp4");
+  assert.equal(rundown.records[0]?.age, "38");
+  assert.equal(rundown.records[0]?.version, undefined, "метаинформация не попала в запись");
+});
+
+test("only an unambiguous wrapper is unwrapped", () => {
+  // Угадывать нельзя: угаданное неверно тихо подменило бы данные эфира.
+  const twoKeys = parseBroadcastTaskDocument({
+    lower: [{ title: "Ролик.mp4" }],
+    upper: [{ title: "Другой.mp4" }],
+  });
+  assert.equal(twoKeys.records.length, 1, "объект с двумя ключами разбирается как одна запись");
+  assert.equal(twoKeys.records[0]?.["lower.0.title"], "Ролик.mp4");
+
+  const notObjects = parseBroadcastTaskDocument({ items: ["Первое", "Второе"] });
+  assert.equal(notObjects.records[0]?.["items.0"], "Первое");
 });
 
 test("a task file accepts scalar and nested fields and describes them for JSON Parser", () => {

@@ -197,6 +197,87 @@ export function updateNode(
   };
 }
 
+/* -------------------------------- группы --------------------------------- */
+
+/**
+ * Собирает выбранные узлы в группу.
+ *
+ * Группа — это узел-родитель: анимация ставится на него, а дети едут вместе с
+ * ним. Так дизайнер двигает плашку с текстом и маркером как одно целое, а не
+ * ставит одинаковые ключи на каждый узел и не ловит потом рассинхрон.
+ *
+ * Группа встаёт **на место самого верхнего** из выбранных: порядок в списке
+ * это порядок наложения, и всплытие группы наверх переставило бы слои.
+ */
+export function groupNodes(
+  template: SceneTemplate,
+  nodeIds: readonly SceneNodeId[],
+  name?: string,
+): { template: SceneTemplate; groupId: SceneNodeId | null } {
+  const chosen = new Set(nodeIds);
+  const members = template.nodes.filter((node) => chosen.has(node.id));
+  if (members.length < 2) return { template, groupId: null };
+
+  const group = sceneNodeSchema.parse({
+    id: nextNodeId(template, "group"),
+    name: name ?? nextNodeName(template, "group"),
+    kind: "group",
+    transform: {
+      x: sceneTrack(0), y: sceneTrack(0),
+      width: sceneTrack(1), height: sceneTrack(1),
+      scale: sceneTrack(1), rotationDegrees: sceneTrack(0), opacity: sceneTrack(1),
+    },
+  });
+
+  const topIndex = Math.max(...members.map((node) => template.nodes.indexOf(node)));
+  const nodes = template.nodes.map((node) => (chosen.has(node.id)
+    ? { ...node, parentId: group.id }
+    : node));
+  nodes.splice(topIndex + 1, 0, group);
+  return { template: { ...template, nodes }, groupId: group.id };
+}
+
+/** Распускает группу: дети остаются на своих местах и в своём порядке. */
+export function ungroupNode(
+  template: SceneTemplate,
+  groupId: SceneNodeId,
+): SceneTemplate {
+  const group = template.nodes.find((node) => node.id === groupId);
+  if (!group || group.kind !== "group") return template;
+  return {
+    ...template,
+    nodes: template.nodes
+      .filter((node) => node.id !== groupId)
+      .map((node) => (node.parentId === groupId ? { ...node, parentId: group.parentId } : node)),
+  };
+}
+
+/**
+ * Делает группу контейнером по размеру одного из детей — обычно подложки.
+ *
+ * Без собственных границ у контейнера нечего прятать: раскрытие группы должно
+ * резать содержимое по краю плашки, а не по краю кадра.
+ */
+export function setGroupContainer(
+  template: SceneTemplate,
+  groupId: SceneNodeId,
+  fitToNodeId: string | null,
+): SceneTemplate {
+  return updateNode(template, groupId, (node) => ({
+    ...node,
+    fitToNodeId,
+    clipsChildren: fitToNodeId !== null,
+  }));
+}
+
+/** Дети группы в порядке наложения. */
+export function groupChildren(
+  template: SceneTemplate,
+  groupId: SceneNodeId,
+): SceneNode[] {
+  return template.nodes.filter((node) => node.parentId === groupId);
+}
+
 /* ----------------------------- направляющие ------------------------------ */
 
 /**
@@ -381,6 +462,47 @@ export function setKeyframeEasing(
     : { ...track, outKeyframes: track.outKeyframes.map(patch) };
 }
 
+/**
+ * Готовые появления текста — те же, что первыми лежат в наборе After Effects.
+ *
+ * Это не украшение: «печатная машинка» и «буквы снизу» — половина эфирной
+ * типографики, и собирать их вручную каждый раз дизайнер не станет.
+ */
+export const textAnimatorPresets: {
+  name: string;
+  nameEn: string;
+  animator: SceneNode["textAnimator"];
+}[] = [
+  {
+    name: "Буквы снизу", nameEn: "Fade Up Characters",
+    animator: { enabled: true, unit: "character", effect: "fade-up", stagger: 0.55, direction: "forward" },
+  },
+  {
+    name: "Печатная машинка", nameEn: "Typewriter",
+    animator: { enabled: true, unit: "character", effect: "typewriter", stagger: 1, direction: "forward" },
+  },
+  {
+    name: "Буквы слева", nameEn: "Slide In By Character",
+    animator: { enabled: true, unit: "character", effect: "slide", stagger: 0.5, direction: "forward" },
+  },
+  {
+    name: "Слова снизу", nameEn: "Fade Up Words",
+    animator: { enabled: true, unit: "word", effect: "fade-up", stagger: 0.7, direction: "forward" },
+  },
+  {
+    name: "Строки снизу", nameEn: "Fade Up Lines",
+    animator: { enabled: true, unit: "line", effect: "fade-up", stagger: 0.8, direction: "forward" },
+  },
+  {
+    name: "От середины", nameEn: "Center Spiral In",
+    animator: { enabled: true, unit: "character", effect: "scale", stagger: 0.45, direction: "center" },
+  },
+  {
+    name: "Буквы с конца", nameEn: "Alternating Characters In",
+    animator: { enabled: true, unit: "character", effect: "fade", stagger: 0.6, direction: "backward" },
+  },
+];
+
 /** Готовые кривые: то, чем дизайнер пользуется в девяти случаях из десяти. */
 export const bezierPresets: { name: string; curve: SceneBezier }[] = [
   { name: "Плавно", curve: { x1: 0.4, y1: 0, x2: 0.2, y2: 1 } },
@@ -396,7 +518,7 @@ export function trackIsAnimated(track: SceneTrack): boolean {
 }
 
 /** Готовые входы: то, что дизайнер ставит первым делом. */
-export type ScenePreset = "fade" | "slide-left" | "slide-up" | "wipe";
+export type ScenePreset = "fade" | "slide-left" | "slide-up" | "wipe" | "reveal";
 
 /**
  * Раскладывает готовый вход и симметричный ему выход по дорожкам узла.
@@ -427,11 +549,17 @@ export function applyPreset(
     t.y = setKeyframe(setKeyframe(t.y, "out", 0, y), "out", outSeconds, y + 0.18);
     t.opacity = setKeyframe(setKeyframe(clear(t.opacity), "in", 0, 0), "in", inSeconds * 0.6, 1);
     t.opacity = setKeyframe(setKeyframe(t.opacity, "out", outSeconds * 0.4, 1), "out", outSeconds, 0);
-  } else {
-    // Раскрытие по ширине от нуля: самый «эфирный» из простых входов.
+  } else if (preset === "wipe") {
+    // Развёртка по ширине: сам узел растёт от нуля. Годится для плашки, но не
+    // для текста — буквы поедут и сожмутся вместе с ним.
     const w = t.width.value;
     t.width = setKeyframe(setKeyframe(clear(t.width), "in", 0, 0), "in", inSeconds, w);
     t.width = setKeyframe(setKeyframe(t.width, "out", 0, w), "out", outSeconds, 0);
+  } else {
+    // Раскрытие маской: узел стоит на месте и открывается обрезкой. Текст при
+    // этом не деформируется — открывается уже готовая надпись.
+    t.reveal = setKeyframe(setKeyframe(clear(t.reveal), "in", 0, 0), "in", inSeconds, 1);
+    t.reveal = setKeyframe(setKeyframe(t.reveal, "out", 0, 1), "out", outSeconds, 0);
   }
   return { ...node, transform: t };
 }
@@ -554,31 +682,97 @@ export function applyLayoutEdit(
 /**
  * Правка коробки узла перетаскиванием.
  *
- * `delta` — насколько сдвинулась **нарисованная** коробка: холст считает
- * прилипание по тому, что видит человек, и отдаёт разницу. Поправка раскладки
- * заменяет анимацию целиком, поэтому в неё пишется готовое значение, а в общую
- * сцену — сдвиг всей дорожки.
+ * `origin` — **снимок узла на момент захвата**, а `delta` считается от начала
+ * перетаскивания. Так результат не зависит от того, сколько событий мыши
+ * успело прийти и в каком порядке их свёл React: применение к текущему
+ * значению складывало сдвиги сами с собой, и узел улетал из кадра.
+ *
+ * Поправка раскладки заменяет анимацию целиком, поэтому в неё пишется готовое
+ * значение, а в общую сцену — сдвиг всей дорожки от снимка.
  */
 export function applyBoxDrag(
-  node: SceneNode,
+  origin: SceneNode,
   target: SceneLayoutTarget | null,
   delta: { dx?: number; dy?: number; dw?: number; dh?: number },
   drawn: { x: number; y: number; width: number; height: number },
 ): SceneNode {
   if (target) {
-    return applyLayoutEdit(node, target, {
+    return applyLayoutEdit(origin, target, {
       ...(delta.dx !== undefined ? { x: drawn.x + delta.dx } : {}),
       ...(delta.dy !== undefined ? { y: drawn.y + delta.dy } : {}),
       ...(delta.dw !== undefined ? { width: drawn.width + delta.dw } : {}),
       ...(delta.dh !== undefined ? { height: drawn.height + delta.dh } : {}),
     });
   }
-  const transform = { ...node.transform };
+  const transform = { ...origin.transform };
   if (delta.dx !== undefined) transform.x = shiftTrack(transform.x, delta.dx);
   if (delta.dy !== undefined) transform.y = shiftTrack(transform.y, delta.dy);
   if (delta.dw !== undefined) transform.width = shiftTrack(transform.width, delta.dw);
   if (delta.dh !== undefined) transform.height = shiftTrack(transform.height, delta.dh);
-  return { ...node, transform };
+  return { ...origin, transform };
+}
+
+/**
+ * Переносит точку привязки, **не сдвигая узел**.
+ *
+ * Привязка — это то, от чего считаются поворот, масштаб и само положение.
+ * Сместить её и увидеть, как узел уехал, — не то, чего ждёт дизайнер: он
+ * выбирает точку отсчёта, а не двигает элемент. Поэтому вместе с привязкой
+ * правится и положение, ровно на столько, чтобы картинка не изменилась.
+ *
+ * `box` — нарисованная коробка в долях кадра: у привязанной к тексту плашки
+ * ширина считается по тексту, и брать её из базового значения нельзя.
+ */
+export function setNodeAnchor(
+  node: SceneNode,
+  anchorX: number,
+  anchorY: number,
+  box: { width: number; height: number },
+): SceneNode {
+  // У группы `x` и `y` — не положение, а сдвиг, который складывается с детьми,
+  // и её собственная коробка вообще берётся от узла-подложки. Поправка,
+  // которая у обычного узла оставляет картинку на месте, здесь утаскивает всё
+  // содержимое группы на ширину плашки. Поэтому у группы привязка переносится
+  // без поправки: она задаёт точку отсчёта поворота, масштаба и среза маски,
+  // а рисунок от неё не зависит.
+  const compensates = node.kind !== "group" && node.fitToNodeId === null;
+  const shiftX = compensates ? box.width * (anchorX - node.transform.anchorX) : 0;
+  const shiftY = compensates ? box.height * (anchorY - node.transform.anchorY) : 0;
+  // Точка среза маски едет за привязкой: раскрытие обязано выезжать оттуда же,
+  // откуда считается сам узел. Проверять, «не увели ли срез вручную», нельзя —
+  // у шаблонов прежних версий срез стоит по старому умолчанию, и такая проверка
+  // молча не сработала бы ровно там, где перенос привязки и нужен. Увести срез
+  // отдельно по-прежнему можно — сеткой 3×3, уже после переноса привязки.
+  return {
+    ...node,
+    transform: {
+      ...node.transform,
+      anchorX,
+      anchorY,
+      revealOriginX: anchorX,
+      revealOriginY: anchorY,
+      x: shiftTrack(node.transform.x, shiftX),
+      y: shiftTrack(node.transform.y, shiftY),
+    },
+  };
+}
+
+/**
+ * Переносит точку среза маски, **не трогая раскрытие**.
+ *
+ * Точка задаёт, откуда маска растёт: слева, справа, сверху, снизу или из
+ * середины в обе стороны. Само раскрытие — отдельная дорожка, и менять её
+ * заодно значило бы сбивать уже поставленную анимацию.
+ */
+export function setRevealOrigin(
+  node: SceneNode,
+  originX: number,
+  originY: number,
+): SceneNode {
+  return {
+    ...node,
+    transform: { ...node.transform, revealOriginX: originX, revealOriginY: originY },
+  };
 }
 
 /** Снимает все поправки узла для раскладки — «как в общей сцене». */

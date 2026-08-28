@@ -71,6 +71,98 @@ test("ticker messages join into one line and close the loop with the separator",
   assert.equal(joinTickerItems(["  ", ""], " • "), "");
 });
 
+
+/* ------------------------------- градиенты ------------------------------- */
+
+test("a linear gradient is built in the node's own box, not in frame fractions", () => {
+  const surface = new RecordingSurface();
+  const template = sceneTemplateSchema.parse({
+    id: "tpl", name: "Плашка", targets: ["hd"],
+    director: { inSeconds: 0.5, outSeconds: 0.4 },
+    nodes: [node({
+      id: "plate", name: "Подложка", kind: "rect",
+      rectStyle: {
+        fill: "#000000", fillOpacity: 1, fillKind: "linear",
+        gradient: {
+          fromX: 0, fromY: 0.5, toX: 1, toY: 0.5,
+          stops: [
+            { offset: 0, color: "#FF0000", opacity: 1 },
+            { offset: 1, color: "#0000FF", opacity: 0 },
+          ],
+        },
+      },
+    })],
+  });
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+
+  const built = surface.calls.find((call) => call.op === "createLinearGradient");
+  assert.ok(built, "градиент не построен");
+  // Узел стоит на 6 % ширины и занимает 30 %: доли считаются от его коробки,
+  // иначе градиент не поедет вместе с узлом при смене раскладки.
+  assert.ok(Math.abs(built.args[0]! - 0.06 * 1920) < 1, "начало не по левому краю узла");
+  assert.ok(Math.abs(built.args[2]! - 0.36 * 1920) < 1, "конец не по правому краю узла");
+  // По вертикали — середина узла: y 0.76, высота 0.11.
+  assert.ok(Math.abs(built.args[1]! - built.args[3]!) < 1e-9, "линия не горизонтальна");
+});
+
+test("a radial gradient takes its radius from the distance between the two points", () => {
+  const surface = new RecordingSurface();
+  const template = sceneTemplateSchema.parse({
+    id: "tpl", name: "Круг", targets: ["hd"],
+    director: { inSeconds: 0.5, outSeconds: 0.4 },
+    nodes: [node({
+      id: "dot", name: "Точка", kind: "ellipse",
+      rectStyle: {
+        fill: "#000000", fillOpacity: 1, fillKind: "radial",
+        gradient: {
+          fromX: 0.5, fromY: 0.5, toX: 1, toY: 0.5,
+          stops: [
+            { offset: 0, color: "#FFFFFF", opacity: 1 },
+            { offset: 1, color: "#FFFFFF", opacity: 0 },
+          ],
+        },
+      },
+    })],
+  });
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+
+  const built = surface.calls.find((call) => call.op === "createRadialGradient");
+  assert.ok(built, "радиальный градиент не построен");
+  assert.equal(built.args[2], 0, "внутренний радиус должен быть нулевым");
+  // Половина ширины узла: от центра до правого края.
+  assert.ok(Math.abs(built.args[5]! - 0.15 * 1920) < 1, "радиус не по расстоянию до второй точки");
+});
+
+test("gradient stops carry the node opacity and go in ascending order", () => {
+  const surface = new RecordingSurface();
+  const template = sceneTemplateSchema.parse({
+    id: "tpl", name: "Плашка", targets: ["hd"],
+    director: { inSeconds: 0.5, outSeconds: 0.4 },
+    nodes: [node({
+      id: "plate", name: "Подложка", kind: "rect",
+      rectStyle: {
+        fill: "#000000", fillOpacity: 0.5, fillKind: "linear",
+        gradient: {
+          fromX: 0, fromY: 0, toX: 1, toY: 0,
+          // Нарочно не по порядку: канва точки не сортирует, и поставленная
+          // раньше своей очереди у части реализаций просто теряется.
+          stops: [
+            { offset: 1, color: "#0000FF", opacity: 1 },
+            { offset: 0, color: "#FF0000", opacity: 1 },
+          ],
+        },
+      },
+    })],
+  });
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+
+  const style = surface.calls.find((call) => call.op === "fill")?.style ?? "";
+  assert.ok(style.startsWith("linear("), "заливка не градиентом");
+  const stops = style.split(";").slice(1);
+  assert.equal(stops[0], "0:rgba(255, 0, 0, 0.500)", "первой обязана идти нулевая точка");
+  assert.equal(stops[1], "1:rgba(0, 0, 255, 0.500)");
+});
+
 /* ------------------------------- отрисовка ------------------------------- */
 
 test("nodes are drawn in the order the operator put them in", () => {
@@ -297,3 +389,54 @@ function lowerThird(): SceneTemplate {
     ],
   });
 }
+
+/* ---------------------------- маска раскрытия ----------------------------- */
+
+test("a reveal mask clips the node instead of resizing it", () => {
+  // Анимировать ширину у текста нельзя: буквы поедут и сожмутся вместе с ней.
+  // Маска открывает уже готовую надпись, поэтому её кегль и место не меняются.
+  const template = lowerThird();
+  const masked: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? { ...entry, transform: { ...entry.transform, reveal: sceneTrack(0.5), revealOriginX: 0 } }
+      : entry)),
+  };
+  const surface = new RecordingSurface();
+  drawScene(surface, masked, hd(), sceneTiming(masked.director, 5), input({ timeSeconds: 3 }));
+
+  assert.ok(surface.ops("clip").length > 0, "маска не обрезала узел");
+  assert.ok(surface.ops("fillText").length > 0, "текст не нарисован под маской");
+});
+
+test("a fully closed mask draws nothing at all", () => {
+  const template = lowerThird();
+  const closed: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? { ...entry, transform: { ...entry.transform, reveal: sceneTrack(0) } }
+      : entry)),
+  };
+  const surface = new RecordingSurface();
+  drawScene(surface, closed, hd(), sceneTiming(closed.director, 5), input({ timeSeconds: 3 }));
+  assert.equal(surface.ops("fillText").length, 0);
+});
+
+test("the mask does not move the text it opens", () => {
+  // Место надписи обязано совпасть с местом без маски: раскрытие — обрезка,
+  // а не сдвиг.
+  const template = lowerThird();
+  const open = new RecordingSurface();
+  drawScene(open, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+
+  const masked: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? { ...entry, transform: { ...entry.transform, reveal: sceneTrack(0.5) } }
+      : entry)),
+  };
+  const half = new RecordingSurface();
+  drawScene(half, masked, hd(), sceneTiming(masked.director, 5), input({ timeSeconds: 3 }));
+
+  assert.deepEqual(half.ops("fillText")[0]?.args, open.ops("fillText")[0]?.args);
+});

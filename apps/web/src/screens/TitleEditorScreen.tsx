@@ -1,28 +1,35 @@
 import {
   sceneFormatSchema,
+  sceneSegmentAt,
+  sceneTiming,
   type SceneLayoutTarget,
   type SceneBezier,
   type SceneKeyframe,
+  type SceneNode,
   type SceneNodeKind,
   type SceneTemplate,
   type SystemFont,
 } from "@gruber/contracts";
 import {
   AlertTriangle, Check, Circle, FileDown, Film, FolderOpen, Image as ImageIcon,
+  Group, Redo2, Undo2, Ungroup,
   KeyRound, Ruler, Save, Sparkles, Square, Type, X,
 } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { SceneCanvas } from "../title-editor/SceneCanvas";
-import { SceneInspector } from "../title-editor/SceneInspector";
+import { SceneInspector, type KeyableTrack } from "../title-editor/SceneInspector";
 import { SceneTimeline, type TrackKey } from "../title-editor/SceneTimeline";
 import { SceneTree } from "../title-editor/SceneTree";
+import { useSceneHistory } from "../title-editor/useSceneHistory";
 import {
-  addNode, applyBoxDrag, applyPreset, createSceneNode, declareField,
-  duplicateNode, removeField, removeKeyframe, removeNode, reorderNode,
-  sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing, updateNode,
+  addNode, applyPreset, createSceneNode, declareField, duplicateNode,
+  groupNodes, moveKeyframe, removeField, removeKeyframe, removeNode, reorderNode,
+  sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing, trackIsAnimated,
+  ungroupNode, updateNode,
   type ScenePreset, type SceneSegmentSide,
 } from "../scene-edit";
 import { useI18n } from "../i18n";
+import { layoutFormats, layoutTitles } from "../scene-layouts";
 
 /* -------------------------------------------------------------------------- *
  * Редактор титров.
@@ -33,21 +40,6 @@ import { useI18n } from "../i18n";
  * обязан выйти в эфир в 4:3, 16:9, HD и UHD, поэтому переключатель формата
  * стоит над холстом, а правки в выбранной цели ложатся поправкой.
  * ------------------------------------------------------------------------- */
-
-/** Кадр каждой раскладочной цели. Частота — в полях у чересстрочных. */
-const layoutFormats: Record<SceneLayoutTarget, { width: number; height: number; pixelAspect: number; drawRate: number; scan: "progressive" | "interlaced" }> = {
-  "sd-4x3": { width: 720, height: 576, pixelAspect: 1.4587, drawRate: 50, scan: "interlaced" },
-  "sd-16x9": { width: 720, height: 576, pixelAspect: 1.9457, drawRate: 50, scan: "interlaced" },
-  hd: { width: 1_920, height: 1_080, pixelAspect: 1, drawRate: 25, scan: "progressive" },
-  uhd: { width: 3_840, height: 2_160, pixelAspect: 1, drawRate: 25, scan: "progressive" },
-};
-
-const layoutTitles: Record<SceneLayoutTarget, string> = {
-  "sd-4x3": "SD 4:3",
-  "sd-16x9": "SD 16:9",
-  hd: "HD",
-  uhd: "UHD",
-};
 
 const nodeButtons: { kind: SceneNodeKind; icon: typeof Square; ru: string; en: string }[] = [
   { kind: "text", icon: Type, ru: "Текст", en: "Text" },
@@ -61,7 +53,8 @@ const presets: { preset: ScenePreset; ru: string; en: string }[] = [
   { preset: "fade", ru: "Проявление", en: "Fade" },
   { preset: "slide-left", ru: "Выезд слева", en: "Slide in" },
   { preset: "slide-up", ru: "Выезд снизу", en: "Rise" },
-  { preset: "wipe", ru: "Раскрытие", en: "Wipe" },
+  { preset: "wipe", ru: "Развёртка", en: "Wipe" },
+  { preset: "reveal", ru: "Раскрытие", en: "Reveal" },
 ];
 
 interface TitleEditorScreenProps {
@@ -90,11 +83,39 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   onChange, onDurationChange, onPickMedia, onSaveAs, onOpenLibrary, onSave, onClose,
 }: TitleEditorScreenProps) {
   const { tr } = useI18n();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /**
+   * Выделение одним состоянием: активный узел и остальные выбранные.
+   *
+   * Двумя состояниями это уже ломалось — при Ctrl-щелчке второй вызов читал
+   * прежний активный узел из устаревшего замыкания, и набор не набирался.
+   */
+  const [selection, setSelection] = useState<{ activeId: string | null; others: string[] }>({
+    activeId: null,
+    others: [],
+  });
+  const selectedId = selection.activeId;
+  const selectedIds = useMemo(
+    () => (selection.activeId ? [...selection.others, selection.activeId] : selection.others),
+    [selection],
+  );
+
+  /** Щелчок по узлу: обычный меняет активный, Ctrl добавляет к набору. */
+  function selectNode(nodeId: string | null, additive = false) {
+    setSelection((current) => {
+      if (!nodeId) return { activeId: null, others: [] };
+      if (!additive) return { activeId: nodeId, others: [] };
+      const others = current.others.filter((id) => id !== nodeId);
+      if (current.activeId && current.activeId !== nodeId) others.push(current.activeId);
+      return { activeId: nodeId, others };
+    });
+  }
+
   const [target, setTarget] = useState<SceneLayoutTarget>(template.targets[0] ?? "hd");
   /** `null` — правим общую сцену; иначе правки идут поправкой этой цели. */
   const [editTarget, setEditTarget] = useState<SceneLayoutTarget | null>(null);
   const [timeSeconds, setTimeSeconds] = useState(0);
+  /** Нарисованная коробка выделенного узла — приходит с холста. */
+  const [drawnBox, setDrawnBox] = useState<{ width: number; height: number } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [showSafe, setShowSafe] = useState(true);
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
@@ -119,30 +140,28 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   const issues = useMemo(() => sceneIssues(template, format), [template, format]);
   const errors = issues.filter((issue) => issue.severity === "error");
 
-  const patch = (next: SceneTemplate) => onChange(next);
+  /**
+   * Правка шаблона с записью в историю.
+   *
+   * `commit` закрывает шаг сразу: у структурных правок — добавления, удаления,
+   * перестановки — сливать нечего, а у перетаскивания подряд идущие правки
+   * сливаются в один шаг.
+   */
+  const history = useSceneHistory(template, onChange);
+  const patch = (next: SceneTemplate, commit = false) => {
+    history.push(next, commit);
+    onChange(next);
+  };
 
   function addKind(kind: SceneNodeKind) {
     const node = createSceneNode(template, kind);
-    patch(addNode(template, node));
-    setSelectedId(node.id);
+    patch(addNode(template, node), true);
+    selectNode(node.id);
   }
 
-  function transform(
-    nodeId: string,
-    delta: { dx?: number; dy?: number; dw?: number; dh?: number },
-    drawn: { x: number; y: number; width: number; height: number },
-  ) {
-    patch(updateNode(template, nodeId, (node) => applyBoxDrag(node, editTarget, delta, drawn)));
-  }
-
-  function keyframe(nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) {
-    patch(updateNode(template, nodeId, (node) => ({
-      ...node,
-      transform: {
-        ...node.transform,
-        [key]: setKeyframe(node.transform[key], side, atSeconds, node.transform[key].value),
-      },
-    })));
+  /** Холст присылает готовый узел — считать его от текущего шаблона нельзя. */
+  function transform(nodeId: string, node: SceneNode) {
+    patch(updateNode(template, nodeId, () => node));
   }
 
   function keyframeEasing(
@@ -158,12 +177,59 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     })));
   }
 
+  function shiftKeyframe(
+    nodeId: string, key: TrackKey, side: SceneSegmentSide, fromSeconds: number, toSeconds: number,
+  ) {
+    patch(updateNode(template, nodeId, (node) => ({
+      ...node,
+      transform: {
+        ...node.transform,
+        [key]: moveKeyframe(node.transform[key], side, fromSeconds, toSeconds),
+      },
+    })));
+  }
+
   function dropKeyframe(nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) {
     patch(updateNode(template, nodeId, (node) => ({
       ...node,
       transform: { ...node.transform, [key]: removeKeyframe(node.transform[key], side, atSeconds) },
     })));
   }
+
+  // Где сейчас стоит головка: ключ ставится в свой отрезок, а в удержании их
+  // не бывает — оно растягивается под длительность показа.
+  const timing = sceneTiming(template.director, duration);
+  const segment = sceneSegmentAt(timing, timeSeconds);
+  const keySide: SceneSegmentSide = segment.segment === "out" ? "out" : "in";
+  const keyAt = segment.segment === "out" ? segment.localSeconds : segment.localSeconds;
+
+  const keyframes = {
+    enabled: segment.segment !== "hold" && selected !== null,
+    at: (track: KeyableTrack): "here" | "animated" | "none" => {
+      if (!selected) return "none";
+      const list = keySide === "in"
+        ? selected.transform[track].inKeyframes
+        : selected.transform[track].outKeyframes;
+      if (list.some((frame) => Math.abs(frame.atSeconds - keyAt) < 0.02)) return "here";
+      return trackIsAnimated(selected.transform[track]) ? "animated" : "none";
+    },
+    toggle: (track: KeyableTrack) => {
+      if (!selected) return;
+      const list = keySide === "in"
+        ? selected.transform[track].inKeyframes
+        : selected.transform[track].outKeyframes;
+      const existing = list.find((frame) => Math.abs(frame.atSeconds - keyAt) < 0.02);
+      patch(updateNode(template, selected.id, (node) => ({
+        ...node,
+        transform: {
+          ...node.transform,
+          [track]: existing
+            ? removeKeyframe(node.transform[track], keySide, existing.atSeconds)
+            : setKeyframe(node.transform[track], keySide, keyAt, node.transform[track].value),
+        },
+      })), true);
+    },
+  };
 
   return (
     <div className="title-editor">
@@ -208,6 +274,22 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             <Ruler size={12} />
           </button>
           <button
+            disabled={!history.canUndo}
+            onClick={() => history.undo()}
+            title={tr("Отменить · Ctrl+Z", "Undo · Ctrl+Z")}
+            type="button"
+          >
+            <Undo2 size={12} />
+          </button>
+          <button
+            disabled={!history.canRedo}
+            onClick={() => history.redo()}
+            title={tr("Вернуть · Ctrl+Shift+Z", "Redo · Ctrl+Shift+Z")}
+            type="button"
+          >
+            <Redo2 size={12} />
+          </button>
+          <button
             disabled={busy}
             onClick={onOpenLibrary}
             title={tr("Загрузить готовый титр", "Load a saved title")}
@@ -234,19 +316,50 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         <div className="title-editor-left">
           <SceneTree
             hiddenIds={hiddenIds}
-            onDuplicate={(id) => patch(duplicateNode(template, id))}
-            onRemove={(id) => { patch(removeNode(template, id)); if (id === selectedId) setSelectedId(null); }}
+            onDuplicate={(id) => patch(duplicateNode(template, id), true)}
+            onRemove={(id) => { patch(removeNode(template, id), true); if (id === selectedId) selectNode(null); }}
             onRename={(id, name) => patch(updateNode(template, id, (node) => ({ ...node, name })))}
-            onReorder={(moved, before) => patch(reorderNode(template, moved, before))}
-            onSelect={setSelectedId}
+            onReorder={(moved, before) => patch(reorderNode(template, moved, before), true)}
+            onSelect={selectNode}
             onToggleHidden={(id) => setHiddenIds((current) => {
               const next = new Set(current);
               if (next.has(id)) next.delete(id); else next.add(id);
               return next;
             })}
             selectedId={selectedId}
+            selectedIds={selectedIds}
             template={template}
           />
+
+          {/* Группа — узел-родитель: анимация ставится на него, дети едут
+              вместе. Иначе одинаковые ключи пришлось бы держать на каждом
+              узле, и рано или поздно они разъедутся. */}
+          <div className="scene-group-row">
+            <button
+              disabled={selectedIds.length < 2}
+              onClick={() => {
+                const result = groupNodes(template, selectedIds);
+                if (!result.groupId) return;
+                patch(result.template, true);
+                selectNode(result.groupId);
+              }}
+              title={selectedIds.length < 2
+                ? tr("Выберите два узла и более: Ctrl-щелчок добавляет к выбору", "Select two or more: Ctrl-click adds to the selection")
+                : tr(`Объединить ${selectedIds.length} узла(ов) в группу`, `Group ${selectedIds.length} nodes`)}
+              type="button"
+            >
+              <Group size={12} /> {tr("В группу", "Group")}
+              {selectedIds.length > 1 ? <i>{selectedIds.length}</i> : null}
+            </button>
+            <button
+              disabled={selected?.kind !== "group"}
+              onClick={() => selected && patch(ungroupNode(template, selected.id), true)}
+              title={tr("Распустить группу", "Ungroup")}
+              type="button"
+            >
+              <Ungroup size={12} /> {tr("Распустить", "Ungroup")}
+            </button>
+          </div>
 
           <div className="scene-add-row">
             {nodeButtons.map(({ kind, icon: Icon, ru, en }) => (
@@ -257,8 +370,8 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           </div>
 
           <SceneFields
-            onDeclare={() => selected && patch(declareField(template, selected.id, selected.name))}
-            onRemove={(key) => patch(removeField(template, key))}
+            onDeclare={() => selected && patch(declareField(template, selected.id, selected.name), true)}
+            onRemove={(key) => patch(removeField(template, key), true)}
             onSample={(key, sample) => patch({
               ...template,
               fields: template.fields.map((field) => (field.key === key ? { ...field, sample } : field)),
@@ -284,9 +397,32 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             durationSeconds={duration}
             fields={fields}
             format={format}
-            onSelect={setSelectedId}
+            onSelect={selectNode}
+            onEditText={(node, value) => {
+              // Статичная строка живёт в самом узле, привязанная — в образце
+              // поля: править надо то, что рисуется, иначе правка не видна.
+              if (node.text?.kind === "static") {
+                patch(updateNode(template, node.id, (entry) => ({
+                  ...entry,
+                  text: { kind: "static", text: value },
+                })));
+                return;
+              }
+              if (node.text?.kind === "field") {
+                const key = node.text.fieldKey;
+                patch({
+                  ...template,
+                  fields: template.fields.map((field) => (
+                    field.key === key ? { ...field, sample: value } : field
+                  )),
+                });
+              }
+            }}
+            editTarget={editTarget}
+            onSelectedBox={setDrawnBox}
             onTransform={transform}
             selectedId={selectedId}
+            selectedIds={selectedIds}
             showSafeAreas={showSafe}
             template={visible}
             timeSeconds={timeSeconds}
@@ -326,7 +462,10 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           fonts={fonts}
           node={selected}
           onChange={(node) => patch(updateNode(template, node.id, () => node))}
+          onChangeTemplate={(next) => patch(next)}
           onDeclareField={(nodeId, label) => patch(declareField(template, nodeId, label))}
+          drawnBox={drawnBox}
+          keyframes={keyframes}
           onPickMedia={onPickMedia}
           onFieldChange={(key, fieldPatch) => patch({
             ...template,
@@ -344,8 +483,9 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         onDirector={(directorPatch) => patch({ ...template, director: { ...template.director, ...directorPatch } })}
         onDuration={onDurationChange}
         onKeyframeEasing={keyframeEasing}
+        onSelectNode={(id) => selectNode(id)}
+        onMoveKeyframe={shiftKeyframe}
         onRemoveKeyframe={dropKeyframe}
-        onSetKeyframe={keyframe}
         onTime={setTimeSeconds}
         onTogglePlay={() => setPlaying((value) => !value)}
         playing={playing}

@@ -1,9 +1,11 @@
 import {
   sceneSegmentAt, sceneTiming,
   type SceneBezier, type SceneKeyframe, type SceneNode,
-  type SceneTemplate, type SceneTrack,
+  type SceneTemplate,
 } from "@gruber/contracts";
-import { Diamond, Pause, Play, Plus, Trash2 } from "lucide-react";
+import {
+  ChevronDown, ChevronRight, Circle, Diamond, Minus, Pause, Play, Trash2,
+} from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { trackIsAnimated, type SceneSegmentSide } from "../scene-edit";
 import { EasingPicker } from "./EasingPicker";
@@ -19,17 +21,25 @@ import { useI18n } from "../i18n";
  * ------------------------------------------------------------------------- */
 
 /** Дорожки узла, которые имеет смысл показывать. */
-const trackKeys = ["x", "y", "width", "height", "opacity", "rotationDegrees", "scale"] as const;
+const trackKeys = [
+  "x", "y", "width", "height",
+  "scale", "scaleY", "rotationDegrees", "skewDegrees",
+  "opacity", "blur", "reveal",
+] as const;
 type TrackKey = (typeof trackKeys)[number];
 
 const trackTitles: Record<TrackKey, [string, string]> = {
-  x: ["X", "X"],
-  y: ["Y", "Y"],
+  x: ["Положение X", "Position X"],
+  y: ["Положение Y", "Position Y"],
   width: ["Ширина", "Width"],
   height: ["Высота", "Height"],
-  opacity: ["Прозрачность", "Opacity"],
+  scale: ["Масштаб X", "Scale X"],
+  scaleY: ["Масштаб Y", "Scale Y"],
   rotationDegrees: ["Поворот", "Rotation"],
-  scale: ["Масштаб", "Scale"],
+  skewDegrees: ["Наклон", "Skew"],
+  opacity: ["Прозрачность", "Opacity"],
+  blur: ["Размытие", "Blur"],
+  reveal: ["Раскрытие", "Reveal"],
 };
 
 interface SceneTimelineProps {
@@ -42,8 +52,12 @@ interface SceneTimelineProps {
   onTogglePlay: () => void;
   onDirector: (patch: { inSeconds?: number; outSeconds?: number }) => void;
   onDuration: (seconds: number) => void;
-  onSetKeyframe: (nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) => void;
+  onMoveKeyframe: (
+    nodeId: string, key: TrackKey, side: SceneSegmentSide, fromSeconds: number, toSeconds: number,
+  ) => void;
   onRemoveKeyframe: (nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) => void;
+  /** Выбор слоя прямо с дорожки: список слоёв и время — одно и то же дерево. */
+  onSelectNode: (nodeId: string) => void;
   onKeyframeEasing: (
     nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number,
     easing: SceneKeyframe["easing"], bezier?: SceneBezier,
@@ -52,15 +66,26 @@ interface SceneTimelineProps {
 
 export function SceneTimeline({
   template, node, durationSeconds, timeSeconds, playing,
-  onTime, onTogglePlay, onDirector, onDuration, onSetKeyframe, onRemoveKeyframe, onKeyframeEasing,
+  onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframe, onRemoveKeyframe, onKeyframeEasing,
+  onSelectNode,
 }: SceneTimelineProps) {
   const { tr } = useI18n();
   /** Ключ, у которого открыт выбор кривой. */
   const [editing, setEditing] = useState<
-    { key: TrackKey; side: SceneSegmentSide; atSeconds: number } | null
+    { nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number } | null
+  >(null);
+  /** Слои, у которых раскрыты свойства. Выбранный раскрыт всегда. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  /** Ключ, который тащат мышью по дорожке. */
+  const dragging = useRef<
+    {
+      nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number;
+      laneWidth: number; laneLeft: number;
+    } | null
   >(null);
   const railRef = useRef<HTMLDivElement | null>(null);
-  const scrubbing = useRef(false);
+  /** Идентификатор указателя, которым перематывают; `null` — не перематывают. */
+  const scrubbing = useRef<number | null>(null);
 
   const timing = sceneTiming(template.director, durationSeconds);
   const total = Math.max(0.04, durationSeconds);
@@ -82,6 +107,81 @@ export function SceneTimeline({
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [playing, timeSeconds, total, onTime]);
+
+  /**
+   * Время ключа из положения мыши на дорожке.
+   *
+   * Ключ живёт внутри своего отрезка, а полоса показывает весь показ: время
+   * пересчитывается в местное, иначе ключ входа уехал бы в удержание.
+   */
+  function keyframeTimeAt(clientX: number, lane: { laneLeft: number; laneWidth: number }, side: SceneSegmentSide) {
+    const ratio = Math.min(1, Math.max(0, (clientX - lane.laneLeft) / lane.laneWidth));
+    const absolute = ratio * total;
+    if (side === "in") return Math.min(timing.inSeconds, Math.max(0, absolute));
+    const exitStart = timing.inSeconds + timing.holdSeconds;
+    return Math.min(timing.outSeconds, Math.max(0, absolute - exitStart));
+  }
+
+  function moveDraggedKey(event: ReactPointerEvent) {
+    const drag = dragging.current;
+    if (!drag) return;
+    const next = keyframeTimeAt(event.clientX, drag, drag.side);
+    if (Math.abs(next - drag.atSeconds) < 0.001) return;
+    onMoveKeyframe(drag.nodeId, drag.key, drag.side, drag.atSeconds, next);
+    dragging.current = { ...drag, atSeconds: next };
+  }
+
+  function endScrub(event: ReactPointerEvent) {
+    if (scrubbing.current !== null) {
+      try { event.currentTarget.releasePointerCapture(scrubbing.current); } catch { /* уже отпущен */ }
+    }
+    scrubbing.current = null;
+  }
+
+  /**
+   * Ключ на дорожке. Один вид на все свойства: тащится мышью, правой кнопкой
+   * переводится в кривую, двойным щелчком убирается.
+   */
+  function keyButton(
+    nodeId: string,
+    key: TrackKey,
+    side: SceneSegmentSide,
+    frame: SceneKeyframe,
+    atRail: number,
+  ) {
+    return (
+      <button
+        className={`scene-key seg-${side} ${frame.easing === "bezier" ? "curved" : ""}`}
+        key={`${side}-${frame.atSeconds}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onKeyframeEasing(
+            nodeId, key, side, frame.atSeconds,
+            frame.easing === "bezier" ? "in-out" : "bezier",
+          );
+        }}
+        onDoubleClick={() => onRemoveKeyframe(nodeId, key, side, frame.atSeconds)}
+        onPointerDown={(event) => {
+          const lane = event.currentTarget.parentElement?.getBoundingClientRect();
+          if (lane) {
+            dragging.current = {
+              nodeId, key, side, atSeconds: frame.atSeconds,
+              laneLeft: lane.left, laneWidth: lane.width,
+            };
+          }
+          setEditing({ nodeId, key, side, atSeconds: frame.atSeconds });
+        }}
+        style={{ left: pct(atRail) }}
+        title={tr(
+          `${side === "in" ? "Вход" : "Выход"}, ${frame.atSeconds} с · ${frame.easing}\nТащите — сдвинуть, правая кнопка — кривая, двойной щелчок — убрать`,
+          `${side === "in" ? "In" : "Out"}, ${frame.atSeconds}s · ${frame.easing}\nDrag to move, right-click for a curve, double-click to remove`,
+        )}
+        type="button"
+      >
+        {frame.easing === "bezier" ? <Circle fill="currentColor" size={9} /> : <Diamond size={9} />}
+      </button>
+    );
+  }
 
   function seek(event: ReactPointerEvent) {
     const rect = railRef.current?.getBoundingClientRect();
@@ -140,11 +240,35 @@ export function SceneTimeline({
         </div>
       </header>
 
+      {/* Шкала времени: без неё ключ ставится «на глаз», и повторить тот же
+          момент на другом слое нечем. Шаг подбирается под длину показа —
+          деления через каждые 0,1 с на минутной строке нечитаемы. */}
+      <div className="scene-ruler">
+        {rulerTicks(total).map((tick) => (
+          <i
+            className={tick.major ? "major" : ""}
+            key={tick.atSeconds}
+            style={{ left: pct(tick.atSeconds) }}
+          >
+            {tick.major ? <b>{formatTick(tick.atSeconds)}</b> : null}
+          </i>
+        ))}
+      </div>
+
+      {/* Перемотка. Захват берётся на самой полосе и обязательно отпускается:
+          иначе указатель остаётся захваченным, и головка продолжает ходить
+          за мышью после того, как кнопку отпустили. */}
       <div
         className="scene-rail"
-        onPointerDown={(event) => { scrubbing.current = true; seek(event); (event.target as Element).setPointerCapture(event.pointerId); }}
-        onPointerMove={(event) => { if (scrubbing.current) seek(event); }}
-        onPointerUp={() => { scrubbing.current = false; }}
+        onLostPointerCapture={() => { scrubbing.current = null; }}
+        onPointerCancel={endScrub}
+        onPointerDown={(event) => {
+          scrubbing.current = event.pointerId;
+          seek(event);
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* захвата не будет */ }
+        }}
+        onPointerMove={(event) => { if (scrubbing.current === event.pointerId) seek(event); }}
+        onPointerUp={endScrub}
         ref={railRef}
       >
         <div className="scene-seg seg-in" style={{ width: pct(timing.inSeconds) }}>
@@ -159,100 +283,97 @@ export function SceneTimeline({
         <i className="scene-playhead" style={{ left: pct(Math.min(timeSeconds, total)) }} />
       </div>
 
-      {node ? (
-        <div className="scene-tracks">
-          {/* Анимация принадлежит узлу, а не сцене целиком: у каждого слоя
-              свои дорожки. Без явной подписи это ищут и не находят. */}
-          <p className="scene-tracks-owner">
-            {tr(`Дорожки слоя «${node.name}»`, `Tracks of layer “${node.name}”`)}
-            <span>{tr(
-              "у каждого слоя своя анимация — выберите другой слой, чтобы править его",
-              "each layer animates on its own — select another to edit it",
-            )}</span>
-          </p>
-          {trackKeys.map((key) => {
-            const track = node.transform[key] as SceneTrack;
-            const animated = trackIsAnimated(track);
-            const side: SceneSegmentSide = segment.segment === "out" ? "out" : "in";
-            const local = segment.segment === "hold" ? timing.inSeconds : segment.localSeconds;
-            return (
-              <div className={`scene-track ${animated ? "animated" : ""}`} key={key}>
-                <span className="scene-track-name">{tr(...trackTitles[key])}</span>
-                <div className="scene-track-rail">
-                  {track.inKeyframes.map((frame) => (
-                    <button
-                      className={`scene-key seg-in ${frame.easing === "bezier" ? "curved" : ""}`}
-                      key={`in-${frame.atSeconds}`}
-                      onClick={(event) => (event.altKey
-                        ? onRemoveKeyframe(node.id, key, "in", frame.atSeconds)
-                        : setEditing({ key, side: "in", atSeconds: frame.atSeconds }))}
-                      style={{ left: pct(frame.atSeconds) }}
-                      title={tr(
-                        `Вход, ${frame.atSeconds} с · ${frame.easing} — нажмите для кривой, Alt — убрать`,
-                        `In, ${frame.atSeconds}s · ${frame.easing} — click for the curve, Alt to remove`,
-                      )}
-                      type="button"
-                    >
-                      <Diamond size={9} />
-                    </button>
-                  ))}
-                  {track.outKeyframes.map((frame) => (
-                    <button
-                      className={`scene-key seg-out ${frame.easing === "bezier" ? "curved" : ""}`}
-                      key={`out-${frame.atSeconds}`}
-                      onClick={(event) => (event.altKey
-                        ? onRemoveKeyframe(node.id, key, "out", frame.atSeconds)
-                        : setEditing({ key, side: "out", atSeconds: frame.atSeconds }))}
-                      style={{ left: pct(timing.inSeconds + timing.holdSeconds + frame.atSeconds) }}
-                      title={tr(
-                        `Выход, ${frame.atSeconds} с · ${frame.easing} — нажмите для кривой, Alt — убрать`,
-                        `Out, ${frame.atSeconds}s · ${frame.easing} — click for the curve, Alt to remove`,
-                      )}
-                      type="button"
-                    >
-                      <Diamond size={9} />
-                    </button>
-                  ))}
-                </div>
+      {/* Все слои сразу, а не только выбранный: анимация живёт на каждом, и
+          понять «где вообще что-то происходит» иначе нечем. Свойства слоя
+          раскрываются — при большом числе ключей слой можно свернуть. */}
+      <div className="scene-layers">
+        {[...template.nodes].reverse().map((entry) => {
+          const animated = trackKeys.filter((key) => trackIsAnimated(entry.transform[key]));
+          const open = expanded.has(entry.id) || entry.id === node?.id;
+          // Тот же сдвиг, что и в списке слоёв: две колонки об одном и том же
+          // читаются как одна только пока вложенность в них выглядит одинаково.
+          const depth = layerDepth(entry, template);
+          return (
+            <div className={`scene-layer ${entry.id === node?.id ? "current" : ""}`} key={entry.id}>
+              <div className="scene-layer-head" style={{ paddingLeft: depth * 14 }}>
                 <button
-                  className="scene-track-add"
-                  disabled={segment.segment === "hold"}
-                  onClick={() => onSetKeyframe(node.id, key, side, local)}
-                  title={segment.segment === "hold"
-                    ? tr(
-                      "Удержание нечем заполнять: оно растягивается под длительность, и ключ в нём заставил бы картинку зависеть от неё.",
-                      "Hold cannot take keyframes: it stretches with the duration.",
-                    )
-                    : tr("Поставить ключ в текущей точке", "Add a keyframe here")}
+                  className="scene-layer-toggle"
+                  disabled={animated.length === 0}
+                  onClick={() => setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(entry.id)) next.delete(entry.id); else next.add(entry.id);
+                    return next;
+                  })}
+                  title={animated.length === 0
+                    ? tr("У слоя нет анимации: поставьте ключ в свойствах справа", "No animation yet: add a keyframe in the properties")
+                    : open ? tr("Свернуть свойства", "Collapse") : tr("Раскрыть свойства", "Expand")}
                   type="button"
                 >
-                  <Plus size={11} />
+                  {animated.length > 0 ? (open ? <ChevronDown size={11} /> : <ChevronRight size={11} />) : <Minus size={11} />}
                 </button>
-                {animated ? (
-                  <button
-                    className="scene-track-clear"
-                    onClick={() => {
-                      for (const frame of track.inKeyframes) onRemoveKeyframe(node.id, key, "in", frame.atSeconds);
-                      for (const frame of track.outKeyframes) onRemoveKeyframe(node.id, key, "out", frame.atSeconds);
-                    }}
-                    title={tr("Снять всю анимацию дорожки", "Clear the track")}
-                    type="button"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                ) : null}
+                <button className="scene-layer-name" onClick={() => onSelectNode(entry.id)} type="button">
+                  {entry.name}
+                </button>
+                {animated.length > 0 ? <em>{animated.length}</em> : null}
+                {/* Сводная полоса: у свёрнутого слоя по ней видно, где ключи. */}
+                <div className="scene-layer-strip">
+                  {!open ? animated.flatMap((key) => [
+                    ...entry.transform[key].inKeyframes.map((frame) => (
+                      <i className="seg-in" key={`${key}-i-${frame.atSeconds}`} style={{ left: pct(frame.atSeconds) }} />
+                    )),
+                    ...entry.transform[key].outKeyframes.map((frame) => (
+                      <i className="seg-out" key={`${key}-o-${frame.atSeconds}`}
+                        style={{ left: pct(timing.inSeconds + timing.holdSeconds + frame.atSeconds) }} />
+                    )),
+                  ]) : null}
+                </div>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="scene-tracks-empty">
-          {tr("Выберите узел, чтобы увидеть его дорожки.", "Select a node to see its tracks.")}
-        </p>
-      )}
 
-      {editing && node ? (() => {
-        const track = node.transform[editing.key] as SceneTrack;
+              {open ? animated.map((key) => {
+                const track = entry.transform[key];
+                return (
+                  <div className="scene-track animated" key={key}>
+                    <span className="scene-track-name">{tr(...trackTitles[key])}</span>
+                    <div
+                      className="scene-track-rail"
+                      onPointerMove={moveDraggedKey}
+                      onPointerUp={() => { dragging.current = null; }}
+                      onPointerLeave={() => { dragging.current = null; }}
+                    >
+                      {track.inKeyframes.map((frame) => keyButton(entry.id, key, "in", frame, frame.atSeconds))}
+                      {track.outKeyframes.map((frame) => keyButton(
+                        entry.id, key, "out", frame,
+                        timing.inSeconds + timing.holdSeconds + frame.atSeconds,
+                      ))}
+                    </div>
+                    <button
+                      className="scene-track-clear"
+                      onClick={() => {
+                        for (const frame of track.inKeyframes) onRemoveKeyframe(entry.id, key, "in", frame.atSeconds);
+                        for (const frame of track.outKeyframes) onRemoveKeyframe(entry.id, key, "out", frame.atSeconds);
+                      }}
+                      title={tr("Снять всю анимацию дорожки", "Clear the track")}
+                      type="button"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                );
+              }) : null}
+            </div>
+          );
+        })}
+        {template.nodes.length === 0 ? (
+          <p className="scene-tracks-empty">
+            {tr("В сцене пока нет слоёв.", "The scene has no layers yet.")}
+          </p>
+        ) : null}
+      </div>
+
+      {editing ? (() => {
+        const owner = template.nodes.find((entry) => entry.id === editing.nodeId);
+        if (!owner) return null;
+        const track = owner.transform[editing.key];
         const list = editing.side === "in" ? track.inKeyframes : track.outKeyframes;
         const frame = list.find((entry) => entry.atSeconds === editing.atSeconds);
         if (!frame) return null;
@@ -260,7 +381,7 @@ export function SceneTimeline({
           <EasingPicker
             keyframe={frame}
             onChange={(easing, bezier) =>
-              onKeyframeEasing(node.id, editing.key, editing.side, editing.atSeconds, easing, bezier)}
+              onKeyframeEasing(owner.id, editing.key, editing.side, editing.atSeconds, easing, bezier)}
             onClose={() => setEditing(null)}
           />
         );
@@ -270,3 +391,43 @@ export function SceneTimeline({
 }
 
 export type { TrackKey };
+
+/**
+ * Деления шкалы под длину показа.
+ *
+ * Шаг подбирается так, чтобы делений было около десятка: через каждые 0,1 с на
+ * минутной бегущей строке шкала превращается в сплошную заливку, а через
+ * каждые 10 с на трёхсекундной плашке делений нет вовсе.
+ */
+export function rulerTicks(totalSeconds: number): { atSeconds: number; major: boolean }[] {
+  const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60];
+  const step = steps.find((candidate) => totalSeconds / candidate <= 12) ?? 60;
+  const ticks: { atSeconds: number; major: boolean }[] = [];
+  for (let at = 0; at <= totalSeconds + 1e-6; at += step) {
+    const rounded = Math.round(at * 1_000) / 1_000;
+    // Крупное деление каждое пятое: подписывать каждое — частокол цифр.
+    ticks.push({ atSeconds: rounded, major: Math.round(at / step) % 5 === 0 });
+  }
+  return ticks;
+}
+
+/** Подпись деления: секунды без хвоста нулей. */
+export function formatTick(seconds: number): string {
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.round(seconds - minutes * 60);
+    return `${minutes}:${String(rest).padStart(2, "0")}`;
+  }
+  return Number.isInteger(seconds) ? `${seconds}с` : `${seconds.toFixed(1)}с`;
+}
+
+/** Глубина вложенности узла — она же величина сдвига строки вправо. */
+function layerDepth(node: SceneNode, template: SceneTemplate): number {
+  let depth = 0;
+  let parentId = node.parentId;
+  for (let step = 0; parentId && step < 8; step += 1) {
+    depth += 1;
+    parentId = template.nodes.find((entry) => entry.id === parentId)?.parentId ?? null;
+  }
+  return depth;
+}

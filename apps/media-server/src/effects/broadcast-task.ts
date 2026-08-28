@@ -49,7 +49,7 @@ export function parseBroadcastTaskDocument(document: unknown): {
   entries: { name: string; values: Record<string, string> }[];
   warnings: string[];
 } {
-  const parsed = broadcastTaskFileSchema.safeParse(document);
+  const parsed = broadcastTaskFileSchema.safeParse(unwrapTaskDocument(document));
   if (!parsed.success) {
     throw new Error(
       "Task file must be one object or a non-empty array of no more than 10,000 objects",
@@ -80,6 +80,29 @@ export function parseBroadcastTaskDocument(document: unknown): {
     entries: [...entries.values()],
     warnings,
   };
+}
+
+/**
+ * Снимает обёртку вида `{ "<любое имя>": [ … ] }`.
+ *
+ * Выгрузки эфирных систем почти всегда приходят обёрнутыми — именем блока,
+ * рубрики или таблицы, — и имя это у каждой системы своё. Без снятия обёртки
+ * весь файл считается **одной** записью с ключами `lower.0.title`, и совпасть
+ * с именем ролика ей нечем: снаружи это выглядит как «JSON не подхватился».
+ *
+ * Имя ключа поэтому не проверяется вовсе. Проверяется однозначность: внутри
+ * объекта должен быть **ровно один** непустой массив объектов — рядом с ним
+ * может лежать метаинформация (версия, дата выгрузки), она не мешает. Два
+ * списка сразу — уже догадка, а угаданное неверно тихо подменило бы данные
+ * эфира, поэтому такой файл разбирается как раньше.
+ */
+function unwrapTaskDocument(document: unknown): unknown {
+  if (!isObject(document)) return document;
+  const lists = Object.values(document).filter(
+    (value): value is Record<string, unknown>[] =>
+      Array.isArray(value) && value.length > 0 && value.every(isObject),
+  );
+  return lists.length === 1 ? lists[0]! : document;
 }
 
 /** Объекты и массивы превращаются в ключи `program.title` и `items.0`. */
