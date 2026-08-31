@@ -6671,12 +6671,21 @@ button.scene-tree-twist:hover { color: var(--text); }
    происходит» иначе нечем. Свойства раскрываются — при большом числе ключей
    слой сворачивается. */
 .scene-layers {
+  position: relative;
   margin-top: 8px;
   display: grid;
   gap: 2px;
   /* Высоту, отданную кадром, забирают дорожки: ради них редактор и открыт. */
   max-height: 44vh;
   overflow-y: auto;
+}
+
+.scene-key-marquee {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
 }
 
 .scene-layer { border-left: 2px solid transparent; }

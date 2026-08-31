@@ -27,6 +27,9 @@ const trackKeys = [
   "opacity", "blur", "reveal",
 ] as const;
 type TrackKey = (typeof trackKeys)[number];
+type SelectedKey = {
+  nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number;
+};
 
 const trackTitles: Record<TrackKey, [string, string]> = {
   x: ["Положение X", "Position X"],
@@ -52,9 +55,9 @@ interface SceneTimelineProps {
   onTogglePlay: () => void;
   onDirector: (patch: { inSeconds?: number; outSeconds?: number }) => void;
   onDuration: (seconds: number) => void;
-  onMoveKeyframe: (
-    nodeId: string, key: TrackKey, side: SceneSegmentSide, fromSeconds: number, toSeconds: number,
-  ) => void;
+  onMoveKeyframes: (moves: readonly (Omit<SelectedKey, "atSeconds"> & {
+    fromSeconds: number; toSeconds: number;
+  })[]) => void;
   onRemoveKeyframe: (nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) => void;
   /** Выбор слоя прямо с дорожки: список слоёв и время — одно и то же дерево. */
   onSelectNode: (nodeId: string) => void;
@@ -66,14 +69,15 @@ interface SceneTimelineProps {
 
 export function SceneTimeline({
   template, node, durationSeconds, timeSeconds, playing,
-  onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframe, onRemoveKeyframe, onKeyframeEasing,
+  onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframes, onRemoveKeyframe, onKeyframeEasing,
   onSelectNode,
 }: SceneTimelineProps) {
   const { tr } = useI18n();
   /** Ключ, у которого открыт выбор кривой. */
   const [editing, setEditing] = useState<
-    { nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number } | null
+    SelectedKey | null
   >(null);
+  const [selectedKeys, setSelectedKeys] = useState<SelectedKey[]>([]);
   const [snapGuide, setSnapGuide] = useState<{
     nodeId: string; key: TrackKey; atRail: number;
   } | null>(null);
@@ -82,11 +86,16 @@ export function SceneTimeline({
   /** Ключ, который тащат мышью по дорожке. */
   const dragging = useRef<
     {
-      nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number;
-      laneWidth: number; laneLeft: number;
+      primary: SelectedKey; keys: SelectedKey[];
+      laneWidth: number; laneLeft: number; pointerId: number;
     } | null
   >(null);
   const railRef = useRef<HTMLDivElement | null>(null);
+  const layersRef = useRef<HTMLDivElement | null>(null);
+  const marqueeBase = useRef<SelectedKey[]>([]);
+  const [marquee, setMarquee] = useState<{
+    pointerId: number; startX: number; startY: number; endX: number; endY: number;
+  } | null>(null);
   /** Идентификатор указателя, которым перематывают; `null` — не перематывают. */
   const scrubbing = useRef<number | null>(null);
 
@@ -127,32 +136,89 @@ export function SceneTimeline({
 
   function moveDraggedKey(event: ReactPointerEvent) {
     const drag = dragging.current;
-    if (!drag) return;
-    const raw = keyframeTimeAt(event.clientX, drag, drag.side);
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const raw = keyframeTimeAt(event.clientX, drag, drag.primary.side);
     const candidates: number[] = [];
     for (const entry of template.nodes) {
       for (const trackKey of trackKeys) {
-        if (entry.id === drag.nodeId && trackKey === drag.key) continue;
-        const frames = drag.side === "in"
+        if (entry.id === drag.primary.nodeId && trackKey === drag.primary.key) continue;
+        const frames = drag.primary.side === "in"
           ? entry.transform[trackKey].inKeyframes
           : entry.transform[trackKey].outKeyframes;
-        for (const frame of frames) candidates.push(frame.atSeconds);
+        for (const frame of frames) {
+          if (!drag.keys.some((selected) => selected.nodeId === entry.id && selected.key === trackKey &&
+            selected.side === drag.primary.side && selected.atSeconds === frame.atSeconds)) {
+            candidates.push(frame.atSeconds);
+          }
+        }
       }
     }
     const snapped = snapKeyframeTime(raw, candidates, (8 / Math.max(1, drag.laneWidth)) * total);
-    const next = Math.round(snapped.value * 1_000) / 1_000;
+    const minimumDelta = Math.max(...drag.keys.map((key) => -key.atSeconds));
+    const maximumDelta = Math.min(...drag.keys.map((key) =>
+      (key.side === "in" ? timing.inSeconds : timing.outSeconds) - key.atSeconds));
+    const delta = Math.round(Math.min(maximumDelta, Math.max(
+      minimumDelta, snapped.value - drag.primary.atSeconds,
+    )) * 1_000) / 1_000;
+    const next = Math.round((drag.primary.atSeconds + delta) * 1_000) / 1_000;
     setSnapGuide(snapped.snapped ? {
-      nodeId: drag.nodeId,
-      key: drag.key,
-      atRail: drag.side === "in" ? next : timing.inSeconds + timing.holdSeconds + next,
+      nodeId: drag.primary.nodeId,
+      key: drag.primary.key,
+      atRail: drag.primary.side === "in" ? next : timing.inSeconds + timing.holdSeconds + next,
     } : null);
-    if (Math.abs(next - drag.atSeconds) < 0.001) return;
-    onMoveKeyframe(drag.nodeId, drag.key, drag.side, drag.atSeconds, next);
-    dragging.current = { ...drag, atSeconds: next };
-    setEditing((current) => current && current.nodeId === drag.nodeId && current.key === drag.key &&
-      current.side === drag.side && current.atSeconds === drag.atSeconds
-      ? { ...current, atSeconds: next }
-      : current);
+    if (Math.abs(delta) < 0.001) return;
+    const moved = drag.keys.map((key) => ({
+      ...key, atSeconds: Math.round((key.atSeconds + delta) * 1_000) / 1_000,
+    }));
+    onMoveKeyframes(moved.map((key, index) => ({
+      nodeId: key.nodeId, key: key.key, side: key.side,
+      fromSeconds: drag.keys[index]!.atSeconds, toSeconds: key.atSeconds,
+    })));
+    const primaryIndex = drag.keys.findIndex((key) => sameKey(key, drag.primary));
+    dragging.current = {
+      ...drag,
+      primary: moved[primaryIndex] ?? { ...drag.primary, atSeconds: next },
+      keys: moved,
+    };
+    setSelectedKeys(moved);
+    setEditing((current) => {
+      const index = current ? drag.keys.findIndex((key) => sameKey(key, current)) : -1;
+      return index >= 0 ? moved[index]! : current;
+    });
+  }
+
+  function updateMarquee(event: ReactPointerEvent) {
+    if (!marquee || event.pointerId !== marquee.pointerId) return;
+    const next = { ...marquee, endX: event.clientX, endY: event.clientY };
+    setMarquee(next);
+    const left = Math.min(next.startX, next.endX);
+    const right = Math.max(next.startX, next.endX);
+    const top = Math.min(next.startY, next.endY);
+    const bottom = Math.max(next.startY, next.endY);
+    const hit = [...(layersRef.current?.querySelectorAll<HTMLButtonElement>(".scene-key") ?? [])]
+      .filter((button) => {
+        const box = button.getBoundingClientRect();
+        return box.right >= left && box.left <= right && box.bottom >= top && box.top <= bottom;
+      })
+      .flatMap((button): SelectedKey[] => {
+        const key = button.dataset.track as TrackKey;
+        const side = button.dataset.side as SceneSegmentSide;
+        const atSeconds = Number(button.dataset.atSeconds);
+        return button.dataset.nodeId && trackKeys.includes(key) && (side === "in" || side === "out") &&
+          Number.isFinite(atSeconds)
+          ? [{ nodeId: button.dataset.nodeId, key, side, atSeconds }]
+          : [];
+      });
+    setSelectedKeys([...marqueeBase.current, ...hit.filter((key) =>
+      !marqueeBase.current.some((base) => sameKey(base, key)))]);
+  }
+
+  function endTimelinePointer(event: ReactPointerEvent) {
+    if (dragging.current?.pointerId !== event.pointerId && marquee?.pointerId !== event.pointerId) return;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* уже отпущен */ }
+    dragging.current = null;
+    setMarquee(null);
+    setSnapGuide(null);
   }
 
   function endScrub(event: ReactPointerEvent) {
@@ -173,12 +239,16 @@ export function SceneTimeline({
     frame: SceneKeyframe,
     atRail: number,
   ) {
-    const selected = editing?.nodeId === nodeId && editing.key === key &&
-      editing.side === side && editing.atSeconds === frame.atSeconds;
+    const currentKey = { nodeId, key, side, atSeconds: frame.atSeconds };
+    const selected = selectedKeys.some((entry) => sameKey(entry, currentKey));
     return (
       <button
         aria-pressed={selected}
         className={`scene-key seg-${side} ${selected ? "selected" : ""} ${frame.easing === "bezier" ? "curved" : ""}`}
+        data-at-seconds={frame.atSeconds}
+        data-node-id={nodeId}
+        data-side={side}
+        data-track={key}
         key={`${side}-${frame.atSeconds}`}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -188,24 +258,35 @@ export function SceneTimeline({
           );
         }}
         onDoubleClick={() => onRemoveKeyframe(nodeId, key, side, frame.atSeconds)}
-        onLostPointerCapture={() => { dragging.current = null; setSnapGuide(null); }}
         onKeyDown={(event) => {
           if (event.key !== "Delete" && event.key !== "Backspace") return;
           event.preventDefault();
           event.stopPropagation();
           onRemoveKeyframe(nodeId, key, side, frame.atSeconds);
           setEditing(null);
+          setSelectedKeys((current) => current.filter((entry) => !sameKey(entry, currentKey)));
         }}
         onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
           const lane = event.currentTarget.parentElement?.getBoundingClientRect();
           if (lane) {
+            const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+            const alreadySelected = selectedKeys.some((entry) => sameKey(entry, currentKey));
+            const nextSelection = additive
+              ? alreadySelected
+                ? selectedKeys.filter((entry) => !sameKey(entry, currentKey))
+                : [...selectedKeys, currentKey]
+              : alreadySelected ? selectedKeys : [currentKey];
+            setSelectedKeys(nextSelection);
+            if (additive && alreadySelected) return;
             dragging.current = {
-              nodeId, key, side, atSeconds: frame.atSeconds,
-              laneLeft: lane.left, laneWidth: lane.width,
+              primary: currentKey, keys: nextSelection,
+              laneLeft: lane.left, laneWidth: lane.width, pointerId: event.pointerId,
             };
           }
-          setEditing({ nodeId, key, side, atSeconds: frame.atSeconds });
-          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
+          setEditing(currentKey);
+          try { layersRef.current?.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
         }}
         style={{ left: pct(atRail) }}
         title={tr(
@@ -322,7 +403,38 @@ export function SceneTimeline({
       {/* Все слои сразу, а не только выбранный: анимация живёт на каждом, и
           понять «где вообще что-то происходит» иначе нечем. Свойства слоя
           раскрываются — при большом числе ключей слой можно свернуть. */}
-      <div className="scene-layers">
+      <div
+        className="scene-layers"
+        onLostPointerCapture={() => { dragging.current = null; setMarquee(null); setSnapGuide(null); }}
+        onPointerCancel={endTimelinePointer}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+          marqueeBase.current = event.ctrlKey || event.metaKey || event.shiftKey ? selectedKeys : [];
+          if (marqueeBase.current.length === 0) setSelectedKeys([]);
+          setMarquee({
+            pointerId: event.pointerId,
+            startX: event.clientX, startY: event.clientY,
+            endX: event.clientX, endY: event.clientY,
+          });
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
+        }}
+        onPointerMove={(event) => {
+          if (dragging.current) moveDraggedKey(event);
+          else updateMarquee(event);
+        }}
+        onPointerUp={endTimelinePointer}
+        ref={layersRef}
+      >
+        {marquee ? (() => {
+          const box = layersRef.current?.getBoundingClientRect();
+          if (!box) return null;
+          return <i className="scene-key-marquee" style={{
+            left: Math.min(marquee.startX, marquee.endX) - box.left + (layersRef.current?.scrollLeft ?? 0),
+            top: Math.min(marquee.startY, marquee.endY) - box.top + (layersRef.current?.scrollTop ?? 0),
+            width: Math.abs(marquee.endX - marquee.startX),
+            height: Math.abs(marquee.endY - marquee.startY),
+          }} />;
+        })() : null}
         {[...template.nodes].reverse().map((entry) => {
           const animated = trackKeys.filter((key) => trackIsAnimated(entry.transform[key]));
           const open = expanded.has(entry.id) || entry.id === node?.id;
@@ -372,9 +484,6 @@ export function SceneTimeline({
                     <span className="scene-track-name">{tr(...trackTitles[key])}</span>
                     <div
                       className="scene-track-rail"
-                      onPointerMove={moveDraggedKey}
-                      onPointerCancel={() => { dragging.current = null; setSnapGuide(null); }}
-                      onPointerUp={() => { dragging.current = null; setSnapGuide(null); }}
                     >
                       {snapGuide?.nodeId === entry.id && snapGuide.key === key ? (
                         <i className="scene-key-snap-guide" style={{ left: pct(snapGuide.atRail) }} />
@@ -430,6 +539,11 @@ export function SceneTimeline({
 }
 
 export type { TrackKey };
+
+function sameKey(left: SelectedKey, right: SelectedKey): boolean {
+  return left.nodeId === right.nodeId && left.key === right.key && left.side === right.side &&
+    left.atSeconds === right.atSeconds;
+}
 
 /**
  * Деления шкалы под длину показа.

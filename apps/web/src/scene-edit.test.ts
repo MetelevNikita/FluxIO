@@ -22,10 +22,12 @@ import {
   createSceneNode,
   declareField,
   duplicateNode,
+  editTrackAt,
   fieldKeyFromLabel,
   groupChildren,
   groupNodes,
   moveKeyframe,
+  moveKeyframes,
   moveNode,
   pasteNode,
   removeField,
@@ -549,6 +551,16 @@ test("a keyframe at the same instant replaces instead of piling up", () => {
   assert.equal(track.inKeyframes[0]!.value, 0.9);
 });
 
+test("editing an animated property at another time creates the next keyframe", () => {
+  let track = setKeyframe(sceneTrack(1), "in", 0, 1);
+  track = editTrackAt(track, "in", 0.8, 0);
+  assert.deepEqual(track.inKeyframes.map(({ atSeconds, value }) => ({ atSeconds, value })), [
+    { atSeconds: 0, value: 1 },
+    { atSeconds: 0.8, value: 0 },
+  ]);
+  assert.equal(editTrackAt(sceneTrack(1), "in", 0.8, 0).value, 0);
+});
+
 test("keyframes stay sorted by time however they were entered", () => {
   let track = sceneTrack(0);
   track = setKeyframe(track, "in", 0.8, 1);
@@ -571,6 +583,19 @@ test("moving a keyframe keeps its value and easing", () => {
   track = moveKeyframe(track, "in", 0.2, 0.9);
   assert.equal(track.inKeyframes.length, 1);
   assert.deepEqual(track.inKeyframes[0], { atSeconds: 0.9, value: 0.7, easing: "linear" });
+});
+
+test("moving selected keyframes together does not overwrite either key", () => {
+  let track = setKeyframe(sceneTrack(0), "in", 0.2, 2);
+  track = setKeyframe(track, "in", 0.4, 4);
+  track = moveKeyframes(track, "in", [
+    { fromSeconds: 0.2, toSeconds: 0.4 },
+    { fromSeconds: 0.4, toSeconds: 0.6 },
+  ]);
+  assert.deepEqual(track.inKeyframes.map(({ atSeconds, value }) => ({ atSeconds, value })), [
+    { atSeconds: 0.4, value: 2 },
+    { atSeconds: 0.6, value: 4 },
+  ]);
 });
 
 test("a dragged keyframe snaps only to a nearby neighbour", () => {

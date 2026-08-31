@@ -627,6 +627,18 @@ export function setKeyframe(
     : { ...track, outKeyframes: next };
 }
 
+/** У анимированной дорожки правка значения становится ключом в текущем времени. */
+export function editTrackAt(
+  track: SceneTrack,
+  side: SceneSegmentSide,
+  atSeconds: number,
+  value: number,
+): SceneTrack {
+  return trackIsAnimated(track)
+    ? setKeyframe(track, side, atSeconds, value)
+    : { ...track, value };
+}
+
 export function removeKeyframe(
   track: SceneTrack,
   side: SceneSegmentSide,
@@ -652,6 +664,30 @@ export function moveKeyframe(
   return setKeyframe(
     removeKeyframe(track, side, from), side, toSeconds, key.value, key.easing, key.bezier,
   );
+}
+
+/** Двигает несколько ключей одной дорожки атомарно, не затирая соседний выбранный ключ. */
+export function moveKeyframes(
+  track: SceneTrack,
+  side: SceneSegmentSide,
+  moves: readonly { fromSeconds: number; toSeconds: number }[],
+): SceneTrack {
+  const list = side === "in" ? track.inKeyframes : track.outKeyframes;
+  const selected = moves.map((move) => ({
+    key: list.find((key) => key.atSeconds === round(move.fromSeconds)),
+    toSeconds: move.toSeconds,
+  }));
+  let next = moves.reduce(
+    (current, move) => removeKeyframe(current, side, move.fromSeconds),
+    track,
+  );
+  for (const move of selected) {
+    if (!move.key) continue;
+    next = setKeyframe(
+      next, side, move.toSeconds, move.key.value, move.key.easing, move.key.bezier,
+    );
+  }
+  return next;
 }
 
 /** Три знака после запятой: миллисекунда точнее любой кадровой сетки. */

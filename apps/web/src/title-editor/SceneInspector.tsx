@@ -47,6 +47,10 @@ interface SceneInspectorProps {
     at: (track: KeyableTrack) => "here" | "animated" | "none";
     /** Можно ли сейчас ставить ключ: в удержании их не бывает. */
     enabled: boolean;
+    /** Значение дорожки под ползунком, а не её невидимая база. */
+    value: (track: KeyableTrack) => number;
+    /** Анимированная дорожка автоматически пишет ключ под ползунком. */
+    commit: (track: KeyableTrack, value: number) => void;
     toggle: (track: KeyableTrack) => void;
   };
 }
@@ -72,13 +76,6 @@ export function SceneInspector({
 
   const override = target ? node.overrides[target] : undefined;
   const hasOverride = Boolean(override && Object.values(override).some((value) => value !== null));
-
-  const patchTransform = (key: "x" | "y" | "width" | "height", value: number) => {
-    onChange({
-      ...node,
-      transform: { ...node.transform, [key]: { ...node.transform[key], value } },
-    });
-  };
 
   /** Кнопка ключа для дорожки — одна и та же во всех строках свойств. */
   const keyed = (track: KeyableTrack) => (
@@ -125,14 +122,14 @@ export function SceneInspector({
           строка дорожки какому полю соответствует, — лишняя работа. */}
       <Section title={tr("Положение", "Position")}>
         <Grid>
-          <Num keyed={keyed("x")} label="X" value={override?.x ?? node.transform.x.value} unit="%"
-            onCommit={(v) => patchTransform("x", v)} />
-          <Num keyed={keyed("y")} label="Y" value={override?.y ?? node.transform.y.value} unit="%"
-            onCommit={(v) => patchTransform("y", v)} />
-          <Num keyed={keyed("width")} label={tr("Ширина", "Width")} value={override?.width ?? node.transform.width.value} unit="%"
-            onCommit={(v) => patchTransform("width", v)} />
-          <Num keyed={keyed("height")} label={tr("Высота", "Height")} value={override?.height ?? node.transform.height.value} unit="%"
-            onCommit={(v) => patchTransform("height", v)} />
+          <Num keyed={keyed("x")} label="X" value={override?.x ?? keyframes.value("x")} unit="%"
+            onCommit={(v) => keyframes.commit("x", v)} />
+          <Num keyed={keyed("y")} label="Y" value={override?.y ?? keyframes.value("y")} unit="%"
+            onCommit={(v) => keyframes.commit("y", v)} />
+          <Num keyed={keyed("width")} label={tr("Ширина", "Width")} value={override?.width ?? keyframes.value("width")} unit="%"
+            onCommit={(v) => keyframes.commit("width", v)} />
+          <Num keyed={keyed("height")} label={tr("Высота", "Height")} value={override?.height ?? keyframes.value("height")} unit="%"
+            onCommit={(v) => keyframes.commit("height", v)} />
         </Grid>
         <p className="scene-hint">
           {tr(
@@ -187,21 +184,12 @@ export function SceneInspector({
 
       <Section title={tr("Вид", "Appearance")}>
         <Grid>
-          <Num keyed={keyed("opacity")} label={tr("Прозрачность", "Opacity")} value={node.transform.opacity.value} unit="%"
-            onCommit={(v) => onChange({
-              ...node,
-              transform: { ...node.transform, opacity: { ...node.transform.opacity, value: clamp(v, 0, 1) } },
-            })} />
-          <Num keyed={keyed("rotationDegrees")} label={tr("Поворот", "Rotation")} value={node.transform.rotationDegrees.value} unit="°" raw
-            onCommit={(v) => onChange({
-              ...node,
-              transform: { ...node.transform, rotationDegrees: { ...node.transform.rotationDegrees, value: v } },
-            })} />
-          <Num keyed={keyed("scale")} label={tr("Масштаб", "Scale")} value={node.transform.scale.value} unit="%"
-            onCommit={(v) => onChange({
-              ...node,
-              transform: { ...node.transform, scale: { ...node.transform.scale, value: Math.max(0, v) } },
-            })} />
+          <Num keyed={keyed("opacity")} label={tr("Прозрачность", "Opacity")} value={keyframes.value("opacity")} unit="%"
+            onCommit={(v) => keyframes.commit("opacity", clamp(v, 0, 1))} />
+          <Num keyed={keyed("rotationDegrees")} label={tr("Поворот", "Rotation")} value={keyframes.value("rotationDegrees")} unit="°" raw
+            onCommit={(v) => keyframes.commit("rotationDegrees", v)} />
+          <Num keyed={keyed("scale")} label={tr("Масштаб", "Scale")} value={keyframes.value("scale")} unit="%"
+            onCommit={(v) => keyframes.commit("scale", Math.max(0, v))} />
         </Grid>
       </Section>
 
@@ -459,11 +447,8 @@ export function SceneInspector({
             буквы поедут и сожмутся. Маска открывает уже готовую картинку. */}
         <Grid>
           <Num keyed={keyed("reveal")} label={tr("Раскрыто", "Revealed")}
-            value={node.transform.reveal.value} unit="%"
-            onCommit={(v) => onChange({
-              ...node,
-              transform: { ...node.transform, reveal: { ...node.transform.reveal, value: clamp(v, 0, 1) } },
-            })} />
+            value={keyframes.value("reveal")} unit="%"
+            onCommit={(v) => keyframes.commit("reveal", clamp(v, 0, 1))} />
         </Grid>
         <label className="scene-row">
           <span>{tr("Как открывается", "Reveal style")}</span>
@@ -860,7 +845,10 @@ function KeyButton({
         )
         : state === "here"
           ? tr("Убрать ключ в этой точке", "Remove the keyframe here")
-          : tr("Поставить ключ в этой точке", "Add a keyframe here")}
+          : tr(
+            "Поставить ключ в этой точке; следующие изменения значения будут создавать ключи автоматически",
+            "Add a keyframe here; further value changes create keyframes automatically",
+          )}
       type="button"
     >
       <Diamond fill={state === "here" ? "currentColor" : "none"} size={10} />

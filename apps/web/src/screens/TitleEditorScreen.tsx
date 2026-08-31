@@ -2,6 +2,7 @@ import {
   sceneFormatSchema,
   sceneSegmentAt,
   sceneTiming,
+  trackValueAt,
   type SceneLayoutTarget,
   type SceneBezier,
   type SceneKeyframe,
@@ -25,8 +26,9 @@ import { SceneTimeline, type TrackKey } from "../title-editor/SceneTimeline";
 import { SceneTree } from "../title-editor/SceneTree";
 import { useSceneHistory } from "../title-editor/useSceneHistory";
 import {
-  addNode, applyPreset, copyNode, createSceneNode, declareField, descendantIds,
-  groupNodes, moveKeyframe, moveNode, pasteNode, removeField, removeKeyframe, removeNode,
+  addNode, applyLayoutEdit, applyPreset, copyNode, createSceneNode, declareField, descendantIds,
+  editTrackAt,
+  groupNodes, moveKeyframes, moveNode, pasteNode, removeField, removeKeyframe, removeNode,
   sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing,
   trackIsAnimated, ungroupNode, updateNode,
   type SceneNodeClipboard, type ScenePreset, type SceneSegmentSide,
@@ -210,16 +212,26 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     })));
   }
 
-  function shiftKeyframe(
-    nodeId: string, key: TrackKey, side: SceneSegmentSide, fromSeconds: number, toSeconds: number,
-  ) {
-    patch(updateNode(template, nodeId, (node) => ({
-      ...node,
-      transform: {
-        ...node.transform,
-        [key]: moveKeyframe(node.transform[key], side, fromSeconds, toSeconds),
-      },
-    })));
+  function shiftKeyframes(moves: readonly {
+    nodeId: string; key: TrackKey; side: SceneSegmentSide;
+    fromSeconds: number; toSeconds: number;
+  }[]) {
+    let next = template;
+    for (const move of moves) {
+      if (moves.some((candidate) => candidate !== move && candidate.nodeId === move.nodeId &&
+        candidate.key === move.key && candidate.side === move.side &&
+        moves.indexOf(candidate) < moves.indexOf(move))) continue;
+      const laneMoves = moves.filter((candidate) => candidate.nodeId === move.nodeId &&
+        candidate.key === move.key && candidate.side === move.side);
+      next = updateNode(next, move.nodeId, (node) => ({
+        ...node,
+        transform: {
+          ...node.transform,
+          [move.key]: moveKeyframes(node.transform[move.key], move.side, laneMoves),
+        },
+      }));
+    }
+    patch(next);
   }
 
   function dropKeyframe(nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) {
@@ -234,10 +246,28 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   const timing = sceneTiming(template.director, duration);
   const segment = sceneSegmentAt(timing, timeSeconds);
   const keySide: SceneSegmentSide = segment.segment === "out" ? "out" : "in";
-  const keyAt = segment.segment === "out" ? segment.localSeconds : segment.localSeconds;
+  const keyAt = segment.segment === "hold" ? timing.inSeconds : segment.localSeconds;
 
   const keyframes = {
     enabled: segment.segment !== "hold" && selected !== null,
+    value: (track: KeyableTrack): number => selected
+      ? trackValueAt(selected.transform[track], timing, timeSeconds)
+      : 0,
+    commit: (track: KeyableTrack, value: number) => {
+      if (!selected) return;
+      patch(updateNode(template, selected.id, (node) => {
+        if (editTarget && (track === "x" || track === "y" || track === "width" || track === "height")) {
+          return applyLayoutEdit(node, editTarget, { [track]: value });
+        }
+        return {
+          ...node,
+          transform: {
+            ...node.transform,
+            [track]: editTrackAt(node.transform[track], keySide, keyAt, value),
+          },
+        };
+      }));
+    },
     at: (track: KeyableTrack): "here" | "animated" | "none" => {
       if (!selected) return "none";
       const list = keySide === "in"
@@ -258,7 +288,10 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           ...node.transform,
           [track]: existing
             ? removeKeyframe(node.transform[track], keySide, existing.atSeconds)
-            : setKeyframe(node.transform[track], keySide, keyAt, node.transform[track].value),
+            : setKeyframe(
+              node.transform[track], keySide, keyAt,
+              trackValueAt(node.transform[track], timing, timeSeconds),
+            ),
         },
       })), true);
     },
@@ -634,7 +667,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         onDuration={onDurationChange}
         onKeyframeEasing={keyframeEasing}
         onSelectNode={(id) => selectNode(id)}
-        onMoveKeyframe={shiftKeyframe}
+        onMoveKeyframes={shiftKeyframes}
         onRemoveKeyframe={dropKeyframe}
         onTime={setTimeSeconds}
         onTogglePlay={() => setPlaying((value) => !value)}
