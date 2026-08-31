@@ -3,7 +3,7 @@ import {
   ChevronDown, ChevronRight, Circle, Copy, Eye, EyeOff, Image as ImageIcon,
   Square, Trash2, Type, Video,
 } from "lucide-react";
-import { useState, type DragEvent } from "react";
+import { Fragment, useRef, useState, type DragEvent, type PointerEvent } from "react";
 import { nodeKindTitle, trackIsAnimated } from "../scene-edit";
 import { useI18n } from "../i18n";
 
@@ -34,20 +34,29 @@ interface SceneTreeProps {
   selectedIds: readonly string[];
   hiddenIds: ReadonlySet<string>;
   onSelect: (nodeId: string, additive?: boolean) => void;
-  onReorder: (movedId: string, beforeId: string | null) => void;
+  onMove: (movedId: string, parentId: string | null, beforeId: string | null) => void;
   onToggleHidden: (nodeId: string) => void;
   onDuplicate: (nodeId: string) => void;
   onRemove: (nodeId: string) => void;
   onRename: (nodeId: string, name: string) => void;
 }
 
+interface DropTarget {
+  index: number;
+  parentId: string | null;
+  beforeId: string | null;
+  intoGroupId: string | null;
+}
+
 export function SceneTree({
   template, selectedId, selectedIds, hiddenIds,
-  onSelect, onReorder, onToggleHidden, onDuplicate, onRemove, onRename,
+  onSelect, onMove, onToggleHidden, onDuplicate, onRemove, onRename,
 }: SceneTreeProps) {
   const { tr } = useI18n();
   const [dragged, setDragged] = useState<string | null>(null);
+  const [drop, setDrop] = useState<DropTarget | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const dragRects = useRef(new Map<string, DOMRect>());
   // Свёрнутые группы. Группа собирается ради того, чтобы её содержимое ехало
   // одним целым, и после сборки читать её по слоям обычно уже не нужно.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -86,11 +95,52 @@ export function SceneTree({
   // Сверху вниз — от верхнего слоя к нижнему: так его видит человек в кадре.
   const ordered = [...template.nodes].reverse().filter((node) => !hiddenByCollapse(node));
 
-  function handleDrop(event: DragEvent, beforeId: string | null) {
+  // Native dragover fires for every pointer pixel. Re-rendering the whole tree
+  // for an unchanged target made rows shake under the pointer.
+  function showDrop(next: DropTarget) {
+    setDrop((current) => current && current.index === next.index &&
+      current.parentId === next.parentId && current.beforeId === next.beforeId &&
+      current.intoGroupId === next.intoGroupId ? current : next);
+  }
+
+  function commitDrop(event: DragEvent) {
     event.preventDefault();
-    if (!dragged) return;
-    onReorder(dragged, beforeId);
+    event.stopPropagation();
+    if (!dragged || !drop) return;
+    onMove(dragged, drop.parentId, drop.beforeId);
+    dragRects.current.clear();
     setDragged(null);
+    setDrop(null);
+  }
+
+  /** Можно ли положить перетаскиваемый узел в эту группу. */
+  function acceptsDrop(groupId: string): boolean {
+    if (!dragged || dragged === groupId) return false;
+    // В собственного потомка узел не переезжает: цепочка родителей замкнулась
+    // бы в кольцо, и раскладка ушла бы в бесконечный обход.
+    let parentId: string | null = groupId;
+    for (let step = 0; parentId && step < 8; step += 1) {
+      if (parentId === dragged) return false;
+      parentId = byId.get(parentId)?.parentId ?? null;
+    }
+    return byId.get(dragged)?.parentId !== groupId;
+  }
+
+  /**
+   * Перенос в группу мышью.
+   *
+   * Середина строки группы кладёт узел внутрь, края — оставляют обычную
+   * перестановку: иначе мимо группы стало бы невозможно протащить слой,
+   * а порядок наложения задаёт именно перестановка.
+   */
+  function groupZone(event: DragEvent, rect: DOMRect): boolean {
+    const offset = event.clientY - rect.top;
+    return offset > rect.height * 0.25 && offset < rect.height * 0.75;
+  }
+
+  function selectOnPointerDown(event: PointerEvent, nodeId: string) {
+    if ((event.target as HTMLElement).closest("button,input")) return;
+    onSelect(nodeId, event.ctrlKey || event.metaKey || event.shiftKey);
   }
 
   return (
@@ -106,7 +156,18 @@ export function SceneTree({
         </p>
       ) : null}
 
-      <ul onDragOver={(event) => event.preventDefault()} onDrop={(event) => handleDrop(event, null)}>
+      {/* Пустое поле под списком — «вынуть из группы»: иначе узел, однажды
+          попавший в группу, можно достать только роспуском всей группы. */}
+      <ul
+        className={dragged && byId.get(dragged)?.parentId ? "un-nesting" : ""}
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (event.target === event.currentTarget) {
+            showDrop({ index: ordered.length, parentId: null, beforeId: null, intoGroupId: null });
+          }
+        }}
+        onDrop={commitDrop}
+      >
         {ordered.map((node, index) => {
           const Icon = kindIcons[node.kind];
           const hidden = hiddenIds.has(node.id);
@@ -115,23 +176,64 @@ export function SceneTree({
           const animated = Object.values(node.transform)
             .some((track) => typeof track === "object" && track !== null && "inKeyframes" in track
               && trackIsAnimated(track as never));
-          // Перетаскивание в списке идёт сверху вниз, а порядок наложения —
-          // снизу вверх: цель вставки берём из исходного массива.
-          const below = ordered[index + 1];
           const depth = depthOf(node);
           const isOpenGroup = node.kind === "group" && !collapsed.has(node.id);
           return (
-            <li
+            <Fragment key={node.id}>
+              {drop?.index === index ? (
+                <li
+                  aria-hidden="true"
+                  className="scene-tree-drop-placeholder"
+                  style={{ marginLeft: 10 + depth * 14 }}
+                />
+              ) : null}
+              <li
               key={node.id}
+              data-node-id={node.id}
               style={{ paddingLeft: 10 + depth * 14 }}
               className={`${node.id === selectedId ? "selected" : ""} ${
                 selectedIds.includes(node.id) && node.id !== selectedId ? "co-selected" : ""
-              } ${hidden ? "hidden-node" : ""} ${node.parentId ? "in-group" : ""}`}
+              } ${hidden ? "hidden-node" : ""} ${node.parentId ? "in-group" : ""} ${
+                drop?.intoGroupId === node.id ? "drop-into" : ""
+              }`}
               draggable
-              onDragStart={() => setDragged(node.id)}
-              onDragEnd={() => setDragged(null)}
-              onDrop={(event) => { event.stopPropagation(); handleDrop(event, below ? below.id : null); }}
-              onClick={(event) => onSelect(node.id, event.ctrlKey || event.metaKey)}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", node.id);
+                dragRects.current = new Map(Array.from(
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLElement>("li[data-node-id]") ?? [],
+                  (row) => [row.dataset.nodeId ?? "", row.getBoundingClientRect()],
+                ));
+                setDragged(node.id);
+              }}
+              onDragEnd={() => { dragRects.current.clear(); setDragged(null); setDrop(null); }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (node.id === dragged) return;
+                const rect = dragRects.current.get(node.id) ?? event.currentTarget.getBoundingClientRect();
+                const into = node.kind === "group" && acceptsDrop(node.id) && groupZone(event, rect);
+                if (into) {
+                  const firstChild = ordered.find((entry) => entry.parentId === node.id);
+                  showDrop({
+                    index: index + 1,
+                    parentId: node.id,
+                    beforeId: firstChild?.id ?? null,
+                    intoGroupId: node.id,
+                  });
+                  return;
+                }
+                const after = event.clientY - rect.top >= rect.height / 2;
+                const siblings = ordered.filter((entry) => entry.parentId === node.parentId);
+                const siblingIndex = siblings.findIndex((entry) => entry.id === node.id);
+                showDrop({
+                  index: index + (after ? 1 : 0),
+                  parentId: node.parentId,
+                  beforeId: after ? siblings[siblingIndex + 1]?.id ?? null : node.id,
+                  intoGroupId: null,
+                });
+              }}
+              onDrop={commitDrop}
+              onPointerDown={(event) => selectOnPointerDown(event, node.id)}
               onDoubleClick={() => setRenaming(node.id)}
             >
               {node.kind === "group" ? (
@@ -167,7 +269,7 @@ export function SceneTree({
                   "This layer has its own animation — tracks below",
                 )}>◆</b>
               ) : null}
-              <em>{nodeKindTitle(node.kind)}</em>
+              <em>{nodeKindTitle(node.kind, tr)}</em>
               <button
                 className="scene-tree-action"
                 onClick={(event) => { event.stopPropagation(); onToggleHidden(node.id); }}
@@ -192,14 +294,12 @@ export function SceneTree({
               >
                 <Trash2 size={12} />
               </button>
-            </li>
+              </li>
+            </Fragment>
           );
         })}
+        {drop?.index === ordered.length ? <li aria-hidden="true" className="scene-tree-drop-placeholder" /> : null}
       </ul>
     </div>
   );
-}
-
-export function isTextNode(node: SceneNode): boolean {
-  return node.kind === "text";
 }

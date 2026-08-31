@@ -24,7 +24,7 @@ export interface DailyStats {
   warnings: number;
 }
 
-export interface SessionStats {
+interface SessionStats {
   sessionId: string;
   startedAt: string;
   endedAt: string | null;

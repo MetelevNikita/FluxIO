@@ -1,6 +1,6 @@
 import { LoaderCircle, Server } from "lucide-react";
 import type { PlayoutStatus } from "@gruber/contracts";
-import type { ConnectionState } from "../App";
+import type { ConnectionState } from "../use-media-service";
 import { useI18n } from "../i18n";
 
 interface GlobalStatusBarProps {

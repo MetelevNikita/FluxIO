@@ -5,7 +5,7 @@ import {
 import { runCommand } from "./process.js";
 
 /** `ffmpeg -filters` печатает строки вида ` ... subtitles         V->V  Render text ...`. */
-export function hasFilter(filterList: string, name: string): boolean {
+function hasFilter(filterList: string, name: string): boolean {
   return filterList.split(/\r?\n/).some((line) => {
     const columns = line.trim().split(/\s+/);
     return columns.length >= 2 && columns[1] === name;

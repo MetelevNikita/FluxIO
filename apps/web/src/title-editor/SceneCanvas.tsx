@@ -1,6 +1,9 @@
 import {
+  ancestorTransforms,
   resolveNodeBox,
   sceneTiming,
+  trackValueAt,
+  transformedBounds,
   type SceneFormat,
   type SceneLayoutTarget,
   type SceneNode,
@@ -10,6 +13,7 @@ import {
   drawScene,
   measureSceneText,
   type SceneDrawInput,
+  type SceneImageSource,
   type SceneSurface,
 } from "@gruber/scene-renderer";
 import {
@@ -25,6 +29,8 @@ import {
   titleSafeInset,
   type SceneGuide,
 } from "../scene-edit";
+import { useI18n } from "../i18n";
+import { vectorLayerPreviewUrl } from "../media-api";
 
 /* -------------------------------------------------------------------------- *
  * Холст редактора.
@@ -37,8 +43,27 @@ import {
  * выделения. Он в кадр не попадает — это оснастка редактора.
  * ------------------------------------------------------------------------- */
 
-/** За какую часть узла взялись мышью. */
-type Grip = "move" | "nw" | "ne" | "sw" | "se";
+/**
+ * За какую часть узла взялись мышью.
+ *
+ * Грани такие же ручки, как углы: тянуть плашку только за угол значит менять
+ * обе стороны сразу, а подогнать надо обычно одну — ширину подложки под
+ * строку или высоту полосы под кегль.
+ */
+type Grip = "move" | "nw" | "ne" | "sw" | "se" | "n" | "s" | "e" | "w";
+
+/** Ручки в порядке отрисовки: сначала грани, углы поверх них. */
+const grips = ["n", "s", "w", "e", "nw", "ne", "sw", "se"] as const;
+
+/** Какие края узла двигает ручка. */
+function gripEdges(grip: Grip): { west: boolean; east: boolean; north: boolean; south: boolean } {
+  return {
+    west: grip === "nw" || grip === "sw" || grip === "w",
+    east: grip === "ne" || grip === "se" || grip === "e",
+    north: grip === "nw" || grip === "ne" || grip === "n",
+    south: grip === "sw" || grip === "se" || grip === "s",
+  };
+}
 
 interface DragState {
   grip: Grip;
@@ -107,6 +132,7 @@ export function SceneCanvas({
   selectedId, selectedIds, backdropUrl, showSafeAreas, editTarget, onSelect, onTransform, onSelectedBox,
   onEditText,
 }: SceneCanvasProps) {
+  const { tr } = useI18n();
   const boxRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   /** Крошечное полотно только для промера строк. */
@@ -114,6 +140,7 @@ export function SceneCanvas({
   const dragRef = useRef<DragState | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [guides, setGuides] = useState<SceneGuide[]>([]);
+  const [images, setImages] = useState<Record<string, SceneImageSource>>({});
   /** Узел, который правят прямо в кадре, и черновик его строки. */
   const [editing, setEditing] = useState<{ nodeId: string; value: string } | null>(null);
 
@@ -139,6 +166,25 @@ export function SceneCanvas({
 
   const timing = sceneTiming(template.director, durationSeconds);
 
+  useEffect(() => {
+    let cancelled = false;
+    const sources = template.nodes.filter((node) =>
+      node.kind === "image" && node.media.filePath?.includes("vector-layers"));
+    if (sources.length === 0) {
+      setImages({});
+      return;
+    }
+    void Promise.all(sources.map((node) => new Promise<[string, SceneImageSource] | null>((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve([node.id, { image, width: image.naturalWidth, height: image.naturalHeight }]);
+      image.onerror = () => resolve(null);
+      image.src = vectorLayerPreviewUrl(node.media.filePath!);
+    }))).then((loaded) => {
+      if (!cancelled) setImages(Object.fromEntries(loaded.filter((entry) => entry !== null)));
+    });
+    return () => { cancelled = true; };
+  }, [template.nodes]);
+
   /** Формат в пикселях предпросмотра: доли сцены дают ту же картинку меньше. */
   const previewFormat = useMemo(
     () => ({ ...format, width: size.width, height: size.height }),
@@ -152,10 +198,10 @@ export function SceneCanvas({
     originY: 0,
     timeSeconds,
     fields,
-    images: {},
+    images,
     airEpochSeconds: 0,
     clipRemainingSeconds: durationSeconds - timeSeconds,
-  }), [size, timeSeconds, fields, durationSeconds]);
+  }), [size, timeSeconds, fields, images, durationSeconds]);
 
   /**
    * Ширины строк — **один** промер на отрисовку.
@@ -213,12 +259,30 @@ export function SceneCanvas({
    */
   function boxOf(node: SceneNode) {
     const box = resolveNodeBox(node, template, previewFormat, timing, timeSeconds, widths);
+    // Поворот и масштаб рамка обязана показывать: без них рамка выделения
+    // стоит там, где узел был бы без них, а картинка — где она есть. Мышь
+    // ловится тем же прямоугольником, что рисует рамку, иначе «элемент не
+    // там, где виден» возвращается с другой стороны.
+    const own = {
+      pivotX: box.x + box.width * node.transform.anchorX,
+      pivotY: box.y + box.height * node.transform.anchorY,
+      // Общий масштаб у обычного узла уже в размере коробки; у группы её
+      // размер даёт содержимое, поэтому масштаб остаётся преобразованием.
+      scaleX: node.kind === "group" ? trackValueAt(node.transform.scale, timing, timeSeconds) : 1,
+      scaleY: (node.kind === "group" ? trackValueAt(node.transform.scale, timing, timeSeconds) : 1) *
+        trackValueAt(node.transform.scaleY, timing, timeSeconds),
+      rotationDegrees: trackValueAt(node.transform.rotationDegrees, timing, timeSeconds),
+    };
+    const drawn = transformedBounds(box, [
+      ...ancestorTransforms(node, template, previewFormat, timing, timeSeconds, widths),
+      own,
+    ]);
     return {
       ...box,
-      x: size.width ? box.x / size.width : 0,
-      y: size.height ? box.y / size.height : 0,
-      width: size.width ? box.width / size.width : 0,
-      height: size.height ? box.height / size.height : 0,
+      x: size.width ? drawn.x / size.width : 0,
+      y: size.height ? drawn.y / size.height : 0,
+      width: size.width ? drawn.width / size.width : 0,
+      height: size.height ? drawn.height / size.height : 0,
     };
   }
 
@@ -285,10 +349,10 @@ export function SceneCanvas({
       if (sy.guide) hit.push(sy.guide);
       emit({ x: sx.value, y: sy.value, width: drag.startW, height: drag.startH });
     } else {
-      // Тянем за угол: противоположный угол стоит на месте, поэтому левые и
-      // верхние ручки двигают и начало, и размер сразу.
-      const west = drag.grip === "nw" || drag.grip === "sw";
-      const north = drag.grip === "nw" || drag.grip === "ne";
+      // Тянем за ручку: противоположный край стоит на месте, поэтому левые и
+      // верхние ручки двигают и начало, и размер сразу. У ручки на грани
+      // вторая ось не трогается вовсе — тем она и отличается от угла.
+      const { west, east, north, south } = gripEdges(drag.grip);
       const minimum = 0.01;
       let x = drag.startX;
       let y = drag.startY;
@@ -298,9 +362,12 @@ export function SceneCanvas({
       if (event.shiftKey) {
         // Пропорция считается от **большего** смещения: иначе при движении
         // строго по одной оси вторая сторона не меняется вовсе, и Shift
-        // выглядит сломанным.
+        // выглядит сломанным. У грани ведущая ось известна заранее.
         const ratio = drag.startH / Math.max(1e-6, drag.startW);
-        const byX = Math.abs(dx) >= Math.abs(dy) * (size.height / Math.max(1, size.width));
+        const horizontal = west || east;
+        const vertical = north || south;
+        const byX = horizontal &&
+          (!vertical || Math.abs(dx) >= Math.abs(dy) * (size.height / Math.max(1, size.width)));
         const deltaW = byX ? dx * (west ? -1 : 1) : (dy * (north ? -1 : 1)) / ratio;
         width = Math.max(minimum, drag.startW + deltaW);
         height = Math.max(minimum, width * ratio);
@@ -316,7 +383,7 @@ export function SceneCanvas({
         if (edge.guide) hit.push(edge.guide);
         width = Math.max(minimum, drag.startX + drag.startW - edge.value);
         x = drag.startX + drag.startW - width;
-      } else {
+      } else if (east) {
         const edge = snapCoordinate(drag.startX + drag.startW + dx, [drag.startX + drag.startW + dx], all, "x", thresholdX);
         if (edge.guide) hit.push(edge.guide);
         width = Math.max(minimum, edge.value - drag.startX);
@@ -326,7 +393,7 @@ export function SceneCanvas({
         if (edge.guide) hit.push(edge.guide);
         height = Math.max(minimum, drag.startY + drag.startH - edge.value);
         y = drag.startY + drag.startH - height;
-      } else {
+      } else if (south) {
         const edge = snapCoordinate(drag.startY + drag.startH + dy, [drag.startY + drag.startH + dy], all, "y", thresholdY);
         if (edge.guide) hit.push(edge.guide);
         height = Math.max(minimum, edge.value - drag.startY);
@@ -378,12 +445,12 @@ export function SceneCanvas({
               <div
                 className="scene-safe scene-safe-action"
                 style={{ inset: `${actionSafeInset * 100}%` }}
-                data-label="action safe"
+                data-label={tr("безопасная зона действия", "action safe")}
               />
               <div
                 className="scene-safe scene-safe-title"
                 style={{ inset: `${titleSafeInset * 100}%` }}
-                data-label="title safe"
+                data-label={tr("безопасная зона титров", "title safe")}
               />
             </>
           ) : null}
@@ -475,12 +542,12 @@ export function SceneCanvas({
                   left: `${selected.transform.anchorX * 100}%`,
                   top: `${selected.transform.anchorY * 100}%`,
                 }}
-                title={`Точка привязки: ${(selected.transform.anchorX * 100).toFixed(0)}% · ${(selected.transform.anchorY * 100).toFixed(0)}%`}
+                title={`${tr("Точка привязки", "Anchor point")}: ${(selected.transform.anchorX * 100).toFixed(0)}% · ${(selected.transform.anchorY * 100).toFixed(0)}%`}
               />
-              {(["nw", "ne", "sw", "se"] as const).map((grip) => (
+              {grips.map((grip) => (
                 <i
                   key={grip}
-                  className={`scene-grip scene-grip-${grip}`}
+                  className={`scene-grip scene-grip-${grip} ${grip.length === 1 ? "edge" : ""}`}
                   onPointerDown={(event) => handlePointerDown(event, grip, selected)}
                 />
               ))}

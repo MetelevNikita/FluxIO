@@ -9,6 +9,9 @@ import {
   type SceneTrack,
 } from "@gruber/contracts";
 
+type Translate = (russian: string, english: string) => string;
+const russian: Translate = (value) => value;
+
 /* -------------------------------------------------------------------------- *
  * Сцены по умолчанию.
  *
@@ -110,10 +113,10 @@ const plateFill = {
 };
 
 /** Подложка, которая растёт по тексту, с мягкой тенью. */
-function plate(textNodeId: string, y: number, height: number, x: SceneTrack): SceneNode {
+function plate(textNodeId: string, y: number, height: number, x: SceneTrack, tr: Translate): SceneNode {
   return node({
     id: "plate",
-    name: "Плашка",
+    name: tr("Плашка", "Plate"),
     kind: "rect",
     x,
     y,
@@ -163,29 +166,35 @@ function textNode(
 }
 
 /** Ключи полей, которые эффект заполняет при применении. */
-export const sceneFieldKeys = {
+const sceneFieldKeys = {
   title: "title",
   subtitle: "subtitle",
   clock: "clock",
   ticker: "ticker",
 } as const;
 
-function lowerThird(title: string, subtitleLabel: string): SceneTemplate {
+function lowerThird(
+  title: [string, string],
+  subtitleLabel: [string, string],
+  tr: Translate,
+): SceneTemplate {
   const x = slideIn(0.06);
+  const sceneTitle = tr(...title);
+  const subtitle = tr(...subtitleLabel);
   return sceneTemplateSchema.parse({
-    id: `scene-${title}`,
-    name: title,
+    id: `scene-${sceneTitle}`,
+    name: sceneTitle,
     targets: ["hd"],
     director: { inSeconds: 0.6, outSeconds: 0.5 },
     fields: [
-      { key: sceneFieldKeys.title, label: "Заголовок", type: "text", sample: "Заголовок" },
-      { key: sceneFieldKeys.subtitle, label: subtitleLabel, type: "text", sample: "" },
+      { key: sceneFieldKeys.title, label: tr("Заголовок", "Title"), type: "text", sample: tr("Заголовок", "Title") },
+      { key: sceneFieldKeys.subtitle, label: subtitle, type: "text", sample: "" },
     ],
     nodes: [
-      plate(sceneFieldKeys.title, 0.775, 0.115, x),
+      plate(sceneFieldKeys.title, 0.775, 0.115, x, tr),
       node({
         id: "marker",
-        name: "Маркер",
+        name: tr("Маркер", "Marker"),
         kind: "ellipse",
         x: sceneTrack(0.043),
         y: 0.8325,
@@ -198,26 +207,26 @@ function lowerThird(title: string, subtitleLabel: string): SceneTemplate {
           rectStyle: { ...defaultRectStyle, fill: "#E97F2C", fillOpacity: 1 },
         },
       }),
-      textNode(sceneFieldKeys.title, "Заголовок", sceneFieldKeys.title, x, 0.788, 0.046, "#FFFFFF"),
+      textNode(sceneFieldKeys.title, tr("Заголовок", "Title"), sceneFieldKeys.title, x, 0.788, 0.046, "#FFFFFF"),
       textNode(
-        sceneFieldKeys.subtitle, subtitleLabel, sceneFieldKeys.subtitle, x, 0.845, 0.028, "#B9C7D0",
+        sceneFieldKeys.subtitle, subtitle, sceneFieldKeys.subtitle, x, 0.845, 0.028, "#B9C7D0",
       ),
     ],
   });
 }
 
-function clockScene(): SceneTemplate {
+function clockScene(tr: Translate): SceneTemplate {
   const x = sceneTrack(0.86);
   return sceneTemplateSchema.parse({
     id: "scene-clock",
-    name: "Часы",
+    name: tr("Часы", "Clock"),
     targets: ["hd"],
     director: { inSeconds: 0.4, outSeconds: 0.4 },
     fields: [],
     nodes: [
       node({
         id: "plate",
-        name: "Плашка",
+        name: tr("Плашка", "Plate"),
         kind: "rect",
         x,
         y: 0.06,
@@ -232,7 +241,7 @@ function clockScene(): SceneTemplate {
       }),
       node({
         id: "clock",
-        name: "Время",
+        name: tr("Время", "Time"),
         kind: "text",
         x,
         y: 0.072,
@@ -254,17 +263,17 @@ function clockScene(): SceneTemplate {
   });
 }
 
-function tickerScene(): SceneTemplate {
+function tickerScene(tr: Translate): SceneTemplate {
   return sceneTemplateSchema.parse({
     id: "scene-ticker",
-    name: "Бегущая строка",
+    name: tr("Бегущая строка", "Ticker crawl"),
     targets: ["hd"],
     director: { inSeconds: 0.5, outSeconds: 0.5 },
-    fields: [{ key: sceneFieldKeys.ticker, label: "Сообщения", type: "text", sample: "" }],
+    fields: [{ key: sceneFieldKeys.ticker, label: tr("Сообщения", "Messages"), type: "text", sample: "" }],
     nodes: [
       node({
         id: "band",
-        name: "Полоса",
+        name: tr("Полоса", "Band"),
         kind: "rect",
         x: sceneTrack(0),
         y: 0.88,
@@ -277,7 +286,7 @@ function tickerScene(): SceneTemplate {
       }),
       node({
         id: sceneFieldKeys.ticker,
-        name: "Строка",
+        name: tr("Строка", "Text crawl"),
         kind: "text",
         x: sceneTrack(0.01),
         y: 0.89,
@@ -305,15 +314,10 @@ function tickerScene(): SceneTemplate {
  * `null` — виду сцена не нужна: Animation in/out и Stinger оформлены готовым
  * alpha-медиа, внутри них подставлять нечего.
  */
-export function defaultSceneTemplate(kind: BroadcastEffectKind): SceneTemplate | null {
-  if (kind === "dynamic-title") return lowerThird("Динамическая плашка", "Подпись");
-  if (kind === "next-program") return lowerThird("Следующая программа", "Время выхода");
-  if (kind === "clock-countdown") return clockScene();
-  if (kind === "ticker-crawl") return tickerScene();
+export function defaultSceneTemplate(kind: BroadcastEffectKind, tr: Translate = russian): SceneTemplate | null {
+  if (kind === "dynamic-title") return lowerThird(["Динамическая плашка", "Dynamic title"], ["Подпись", "Caption"], tr);
+  if (kind === "next-program") return lowerThird(["Следующая программа", "Next program"], ["Время выхода", "Air time"], tr);
+  if (kind === "clock-countdown") return clockScene(tr);
+  if (kind === "ticker-crawl") return tickerScene(tr);
   return null;
-}
-
-/** Виды, оформление которых живёт сценой, а не файлом. */
-export function usesScene(kind: BroadcastEffectKind): boolean {
-  return defaultSceneTemplate(kind) !== null;
 }

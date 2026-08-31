@@ -14,10 +14,11 @@ import { useI18n } from "../i18n";
  * значит заставить проверять то, чего никогда не будет в линии.
  * ------------------------------------------------------------------------- */
 
-export const layoutCatalog: {
+const layoutCatalog: {
   target: SceneLayoutTarget;
   title: string;
   size: string;
+  sizeEn: string;
   note: string;
   noteEn: string;
 }[] = [
@@ -25,6 +26,7 @@ export const layoutCatalog: {
     target: "hd",
     title: "HD 1080",
     size: "1920 × 1080 · 25p",
+    sizeEn: "1920 × 1080 · 25p",
     note: "Основной формат большинства каналов",
     noteEn: "The usual format for most channels",
   },
@@ -32,6 +34,7 @@ export const layoutCatalog: {
     target: "uhd",
     title: "UHD 2160",
     size: "3840 × 2160 · 25p",
+    sizeEn: "3840 × 2160 · 25p",
     note: "Требует аппаратного кодирования: программное не тянет реальное время",
     noteEn: "Needs hardware encoding: software cannot keep real time",
   },
@@ -39,6 +42,7 @@ export const layoutCatalog: {
     target: "sd-16x9",
     title: "SD 16:9",
     size: "720 × 576 · 50i · анаморф",
+    sizeEn: "720 × 576 · 50i · anamorphic",
     note: "Пиксель не квадратный — кадр в эфире шире, чем в файле",
     noteEn: "Non-square pixels — the frame is wider on air than in the file",
   },
@@ -46,6 +50,7 @@ export const layoutCatalog: {
     target: "sd-4x3",
     title: "SD 4:3",
     size: "720 × 576 · 50i",
+    sizeEn: "720 × 576 · 50i",
     note: "Раскладка 16:9 сюда не помещается: узлам понадобятся поправки",
     noteEn: "A 16:9 layout does not fit here: nodes will need overrides",
   },
@@ -95,7 +100,7 @@ export function SceneFormatDialog({
                   <i>{active ? <Check size={12} /> : null}</i>
                   <span>
                     <b>{entry.title}</b>
-                    <code>{entry.size}</code>
+                    <code>{tr(entry.size, entry.sizeEn)}</code>
                   </span>
                   <em>{tr(entry.note, entry.noteEn)}</em>
                 </button>

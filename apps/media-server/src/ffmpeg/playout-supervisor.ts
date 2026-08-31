@@ -2186,7 +2186,7 @@ async function resolveAgeOverlay<T extends { filePath: string }>(overlay: T): Pr
  * Сцена, невидимая на всём показе, отбрасывается здесь: поднимать под неё
  * процесс и вход FFmpeg незачем.
  */
-function prepareScenes(
+export function prepareScenes(
   item: StartPlayoutRequest["playlist"][number],
   request: StartPlayoutRequest,
   durationSeconds: number,
@@ -2231,7 +2231,7 @@ function prepareScenes(
 }
 
 /** Раскладочная цель по размеру кадра: от неё зависят поправки шаблона. */
-export function sceneLayoutFor(width: number, height: number): SceneLayoutTarget {
+function sceneLayoutFor(width: number, height: number): SceneLayoutTarget {
   if (height >= 1_440) return "uhd";
   if (height >= 720) return "hd";
   return width / height > 1.5 ? "sd-16x9" : "sd-4x3";

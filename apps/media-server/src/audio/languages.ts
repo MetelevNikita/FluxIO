@@ -45,7 +45,7 @@ const languageAliases = new Map<string, string>([
   ["und", "und"], ["orig", "und"], ["original", "und"], ["ориг", "und"],
 ]);
 
-export const undefinedLanguageCode = "und";
+const undefinedLanguageCode = "und";
 
 export function resolveLanguageCode(token: string): string {
   const normalized = token.trim().toLowerCase();

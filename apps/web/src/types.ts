@@ -7,9 +7,9 @@ import type {
 
 export type AppView = "import" | "effects" | "playlist" | "broadcast";
 
-export type AssetStatus = "analyzed" | "pending" | "error" | "queued";
+type AssetStatus = "analyzed" | "pending" | "error" | "queued";
 export type ScheduleSlot = "current" | "future";
-export type ScheduleItemType = "movie" | "chop" | "clip";
+type ScheduleItemType = "movie" | "chop" | "clip";
 
 export type Scte35MarkerKind = "break-start" | "break-end";
 
@@ -205,19 +205,4 @@ export interface BroadcastSettings {
   scte35UpidType: string;
   scte35DefaultUpid: string;
   scte35LoopEventStrategy: string;
-}
-
-export interface AudioTrackSettings {
-  audioTracksEnabled: boolean;
-  audioTrackDirectory: string;
-  audioOriginalLanguage: string;
-  audioOriginalLabel: string;
-}
-
-export interface EncodingJob {
-  id: string;
-  name: string;
-  progress: number;
-  eta: string;
-  bitrate: string;
 }

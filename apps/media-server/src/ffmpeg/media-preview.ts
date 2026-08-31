@@ -3,8 +3,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Writable } from "node:stream";
 import type { ClipPreviewSession, StartPlayoutRequest } from "@gruber/contracts";
-import { buildFfmpegCompositePreviewCommand, type PreparedPlayoutItem } from "./command-builder.js";
+import {
+  buildFfmpegCompositePreviewCommand,
+  firstSceneFileDescriptor,
+  previewSizedRequest,
+  type PreparedPlayoutItem,
+  type PreparedSceneShow,
+} from "./command-builder.js";
+import { prepareScenes } from "./playout-supervisor.js";
 import { probeMedia } from "./probe.js";
 import { runCommand } from "./process.js";
 
@@ -36,9 +45,18 @@ interface ActivePreview {
   directory: string;
   sessionId: string;
   stderr: string;
+  /**
+   * Графические процессы сцен этого предпросмотра.
+   *
+   * Гасятся вместе с ним: рисовальщик, переживший Stop, продолжал бы жечь ядро
+   * и писать в закрытую трубу.
+   */
+  sceneProducers: Set<ChildProcessWithoutNullStreams>;
 }
 
 export class MediaPreviewService {
+  /** Точка входа графического процесса — та же, что у эфирного рендерера. */
+  readonly #sceneEntryPath = fileURLToPath(new URL("../scene/process-entry.js", import.meta.url));
   readonly ffmpegPath: string;
   readonly ffprobePath: string;
   readonly rootDirectory: string;
@@ -178,6 +196,23 @@ export class MediaPreviewService {
     const clipEnd = Math.min(source.trimOutSeconds ?? sourceDuration, sourceDuration);
     const clipDuration = Math.max(0.1, clipEnd - source.trimInSeconds);
     const offsetSeconds = Math.min(Math.max(0, startSeconds), clipDuration - 0.1);
+    const visibleDuration = clipDuration - offsetSeconds;
+    // Сцена считается под **кадр предпросмотра**, а не эфирный: превью
+    // кодируется уменьшенным, и область, посчитанная по 1920, легла бы мимо.
+    // Показ, начавшийся до точки перемотки, сдвигается назад ровно как FX-слой;
+    // закончившийся — отбрасывается.
+    const scenes = prepareScenes(
+      {
+        ...source,
+        scenes: (source.scenes ?? []).flatMap((show) => {
+          const start = show.startSeconds - offsetSeconds;
+          const end = start + show.durationSeconds;
+          return end > 0 ? [{ ...show, startSeconds: Math.max(0, start) }] : [];
+        }),
+      },
+      previewSizedRequest(request),
+      visibleDuration,
+    );
     const item: PreparedPlayoutItem = {
       ageTitle: source.ageTitle?.enabled && offsetSeconds < source.ageTitle.durationSeconds
         ? { ...source.ageTitle, durationSeconds: source.ageTitle.durationSeconds - offsetSeconds }
@@ -195,6 +230,7 @@ export class MediaPreviewService {
       id: source.id,
       itemLogo: source.itemLogo?.enabled ? source.itemLogo : undefined,
       name: source.name,
+      scenes,
       subtitles: source.subtitles?.enabled ? source.subtitles : undefined,
       trimInSeconds: source.trimInSeconds + offsetSeconds,
     };
@@ -205,7 +241,7 @@ export class MediaPreviewService {
       item,
       directory,
     );
-    return this.#launchPreview(command.args, sessionId, directory, offsetSeconds);
+    return this.#launchPreview(command.args, sessionId, directory, offsetSeconds, scenes);
   }
 
   async #launchPreview(
@@ -213,16 +249,22 @@ export class MediaPreviewService {
     sessionId: string,
     directory: string,
     offsetSeconds: number,
+    scenes: readonly PreparedSceneShow[] = [],
   ): Promise<ClipPreviewSession> {
     const manifestPath = path.join(directory, "index.m3u8");
     const firstSegmentPath = path.join(directory, "segment-000000.ts");
     await mkdir(directory, { recursive: true });
+    // Каждая сцена приходит своей трубой: fd 3, 4 и дальше — тот же уговор,
+    // что и у эфирного рендерера. Без сцен список остаётся прежним.
     const child = spawn(this.ffmpegPath, args, {
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const active: ActivePreview = { child, directory, sessionId, stderr: "" };
+      stdio: ["pipe", "pipe", "pipe", ...scenes.map(() => "pipe" as const)],
+    }) as ChildProcessWithoutNullStreams;
+    const active: ActivePreview = {
+      child, directory, sessionId, stderr: "", sceneProducers: new Set(),
+    };
     this.#active = active;
+    this.#attachSceneProducers(active, scenes);
     // Composite previews report FFmpeg progress on stdout. Drain it so a long
     // preview cannot block when the child-process pipe becomes full.
     child.stdout.resume();
@@ -261,10 +303,47 @@ export class MediaPreviewService {
     return readFile(path.join(active.directory, filename));
   }
 
+  /**
+   * Поднимает графический процесс на каждую сцену предпросмотра.
+   *
+   * Процесс отдельный по той же причине, что и в эфире: рисование покадрово —
+   * непрерывная нагрузка, а служба однопоточная, и рисуя внутри неё, она
+   * перестала бы отвечать на маршруты всё время показа.
+   *
+   * Падение графики не имеет права уронить предпросмотр: труба закрывается,
+   * FFmpeg доигрывает ролик без титра — `eof_action=pass` в наложении ровно
+   * для этого.
+   */
+  #attachSceneProducers(active: ActivePreview, scenes: readonly PreparedSceneShow[]): void {
+    const child = active.child;
+    if (!child) return;
+    for (const [order, scene] of scenes.entries()) {
+      const target = child.stdio[firstSceneFileDescriptor + order] as Writable | undefined;
+      if (!target) continue;
+      const producer = spawn(process.execPath, [this.#sceneEntryPath], {
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      }) as ChildProcessWithoutNullStreams;
+      active.sceneProducers.add(producer);
+      // Описание уходит в stdin: каталог сессии сносится при остановке, и файл
+      // до запуска рисовальщика не доживал бы.
+      producer.stdin.end(scene.request);
+      producer.stdout.pipe(target);
+      producer.stderr.resume();
+      producer.once("error", () => { target.end(); });
+      producer.once("close", () => {
+        active.sceneProducers.delete(producer);
+        target.end();
+      });
+    }
+  }
+
   async stop(sessionId?: string): Promise<void> {
     const active = this.#active;
     if (!active || (sessionId && active.sessionId !== sessionId)) return;
     this.#active = null;
+    for (const producer of active.sceneProducers) producer.kill("SIGTERM");
+    active.sceneProducers.clear();
     const child = active.child;
     if (child && child.exitCode == null && child.signalCode == null) {
       const closed = once(child, "close");

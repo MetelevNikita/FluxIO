@@ -11,25 +11,29 @@ import {
   type SystemFont,
 } from "@gruber/contracts";
 import {
-  AlertTriangle, Check, Circle, FileDown, Film, FolderOpen, Image as ImageIcon,
-  Group, Redo2, Undo2, Ungroup,
+  AlertTriangle, Check, Circle, FileDown, FileUp, Film, FolderOpen, Image as ImageIcon,
+  Group, Maximize2, Minimize2, Redo2, Undo2, Ungroup,
   KeyRound, Ruler, Save, Sparkles, Square, Type, X,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import {
+  memo, useEffect, useMemo, useRef, useState,
+  type CSSProperties, type PointerEvent as ReactPointerEvent,
+} from "react";
 import { SceneCanvas } from "../title-editor/SceneCanvas";
 import { SceneInspector, type KeyableTrack } from "../title-editor/SceneInspector";
 import { SceneTimeline, type TrackKey } from "../title-editor/SceneTimeline";
 import { SceneTree } from "../title-editor/SceneTree";
 import { useSceneHistory } from "../title-editor/useSceneHistory";
 import {
-  addNode, applyPreset, createSceneNode, declareField, duplicateNode,
-  groupNodes, moveKeyframe, removeField, removeKeyframe, removeNode, reorderNode,
-  sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing, trackIsAnimated,
-  ungroupNode, updateNode,
-  type ScenePreset, type SceneSegmentSide,
+  addNode, applyPreset, copyNode, createSceneNode, declareField, descendantIds,
+  groupNodes, moveKeyframe, moveNode, pasteNode, removeField, removeKeyframe, removeNode,
+  sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing,
+  trackIsAnimated, ungroupNode, updateNode,
+  type SceneNodeClipboard, type ScenePreset, type SceneSegmentSide,
 } from "../scene-edit";
 import { useI18n } from "../i18n";
 import { layoutFormats, layoutTitles } from "../scene-layouts";
+import { LanguageSelector } from "../components/LanguageSelector";
 
 /* -------------------------------------------------------------------------- *
  * Редактор титров.
@@ -57,6 +61,9 @@ const presets: { preset: ScenePreset; ru: string; en: string }[] = [
   { preset: "reveal", ru: "Раскрытие", en: "Reveal" },
 ];
 
+const defaultPaneSizes = { left: 268, right: 300, timeline: 250 };
+const paneStorageKey = "fluxio-title-editor-panes";
+
 interface TitleEditorScreenProps {
   template: SceneTemplate;
   fonts: SystemFont[];
@@ -70,6 +77,8 @@ interface TitleEditorScreenProps {
   onDurationChange: (seconds: number) => void;
   /** Выбор подложки: видео с альфой или последовательность `.png`. */
   onPickMedia: (nodeId: string) => void;
+  /** Импорт top-level layers из PDF или PDF-compatible Illustrator. */
+  onImportVector: () => void;
   /** Сохранить шаблон отдельным файлом `.fto`. */
   onSaveAs: () => void;
   /** Открыть каталог готовых титров. */
@@ -80,7 +89,7 @@ interface TitleEditorScreenProps {
 
 export const TitleEditorScreen = memo(function TitleEditorScreen({
   template, fonts, backdropUrl, durationSeconds, busy,
-  onChange, onDurationChange, onPickMedia, onSaveAs, onOpenLibrary, onSave, onClose,
+  onChange, onDurationChange, onPickMedia, onImportVector, onSaveAs, onOpenLibrary, onSave, onClose,
 }: TitleEditorScreenProps) {
   const { tr } = useI18n();
   /**
@@ -93,6 +102,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     activeId: null,
     others: [],
   });
+  const clipboard = useRef<SceneNodeClipboard | null>(null);
   const selectedId = selection.activeId;
   const selectedIds = useMemo(
     () => (selection.activeId ? [...selection.others, selection.activeId] : selection.others),
@@ -119,6 +129,25 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   const [playing, setPlaying] = useState(false);
   const [showSafe, setShowSafe] = useState(true);
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * Крупный предпросмотр.
+   *
+   * По умолчанию холст ужат в пользу дорожек времени: ключи ставят чаще, чем
+   * разглядывают кадр. Разглядеть кадр всё равно надо — поэтому холст
+   * увеличивается по кнопке, а не занимает экран постоянно.
+   */
+  const [zoomedPreview, setZoomedPreview] = useState(false);
+  const [paneSizes, setPaneSizes] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(paneStorageKey) ?? "null") as Partial<typeof defaultPaneSizes> | null;
+      return saved ? { ...defaultPaneSizes, ...saved } : defaultPaneSizes;
+    } catch {
+      return defaultPaneSizes;
+    }
+  });
+  useEffect(() => {
+    window.localStorage.setItem(paneStorageKey, JSON.stringify(paneSizes));
+  }, [paneSizes]);
   // Длина показа приходит из настроек эффекта и туда же возвращается: в эфире
   // режиссёр считает удержание именно от неё.
   const duration = durationSeconds;
@@ -129,15 +158,19 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   );
 
   // Узлы, скрытые в редакторе, из шаблона не вынимаются: скрытие — оснастка,
-  // а не свойство сцены, и в эфир оно не уходит.
-  const visible = useMemo<SceneTemplate>(() => ({
-    ...template,
-    nodes: template.nodes.filter((node) => !hiddenIds.has(node.id)),
-  }), [template, hiddenIds]);
+  // а не свойство сцены, и в эфир оно не уходит. Скрытая группа уносит с собой
+  // содержимое: без этого «глаз» на группе гасил бы пустой узел-родитель, а
+  // плашка оставалась бы в кадре.
+  const visible = useMemo<SceneTemplate>(() => {
+    if (hiddenIds.size === 0) return template;
+    const family = new Set<string>();
+    for (const id of hiddenIds) for (const member of descendantIds(template, id)) family.add(member);
+    return { ...template, nodes: template.nodes.filter((node) => !family.has(node.id)) };
+  }, [template, hiddenIds]);
 
   const selected = template.nodes.find((node) => node.id === selectedId) ?? null;
   const fields = useMemo(() => sampleFieldValues(template), [template]);
-  const issues = useMemo(() => sceneIssues(template, format), [template, format]);
+  const issues = useMemo(() => sceneIssues(template, format, tr), [template, format, tr]);
   const errors = issues.filter((issue) => issue.severity === "error");
 
   /**
@@ -154,7 +187,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   };
 
   function addKind(kind: SceneNodeKind) {
-    const node = createSceneNode(template, kind);
+    const node = createSceneNode(template, kind, tr);
     patch(addNode(template, node), true);
     selectNode(node.id);
   }
@@ -231,8 +264,65 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     },
   };
 
+  /**
+   * Монтажные сочетания работают везде, кроме полей ввода.
+   *
+   * Так устроен любой монтажный стол, из которого сюда придёт дизайнер. Ввод
+   * при этом трогать нельзя: пробел в имени слоя или в строке титра обязан
+   * оставаться пробелом, поэтому поля ввода и правка текста прямо в кадре
+   * забирают нажатие себе.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      const command = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (command && key === "c" && selectedId) {
+        clipboard.current = copyNode(template, selectedId);
+        event.preventDefault();
+        return;
+      }
+      if (command && key === "v" && clipboard.current) {
+        const pasted = pasteNode(template, clipboard.current, tr("копия", "copy"));
+        if (pasted.nodeId) {
+          patch(pasted.template, true);
+          selectNode(pasted.nodeId);
+        }
+        event.preventDefault();
+        return;
+      }
+      if (!command && !event.altKey && (event.key === "Delete" || event.key === "Backspace")) {
+        if (tag === "BUTTON" || selectedIds.length === 0) return;
+        let next = template;
+        for (const id of selectedIds) next = removeNode(next, id);
+        patch(next, true);
+        selectNode(null);
+        event.preventDefault();
+        return;
+      }
+      if (event.code === "Space" && !event.repeat && !command && !event.altKey && tag !== "BUTTON") {
+        event.preventDefault();
+        setPlaying((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedId, selectedIds, template, tr]);
+
   return (
-    <div className="title-editor">
+    <div
+      className="title-editor"
+      style={{
+        "--title-left-width": `${paneSizes.left}px`,
+        "--title-right-width": `${paneSizes.right}px`,
+        "--title-timeline-height": `${paneSizes.timeline}px`,
+      } as CSSProperties}
+    >
       <header className="title-editor-head">
         <div className="title-editor-title">
           <Sparkles size={14} />
@@ -265,6 +355,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         </div>
 
         <div className="title-editor-actions">
+          <LanguageSelector />
           <button
             className={showSafe ? "active" : ""}
             onClick={() => setShowSafe((value) => !value)}
@@ -308,7 +399,9 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           <button className="title-editor-save" disabled={busy || errors.length > 0} onClick={onSave} type="button">
             <Save size={12} /> {tr("Сохранить", "Save")}
           </button>
-          <button onClick={onClose} type="button"><X size={13} /></button>
+          <button onClick={onClose} title={tr("Закрыть без сохранения", "Close without saving")} type="button">
+            <X size={13} />
+          </button>
         </div>
       </header>
 
@@ -316,10 +409,16 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         <div className="title-editor-left">
           <SceneTree
             hiddenIds={hiddenIds}
-            onDuplicate={(id) => patch(duplicateNode(template, id), true)}
+            onDuplicate={(id) => {
+              const copied = copyNode(template, id);
+              if (!copied) return;
+              const pasted = pasteNode(template, copied, tr("копия", "copy"));
+              patch(pasted.template, true);
+              if (pasted.nodeId) selectNode(pasted.nodeId);
+            }}
             onRemove={(id) => { patch(removeNode(template, id), true); if (id === selectedId) selectNode(null); }}
             onRename={(id, name) => patch(updateNode(template, id, (node) => ({ ...node, name })))}
-            onReorder={(moved, before) => patch(reorderNode(template, moved, before), true)}
+            onMove={(moved, parentId, before) => patch(moveNode(template, moved, parentId, before), true)}
             onSelect={selectNode}
             onToggleHidden={(id) => setHiddenIds((current) => {
               const next = new Set(current);
@@ -338,7 +437,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             <button
               disabled={selectedIds.length < 2}
               onClick={() => {
-                const result = groupNodes(template, selectedIds);
+                const result = groupNodes(template, selectedIds, tr("Группа", "Group"));
                 if (!result.groupId) return;
                 patch(result.template, true);
                 selectNode(result.groupId);
@@ -367,6 +466,14 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
                 <Icon size={13} />
               </button>
             ))}
+            <button
+              disabled={busy}
+              onClick={onImportVector}
+              title={tr("Импортировать слои .ai/.pdf", "Import layered .ai/.pdf")}
+              type="button"
+            >
+              <FileUp size={13} />
+            </button>
           </div>
 
           <SceneFields
@@ -381,7 +488,17 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           />
         </div>
 
-        <div className="title-editor-center">
+        <PanelDivider
+          orientation="vertical"
+          value={paneSizes.left}
+          onDelta={(delta) => setPaneSizes((current) => ({
+            ...current,
+            left: clampPane(current.left + delta, 200, Math.min(480, window.innerWidth - current.right - 440)),
+          }))}
+          onReset={() => setPaneSizes((current) => ({ ...current, left: defaultPaneSizes.left }))}
+        />
+
+        <div className={`title-editor-center ${zoomedPreview ? "zoomed" : ""}`}>
           <div className="scene-edit-target">
             <span>{tr("Правки идут", "Edits land")}</span>
             <button className={editTarget === null ? "active" : ""} onClick={() => setEditTarget(null)} type="button">
@@ -389,6 +506,17 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             </button>
             <button className={editTarget === target ? "active" : ""} onClick={() => setEditTarget(target)} type="button">
               {tr(`поправкой ${layoutTitles[target]}`, `as a ${layoutTitles[target]} override`)}
+            </button>
+            <button
+              className={`scene-zoom-toggle ${zoomedPreview ? "active" : ""}`}
+              onClick={() => setZoomedPreview((value) => !value)}
+              title={zoomedPreview
+                ? tr("Вернуть место дорожкам времени", "Give the room back to the tracks")
+                : tr("Разглядеть кадр крупнее", "Look at the frame larger")}
+              type="button"
+            >
+              {zoomedPreview ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+              {zoomedPreview ? tr("Уменьшить кадр", "Shrink frame") : tr("Увеличить кадр", "Enlarge frame")}
             </button>
           </div>
 
@@ -458,6 +586,17 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           )}
         </div>
 
+
+        <PanelDivider
+          orientation="vertical"
+          value={paneSizes.right}
+          onDelta={(delta) => setPaneSizes((current) => ({
+            ...current,
+            right: clampPane(current.right - delta, 240, Math.min(520, window.innerWidth - current.left - 440)),
+          }))}
+          onReset={() => setPaneSizes((current) => ({ ...current, right: defaultPaneSizes.right }))}
+        />
+
         <SceneInspector
           fonts={fonts}
           node={selected}
@@ -477,6 +616,17 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         />
       </div>
 
+
+      <PanelDivider
+        orientation="horizontal"
+        value={paneSizes.timeline}
+        onDelta={(delta) => setPaneSizes((current) => ({
+          ...current,
+          timeline: clampPane(current.timeline - delta, 150, Math.max(150, window.innerHeight - 260)),
+        }))}
+        onReset={() => setPaneSizes((current) => ({ ...current, timeline: defaultPaneSizes.timeline }))}
+      />
+
       <SceneTimeline
         durationSeconds={duration}
         node={selected}
@@ -495,6 +645,64 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     </div>
   );
 });
+
+function clampPane(value: number, minimum: number, maximum: number): number {
+  return Math.round(Math.min(Math.max(minimum, maximum), Math.max(minimum, value)));
+}
+
+function PanelDivider({
+  orientation, value, onDelta, onReset,
+}: {
+  orientation: "vertical" | "horizontal";
+  value: number;
+  onDelta: (delta: number) => void;
+  onReset: () => void;
+}) {
+  const { tr } = useI18n();
+  const drag = useRef<{ pointerId: number; at: number } | null>(null);
+  const coordinate = (event: ReactPointerEvent) => orientation === "vertical" ? event.clientX : event.clientY;
+  const end = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    try { event.currentTarget.releasePointerCapture(drag.current.pointerId); } catch { /* already released */ }
+    drag.current = null;
+  };
+  return (
+    <div
+      aria-label={orientation === "vertical"
+        ? tr("Изменить ширину панели", "Resize panel")
+        : tr("Изменить высоту таймлайна", "Resize timeline")}
+      aria-orientation={orientation}
+      aria-valuenow={Math.round(value)}
+      className={`title-editor-divider ${orientation}`}
+      onDoubleClick={onReset}
+      onKeyDown={(event) => {
+        const step = event.shiftKey ? 40 : 12;
+        if (orientation === "vertical" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+          onDelta(event.key === "ArrowLeft" ? -step : step);
+          event.preventDefault();
+        }
+        if (orientation === "horizontal" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+          onDelta(event.key === "ArrowUp" ? -step : step);
+          event.preventDefault();
+        }
+      }}
+      onPointerCancel={end}
+      onPointerDown={(event) => {
+        drag.current = { pointerId: event.pointerId, at: coordinate(event) };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+        const at = coordinate(event);
+        onDelta(at - drag.current.at);
+        drag.current.at = at;
+      }}
+      onPointerUp={end}
+      role="separator"
+      tabIndex={0}
+    />
+  );
+}
 
 /* -------------------------------- поля ------------------------------------ */
 

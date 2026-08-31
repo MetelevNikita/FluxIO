@@ -32,7 +32,7 @@ import {
  */
 const registered = new Map<string, string>();
 
-export function registerSceneFont(filePath: string): string {
+function registerSceneFont(filePath: string): string {
   const known = registered.get(filePath);
   if (known) return known;
   const family = `scene-${registered.size}`;
@@ -49,7 +49,7 @@ export function registerSceneFont(filePath: string): string {
  * Шаблон хранит путь к файлу — он переживает перенос проекта лучше, чем имя
  * семейства, — а растеризатору нужно имя. Перевод делается один раз на шаблон.
  */
-export function withRegisteredFonts(template: SceneTemplate): SceneTemplate {
+function withRegisteredFonts(template: SceneTemplate): SceneTemplate {
   return {
     ...template,
     nodes: template.nodes.map((node) => {

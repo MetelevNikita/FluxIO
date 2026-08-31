@@ -11,6 +11,7 @@ import {
   SELECT_EFFECT_FILES_CHANNEL,
   SELECT_STINGER_FILE_CHANNEL,
   SELECT_DECORATION_FILE_CHANNEL,
+  SELECT_VECTOR_FILE_CHANNEL,
   SAVE_TITLE_FILE_CHANNEL,
   SELECT_TITLE_FILE_CHANNEL,
   READ_TITLE_LIBRARY_CHANNEL,
@@ -169,6 +170,11 @@ function registerEffectHandlers(): void {
   ipcMain.handle(SELECT_DECORATION_FILE_CHANNEL, async () =>
     selectFile("Select effect design file", [
       { name: "Alpha media", extensions: ["mov", "webm", "png"] },
+    ]));
+
+  ipcMain.handle(SELECT_VECTOR_FILE_CHANNEL, async () =>
+    selectFile("Import layered PDF or Illustrator file", [
+      { name: "Layered PDF / PDF-compatible Illustrator", extensions: ["pdf", "ai"] },
     ]));
 
   // Титры лежат своим расширением: с `.json` их не отличить от файла задания

@@ -112,7 +112,9 @@ function showSplash(splashWindow: BrowserWindow, startup: StartupReveal): void {
     startup.startSplashTimer(SPLASH_DURATION_MS);
   });
 
-  void splashWindow.loadFile(splashFilePath()).catch(() => {
+  void splashWindow.loadFile(splashFilePath(), {
+    query: { version: app.getVersion() },
+  }).catch(() => {
     startup.markSplashElapsed();
   });
 }

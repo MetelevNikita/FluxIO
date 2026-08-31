@@ -193,7 +193,7 @@ export function decodeSubtitleBuffer(buffer: Uint8Array): string {
   }
 }
 
-export function serializeSrt(cues: SrtCue[]): string {
+function serializeSrt(cues: SrtCue[]): string {
   if (cues.length === 0) return "";
   return cues.map((cue, index) => [
     String(index + 1),

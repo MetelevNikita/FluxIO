@@ -15,17 +15,6 @@ export interface GraphicEffectAnalysisResult {
   issues: { filePath: string; message: string }[];
 }
 
-export async function analyzeGraphicEffectPaths(
-  paths: string[],
-  ffprobePath: string,
-): Promise<GraphicEffectAsset[]> {
-  const assets: GraphicEffectAsset[] = [];
-  for (const filePath of paths) {
-    assets.push(await analyzeGraphicEffect(filePath, ffprobePath));
-  }
-  return assets;
-}
-
 /**
  * Пакетный импорт с частичным успехом: один повреждённый файл не должен
  * выбрасывать уже разобранные эффекты из той же папки.

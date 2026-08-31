@@ -6,7 +6,8 @@
     "outDir": "dist-test",
     "rootDir": "src",
     "types": [
-      "node"
+      "node",
+      "vite/client"
     ]
   },
   "include": [
@@ -34,6 +35,10 @@
     "src/graphic-title-matching.test.ts",
     "src/media-request-timeout.ts",
     "src/media-request-timeout.test.ts",
+    "src/media-api.ts",
+    "src/use-media-service.ts",
+    "src/media-service-state.test.ts",
+    "src/electron.d.ts",
     "src/schedule-timeline.ts",
     "src/schedule-timeline.test.ts",
     "src/types.ts"

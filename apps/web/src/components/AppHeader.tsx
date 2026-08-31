@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { SystemMetrics } from "@gruber/contracts";
-import type { ConnectionState } from "../App";
+import type { ConnectionState } from "../use-media-service";
 import type { AppView } from "../types";
 import { FluxIoLogo } from "./FluxIoLogo";
 import { LanguageSelector } from "./LanguageSelector";

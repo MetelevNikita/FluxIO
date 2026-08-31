@@ -39,7 +39,7 @@ export function evaluateDvbSubtitleClock({
   };
 }
 
-export function wrappedPtsDeltaMs(actualMs: number, expectedMs: number): number {
+function wrappedPtsDeltaMs(actualMs: number, expectedMs: number): number {
   let delta = actualMs - expectedMs;
   const halfWrap = mpegTsPtsWrapMs / 2;
   if (delta > halfWrap) delta -= mpegTsPtsWrapMs;

@@ -33,7 +33,7 @@ let counter = 0;
  * сравнивается в тестах, и случайность сделала бы сравнение невозможным.
  * Столкновение с уже существующим id разрешается суффиксом.
  */
-export function nextNodeId(template: SceneTemplate, kind: SceneNodeKind): SceneNodeId {
+function nextNodeId(template: SceneTemplate, kind: SceneNodeKind): SceneNodeId {
   const taken = new Set(template.nodes.map((node) => node.id));
   let id = `${kind}-${++counter}`;
   while (taken.has(id)) id = `${kind}-${++counter}`;
@@ -41,23 +41,26 @@ export function nextNodeId(template: SceneTemplate, kind: SceneNodeKind): SceneN
 }
 
 /** Имя нового узла: «Прямоугольник 2», а не «rect-7». */
-export function nextNodeName(template: SceneTemplate, kind: SceneNodeKind): string {
-  const base = nodeKindTitles[kind];
+type Translate = (russian: string, english: string) => string;
+const russian: Translate = (value) => value;
+
+function nextNodeName(template: SceneTemplate, kind: SceneNodeKind, tr: Translate = russian): string {
+  const base = nodeKindTitle(kind, tr);
   const used = template.nodes.filter((node) => node.name.startsWith(base)).length;
   return used === 0 ? base : `${base} ${used + 1}`;
 }
 
-const nodeKindTitles: Record<SceneNodeKind, string> = {
-  group: "Группа",
-  rect: "Прямоугольник",
-  ellipse: "Эллипс",
-  text: "Текст",
-  image: "Картинка",
-  video: "Видео",
+const nodeKindTitles: Record<SceneNodeKind, [string, string]> = {
+  group: ["Группа", "Group"],
+  rect: ["Прямоугольник", "Rectangle"],
+  ellipse: ["Эллипс", "Ellipse"],
+  text: ["Текст", "Text"],
+  image: ["Картинка", "Image"],
+  video: ["Видео", "Video"],
 };
 
-export function nodeKindTitle(kind: SceneNodeKind): string {
-  return nodeKindTitles[kind];
+export function nodeKindTitle(kind: SceneNodeKind, tr: Translate = russian): string {
+  return tr(...nodeKindTitles[kind]);
 }
 
 /**
@@ -69,12 +72,13 @@ export function nodeKindTitle(kind: SceneNodeKind): string {
 export function createSceneNode(
   template: SceneTemplate,
   kind: SceneNodeKind,
+  tr: Translate = russian,
 ): SceneNode {
   const width = kind === "text" ? 0.36 : 0.3;
   const height = kind === "text" ? 0.08 : 0.14;
   return sceneNodeSchema.parse({
     id: nextNodeId(template, kind),
-    name: nextNodeName(template, kind),
+    name: nextNodeName(template, kind, tr),
     kind,
     transform: {
       x: sceneTrack(0.5 - width / 2),
@@ -85,7 +89,7 @@ export function createSceneNode(
       rotationDegrees: sceneTrack(0),
       opacity: sceneTrack(1),
     },
-    text: kind === "text" ? { kind: "static", text: "Текст" } : null,
+    text: kind === "text" ? { kind: "static", text: tr("Текст", "Text") } : null,
   });
 }
 
@@ -124,27 +128,110 @@ export function removeNode(template: SceneTemplate, nodeId: SceneNodeId): SceneT
   };
 }
 
-/** Копия узла со сдвигом, чтобы её было видно из-под оригинала. */
+/**
+ * Опознаватели узла и всех его потомков.
+ *
+ * Всё, что делается со слоем, обязано делаться и с группой: она такой же
+ * элемент списка, и «скрыть» или «дублировать» на ней, тронувшие один пустой
+ * узел-родитель, снаружи выглядят как сломанные кнопки.
+ */
+export function descendantIds(
+  template: SceneTemplate,
+  nodeId: SceneNodeId,
+): Set<SceneNodeId> {
+  const family = new Set<SceneNodeId>([nodeId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const node of template.nodes) {
+      if (node.parentId && family.has(node.parentId) && !family.has(node.id)) {
+        family.add(node.id);
+        grew = true;
+      }
+    }
+  }
+  return family;
+}
+
+/**
+ * Копия узла со сдвигом, чтобы её было видно из-под оригинала.
+ *
+ * Группа копируется целиком, вместе с содержимым: копия пустой группы —
+ * не то, что имел в виду дизайнер, нажавший «дублировать» на собранной
+ * плашке. Внутренние привязки переносятся на копии, внешние снимаются.
+ */
+export interface SceneNodeClipboard {
+  rootId: SceneNodeId;
+  nodes: SceneNode[];
+}
+
+export function copyNode(template: SceneTemplate, nodeId: SceneNodeId): SceneNodeClipboard | null {
+  if (!template.nodes.some((node) => node.id === nodeId)) return null;
+  const family = descendantIds(template, nodeId);
+  return {
+    rootId: nodeId,
+    nodes: structuredClone(template.nodes.filter((node) => family.has(node.id))),
+  };
+}
+
+export function pasteNode(
+  template: SceneTemplate,
+  clipboard: SceneNodeClipboard,
+  copyLabel = "копия",
+): { template: SceneTemplate; nodeId: SceneNodeId | null } {
+  const members = clipboard.nodes;
+  if (!members.some((node) => node.id === clipboard.rootId)) {
+    return { template, nodeId: null };
+  }
+
+  // Новые опознаватели раздаются заранее и все сразу: привязка внутри группы
+  // обязана вести на копию, а не на исходный узел, иначе плашка копии тянется
+  // по чужому тексту.
+  let grown = template;
+  const renamed = new Map<SceneNodeId, SceneNodeId>();
+  for (const node of members) {
+    const id = nextNodeId(grown, node.kind);
+    renamed.set(node.id, id);
+    grown = { ...grown, nodes: [...grown.nodes, { ...node, id }] };
+  }
+
+  const copies = members.map((node) => ({
+    ...node,
+    id: renamed.get(node.id)!,
+    name: node.id === clipboard.rootId ? `${node.name} — ${copyLabel}` : node.name,
+    parentId: node.parentId && renamed.has(node.parentId)
+      ? renamed.get(node.parentId)!
+      : node.id === clipboard.rootId && node.parentId && template.nodes.some((entry) => entry.id === node.parentId)
+        ? node.parentId
+        : null,
+    transform: node.id === clipboard.rootId
+      ? {
+          ...node.transform,
+          x: shiftTrack(node.transform.x, 0.02),
+          y: shiftTrack(node.transform.y, 0.02),
+        }
+      : node.transform,
+    // Привязка наружу ведёт на исходный узел: копировать её вслепую значит
+    // завести две плашки на одном тексте, и вторая молча накроет первую.
+    fitToText: node.fitToText && renamed.has(node.fitToText.nodeId)
+      ? { ...node.fitToText, nodeId: renamed.get(node.fitToText.nodeId)! }
+      : null,
+    fitToNodeId: node.fitToNodeId && renamed.has(node.fitToNodeId)
+      ? renamed.get(node.fitToNodeId)!
+      : null,
+  }));
+
+  const nodeId = renamed.get(clipboard.rootId) ?? null;
+  return { template: { ...template, nodes: [...template.nodes, ...copies] }, nodeId };
+}
+
 export function duplicateNode(
   template: SceneTemplate,
   nodeId: SceneNodeId,
+  copyLabel = "копия",
 ): SceneTemplate {
-  const source = template.nodes.find((node) => node.id === nodeId);
-  if (!source) return template;
-  const copy: SceneNode = {
-    ...source,
-    id: nextNodeId(template, source.kind),
-    name: `${source.name} — копия`,
-    transform: {
-      ...source.transform,
-      x: shiftTrack(source.transform.x, 0.02),
-      y: shiftTrack(source.transform.y, 0.02),
-    },
-    // Привязка ведёт на исходный узел: копировать её вслепую значит завести
-    // две плашки на одном тексте, и вторая молча накроет первую.
-    fitToText: null,
-  };
-  return addNode(template, copy);
+  const clipboard = copyNode(template, nodeId);
+  return clipboard ? pasteNode(template, clipboard, copyLabel).template : template;
 }
 
 /**
@@ -154,7 +241,7 @@ export function duplicateNode(
  * значение **с ключей**, а не базовое, поэтому запись дельты в одно только
  * базовое значение увела бы узел куда угодно, кроме места, куда его положили.
  */
-export function shiftTrack(track: SceneTrack, delta: number): SceneTrack {
+function shiftTrack(track: SceneTrack, delta: number): SceneTrack {
   return {
     ...track,
     value: track.value + delta,
@@ -183,6 +270,58 @@ export function reorderNode(
     ? [...rest, moved]
     : [...rest.slice(0, target), moved, ...rest.slice(target)];
   return { ...template, nodes };
+}
+
+/**
+ * Переносит слой или всю группу в одну точку дерева.
+ *
+ * `beforeSiblingId` задан в видимом порядке сверху вниз; `null` означает
+ * конец списка детей. Родитель и позиция меняются одним снимком, иначе одна
+ * из двух правок затирает другую.
+ */
+export function moveNode(
+  template: SceneTemplate,
+  movedId: SceneNodeId,
+  parentId: SceneNodeId | null,
+  beforeSiblingId: SceneNodeId | null,
+): SceneTemplate {
+  if (movedId === beforeSiblingId) return template;
+  const moved = template.nodes.find((node) => node.id === movedId);
+  if (!moved) return template;
+  if (parentId && descendantIds(template, movedId).has(parentId)) return template;
+
+  const reparented = reparentNode(template, movedId, parentId);
+  const family = descendantIds(reparented, movedId);
+  const block = reparented.nodes.filter((node) => family.has(node.id));
+  const rest = reparented.nodes.filter((node) => !family.has(node.id));
+  const siblings = rest.filter((node) => (node.parentId ?? null) === parentId);
+
+  let insertAt = 0;
+  if (beforeSiblingId) {
+    const targetFamily = descendantIds(reparented, beforeSiblingId);
+    const lastTarget = rest.reduce(
+      (last, node, index) => targetFamily.has(node.id) ? index : last,
+      -1,
+    );
+    insertAt = lastTarget < 0 ? rest.length : lastTarget + 1;
+  } else if (siblings.length > 0) {
+    const bottom = siblings.reduce((candidate, node) => {
+      const candidateIndex = rest.findIndex((entry) => entry.id === candidate.id);
+      const nodeIndex = rest.findIndex((entry) => entry.id === node.id);
+      return nodeIndex < candidateIndex ? node : candidate;
+    });
+    const bottomFamily = descendantIds(reparented, bottom.id);
+    const firstBottom = rest.findIndex((node) => bottomFamily.has(node.id));
+    insertAt = Math.max(0, firstBottom);
+  } else if (parentId) {
+    const parentIndex = rest.findIndex((node) => node.id === parentId);
+    insertAt = parentIndex < 0 ? rest.length : parentIndex;
+  }
+
+  return {
+    ...reparented,
+    nodes: [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)],
+  };
 }
 
 /** Точечная правка одного узла. */
@@ -218,6 +357,9 @@ export function groupNodes(
   const members = template.nodes.filter((node) => chosen.has(node.id));
   if (members.length < 2) return { template, groupId: null };
 
+  // Собственных границ у группы нет: её коробка — габариты содержимого, и
+  // считает их раскладка. Поэтому сборка не трогает детей вовсе, а `x` и `y`
+  // группы остаются нулями до первого перетаскивания.
   const group = sceneNodeSchema.parse({
     id: nextNodeId(template, "group"),
     name: name ?? nextNodeName(template, "group"),
@@ -237,6 +379,57 @@ export function groupNodes(
   return { template: { ...template, nodes }, groupId: group.id };
 }
 
+/**
+ * Переносит узел в группу — или наружу, если `parentId` пуст.
+ *
+ * Сдвиг группы складывается с ребёнком, поэтому положение узла правится ровно
+ * на разницу сдвигов прежнего и нового родителя: перетаскивание в списке слоёв
+ * меняет вложенность, а не место в кадре. Переезд в собственного потомка
+ * отклоняется — цепочка родителей замкнулась бы в кольцо.
+ */
+export function reparentNode(
+  template: SceneTemplate,
+  nodeId: SceneNodeId,
+  parentId: SceneNodeId | null,
+): SceneTemplate {
+  const moved = template.nodes.find((node) => node.id === nodeId);
+  if (!moved || nodeId === parentId) return template;
+  if ((moved.parentId ?? null) === (parentId ?? null)) return template;
+  if (parentId) {
+    const parent = template.nodes.find((node) => node.id === parentId);
+    if (!parent || parent.kind !== "group") return template;
+    if (descendantIds(template, nodeId).has(parentId)) return template;
+  }
+
+  const offsetOf = (id: SceneNodeId | null): { x: number; y: number } => {
+    let x = 0;
+    let y = 0;
+    let current = id;
+    for (let step = 0; current && step < 8; step += 1) {
+      const parent: SceneNode | undefined = template.nodes.find((node) => node.id === current);
+      if (!parent) break;
+      x += parent.transform.x.value;
+      y += parent.transform.y.value;
+      current = parent.parentId;
+    }
+    return { x, y };
+  };
+  const before = offsetOf(moved.parentId);
+  const after = offsetOf(parentId);
+
+  // Узел уезжает вместе со своими детьми: их положение задано относительно
+  // него самого и трогать его не надо.
+  return updateNode(template, nodeId, (node) => ({
+    ...node,
+    parentId,
+    transform: {
+      ...node.transform,
+      x: shiftTrack(node.transform.x, before.x - after.x),
+      y: shiftTrack(node.transform.y, before.y - after.y),
+    },
+  }));
+}
+
 /** Распускает группу: дети остаются на своих местах и в своём порядке. */
 export function ungroupNode(
   template: SceneTemplate,
@@ -244,11 +437,25 @@ export function ungroupNode(
 ): SceneTemplate {
   const group = template.nodes.find((node) => node.id === groupId);
   if (!group || group.kind !== "group") return template;
+  // Сдвиг группы возвращается детям: он складывался с их собственным, и без
+  // возврата роспуск утащил бы содержимое на величину этого сдвига.
+  const dx = group.transform.x.value;
+  const dy = group.transform.y.value;
   return {
     ...template,
     nodes: template.nodes
       .filter((node) => node.id !== groupId)
-      .map((node) => (node.parentId === groupId ? { ...node, parentId: group.parentId } : node)),
+      .map((node) => (node.parentId === groupId
+        ? {
+            ...node,
+            parentId: group.parentId,
+            transform: {
+              ...node.transform,
+              x: shiftTrack(node.transform.x, dx),
+              y: shiftTrack(node.transform.y, dy),
+            },
+          }
+        : node)),
   };
 }
 
@@ -367,6 +574,24 @@ export function snapCoordinate(
 /** Порог прилипания в долях кадра из порога в пикселях предпросмотра. */
 export function snapThreshold(pixels: number, previewSizePx: number): number {
   return previewSizePx > 0 ? pixels / previewSizePx : 0;
+}
+
+/** Притягивает время к ближайшему соседнему ключу в пределах порога. */
+export function snapKeyframeTime(
+  value: number,
+  candidates: readonly number[],
+  thresholdSeconds: number,
+): { value: number; snapped: boolean } {
+  let nearest = value;
+  let distance = thresholdSeconds + Number.EPSILON;
+  for (const candidate of candidates) {
+    const nextDistance = Math.abs(candidate - value);
+    if (nextDistance <= thresholdSeconds && nextDistance < distance) {
+      nearest = candidate;
+      distance = nextDistance;
+    }
+  }
+  return { value: nearest, snapped: nearest !== value };
 }
 
 /* -------------------------------- ключи ---------------------------------- */
@@ -549,15 +774,31 @@ export function applyPreset(
     t.y = setKeyframe(setKeyframe(t.y, "out", 0, y), "out", outSeconds, y + 0.18);
     t.opacity = setKeyframe(setKeyframe(clear(t.opacity), "in", 0, 0), "in", inSeconds * 0.6, 1);
     t.opacity = setKeyframe(setKeyframe(t.opacity, "out", outSeconds * 0.4, 1), "out", outSeconds, 0);
-  } else if (preset === "wipe") {
+  } else if (preset === "wipe" && node.kind !== "group") {
     // Развёртка по ширине: сам узел растёт от нуля. Годится для плашки, но не
     // для текста — буквы поедут и сожмутся вместе с ним.
     const w = t.width.value;
     t.width = setKeyframe(setKeyframe(clear(t.width), "in", 0, 0), "in", inSeconds, w);
     t.width = setKeyframe(setKeyframe(t.width, "out", 0, w), "out", outSeconds, 0);
+  } else if (preset === "wipe") {
+    // Развёртка группы — шторка: окно растёт от точки среза, содержимое стоит.
+    // Ширина группы не рисуется — это рамка обрезки, — поэтому развёртка у неё
+    // выражается маской, а не размером.
+    t.revealMode = "wipe";
+    t.reveal = setKeyframe(setKeyframe(clear(t.reveal), "in", 0, 0), "in", inSeconds, 1);
+    t.reveal = setKeyframe(setKeyframe(t.reveal, "out", 0, 1), "out", outSeconds, 0);
   } else {
-    // Раскрытие маской: узел стоит на месте и открывается обрезкой. Текст при
-    // этом не деформируется — открывается уже готовая надпись.
+    // У группы ширина не рисуется — это рамка обрезки, — поэтому развёртка
+    // сводится к раскрытию: иначе кнопка ставила бы ключи, ничего не меняя.
+    // Раскрытие группы режет её содержимое, и всей плашке хватает одного
+    // набора ключей вместо одинаковых наборов на каждом слое.
+    //
+    // Раскрытие — выезд из-под маски: рамка узла стоит на месте, а картинка
+    // выползает из-за её края — оттуда же, где стоит точка среза. Текст при
+    // этом не деформируется: едет уже готовая надпись, а не её ширина.
+    // Шторка осталась «Развёрткой»: две разные картинки под одной кнопкой
+    // оператор различить не смог бы.
+    t.revealMode = "slide";
     t.reveal = setKeyframe(setKeyframe(clear(t.reveal), "in", 0, 0), "in", inSeconds, 1);
     t.reveal = setKeyframe(setKeyframe(t.reveal, "out", 0, 1), "out", outSeconds, 0);
   }
@@ -696,6 +937,13 @@ export function applyBoxDrag(
   delta: { dx?: number; dy?: number; dw?: number; dh?: number },
   drawn: { x: number; y: number; width: number; height: number },
 ): SceneNode {
+  // У группы своего размера нет — её коробка это габариты содержимого. Тянуть
+  // её за ручку значит менять размер содержимого, поэтому правка уходит в
+  // масштаб, а не в неиспользуемые дорожки ширины и высоты: иначе рамка
+  // растягивалась бы, а картинка стояла на месте.
+  if (origin.kind === "group" && (delta.dw !== undefined || delta.dh !== undefined)) {
+    return scaleGroupBox(origin, delta, drawn);
+  }
   if (target) {
     return applyLayoutEdit(origin, target, {
       ...(delta.dx !== undefined ? { x: drawn.x + delta.dx } : {}),
@@ -709,6 +957,37 @@ export function applyBoxDrag(
   if (delta.dy !== undefined) transform.y = shiftTrack(transform.y, delta.dy);
   if (delta.dw !== undefined) transform.width = shiftTrack(transform.width, delta.dw);
   if (delta.dh !== undefined) transform.height = shiftTrack(transform.height, delta.dh);
+  return { ...origin, transform };
+}
+
+/**
+ * Изменение размера группы: масштаб содержимого вместо своей ширины.
+ *
+ * Масштаб накладывается вокруг точки привязки, поэтому противоположный край
+ * сам собой на месте не останется — его держит поправка сдвига. Считается всё
+ * от снимка на момент захвата, как и обычное перетаскивание.
+ */
+function scaleGroupBox(
+  origin: SceneNode,
+  delta: { dx?: number; dy?: number; dw?: number; dh?: number },
+  drawn: { x: number; y: number; width: number; height: number },
+): SceneNode {
+  const minimum = 0.05;
+  const kx = delta.dw !== undefined && drawn.width > 1e-6
+    ? Math.max(minimum, (drawn.width + delta.dw) / drawn.width)
+    : 1;
+  const ky = delta.dh !== undefined && drawn.height > 1e-6
+    ? Math.max(minimum, (drawn.height + delta.dh) / drawn.height)
+    : 1;
+  const pivotX = drawn.x + drawn.width * origin.transform.anchorX;
+  const pivotY = drawn.y + drawn.height * origin.transform.anchorY;
+  const transform = { ...origin.transform };
+  transform.x = shiftTrack(transform.x, (delta.dx ?? 0) - (drawn.x - pivotX) * (kx - 1));
+  transform.y = shiftTrack(transform.y, (delta.dy ?? 0) - (drawn.y - pivotY) * (ky - 1));
+  transform.scale = { ...transform.scale, value: transform.scale.value * kx };
+  // `scaleY` — множитель поверх общего масштаба, поэтому по вертикали остаётся
+  // только разница между осями.
+  transform.scaleY = { ...transform.scaleY, value: transform.scaleY.value * (ky / kx) };
   return { ...origin, transform };
 }
 
@@ -735,7 +1014,12 @@ export function setNodeAnchor(
   // содержимое группы на ширину плашки. Поэтому у группы привязка переносится
   // без поправки: она задаёт точку отсчёта поворота, масштаба и среза маски,
   // а рисунок от неё не зависит.
-  const compensates = node.kind !== "group" && node.fitToNodeId === null;
+  // У примыкающего узла положение задаёт правый край источника, а не
+  // собственный `x`: поправка в него ничего не выравнивает, зато мусорит в
+  // дорожке. Место такого узла держит сама раскладка.
+  const compensates = node.kind !== "group" &&
+    node.fitToNodeId === null &&
+    node.fitToText?.anchor !== "follow";
   const shiftX = compensates ? box.width * (anchorX - node.transform.anchorX) : 0;
   const shiftY = compensates ? box.height * (anchorY - node.transform.anchorY) : 0;
   // Точка среза маски едет за привязкой: раскрытие обязано выезжать оттуда же,
@@ -802,6 +1086,7 @@ export interface SceneIssue {
 export function sceneIssues(
   template: SceneTemplate,
   format: SceneFormat,
+  tr: Translate = russian,
 ): SceneIssue[] {
   const issues: SceneIssue[] = [];
   const ids = new Set(template.nodes.map((node) => node.id));
@@ -812,21 +1097,30 @@ export function sceneIssues(
       issues.push({
         severity: "error",
         nodeId: node.id,
-        message: `«${node.name}»: привязка ведёт на несуществующий узел — плашка не будет тянуться`,
+        message: tr(
+          `«${node.name}»: привязка ведёт на несуществующий узел — плашка не будет тянуться`,
+          `“${node.name}”: the binding points to a missing node`,
+        ),
       });
     }
     if (node.text?.kind === "field" && !fieldKeys.has(node.text.fieldKey)) {
       issues.push({
         severity: "error",
         nodeId: node.id,
-        message: `«${node.name}»: поле «${node.text.fieldKey}» не объявлено — в эфир уйдёт пустая строка`,
+        message: tr(
+          `«${node.name}»: поле «${node.text.fieldKey}» не объявлено — в эфир уйдёт пустая строка`,
+          `“${node.name}”: field “${node.text.fieldKey}” is not declared`,
+        ),
       });
     }
     if (node.kind === "text" && !node.textStyle.fontFilePath) {
       issues.push({
         severity: "warning",
         nodeId: node.id,
-        message: `«${node.name}»: шрифт не выбран — кириллица может выйти пустыми прямоугольниками`,
+        message: tr(
+          `«${node.name}»: шрифт не выбран — кириллица может выйти пустыми прямоугольниками`,
+          `“${node.name}”: no font file is selected`,
+        ),
       });
     }
     if (node.kind === "text" && node.text?.kind === "field") {
@@ -836,7 +1130,10 @@ export function sceneIssues(
         issues.push({
           severity: "warning",
           nodeId: node.id,
-          message: `«${node.name}»: у поля нет образца — привязанной плашке нечем мерить ширину`,
+          message: tr(
+            `«${node.name}»: у поля нет образца — привязанной плашке нечем мерить ширину`,
+            `“${node.name}”: the field has no sample for measuring its bound plate`,
+          ),
         });
       }
     }
@@ -847,14 +1144,20 @@ export function sceneIssues(
       issues.push({
         severity: "warning",
         nodeId: node.id,
-        message: `«${node.name}» выходит за зону надписей — приёмник зрителя может обрезать`,
+        message: tr(
+          `«${node.name}» выходит за зону надписей — приёмник зрителя может обрезать`,
+          `“${node.name}” is outside title safe and may be cropped`,
+        ),
       });
     }
   }
   if (!template.targets.includes(format.layout)) {
     issues.push({
       severity: "warning",
-      message: `Раскладка ${format.layout} не заявлена в шаблоне — правки в ней в эфир не пойдут`,
+      message: tr(
+        `Раскладка ${format.layout} не заявлена в шаблоне — правки в ней в эфир не пойдут`,
+        `Layout ${format.layout} is not declared by this template`,
+      ),
     });
   }
   return issues;

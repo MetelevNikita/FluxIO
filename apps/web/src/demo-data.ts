@@ -1,4 +1,4 @@
-import type { EncodingJob, MediaAsset } from "./types";
+import type { MediaAsset } from "./types";
 import { mediaPath } from "./runtime";
 
 export const initialAssets: MediaAsset[] = [
@@ -228,33 +228,3 @@ export const additionalPlaylistAssets: MediaAsset[] = [
     sha256: "820da4...4e8b",
   },
 ];
-
-export const encodingJobs: EncodingJob[] = [
-  {
-    id: "job-production",
-    name: "Promo_BehindTheScenes_03_RAW.mov",
-    progress: 78,
-    eta: "ETA 00:03:14",
-    bitrate: "18 Mbps",
-  },
-  {
-    id: "job-interview",
-    name: "Interview_President_Take02.mp4",
-    progress: 12,
-    eta: "ETA 01:42:10",
-    bitrate: "18 Mbps",
-  },
-  {
-    id: "job-reef",
-    name: "GoPro_Undersea_Reef_HEVC.mp4",
-    progress: 0,
-    eta: "Queued",
-    bitrate: "18 Mbps",
-  },
-];
-
-export const filmstripImages = Array.from(
-  { length: 8 },
-  (_, index) =>
-    mediaPath(`filmstrip-${String(index + 1).padStart(2, "0")}.png`),
-);

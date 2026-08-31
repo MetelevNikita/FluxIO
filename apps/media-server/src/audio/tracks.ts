@@ -25,7 +25,7 @@ const audioExtensions = new Set([
   ".mkv", ".mov", ".mp4", ".m4v", ".ts", ".mxf", ".webm",
 ]);
 
-export class AudioTrackScanError extends Error {}
+class AudioTrackScanError extends Error {}
 
 /**
  * Ищет дополнительные дорожки для каждого ролика: сначала в указанной папке,
@@ -194,6 +194,6 @@ async function attachTrackDurations(
 }
 
 /** Имена сравниваются без регистра и без разницы в пробелах. */
-export function normalizeBaseName(value: string): string {
+function normalizeBaseName(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }

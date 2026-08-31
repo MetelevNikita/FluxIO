@@ -29,6 +29,7 @@ declare global {
       selectTickerSourceFile: () => Promise<string | null>;
       selectStingerFile: () => Promise<string | null>;
       selectDecorationFile: () => Promise<string | null>;
+      selectVectorFile: () => Promise<string | null>;
       saveTitleFile: (input: {
         content: string;
         defaultName: string;

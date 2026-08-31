@@ -1,4 +1,5 @@
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { PlayoutStatus } from "@gruber/contracts";
@@ -150,20 +151,15 @@ export class ApplicationLogger {
  * оболочки, systemd-установка) — домашняя папка. Переопределяется
  * `GRUBER_LOG_DIR`, чтобы production-развёртывание клало журнал куда нужно.
  */
-export function defaultLogDirectory(): string {
+function defaultLogDirectory(): string {
   const override = process.env.GRUBER_LOG_DIR;
   if (override) return override;
-  return path.join(homedir(), "Desktop", "FluxIO logs");
-}
-
-/** Проверка при старте: есть ли рабочий стол вообще. */
-export async function resolveLogDirectory(candidate = defaultLogDirectory()): Promise<string> {
-  if (process.env.GRUBER_LOG_DIR) return candidate;
-  const desktop = path.dirname(candidate);
+  const homeDirectory = homedir();
+  const desktop = path.join(homeDirectory, "Desktop");
   try {
-    if ((await stat(desktop)).isDirectory()) return candidate;
+    if (statSync(desktop).isDirectory()) return path.join(desktop, "FluxIO logs");
   } catch {
     // Рабочего стола нет.
   }
-  return path.join(homedir(), "FluxIO logs");
+  return path.join(homeDirectory, "FluxIO logs");
 }

@@ -6,7 +6,6 @@ import {
   graphicEffectVerificationSchema,
   imageSequenceSchema,
   type ImageSequence,
-  broadcastConfigurationSummarySchema,
   broadcastTaskFileContentSchema,
   tickerSourceContentSchema,
   systemFontListSchema,
@@ -14,13 +13,11 @@ import {
   mediaProbeSchema,
   networkInterfaceListSchema,
   playoutStatusSchema,
-  savedBroadcastConfigurationSchema,
   savedWorkspaceSessionSchema,
   systemMetricsSchema,
   workspaceSessionEnvelopeSchema,
   parsedScheduleSchema,
   serializedScheduleSchema,
-  type BroadcastConfigurationSummary,
   type BroadcastTaskFileContent,
   type TickerSourceContent,
   type SystemFont,
@@ -33,15 +30,15 @@ import {
   type ParsedSchedule,
   type SerializeScheduleRequest,
   type SerializedSchedule,
-  type SaveBroadcastConfigurationRequest,
-  type SavedBroadcastConfiguration,
   type SavedWorkspaceSession,
   type StartPlayoutRequest,
   type SystemMetrics,
   type WorkspaceSessionSaveRequest,
+  vectorLayerImportSchema,
+  type VectorLayerImport,
 } from "@gruber/contracts";
-import { mediaApiUrl } from "./runtime";
-import { mediaRequestTimeoutMs } from "./media-request-timeout";
+import { mediaApiUrl } from "./runtime.js";
+import { mediaRequestTimeoutMs } from "./media-request-timeout.js";
 
 export async function getFfmpegCapabilities(): Promise<FfmpegCapabilities> {
   return ffmpegCapabilitiesSchema.parse(await request("/api/capabilities"));
@@ -81,19 +78,6 @@ export async function analyzeGraphicEffectPaths(
   );
 }
 
-export async function scanGraphicEffectDirectory(
-  directoryPath: string,
-): Promise<GraphicEffectImportResult> {
-  return graphicEffectImportResultSchema.parse(
-    await request("/api/effects/scan", {
-      body: JSON.stringify({ directoryPath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
-  );
-}
-
-/** Какие из путей графики расписания уже не лежат на диске сервера. */
 /**
  * Разбор последовательности кадров по одному выбранному файлу: служба выводит
  * шаблон нумерации, границы диапазона и пропуски.
@@ -135,6 +119,20 @@ export async function scanAudioTracks(
 /** Системные шрифты машины, где работает media-service. */
 export async function listSystemFonts(): Promise<SystemFont[]> {
   return systemFontListSchema.parse(await request("/api/effects/fonts")).items;
+}
+
+export async function importVectorLayers(filePath: string): Promise<VectorLayerImport> {
+  return vectorLayerImportSchema.parse(
+    await request("/api/effects/vector-layers", {
+      body: JSON.stringify({ filePath }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  );
+}
+
+export function vectorLayerPreviewUrl(filePath: string): string {
+  return mediaApiUrl(`/api/effects/vector-layer-preview?filePath=${encodeURIComponent(filePath)}`);
 }
 
 /** Заголовки новостной ленты. Качает сервер: у окна Electron строгий CSP. */
@@ -224,19 +222,6 @@ export function mediaThumbnailUrl(filePath: string, atSeconds?: number): string 
   const query = new URLSearchParams({ path: filePath });
   if (atSeconds != null) query.set("at", atSeconds.toFixed(3));
   return mediaApiUrl(`/api/media/thumbnail?${query}`);
-}
-
-export async function startClipPreview(
-  filePath: string,
-  startSeconds: number,
-): Promise<ClipPreviewSession> {
-  return clipPreviewSessionSchema.parse(
-    await request("/api/media/clip-preview/start", {
-      body: JSON.stringify({ filePath, startSeconds }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
-  );
 }
 
 export async function startCompositeClipPreview(
@@ -330,36 +315,6 @@ export async function saveWorkspaceSession(
 
 export async function deleteWorkspaceSession(): Promise<void> {
   await request("/api/workspace-session", { method: "DELETE" });
-}
-
-export async function listBroadcastConfigurations(): Promise<
-  BroadcastConfigurationSummary[]
-> {
-  const payload = await request("/api/configurations");
-  if (!payload || typeof payload !== "object" || !("items" in payload)) {
-    throw new Error("Media service returned an invalid configuration list");
-  }
-  return broadcastConfigurationSummarySchema.array().parse(payload.items);
-}
-
-export async function getBroadcastConfiguration(
-  id: string,
-): Promise<SavedBroadcastConfiguration> {
-  return savedBroadcastConfigurationSchema.parse(
-    await request(`/api/configurations/${encodeURIComponent(id)}`),
-  );
-}
-
-export async function saveBroadcastConfiguration(
-  configuration: SaveBroadcastConfigurationRequest,
-): Promise<SavedBroadcastConfiguration> {
-  return savedBroadcastConfigurationSchema.parse(
-    await request("/api/configurations", {
-      body: JSON.stringify(configuration),
-      headers: { "content-type": "application/json" },
-      method: "PUT",
-    }),
-  );
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {

@@ -530,7 +530,6 @@ export const broadcastEffectSettingsSchema = z.object({
   ),
 });
 
-/** Описание эффекта второго уровня. */
 /**
  * Сдвиг графики эффекта относительно того места, куда её поставил дизайнер.
  *
@@ -546,7 +545,7 @@ export const effectPlacementSchema = z.object({
 /**
  * Явная связь поля входного JSON с редактируемым текстовым полем шаблона.
  * Имена не обязаны совпадать: например, `program.title` можно направить в
- * Text Layer `next_title` без переделки выгрузки или проекта After Effects.
+ * поле сцены `next_title` без переделки выгрузки или самого шаблона.
  */
 export const broadcastDataBindingSchema = z.object({
   sourceKey: z.string().trim().min(1).max(256),
@@ -837,6 +836,23 @@ export const imageSequenceSchema = z.object({
   width: z.number().int().nonnegative().default(0),
   height: z.number().int().nonnegative().default(0),
 });
+
+/** Послойный импорт PDF или PDF-compatible Adobe Illustrator. */
+export const vectorLayerImportRequestSchema = z.object({
+  filePath: z.string().min(1),
+});
+
+export const vectorLayerImportSchema = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  layered: z.boolean(),
+  layers: z.array(z.object({
+    name: z.string().min(1).max(256),
+    filePath: z.string().min(1),
+  })).min(1).max(200),
+});
+
+export type VectorLayerImport = z.infer<typeof vectorLayerImportSchema>;
 
 /** Системный шрифт для динамических надписей. */
 export const systemFontSchema = z.object({
@@ -1464,6 +1480,15 @@ export const workspaceSessionAssetSchema = z.object({
   itemLogo: itemLogoOverlaySchema.optional(),
   effects: z.array(graphicEffectLayerSchema).max(64).optional(),
   audioOverlays: z.array(clipAudioOverlaySchema).max(8).optional(),
+  /**
+   * Показы сцен второго уровня. Поле обязано быть здесь: Zod по умолчанию
+   * выбрасывает незнакомые ключи, поэтому без него каждое сохранение сессии
+   * молча снимало с роликов все плашки — оператор раскладывал титры по
+   * расписанию, а после перезапуска их не было.
+   */
+  scenes: z.array(playoutSceneShowSchema).max(8).optional(),
+  /** Дополнительные звуковые дорожки — тем же молчаливым срезом теряются. */
+  audioTracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks).optional(),
   subtitles: subtitleOverlaySchema.optional(),
 });
 

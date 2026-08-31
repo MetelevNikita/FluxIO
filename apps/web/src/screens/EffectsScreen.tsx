@@ -4,6 +4,7 @@ import type {
   SystemFont,
 } from "@gruber/contracts";
 import {
+  Braces,
   CheckCircle2,
   FileJson,
   Layers3,
@@ -22,14 +23,16 @@ import {
 import {
   BroadcastEffectInspector,
   BroadcastEffectPreview,
+} from "./BroadcastEffectInspector";
+import {
   broadcastEffectCatalog,
   broadcastEffectTitle,
   type BroadcastTaskSummary,
-} from "./BroadcastEffectInspector";
+} from "../broadcast-effect-catalog";
 import { ScenePreview } from "../title-editor/ScenePreview";
 import { useI18n } from "../i18n";
 
-export interface EffectTargetClip {
+interface EffectTargetClip {
   id: string;
   name: string;
   schedule: "Current" | "Future";
@@ -110,6 +113,12 @@ export const EffectsScreen = memo(function EffectsScreen({
   const [renderNotice, setRenderNotice] = useState<string | null>(null);
   const [targetClipId, setTargetClipId] = useState("");
   const [previewCollapsed, setPreviewCollapsed] = useState(() => window.innerHeight < 800);
+  /**
+   * Разбор JSON — окно, а не шаг мастера, и открывается кнопкой в «Применении»:
+   * там же выбирают файл и по нему раскладывают. Само оно не открывается —
+   * раньше открывалось на каждый вход на вкладку.
+   */
+  const [mappingOpen, setMappingOpen] = useState(false);
   const renderNoticeTimer = useRef<number | null>(null);
 
   /**
@@ -521,6 +530,8 @@ export const EffectsScreen = memo(function EffectsScreen({
                   onSelectTaskFile={() => void onSelectBroadcastTaskFile(draftEffect.id)}
                   onSelectTickerSource={() => void onSelectTickerSourceFile(draftEffect.id)}
                   taskSummary={broadcastTaskSummaries[draftEffect.id] ?? null}
+                  mappingOpen={mappingOpen}
+                  onMappingOpenChange={setMappingOpen}
                 />
               ) : null}
 
@@ -609,6 +620,19 @@ export const EffectsScreen = memo(function EffectsScreen({
                       <FileJson size={12} />
                       {taskSummary ? shortPath(taskSummary.filePath) : tr("Выбрать .json", "Choose .json")}
                     </button>
+                    {taskSummary ? (
+                      <button
+                        className="assignment-way-parser"
+                        onClick={() => setMappingOpen(true)}
+                        title={tr(
+                          "Посмотреть, что прочитано из файла, и связать ключи с полями титра",
+                          "Inspect what was read from the file and bind its keys to the title fields",
+                        )}
+                        type="button"
+                      >
+                        <Braces size={12} /> {tr("Разбор JSON", "JSON Parser")}
+                      </button>
+                    ) : null}
                     {taskSummary ? (
                       <label className="assignment-match-key">
                         <span>{tr("Имя ролика в ключе", "Clip name key")}</span>

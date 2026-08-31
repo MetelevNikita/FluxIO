@@ -1017,11 +1017,13 @@ p {
   background: #0d1013;
 }
 
+/* Панель применения едет со всеми настройками, а не прибита к низу.
+   Прибитая, она накрывала собой блок «Шаблон и данные»: настройки под ней
+   не читались и не принимали клики, а снаружи это выглядело как «шаг 01
+   пропал». Единственное, что остаётся на месте, — предпросмотр с кнопкой,
+   которой его убирают. */
 .effect-assignment-panel {
-  position: sticky;
-  z-index: 2;
-  bottom: 0;
-  box-shadow: 0 -10px 24px rgba(6, 8, 10, 0.72);
+  margin-bottom: 2px;
 }
 
 .effect-assignment-heading {
@@ -5144,7 +5146,7 @@ input[type="range"] {
   inset: 0;
   z-index: 40;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) 5px var(--title-timeline-height, 250px);
   background: var(--background);
 }
 
@@ -5233,9 +5235,29 @@ input[type="range"] {
 
 .title-editor-body {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr) 300px;
+  grid-template-columns:
+    var(--title-left-width, 268px) 5px minmax(0, 1fr) 5px var(--title-right-width, 300px);
   min-height: 0;
 }
+
+.title-editor-divider {
+  position: relative;
+  z-index: 2;
+  background: var(--border);
+  touch-action: none;
+  outline: none;
+}
+
+.title-editor-divider::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+}
+
+.title-editor-divider.vertical { cursor: col-resize; }
+.title-editor-divider.horizontal { cursor: row-resize; }
+.title-editor-divider:hover,
+.title-editor-divider:focus-visible { background: var(--tier2); }
 
 .title-editor-left,
 .title-editor-center,
@@ -5443,6 +5465,15 @@ input[type="range"] {
 
 .scene-edit-target button.active { color: var(--tier2); border-color: var(--tier2-border); background: var(--tier2-soft); }
 
+/* Кнопка крупного кадра стоит с краю строки: она про просмотр, а не про то,
+   куда лягут правки, и мешаться с переключателем раскладочной цели ей нельзя. */
+.scene-zoom-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .scene-canvas-box {
   display: grid;
   place-items: center;
@@ -5450,8 +5481,15 @@ input[type="range"] {
      поймать мышью. */
   min-height: 220px;
   min-width: 0;
+  /* Кадр ужат в пользу дорожек времени: ключи ставят чаще, чем разглядывают
+     картинку, а одиннадцать дорожек на слой в полосе высотой в треть экрана
+     не читаются. Разглядеть кадр по-прежнему надо — кнопка над холстом растит
+     его сразу заметно, а не на пару процентов. */
+  max-height: 40vh;
   overflow: hidden;
 }
+
+.title-editor-center.zoomed .scene-canvas-box { max-height: 64vh; }
 
 /* Рамку и фон несёт сам кадр, а не колонка вокруг него. Кадр держит
    соотношение сторон выбранной раскладки, поэтому поля по бокам неизбежны —
@@ -5460,6 +5498,11 @@ input[type="range"] {
   position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* Обводка вокруг кадра: без неё край чёрной картинки сливается с фоном
+     редактора, и непонятно, где кончается кадр — а титр у нижнего края
+     проверяют именно по краю. Тень, а не рамка: рамка съела бы пиксели
+     холста, и промер под мышью разошёлся бы с рисунком. */
+  box-shadow: 0 0 0 1px var(--border-strong), 0 22px 44px -28px rgba(0, 0, 0, 0.9);
   overflow: hidden;
 }
 
@@ -5520,6 +5563,14 @@ input[type="range"] {
 .scene-grip-ne { right: -5px; top: -5px; cursor: nesw-resize; }
 .scene-grip-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
 .scene-grip-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+
+/* Ручки на гранях. Тянут одну сторону, поэтому и выглядят полосой, а не
+   квадратом: угол меняет обе стороны сразу, и путать их нельзя. */
+.scene-grip.edge { border-radius: 1px; }
+.scene-grip-n { left: 50%; top: -4px; width: 16px; height: 7px; margin-left: -8px; cursor: ns-resize; }
+.scene-grip-s { left: 50%; bottom: -4px; width: 16px; height: 7px; margin-left: -8px; cursor: ns-resize; }
+.scene-grip-w { top: 50%; left: -4px; width: 7px; height: 16px; margin-top: -8px; cursor: ew-resize; }
+.scene-grip-e { top: 50%; right: -4px; width: 7px; height: 16px; margin-top: -8px; cursor: ew-resize; }
 
 .scene-guide { position: absolute; pointer-events: none; }
 .scene-guide.x { top: 0; bottom: 0; width: 1px; }
@@ -5625,14 +5676,24 @@ input[type="range"] {
 
 .scene-section { padding: 12px 14px 0; }
 
-.scene-section h4 {
-  margin: 0 0 8px;
+.scene-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  list-style: none;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--muted-dark);
 }
+.scene-section > summary::-webkit-details-marker { display: none; }
+.scene-section > summary svg { transition: transform 120ms ease; }
+.scene-section[open] > summary svg { transform: rotate(90deg); }
+.scene-section-body { padding-top: 8px; }
 
 .scene-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 
@@ -5712,6 +5773,8 @@ input[type="range"] {
   border-top: 1px solid var(--border);
   background: var(--surface);
   padding: 9px 16px 12px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .scene-timeline > header {
@@ -5835,6 +5898,7 @@ input[type="range"] {
 
 .scene-key {
   position: absolute;
+  z-index: 1;
   top: 50%;
   width: 14px;
   height: 14px;
@@ -5846,11 +5910,35 @@ input[type="range"] {
   border-radius: 2px;
   background: transparent;
   padding: 0;
+  cursor: grab;
 }
+
+.scene-key:active { cursor: grabbing; }
 
 .scene-key.seg-in { color: #6ee7b7; }
 .scene-key.seg-out { color: #f472b6; }
 .scene-key:hover { color: var(--danger); }
+.scene-key.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  background: var(--surface-strong);
+}
+.scene-key:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
+  background: var(--surface-strong);
+}
+
+.scene-key-snap-guide {
+  position: absolute;
+  z-index: 0;
+  top: -5px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 5px var(--accent);
+  pointer-events: none;
+}
 
 .scene-track-add,
 .scene-track-clear {
@@ -5878,6 +5966,7 @@ input[type="range"] {
     grid-template-rows: minmax(300px, 1fr) minmax(0, auto);
   }
   .title-editor-left { grid-row: 1 / 2; }
+  .title-editor-divider.vertical { display: none; }
   .scene-inspector {
     grid-column: 1 / -1;
     grid-row: 2 / 3;
@@ -6417,6 +6506,26 @@ input[type="range"] {
 /* Узел внутри группы сдвинут вправо на всю строку — сдвиг одного имени читался
    как случайный отступ, а не как вложенность. Величину сдвига задаёт глубина,
    поэтому она проставляется в разметке, а не здесь. */
+/* Группа под указателем при переносе: без подсветки непонятно, ляжет узел
+   внутрь неё или просто встанет рядом в стопке. */
+.scene-tree li.drop-into {
+  background: var(--tier2-soft);
+  box-shadow: inset 0 0 0 1px var(--tier2-border);
+}
+
+.scene-tree li.scene-tree-drop-placeholder {
+  display: block;
+  height: 28px;
+  margin: 2px 8px;
+  padding: 0;
+  border: 1px dashed var(--tier2);
+  border-radius: 4px;
+  background: var(--tier2-soft);
+  pointer-events: none;
+}
+
+.scene-tree ul.un-nesting { min-height: 100%; }
+
 .scene-tree li.in-group { color: var(--muted-dark); }
 .scene-tree li.in-group:hover, .scene-tree li.in-group.selected { color: var(--text); }
 
@@ -6565,7 +6674,8 @@ button.scene-tree-twist:hover { color: var(--text); }
   margin-top: 8px;
   display: grid;
   gap: 2px;
-  max-height: 34vh;
+  /* Высоту, отданную кадром, забирают дорожки: ради них редактор и открыт. */
+  max-height: 44vh;
   overflow-y: auto;
 }
 
@@ -6906,6 +7016,24 @@ button.scene-tree-twist:hover { color: var(--text); }
 .assignment-match-key { grid-column: 1 / -1; display: grid; gap: 2px; }
 .assignment-match-key span { color: var(--muted-dark); font-size: 9px; }
 
+/* Разбор JSON вызывается отсюда: файл выбирают тут же, и связки ключей с
+   полями титра смотрят там же, где по ним раскладывают. Кнопка вторичная —
+   основное действие в этом блоке одно, «Разложить по расписанию». */
+.effect-assignment-panel .assignment-way-parser {
+  grid-column: 1 / -1;
+  min-height: 26px;
+  justify-self: start;
+  border-color: var(--border-strong) !important;
+  color: var(--muted) !important;
+  background: #0a0d10 !important;
+  font-weight: 500 !important;
+}
+
+.effect-assignment-panel .assignment-way-parser:hover:not(:disabled) {
+  color: var(--text) !important;
+  border-color: var(--tier2-border) !important;
+}
+
 .assignment-way-note {
   grid-column: 1 / -1;
   margin: 0;
@@ -6920,4 +7048,10 @@ button.scene-tree-twist:hover { color: var(--text); }
 .effect-assignment-panel > button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.screen-loading {
+  display: grid;
+  min-height: 16rem;
+  place-items: center;
+  color: var(--text-secondary, #8b98a5);
 }

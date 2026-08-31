@@ -23,7 +23,7 @@ const fontExtensions = new Set([".ttf", ".otf", ".ttc", ".otc"]);
 const maximumFonts = 400;
 const cyrillicProbe = 0x0410; // «А» — если её нет, кириллицы нет и подавно.
 
-export function systemFontDirectories(): string[] {
+function systemFontDirectories(): string[] {
   const home = homedir();
   if (platform() === "darwin") {
     return ["/System/Library/Fonts", "/Library/Fonts", path.join(home, "Library/Fonts")];
@@ -112,7 +112,7 @@ function firstFontOffset(buffer: Buffer): number | null {
   return buffer.toString("latin1", 0, 4) === "ttcf" ? buffer.readUInt32BE(12) : 0;
 }
 
-export function findTable(buffer: Buffer, tag: string): { offset: number; length: number } | null {
+function findTable(buffer: Buffer, tag: string): { offset: number; length: number } | null {
   const base = firstFontOffset(buffer);
   if (base == null || base + 12 > buffer.length) return null;
   const tableCount = buffer.readUInt16BE(base + 4);

@@ -132,13 +132,13 @@ export function summarizeBroadcastTaskMatches(
   };
 }
 
-export interface PlannedEffectLayer {
+interface PlannedEffectLayer {
   assetId: string;
   layer: GraphicEffectLayer;
 }
 
 /** Показ сцены, поставленный на ролик. */
-export interface PlannedSceneShow {
+interface PlannedSceneShow {
   assetId: string;
   show: PlayoutSceneShow;
 }
@@ -177,7 +177,7 @@ export const fileOnlyEffectKinds: ReadonlySet<BroadcastEffectKind> = new Set([
 ]);
 
 /** Оформление с поправкой на вид: у файловых видов выбор оператора игнорируется. */
-export function effectDecoration(
+function effectDecoration(
   definition: NonNullable<GraphicEffectAsset["broadcast"]>,
 ): EffectDecoration {
   return fileOnlyEffectKinds.has(definition.kind) ? "file" : definition.decoration;
@@ -227,11 +227,6 @@ export function preferredTextFont(fonts: readonly SystemFont[]): SystemFont | nu
   return cyrillic[0] ?? null;
 }
 
-/**
- * Проставляет шрифт во все стили надписей эффекта. Вид использует только свой
- * блок, но эффект можно переключить, и оставлять в остальных пустой шрифт
- * значит откладывать ту же поломку на потом.
- */
 /**
  * Подставляет шрифт в текстовые узлы сцены.
  *
@@ -493,9 +488,9 @@ const planners: Record<BroadcastEffectKind, (context: PlanContext) => void> = {
  * -------------------------------------------------------------------------- */
 
 /**
- * Универсальная плашка: сцена отвечает за декор и за строку, поэтому
- * FFmpeg. Поэтому значение можно менять для каждого ролика без повторной
- * сборки проекта After Effects, а слой `fit:<имя поля>` садится по её ширине.
+ * Универсальная плашка: сцена отвечает и за декор, и за строку. Значение
+ * можно менять для каждого ролика без повторной сборки оформления, а узел,
+ * привязанный к полю через `fitToText`, подстраивается под его ширину.
  */
 function planDynamicTitle(context: PlanContext): void {
   const settings = context.definition.settings.dynamicTitle;
@@ -704,11 +699,6 @@ function planNextProgram(context: PlanContext): void {
   }
 }
 
-/**
- * Ближайший фильм после позиции `position`. Если расписание не размечено по
- * типам вовсе, берётся просто следующий элемент — иначе на ручном плейлисте
- * эффект не сработал бы никогда.
- */
 /**
  * Имя ролика в том виде, в котором его не стыдно показать в эфире.
  *

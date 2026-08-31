@@ -49,7 +49,7 @@ const autoOrder: Exclude<VideoHardware, "off" | "auto">[] = [
   "videotoolbox",
 ];
 
-export class HardwareEncoderError extends Error {}
+class HardwareEncoderError extends Error {}
 
 /**
  * Программный кодировщик для этого кодека.

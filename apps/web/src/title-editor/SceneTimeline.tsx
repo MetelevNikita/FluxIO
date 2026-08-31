@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronRight, Circle, Diamond, Minus, Pause, Play, Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { trackIsAnimated, type SceneSegmentSide } from "../scene-edit";
+import { snapKeyframeTime, trackIsAnimated, type SceneSegmentSide } from "../scene-edit";
 import { EasingPicker } from "./EasingPicker";
 import { useI18n } from "../i18n";
 
@@ -74,6 +74,9 @@ export function SceneTimeline({
   const [editing, setEditing] = useState<
     { nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number } | null
   >(null);
+  const [snapGuide, setSnapGuide] = useState<{
+    nodeId: string; key: TrackKey; atRail: number;
+  } | null>(null);
   /** Слои, у которых раскрыты свойства. Выбранный раскрыт всегда. */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   /** Ключ, который тащат мышью по дорожке. */
@@ -125,10 +128,31 @@ export function SceneTimeline({
   function moveDraggedKey(event: ReactPointerEvent) {
     const drag = dragging.current;
     if (!drag) return;
-    const next = keyframeTimeAt(event.clientX, drag, drag.side);
+    const raw = keyframeTimeAt(event.clientX, drag, drag.side);
+    const candidates: number[] = [];
+    for (const entry of template.nodes) {
+      for (const trackKey of trackKeys) {
+        if (entry.id === drag.nodeId && trackKey === drag.key) continue;
+        const frames = drag.side === "in"
+          ? entry.transform[trackKey].inKeyframes
+          : entry.transform[trackKey].outKeyframes;
+        for (const frame of frames) candidates.push(frame.atSeconds);
+      }
+    }
+    const snapped = snapKeyframeTime(raw, candidates, (8 / Math.max(1, drag.laneWidth)) * total);
+    const next = Math.round(snapped.value * 1_000) / 1_000;
+    setSnapGuide(snapped.snapped ? {
+      nodeId: drag.nodeId,
+      key: drag.key,
+      atRail: drag.side === "in" ? next : timing.inSeconds + timing.holdSeconds + next,
+    } : null);
     if (Math.abs(next - drag.atSeconds) < 0.001) return;
     onMoveKeyframe(drag.nodeId, drag.key, drag.side, drag.atSeconds, next);
     dragging.current = { ...drag, atSeconds: next };
+    setEditing((current) => current && current.nodeId === drag.nodeId && current.key === drag.key &&
+      current.side === drag.side && current.atSeconds === drag.atSeconds
+      ? { ...current, atSeconds: next }
+      : current);
   }
 
   function endScrub(event: ReactPointerEvent) {
@@ -149,9 +173,12 @@ export function SceneTimeline({
     frame: SceneKeyframe,
     atRail: number,
   ) {
+    const selected = editing?.nodeId === nodeId && editing.key === key &&
+      editing.side === side && editing.atSeconds === frame.atSeconds;
     return (
       <button
-        className={`scene-key seg-${side} ${frame.easing === "bezier" ? "curved" : ""}`}
+        aria-pressed={selected}
+        className={`scene-key seg-${side} ${selected ? "selected" : ""} ${frame.easing === "bezier" ? "curved" : ""}`}
         key={`${side}-${frame.atSeconds}`}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -161,6 +188,14 @@ export function SceneTimeline({
           );
         }}
         onDoubleClick={() => onRemoveKeyframe(nodeId, key, side, frame.atSeconds)}
+        onLostPointerCapture={() => { dragging.current = null; setSnapGuide(null); }}
+        onKeyDown={(event) => {
+          if (event.key !== "Delete" && event.key !== "Backspace") return;
+          event.preventDefault();
+          event.stopPropagation();
+          onRemoveKeyframe(nodeId, key, side, frame.atSeconds);
+          setEditing(null);
+        }}
         onPointerDown={(event) => {
           const lane = event.currentTarget.parentElement?.getBoundingClientRect();
           if (lane) {
@@ -170,6 +205,7 @@ export function SceneTimeline({
             };
           }
           setEditing({ nodeId, key, side, atSeconds: frame.atSeconds });
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
         }}
         style={{ left: pct(atRail) }}
         title={tr(
@@ -198,7 +234,7 @@ export function SceneTimeline({
         <button className="scene-play" onClick={onTogglePlay} type="button">
           {playing ? <Pause size={13} /> : <Play size={13} />}
         </button>
-        <span className="scene-clock">{timeSeconds.toFixed(2)} / {total.toFixed(2)} с</span>
+        <span className="scene-clock">{timeSeconds.toFixed(2)} / {total.toFixed(2)} {tr("с", "s")}</span>
         <span className={`scene-segment-badge seg-${segment.segment}`}>
           {segment.segment === "in" ? tr("вход", "in")
             : segment.segment === "hold" ? tr("удержание", "hold") : tr("выход", "out")}
@@ -250,7 +286,7 @@ export function SceneTimeline({
             key={tick.atSeconds}
             style={{ left: pct(tick.atSeconds) }}
           >
-            {tick.major ? <b>{formatTick(tick.atSeconds)}</b> : null}
+            {tick.major ? <b>{formatTick(tick.atSeconds, tr("с", "s"))}</b> : null}
           </i>
         ))}
       </div>
@@ -337,9 +373,12 @@ export function SceneTimeline({
                     <div
                       className="scene-track-rail"
                       onPointerMove={moveDraggedKey}
-                      onPointerUp={() => { dragging.current = null; }}
-                      onPointerLeave={() => { dragging.current = null; }}
+                      onPointerCancel={() => { dragging.current = null; setSnapGuide(null); }}
+                      onPointerUp={() => { dragging.current = null; setSnapGuide(null); }}
                     >
+                      {snapGuide?.nodeId === entry.id && snapGuide.key === key ? (
+                        <i className="scene-key-snap-guide" style={{ left: pct(snapGuide.atRail) }} />
+                      ) : null}
                       {track.inKeyframes.map((frame) => keyButton(entry.id, key, "in", frame, frame.atSeconds))}
                       {track.outKeyframes.map((frame) => keyButton(
                         entry.id, key, "out", frame,
@@ -399,7 +438,7 @@ export type { TrackKey };
  * минутной бегущей строке шкала превращается в сплошную заливку, а через
  * каждые 10 с на трёхсекундной плашке делений нет вовсе.
  */
-export function rulerTicks(totalSeconds: number): { atSeconds: number; major: boolean }[] {
+function rulerTicks(totalSeconds: number): { atSeconds: number; major: boolean }[] {
   const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60];
   const step = steps.find((candidate) => totalSeconds / candidate <= 12) ?? 60;
   const ticks: { atSeconds: number; major: boolean }[] = [];
@@ -412,13 +451,13 @@ export function rulerTicks(totalSeconds: number): { atSeconds: number; major: bo
 }
 
 /** Подпись деления: секунды без хвоста нулей. */
-export function formatTick(seconds: number): string {
+function formatTick(seconds: number, unit = "с"): string {
   if (seconds >= 60) {
     const minutes = Math.floor(seconds / 60);
     const rest = Math.round(seconds - minutes * 60);
     return `${minutes}:${String(rest).padStart(2, "0")}`;
   }
-  return Number.isInteger(seconds) ? `${seconds}с` : `${seconds.toFixed(1)}с`;
+  return Number.isInteger(seconds) ? `${seconds}${unit}` : `${seconds.toFixed(1)}${unit}`;
 }
 
 /** Глубина вложенности узла — она же величина сдвига строки вправо. */

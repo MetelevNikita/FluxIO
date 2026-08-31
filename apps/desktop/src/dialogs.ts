@@ -174,9 +174,9 @@ function formatBytes(bytes: number): string {
  * ------------------------------------------------------------------------- */
 
 /** Имя папки титров. Одно на все платформы: её ищут глазами. */
-export const titleLibraryFolderName = "FluxIO Titles";
+const titleLibraryFolderName = "FluxIO Titles";
 
-export function defaultTitleLibraryPath(): string {
+function defaultTitleLibraryPath(): string {
   return path.join(app.getPath("desktop"), titleLibraryFolderName);
 }
 

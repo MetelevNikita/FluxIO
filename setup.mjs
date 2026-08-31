@@ -2,7 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -25,7 +25,9 @@ const envBackupsToKeep = 2;
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
   ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
-const applicationVersion = "8.0.1";
+const applicationVersion = JSON.parse(
+  readFileSync(path.join(projectRoot, "package.json"), "utf8"),
+).version;
 
 export function buildDatabaseUrl({
   database,

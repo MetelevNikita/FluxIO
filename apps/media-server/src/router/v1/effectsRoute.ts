@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import path from "node:path";
 
 //
 
@@ -14,6 +15,8 @@ import {
   verifyGraphicEffectsRequestSchema,
   imageSequenceRequestSchema,
   imageSequenceSchema,
+  vectorLayerImportRequestSchema,
+  vectorLayerImportSchema,
   scanGraphicEffectsRequestSchema,
 } from "@gruber/contracts";
 import {
@@ -28,6 +31,7 @@ import {
 import { scanSystemFonts } from "../../effects/system-fonts.js";
 import { probeMedia } from "../../ffmpeg/probe.js";
 import { readImageSequence } from "../../effects/image-sequence.js";
+import { importVectorLayers } from "../../effects/vector-import.js";
 import { badRequest, type RouteContext } from "../context.js";
 
 export async function effectsRoute(app: FastifyInstance, context: RouteContext) {
@@ -64,6 +68,33 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
         width: probe?.width ?? 0,
         height: probe?.height ?? 0,
       });
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  app.post("/api/effects/vector-layers", async (request, reply) => {
+    try {
+      const body = vectorLayerImportRequestSchema.parse(request.body);
+      return vectorLayerImportSchema.parse(
+        await importVectorLayers(body.filePath, context.effectCacheDirectory),
+      );
+    } catch (error) {
+      return badRequest(reply, error);
+    }
+  });
+
+  app.get("/api/effects/vector-layer-preview", async (request, reply) => {
+    try {
+      const { filePath } = vectorLayerImportRequestSchema.parse(request.query);
+      const root = await realpath(path.join(context.effectCacheDirectory, "vector-layers"));
+      const resolved = await realpath(filePath);
+      const relative = path.relative(root, resolved);
+      if (relative.startsWith("..") || path.isAbsolute(relative) || path.extname(resolved).toLowerCase() !== ".png") {
+        throw new Error("Vector preview path is outside the import cache");
+      }
+      reply.header("cache-control", "private, max-age=86400");
+      return reply.type("image/png").send(await readFile(resolved));
     } catch (error) {
       return badRequest(reply, error);
     }

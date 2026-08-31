@@ -18,6 +18,7 @@ export const SELECT_BROADCAST_TASK_FILE_CHANNEL = "dialog:select-broadcast-task-
 export const SELECT_TICKER_SOURCE_FILE_CHANNEL = "dialog:select-ticker-source-file";
 export const SELECT_STINGER_FILE_CHANNEL = "dialog:select-stinger-file";
 export const SELECT_DECORATION_FILE_CHANNEL = "dialog:select-decoration-file";
+export const SELECT_VECTOR_FILE_CHANNEL = "dialog:select-vector-file";
 export const SAVE_TITLE_FILE_CHANNEL = "dialog:save-title-file";
 export const SELECT_TITLE_FILE_CHANNEL = "dialog:select-title-file";
 export const READ_TITLE_LIBRARY_CHANNEL = "dialog:read-title-library";
@@ -43,6 +44,7 @@ export type DesktopChannel =
   | typeof SELECT_TICKER_SOURCE_FILE_CHANNEL
   | typeof SELECT_STINGER_FILE_CHANNEL
   | typeof SELECT_DECORATION_FILE_CHANNEL
+  | typeof SELECT_VECTOR_FILE_CHANNEL
   | typeof SAVE_TITLE_FILE_CHANNEL
   | typeof SELECT_TITLE_FILE_CHANNEL
   | typeof READ_TITLE_LIBRARY_CHANNEL

@@ -8,7 +8,7 @@ import { DatabaseService } from "./database/database.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { PlayoutSupervisor } from "./ffmpeg/playout-supervisor.js";
-import { ApplicationLogger, resolveLogDirectory } from "./logging/logger.js";
+import { ApplicationLogger } from "./logging/logger.js";
 import { SystemMetricsSampler } from "./system-metrics.js";
 import { type RouteContext } from "./router/context.js";
 import { audioRoute } from "./router/v1/audioRoute.js";
@@ -69,14 +69,6 @@ function createRouteContext(): RouteContext {
   const previewDirectory = process.env.GRUBER_PREVIEW_DIR ??
     path.join(tmpdir(), "gruber-playout-preview");
   const logger = new ApplicationLogger();
-  // Рабочего стола может не быть (systemd-установка) — тогда журнал уезжает в
-  // домашнюю папку. Проверка асинхронная, поэтому журнал стартует сразу, а путь
-  // уточняется первым же тиком.
-  void resolveLogDirectory().then((directory) => {
-    if (directory !== logger.directory) {
-      logger.log("info", "SERVICE", `Рабочего стола нет, журнал переведён в ${directory}`);
-    }
-  });
 
   return {
     capabilities,

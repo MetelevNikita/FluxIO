@@ -23,7 +23,7 @@ const I18nContext = createContext<I18nContextValue | null>(null);
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<AppLanguage>(() => {
     const saved = window.localStorage.getItem(storageKey);
-    return saved === "en" || saved === "ru" ? saved : "ru";
+    return saved === "en" || saved === "ru" ? saved : "en";
   });
   const setLanguage = useCallback((next: AppLanguage) => {
     window.localStorage.setItem(storageKey, next);

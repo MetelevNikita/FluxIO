@@ -15,12 +15,13 @@
   },
   "dependencies": {
     "@gruber/contracts": "*",
+    "@gruber/scene-renderer": "*",
     "@napi-rs/canvas": "^1.0.8",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "fastify": "5.11.2",
-    "pg": "^8.22.0",
-    "@gruber/scene-renderer": "*"
+    "pdfjs-dist": "^5.4.624",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
     "prisma": "^7.9.1"

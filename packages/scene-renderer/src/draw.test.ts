@@ -440,3 +440,172 @@ test("the mask does not move the text it opens", () => {
 
   assert.deepEqual(half.ops("fillText")[0]?.args, open.ops("fillText")[0]?.args);
 });
+
+/* --------------------------- преобразования групп -------------------------- */
+
+/**
+ * Та же нижняя треть, собранная в группу — так же, как её собирает редактор:
+ * рамка группы обхватывает содержимое, а сдвиг группы вычтен из детей, чтобы
+ * сборка не двигала картинку. Рамка, не покрывающая детей, режет их при
+ * включённой обрезке — и тест на такой фикстуре проверял бы не то.
+ */
+const bandOrigin = { x: 0.04, y: 0.74 };
+
+function groupedLowerThird(patch: Record<string, unknown> = {}): SceneTemplate {
+  const template = lowerThird();
+  const box = node({
+    id: "band",
+    name: "Группа",
+    kind: "group",
+    transform: {
+      x: sceneTrack(bandOrigin.x), y: sceneTrack(bandOrigin.y),
+      width: sceneTrack(0.6), height: sceneTrack(0.22),
+      anchorX: 0, anchorY: 0, scale: sceneTrack(1), rotationDegrees: sceneTrack(0),
+      opacity: sceneTrack(1),
+    },
+    ...patch,
+  });
+  return {
+    ...template,
+    nodes: [
+      ...template.nodes.map((entry) => ({
+        ...entry,
+        parentId: "band",
+        transform: {
+          ...entry.transform,
+          x: { ...entry.transform.x, value: entry.transform.x.value - bandOrigin.x },
+          y: { ...entry.transform.y, value: entry.transform.y.value - bandOrigin.y },
+        },
+      })),
+      box,
+    ],
+  };
+}
+
+test("a group's scale reaches its children: it is a transform, not its own size", () => {
+  // Ради этого группа и собирается — чтобы плашка с текстом и маркером ехала
+  // как одно целое, а не тремя одинаковыми наборами ключей.
+  const template = groupedLowerThird({
+    transform: {
+      x: sceneTrack(bandOrigin.x), y: sceneTrack(bandOrigin.y),
+      width: sceneTrack(0.6), height: sceneTrack(0.22),
+      anchorX: 0, anchorY: 0, scale: sceneTrack(1.5), rotationDegrees: sceneTrack(0),
+      opacity: sceneTrack(1),
+    },
+  });
+  const surface = new RecordingSurface();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+  assert.ok(
+    surface.ops("scale").some((call) => call.args[0] === 1.5 && call.args[1] === 1.5),
+    "масштаб группы не дошёл до содержимого",
+  );
+});
+
+test("a group's rotation reaches its children and turns around its own anchor", () => {
+  const template = groupedLowerThird({
+    transform: {
+      x: sceneTrack(bandOrigin.x), y: sceneTrack(bandOrigin.y),
+      width: sceneTrack(0.6), height: sceneTrack(0.22),
+      anchorX: 0, anchorY: 0, scale: sceneTrack(1), rotationDegrees: sceneTrack(90),
+      opacity: sceneTrack(1),
+    },
+  });
+  const surface = new RecordingSurface();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+  const turned = surface.ops("rotate");
+  assert.ok(turned.length > 0, "поворот группы не дошёл до содержимого");
+  assert.ok(Math.abs(turned[0]!.args[0]! - Math.PI / 2) < 1e-9);
+});
+
+test("a group at rest adds no transform at all", () => {
+  // Лишний `translate` вокруг каждого узла — не косметика: он сбивает
+  // сравнение координат, которым проверяется всё остальное в этом файле.
+  const template = groupedLowerThird();
+  const surface = new RecordingSurface();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+  assert.equal(surface.ops("scale").length, 0);
+  assert.equal(surface.ops("rotate").length, 0);
+});
+
+test("a group's reveal clips its children without the container switch", () => {
+  // Кнопка «Раскрытие», поставленная на группу, обязана что-то делать: ключи,
+  // которые молча ничего не меняют, хуже отсутствующей кнопки.
+  const template = groupedLowerThird({
+    transform: {
+      x: sceneTrack(bandOrigin.x), y: sceneTrack(bandOrigin.y),
+      width: sceneTrack(0.6), height: sceneTrack(0.22),
+      anchorX: 0, anchorY: 0, scale: sceneTrack(1), rotationDegrees: sceneTrack(0),
+      opacity: sceneTrack(1), reveal: sceneTrack(0.5), revealMode: "wipe",
+    },
+  });
+  const surface = new RecordingSurface();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+  assert.ok(surface.ops("clip").length > 0, "раскрытие группы не обрезало содержимое");
+});
+
+/* ---------------------------- выезд из-под маски --------------------------- */
+
+test("a slide moves the picture under a mask that stays where it is", () => {
+  // Шторка открывает неподвижную надпись, выезд её везёт: две разные картинки,
+  // и путать их нельзя — иначе кнопка «Раскрытие» делает не то, что обещает.
+  const template = lowerThird();
+  const sliding: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? {
+          ...entry,
+          transform: {
+            ...entry.transform,
+            reveal: sceneTrack(0.5),
+            revealMode: "slide" as const,
+            revealAxis: "x" as const,
+            revealOriginX: 0,
+          },
+        }
+      : entry)),
+  };
+  const surface = new RecordingSurface();
+  drawScene(surface, sliding, hd(), sceneTiming(sliding.director, 5), input({ timeSeconds: 3 }));
+
+  // Обрезка есть — иначе выехавшая строка торчала бы за краем плашки.
+  assert.ok(surface.ops("clip").length > 0, "выезд не обрезал узел");
+  // И картинка сдвинута влево: точка среза стоит слева, оттуда и выезжает.
+  const moved = surface.ops("translate").find((call) => call.args[0]! < 0);
+  assert.ok(moved, "картинка не поехала из-под маски");
+});
+
+test("a finished slide leaves neither a mask nor a shift", () => {
+  const template = lowerThird();
+  const settled: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? {
+          ...entry,
+          transform: { ...entry.transform, reveal: sceneTrack(1), revealMode: "slide" as const },
+        }
+      : entry)),
+  };
+  const surface = new RecordingSurface();
+  drawScene(surface, settled, hd(), sceneTiming(settled.director, 5), input({ timeSeconds: 3 }));
+  assert.equal(surface.ops("clip").length, 0);
+  assert.ok(!surface.ops("translate").some((call) => call.args[0] !== -0 && call.args[0] !== 0));
+});
+
+test("a sliding group carries its children, not just its own frame", () => {
+  const template = groupedLowerThird({
+    transform: {
+      x: sceneTrack(bandOrigin.x), y: sceneTrack(bandOrigin.y),
+      width: sceneTrack(0.6), height: sceneTrack(0.22),
+      anchorX: 0, anchorY: 0, scale: sceneTrack(1), rotationDegrees: sceneTrack(0),
+      opacity: sceneTrack(1), reveal: sceneTrack(0.8), revealMode: "slide", revealAxis: "x",
+      revealOriginX: 0,
+    },
+  });
+  const surface = new RecordingSurface();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({ timeSeconds: 3 }));
+  assert.ok(surface.ops("clip").length > 0, "группа не обрезала содержимое");
+  assert.ok(
+    surface.ops("translate").some((call) => call.args[0]! < 0),
+    "содержимое группы не поехало вместе с её выездом",
+  );
+});

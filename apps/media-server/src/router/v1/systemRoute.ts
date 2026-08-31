@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { readFileSync } from "node:fs";
 
 //
 
@@ -11,7 +12,9 @@ import {
 import { listNetworkInterfaces } from "../../network-interfaces.js";
 import { errorMessage, type RouteContext } from "../context.js";
 
-export const serviceVersion = "8.0.1";
+export const serviceVersion = String(JSON.parse(
+  readFileSync(new URL("../../../../../package.json", import.meta.url), "utf8"),
+).version);
 
 const streamingStates = ["starting", "running", "stopping"];
 

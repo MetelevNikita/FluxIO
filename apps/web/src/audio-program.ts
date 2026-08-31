@@ -10,7 +10,7 @@ import type { AudioTrackInfo, MediaAsset } from "./types.js";
  * найденные по всему плейлисту, каждый со своим PID подряд. Набор фиксируется на
  * Start, потому что PMT нельзя менять в течение сессии.
  */
-export function buildProgramAudioTracks(
+function buildProgramAudioTracks(
   playlist: MediaAsset[],
   originalLanguageCode: string,
   originalLabel: string,
@@ -39,7 +39,7 @@ export function buildProgramAudioTracks(
 }
 
 /** Языки, встречающиеся хотя бы у одного ролика, в стабильном порядке. */
-export function collectLanguages(playlist: MediaAsset[]): AudioTrackInfo[] {
+function collectLanguages(playlist: MediaAsset[]): AudioTrackInfo[] {
   const byLanguage = new Map<string, AudioTrackInfo>();
 
   for (const asset of playlist) {

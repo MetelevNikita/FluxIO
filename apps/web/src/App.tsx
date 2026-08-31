@@ -1,33 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+declare const __FLUXIO_VERSION__: string;
 import {
   broadcastEffectDefinitionSchema,
   broadcastEffectSettingsSchema,
   graphicEffectAssetSchema,
-  serviceHealthSchema,
   type BroadcastEffectKind,
   type BroadcastTaskFileContent,
-  type FfmpegCapabilities,
   type GraphicEffectAsset,
   type SystemFont,
   type MediaProbe,
   type ParsedSchedule,
   type ScheduleExportExtension,
   type SerializeScheduleRequest,
-  type NetworkInterfaceInfo,
-  type PlayoutStatus,
   type SavedWorkspaceSession,
   type ScheduleStartMarker,
-  type ServiceHealth,
   type StartPlayoutRequest,
-  type SystemMetrics,
   type WorkspaceSessionCheckpoint,
   type WorkspaceSessionSaveRequest,
-  isBarsSource,
   type SceneLayoutTarget,
   type SceneTemplate,
+  sceneTemplateSchema,
+  sceneNodeSchema,
+  sceneTrack,
   type TitleFileSummary,
 } from "@gruber/contracts";
 import { AppHeader } from "./components/AppHeader";
+import { useI18n } from "./i18n";
 import { PlayoutStatusProvider } from "./playout-status";
 import { GlobalStatusBar } from "./components/GlobalStatusBar";
 import {
@@ -46,11 +45,6 @@ import {
   parseEncodingSettingsProfile,
   serializeEncodingSettingsProfile,
 } from "./encoding-settings-profile";
-import { BroadcastSettingsScreen } from "./screens/BroadcastSettingsScreen";
-import { ImportAnalyzeScreen } from "./screens/ImportAnalyzeScreen";
-import { PlaylistPreviewScreen } from "./screens/PlaylistPreviewScreen";
-import { EffectsScreen } from "./screens/EffectsScreen";
-import { TitleEditorScreen } from "./screens/TitleEditorScreen";
 import { SceneFormatDialog } from "./title-editor/SceneFormatDialog";
 import { TitleLibraryDialog } from "./title-editor/TitleLibraryDialog";
 import { decodeScheduleBlob, encodeScheduleBlob } from "./schedule-blob";
@@ -92,10 +86,7 @@ import {
   withSceneFont,
   withSceneTargets,
 } from "./broadcast-effects";
-import {
-  broadcastEffectTitle,
-  type BroadcastTaskSummary,
-} from "./screens/BroadcastEffectInspector";
+import { broadcastEffectTitle, type BroadcastTaskSummary } from "./broadcast-effect-catalog";
 import {
   removeEffectFromLibrary,
 } from "./effect-assignment";
@@ -104,13 +95,10 @@ import { defaultSceneTemplate } from "./default-scenes";
 import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
 import {
-  getFfmpegCapabilities,
   analyzeGraphicEffectPaths,
-  getNetworkInterfaces,
-  getPlayoutStatus,
-  getSystemMetrics,
   getWorkspaceSession,
   listSystemFonts,
+  importVectorLayers,
   mediaThumbnailUrl,
   parseScheduleFile,
   probeMediaPaths,
@@ -131,6 +119,7 @@ import {
   updateCurrentPlayoutPlaylist,
   updateNextPlayoutPlaylist,
 } from "./media-api";
+import { useMediaService } from "./use-media-service";
 import type {
   AppView,
   BroadcastSettings,
@@ -142,10 +131,16 @@ import type {
   SubtitleLibrary,
 } from "./types";
 
-export type ConnectionState =
-  | { kind: "loading" }
-  | { kind: "ready"; health: ServiceHealth }
-  | { kind: "error"; message: string };
+const BroadcastSettingsScreen = lazy(() => import("./screens/BroadcastSettingsScreen")
+  .then((module) => ({ default: module.BroadcastSettingsScreen })));
+const EffectsScreen = lazy(() => import("./screens/EffectsScreen")
+  .then((module) => ({ default: module.EffectsScreen })));
+const ImportAnalyzeScreen = lazy(() => import("./screens/ImportAnalyzeScreen")
+  .then((module) => ({ default: module.ImportAnalyzeScreen })));
+const PlaylistPreviewScreen = lazy(() => import("./screens/PlaylistPreviewScreen")
+  .then((module) => ({ default: module.PlaylistPreviewScreen })));
+const TitleEditorScreen = lazy(() => import("./screens/TitleEditorScreen")
+  .then((module) => ({ default: module.TitleEditorScreen })));
 
 const initialPlaylist = [
   initialAssets[2],
@@ -166,17 +161,24 @@ const demoDataEnabled = import.meta.env.VITE_ENABLE_DEMO_DATA === "true";
  */
 const autoResumeDelaySeconds = 15;
 
+interface EditingSceneDraft {
+  effectId: string;
+  effectName: string;
+  template: SceneTemplate;
+  durationSeconds: number;
+}
+
 export function App() {
+  const { tr } = useI18n();
   const [view, setView] = useState<AppView>("import");
   /**
    * Эффект, сцену которого правит редактор титров. Редактор — накладка поверх
    * всего приложения, а не отдельная вкладка: он открывается из эффекта и
    * возвращает в него же.
    */
-  const [editingSceneEffectId, setEditingSceneEffectId] = useState<string | null>(null);
-  const [connection, setConnection] = useState<ConnectionState>({
-    kind: "loading",
-  });
+  const [editingScene, setEditingScene] = useState<EditingSceneDraft | null>(null);
+  /** Незавершённые титры остаются у своего эффекта после закрытия редактора. */
+  const [sceneDrafts, setSceneDrafts] = useState<Record<string, EditingSceneDraft>>({});
   const [assets, setAssets] = useState<MediaAsset[]>(() =>
     demoDataEnabled ? initialAssets : [],
   );
@@ -193,10 +195,17 @@ export function App() {
   const [settings, setSettings] = useState<BroadcastSettings>(
     initialBroadcastSettings,
   );
-  const [capabilities, setCapabilities] = useState<FfmpegCapabilities | null>(null);
-  const [playoutStatus, setPlayoutStatus] = useState<PlayoutStatus | null>(null);
-  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
-  const [networkInterfaces, setNetworkInterfaces] = useState<NetworkInterfaceInfo[]>([]);
+  const {
+    capabilities,
+    connection,
+    networkInterfaces,
+    playoutStatus,
+    pollError,
+    preferredUdpLocalAddress,
+    serverAddress,
+    setPlayoutStatus,
+    systemMetrics,
+  } = useMediaService();
   const [operationError, setOperationError] = useState<string | null>(null);
   const [mediaBusy, setMediaBusy] = useState(false);
   const [scheduleLogoPath, setScheduleLogoPath] = useState("");
@@ -254,10 +263,13 @@ export function App() {
     void listSystemFonts()
       .then((items) => { if (!cancelled) { setSystemFonts(items); setSystemFontsError(null); } })
       .catch((error: unknown) => {
-        if (!cancelled) setSystemFontsError(`Не удалось получить системные шрифты: ${String(error)}`);
+        if (!cancelled) setSystemFontsError(tr(
+          `Не удалось получить системные шрифты: ${String(error)}`,
+          `Could not load system fonts: ${String(error)}`,
+        ));
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [tr]);
 
   const stableCreateBroadcastEffect = useStableCallback(
     (kind: BroadcastEffectKind, defaultFont: SystemFont | null) =>
@@ -267,7 +279,7 @@ export function App() {
   const stableSelectStingerFile = useStableCallback((id: string) => selectStingerFile(id));
   const stableSelectDecorationFile = useStableCallback((id: string) =>
     selectDecorationFile(id));
-  const stableEditScene = useStableCallback((id: string) => setEditingSceneEffectId(id));
+  const stableEditScene = useStableCallback((id: string) => openTitleEditor(id));
 
   /**
    * Что правит редактор титров: сцена эффекта, её длительность показа и кадр
@@ -277,29 +289,25 @@ export function App() {
    * удержание, и в редакторе показ обязан идти ровно столько же, сколько в
    * эфире.
    */
-  const editingScene = useMemo(() => {
-    if (!editingSceneEffectId) return null;
-    const effect = effectLibrary.find((entry) => entry.id === editingSceneEffectId);
+  function openTitleEditor(effectId: string) {
+    const effect = effectLibrary.find((entry) => entry.id === effectId);
     const definition = effect?.broadcast;
-    if (!effect || !definition?.scene) return null;
-    const durationSeconds = sceneShowDurationSeconds(definition);
-    return {
+    if (!effect || !definition?.scene) return;
+    const savedDraft = sceneDrafts[effectId];
+    setEditingScene(savedDraft ? { ...savedDraft, effectName: effect.name } : {
       effectId: effect.id,
       effectName: effect.name,
-      template: definition.scene,
-      durationSeconds,
-    };
-  }, [editingSceneEffectId, effectLibrary]);
-
-  /**
-   * Кадр под сценой. Берём середину первого ролика: титр почти всегда ложится
-   * на движущуюся картинку, и на чёрном фоне читаемость обманчива.
-   */
-  const editorBackdropUrl = useMemo(() => {
-    const clip = playlist[0];
-    if (!clip || isBarsSource(clip.filePath)) return null;
-    return mediaThumbnailUrl(clip.filePath, Math.max(1, airDurationSeconds(clip) / 2));
-  }, [playlist]);
+      template: sceneTemplateSchema.parse({
+        id: `scene-${window.crypto.randomUUID()}`,
+        name: tr("Новый титр", "Untitled title"),
+        targets: definition.scene.targets,
+        director: { inSeconds: 0.5, outSeconds: 0.5 },
+        fields: [],
+        nodes: [],
+      }),
+      durationSeconds: sceneShowDurationSeconds(definition),
+    });
+  }
   const stableSelectStingerSequence = useStableCallback((id: string) => selectStingerSequence(id));
   const stableSelectTickerSourceFile = useStableCallback((id: string) =>
     selectTickerSourceFile(id));
@@ -403,100 +411,15 @@ export function App() {
   const currentPlaylistSync = useRef({ sessionId: "", snapshot: "" });
 
   useEffect(() => {
-    let cancelled = false;
-    let requestInFlight = false;
-
-    async function loadHealth() {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      try {
-        const healthPayload = window.gruberDesktop
-          ? await window.gruberDesktop.getServiceHealth()
-          : await fetchHealth();
-        const health = serviceHealthSchema.parse(healthPayload);
-        if (!cancelled) {
-          setConnection({ kind: "ready", health });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setConnection({
-            kind: "error",
-            message: error instanceof Error ? error.message : "Unknown error",
-          });
-        }
-      } finally {
-        requestInFlight = false;
-      }
-    }
-
-    void loadHealth();
-    const timer = window.setInterval(() => void loadHealth(), 2_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+    if (pollError) setOperationError(pollError);
+  }, [pollError]);
 
   useEffect(() => {
-    if (connection.kind !== "ready") {
-      return;
-    }
-    let cancelled = false;
-    let pollInFlight = false;
-
-    async function refresh() {
-      try {
-        const [nextCapabilities, nextStatus, nextMetrics, nextNetworkInterfaces] = await Promise.all([
-          getFfmpegCapabilities(),
-          getPlayoutStatus(),
-          getSystemMetrics(),
-          getNetworkInterfaces(),
-        ]);
-        if (!cancelled) {
-          setCapabilities(nextCapabilities);
-          setPlayoutStatus(nextStatus);
-          setSystemMetrics(nextMetrics);
-          setNetworkInterfaces(nextNetworkInterfaces);
-          const preferredInterface = nextNetworkInterfaces.find(
-            (entry) => entry.family === "IPv4" && !entry.internal,
-          );
-          if (preferredInterface) {
-            setSettings((current) => current.udpLocalAddress
-              ? current
-              : { ...current, udpLocalAddress: preferredInterface.address });
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setOperationError(errorMessage(error));
-        }
-      }
-    }
-
-    pollInFlight = true;
-    void refresh().finally(() => {
-      pollInFlight = false;
-    });
-    const timer = window.setInterval(() => {
-      if (pollInFlight) return;
-      pollInFlight = true;
-      void Promise.all([getPlayoutStatus(), getSystemMetrics()])
-        .then(([status, metrics]) => {
-          if (!cancelled) {
-            setPlayoutStatus(status);
-            setSystemMetrics(metrics);
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          pollInFlight = false;
-        });
-    }, 1_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [connection.kind]);
+    if (!preferredUdpLocalAddress) return;
+    setSettings((current) => current.udpLocalAddress
+      ? current
+      : { ...current, udpLocalAddress: preferredUdpLocalAddress });
+  }, [preferredUdpLocalAddress]);
 
   useEffect(() => {
     if (
@@ -808,9 +731,10 @@ export function App() {
     setBroadcastTaskContents((current) => ({ ...current, ...contents }));
     setBroadcastTaskSummaries((current) => ({ ...current, ...summaries }));
     if (failures.length > 0) {
-      setOperationError(
+      setOperationError(tr(
         `Не удалось восстановить ${failures.length} файл(а) задания. ${failures[0]}`,
-      );
+        `Could not restore ${failures.length} task file(s). ${failures[0]}`,
+      ));
     }
   }
 
@@ -1031,9 +955,10 @@ export function App() {
         [...importedEffects, ...restoredEffects.values()],
       ));
       if (effectIssues.length > 0) {
-        setOperationError(
+        setOperationError(tr(
           `Не удалось восстановить эффекты из расписания: ${effectIssues.join("; ")}`,
-        );
+          `Could not restore schedule effects: ${effectIssues.join("; ")}`,
+        ));
       }
       if (slot === "current") {
         setPlaylist(scheduledAssets);
@@ -1312,7 +1237,10 @@ export function App() {
       setMissingGraphics(missing);
       setMissingGraphicsResolved({});
     } catch (error) {
-      setOperationError(`Не удалось проверить графику расписания: ${errorMessage(error)}`);
+      setOperationError(tr(
+        `Не удалось проверить графику расписания: ${errorMessage(error)}`,
+        `Could not verify schedule graphics: ${errorMessage(error)}`,
+      ));
     }
   }
 
@@ -1326,7 +1254,10 @@ export function App() {
     try {
       const { items: [replacement], issues } = await analyzeGraphicEffectPaths([selected]);
       if (!replacement && issues[0]) throw new Error(issues[0].message);
-      if (!replacement) throw new Error("Файл не удалось разобрать как эффект");
+      if (!replacement) throw new Error(tr(
+        "Файл не удалось разобрать как эффект",
+        "The file could not be parsed as an effect",
+      ));
       const map = new Map([[filePath, replacement]]);
       setEffectLibrary((current) => mergeEffectAssets(current, [replacement]));
       setPlaylist((current) => applyGraphicReplacements(current, map).items);
@@ -1351,9 +1282,10 @@ export function App() {
     setFuturePlaylist((current) => dropMissingGraphics(current, unresolved));
     setMissingGraphics([]);
     setMissingGraphicsResolved({});
-    setScheduleActionMessage(
+    setScheduleActionMessage(tr(
       `${unresolved.size} потерянных элемент(ов) графики сняты с роликов.`,
-    );
+      `${unresolved.size} missing graphic item(s) were removed from clips.`,
+    ));
   }
 
   /**
@@ -1372,7 +1304,7 @@ export function App() {
   const [pendingSceneKind, setPendingSceneKind] = useState<BroadcastEffectKind | null>(null);
 
   function createBroadcastEffect(kind: BroadcastEffectKind, defaultFont: SystemFont | null) {
-    if (defaultSceneTemplate(kind)) { setPendingSceneKind(kind); return; }
+    if (defaultSceneTemplate(kind, tr)) { setPendingSceneKind(kind); return; }
     createBroadcastEffectWithTargets(kind, defaultFont, ["hd"]);
   }
 
@@ -1381,13 +1313,13 @@ export function App() {
     defaultFont: SystemFont | null,
     targets: SceneLayoutTarget[],
   ) {
-    const title = broadcastEffectTitle(kind);
+    const title = broadcastEffectTitle(kind, tr);
     const existing = effectLibrary.filter((effect) => effect.broadcast?.kind === kind).length;
     const blank = broadcastEffectSettingsSchema.parse({});
     const effect = graphicEffectAssetSchema.parse({
       broadcast: {
         kind,
-        scene: withSceneTargets(withSceneFont(defaultSceneTemplate(kind), defaultFont), targets),
+        scene: withSceneTargets(withSceneFont(defaultSceneTemplate(kind, tr), defaultFont), targets),
         settings: withDefaultTextFont(blank, defaultFont),
         dataMapping: {
           matchSourceKey: kind === "animation-in-out" ? "title" : "name",
@@ -1402,10 +1334,10 @@ export function App() {
       width: 0,
     });
     setEffectLibrary((current) => [...current, effect]);
-    setEffectsMessage(
-      `${effect.name}: эффект второго уровня создан. Выберите пресет и настройки, ` +
-        "затем примените его к проекту или ролику.",
-    );
+    setEffectsMessage(tr(
+      `${effect.name}: эффект второго уровня создан. Выберите пресет и настройки, затем примените его к проекту или ролику.`,
+      `${effect.name}: tier 2 effect created. Choose a preset and settings, then apply it to the project or a clip.`,
+    ));
   }
 
   /** Перестановка эффекта в библиотеке: `beforeEffectId === null` — в конец списка. */
@@ -1481,10 +1413,12 @@ export function App() {
           },
         },
       }));
-      setEffectsMessage(
+      setEffectsMessage(tr(
         `Файл задания прочитан: ${content.records.length} записей` +
           (content.warnings.length > 0 ? `, предупреждений — ${content.warnings.length}.` : "."),
-      );
+        `Task file loaded: ${content.records.length} records` +
+          (content.warnings.length > 0 ? `, ${content.warnings.length} warnings.` : "."),
+      ));
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1512,7 +1446,10 @@ export function App() {
         .map((asset) => asset.id),
     );
     if (assignedIds.size === 0) {
-      setEffectsMessage(`${effect.name}: эффект ещё не назначен ни одному ролику.`);
+      setEffectsMessage(tr(
+        `${effect.name}: эффект ещё не назначен ни одному ролику.`,
+        `${effect.name}: this effect has not been assigned to any clip yet.`,
+      ));
       return;
     }
     // Стингер лежит парой: хвост на выбранном ролике и голова на следующем.
@@ -1535,9 +1472,10 @@ export function App() {
       silent: true,
     });
     if (!result) return;
-    setEffectsMessage(
+    setEffectsMessage(tr(
       `${effect.name}: настройки перенесены в ${assignedIds.size} ролик(ов).`,
-    );
+      `${effect.name}: settings updated on ${assignedIds.size} clip(s).`,
+    ));
   }
 
   /**
@@ -1553,7 +1491,10 @@ export function App() {
     if (!effect.broadcast) return;
     const taskContent = broadcastTaskContents[effect.id];
     if (!taskContent || !effect.broadcast.dataMapping.filePath) {
-      setOperationError(`${effect.name}: сначала выберите файл задания .json.`);
+      setOperationError(tr(
+        `${effect.name}: сначала выберите файл задания .json.`,
+        `${effect.name}: choose a .json task file first.`,
+      ));
       return;
     }
     const taskEntries = mapBroadcastTaskRecords(
@@ -1565,18 +1506,19 @@ export function App() {
       [...playlist, ...futurePlaylist].map(broadcastTargetClip),
     );
     if (summary.duplicateTitles.length > 0) {
-      setOperationError(
-        `${effect.name}: в JSON повторяется идентификатор ` +
-          `«${effect.broadcast.dataMapping.matchSourceKey}»: ` +
+      setOperationError(tr(
+        `${effect.name}: в JSON повторяется идентификатор «${effect.broadcast.dataMapping.matchSourceKey}»: ` +
           `${summary.duplicateTitles.slice(0, 3).join(", ")}. Удалите неоднозначные записи.`,
-      );
+        `${effect.name}: JSON contains duplicate “${effect.broadcast.dataMapping.matchSourceKey}” values: ` +
+          `${summary.duplicateTitles.slice(0, 3).join(", ")}. Remove ambiguous records.`,
+      ));
       return;
     }
     if (summary.matchedClipCount === 0) {
-      setOperationError(
-        `${effect.name}: ни одно значение «${effect.broadcast.dataMapping.matchSourceKey}» ` +
-          "из JSON не совпало с именем ролика в расписании.",
-      );
+      setOperationError(tr(
+        `${effect.name}: ни одно значение «${effect.broadcast.dataMapping.matchSourceKey}» из JSON не совпало с именем ролика в расписании.`,
+        `${effect.name}: no JSON “${effect.broadcast.dataMapping.matchSourceKey}” value matches a clip name in the schedule.`,
+      ));
       return;
     }
     const result = await applyBroadcastEffect(effect, null, {
@@ -1587,18 +1529,16 @@ export function App() {
       silent: true,
     });
     if (!result) return;
-    setEffectsMessage(
-      `${effect.name}: JSON применён к ${result.touched} ролику(ам). ` +
-        `Совпало записей: ${summary.matchedRecordCount}; ` +
-        `вне расписания: ${summary.unmatchedRecordCount}; ` +
-        `роликов без JSON: ${summary.unmatchedClipCount}.` +
-        (result.warnings.length > 0
-          ? ` Предупреждений: ${result.warnings.length} — ${result.warnings[0]}`
-          : "") +
-        (result.errors.length > 0
-          ? ` Ошибок привязки: ${result.errors.length} — ${result.errors[0]}`
-          : ""),
-    );
+    setEffectsMessage(tr(
+      `${effect.name}: JSON применён к ${result.touched} ролику(ам). Совпало записей: ${summary.matchedRecordCount}; ` +
+        `вне расписания: ${summary.unmatchedRecordCount}; роликов без JSON: ${summary.unmatchedClipCount}.` +
+        (result.warnings.length > 0 ? ` Предупреждений: ${result.warnings.length} — ${result.warnings[0]}` : "") +
+        (result.errors.length > 0 ? ` Ошибок привязки: ${result.errors.length} — ${result.errors[0]}` : ""),
+      `${effect.name}: JSON applied to ${result.touched} clip(s). Matched records: ${summary.matchedRecordCount}; ` +
+        `outside schedule: ${summary.unmatchedRecordCount}; clips without JSON: ${summary.unmatchedClipCount}.` +
+        (result.warnings.length > 0 ? ` Warnings: ${result.warnings.length} — ${result.warnings[0]}` : "") +
+        (result.errors.length > 0 ? ` Binding errors: ${result.errors.length} — ${result.errors[0]}` : ""),
+    ));
   }
 
   /** Заголовки новостной ленты. Качает media-service: у окна Electron строгий CSP. */
@@ -1624,10 +1564,10 @@ export function App() {
           },
         },
       }));
-      setEffectsMessage(
-        `Лента прочитана: ${content.items.length} заголовков. ` +
-          "Примените эффект заново, чтобы новости ушли в эфир.",
-      );
+      setEffectsMessage(tr(
+        `Лента прочитана: ${content.items.length} заголовков. Примените эффект заново, чтобы новости ушли в эфир.`,
+        `Feed loaded: ${content.items.length} headlines. Apply the effect again to send the news to air.`,
+      ));
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1664,7 +1604,10 @@ export function App() {
       },
     }));
     setOperationError(null);
-    setEffectsMessage(`Оформление эффекта «${effect.name}»: ${filePath.split(/[\\/]/).pop()}`);
+    setEffectsMessage(tr(
+      `Оформление эффекта «${effect.name}»: ${filePath.split(/[\\/]/).pop()}`,
+      `Design for “${effect.name}”: ${filePath.split(/[\\/]/).pop()}`,
+    ));
   }
 
   async function selectTickerSourceFile(effectId: string) {
@@ -1689,7 +1632,10 @@ export function App() {
           },
         },
       }));
-      setEffectsMessage(`Бегущая строка: загружено ${content.items.length} сообщений.`);
+      setEffectsMessage(tr(
+        `Бегущая строка: загружено ${content.items.length} сообщений.`,
+        `Ticker: loaded ${content.items.length} messages.`,
+      ));
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1711,7 +1657,9 @@ export function App() {
    * Длина показа подгоняется под источник: титр короче своей подложки обрывал бы
    * её на середине, а длиннее — держал бы в кадре застывший последний кадр.
    */
-  async function selectSceneMedia(effectId: string, nodeId: string) {
+  async function selectSceneMedia(nodeId: string) {
+    const draftId = editingScene?.template.id;
+    if (!draftId) return;
     const filePath = await window.gruberDesktop?.selectDecorationFile();
     if (!filePath) return;
     setEffectsBusy(true);
@@ -1735,7 +1683,7 @@ export function App() {
         };
       } else {
         const [probe] = await probeMediaPaths([filePath]);
-        if (!probe) throw new Error("FFprobe не вернул данные файла");
+        if (!probe) throw new Error(tr("FFprobe не вернул данные файла", "FFprobe returned no file data"));
         media = {
           filePath,
           durationSeconds: probe.durationSeconds,
@@ -1745,26 +1693,72 @@ export function App() {
         };
       }
 
-      updateBroadcastSettings(effectId, (effect) => {
-        const definition = effect.broadcast;
-        if (!definition?.scene) return effect;
-        return {
-          ...effect,
-          broadcast: {
-            ...definition,
-            scene: {
-              ...definition.scene,
-              nodes: definition.scene.nodes.map((node) => (node.id === nodeId
-                ? { ...node, media: { ...node.media, ...media } }
-                : node)),
-            },
-          },
-        };
-      });
-      setSceneShowDuration(effectId, media.durationSeconds);
-      setEffectsMessage(
+      setEditingScene((current) => current?.template.id === draftId ? {
+        ...current,
+        durationSeconds: media.durationSeconds,
+        template: {
+          ...current.template,
+          nodes: current.template.nodes.map((node) => (node.id === nodeId
+            ? { ...node, media: { ...node.media, ...media } }
+            : node)),
+        },
+      } : current);
+      setEffectsMessage(tr(
         `Подложка загружена: ${media.durationSeconds.toFixed(2)} с. Длина показа подогнана под неё.`,
-      );
+        `Media loaded: ${media.durationSeconds.toFixed(2)} s. Show duration was matched to it.`,
+      ));
+    } catch (reason) {
+      setOperationError(errorMessage(reason));
+    } finally {
+      setEffectsBusy(false);
+    }
+  }
+
+  async function importSceneVectorLayers() {
+    const draftId = editingScene?.template.id;
+    if (!draftId) return;
+    const filePath = await window.gruberDesktop?.selectVectorFile();
+    if (!filePath) return;
+    setEffectsBusy(true);
+    setOperationError(null);
+    try {
+      const imported = await importVectorLayers(filePath);
+      const groupId = `group-${window.crypto.randomUUID().slice(0, 8)}`;
+      const imageNodes = [...imported.layers].reverse().map((layer) => sceneNodeSchema.parse({
+        id: `image-${window.crypto.randomUUID().slice(0, 8)}`,
+        name: layer.name,
+        kind: "image",
+        parentId: groupId,
+        transform: {
+          x: sceneTrack(0), y: sceneTrack(0),
+          width: sceneTrack(1), height: sceneTrack(1),
+          scale: sceneTrack(1), rotationDegrees: sceneTrack(0), opacity: sceneTrack(1),
+        },
+        media: {
+          filePath: layer.filePath,
+          fit: "contain",
+          loop: true,
+          durationSeconds: 0,
+          hasAlpha: true,
+        },
+      }));
+      const group = sceneNodeSchema.parse({
+        id: groupId,
+        name: tr("Импортированный вектор", "Imported artwork"),
+        kind: "group",
+        transform: {
+          x: sceneTrack(0), y: sceneTrack(0),
+          width: sceneTrack(1), height: sceneTrack(1),
+          scale: sceneTrack(1), rotationDegrees: sceneTrack(0), opacity: sceneTrack(1),
+        },
+      });
+      setEditingScene((current) => current?.template.id === draftId ? {
+        ...current,
+        template: { ...current.template, nodes: [...current.template.nodes, ...imageNodes, group] },
+      } : current);
+      setEffectsMessage(imported.layered
+        ? tr(`Импортировано слоёв: ${imported.layers.length}.`, `Imported ${imported.layers.length} layers.`)
+        : tr("В файле нет именованных PDF-слоёв: импортирован один элемент.", "No named PDF layers were found; imported as one element."));
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1778,7 +1772,7 @@ export function App() {
     if (!picked) return;
     setEffectLibrary((current) => applyEffectFileReplacement(current, filePath, picked));
     setMissingEffectFiles((current) => current.filter((entry) => entry.filePath !== filePath));
-    setEffectsMessage(`Файл найден: ${picked}`);
+    setEffectsMessage(tr(`Файл найден: ${picked}`, `File found: ${picked}`));
   }
 
   /* ------------------------- автостарт после запуска ----------------------- */
@@ -1856,10 +1850,7 @@ export function App() {
   }
 
   /** Сохранить текущий шаблон отдельным файлом `.fto`. */
-  async function saveTitleAs(effectId: string) {
-    const effect = effectLibrary.find((entry) => entry.id === effectId);
-    const scene = effect?.broadcast?.scene;
-    if (!scene) return;
+  async function saveTitleAs(scene: SceneTemplate) {
     setEffectsBusy(true);
     setOperationError(null);
     try {
@@ -1869,7 +1860,7 @@ export function App() {
         defaultName: titleFileName(scene.name),
       });
       if (saved) {
-        setEffectsMessage(`Титр сохранён: ${saved}`);
+        setEffectsMessage(tr(`Титр сохранён: ${saved}`, `Title saved: ${saved}`));
         void refreshTitleLibrary(titleLibrary.directoryPath || undefined);
       }
     } catch (reason) {
@@ -1885,30 +1876,33 @@ export function App() {
    * Опознаватели узлов выдаются заново: два узла с одним id — это потерянная
    * привязка плашки к тексту, и заметно это только в эфире.
    */
-  function adoptTitle(effectId: string, template: SceneTemplate) {
-    updateBroadcastSettings(effectId, (effect) => ({
-      ...effect,
-      broadcast: effect.broadcast && {
-        ...effect.broadcast,
-        scene: withSceneFont(
-          adoptTitleTemplate(template, () => window.crypto.randomUUID().slice(0, 8)),
-          preferredTextFont(systemFonts),
-        ),
-      },
-    }));
+  function adoptTitle(template: SceneTemplate) {
+    setEditingScene((current) => current ? {
+      ...current,
+      template: withSceneFont(
+        adoptTitleTemplate(template, () => window.crypto.randomUUID().slice(0, 8)),
+        preferredTextFont(systemFonts),
+      )!,
+    } : current);
     setTitleLibraryOpen(false);
-    setEffectsMessage(`Титр «${template.name}» загружен в эффект.`);
+    setEffectsMessage(tr(
+      `Титр «${template.name}» загружен в эффект.`,
+      `Title “${template.name}” loaded into the draft.`,
+    ));
   }
 
-  async function pickTitleFromLibrary(effectId: string, filePath: string) {
+  async function pickTitleFromLibrary(filePath: string) {
     const bridge = window.gruberDesktop;
     if (!bridge) return;
     setEffectsBusy(true);
     try {
       const read = await bridge.readTitleLibrary(titleLibrary.directoryPath || undefined);
       const file = read.files.find((entry) => entry.filePath === filePath);
-      if (!file) throw new Error("Файл титра больше не найден — перечитайте папку");
-      adoptTitle(effectId, parseTitleFile(file.content).template);
+      if (!file) throw new Error(tr(
+        "Файл титра больше не найден — перечитайте папку",
+        "The title file is no longer available — refresh the folder",
+      ));
+      adoptTitle(parseTitleFile(file.content).template);
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
@@ -1916,37 +1910,17 @@ export function App() {
     }
   }
 
-  async function openTitleFile(effectId: string) {
+  async function openTitleFile() {
     setEffectsBusy(true);
     try {
       const picked = await window.gruberDesktop?.selectTitleFile();
       if (!picked) return;
-      adoptTitle(effectId, parseTitleFile(picked.content).template);
+      adoptTitle(parseTitleFile(picked.content).template);
     } catch (reason) {
       setOperationError(errorMessage(reason));
     } finally {
       setEffectsBusy(false);
     }
-  }
-
-  /** Длина показа живёт в настройках вида эффекта, а не в сцене. */
-  function setSceneShowDuration(effectId: string, seconds: number) {
-    const durationSeconds = Math.max(0.1, Math.min(86_400, seconds));
-    updateBroadcastSettings(effectId, (effect) => {
-      const definition = effect.broadcast;
-      if (!definition) return effect;
-      const settingsPatch = definition.kind === "next-program"
-        ? { nextProgram: { ...definition.settings.nextProgram, durationSeconds } }
-        : definition.kind === "ticker-crawl"
-          ? { tickerCrawl: { ...definition.settings.tickerCrawl, durationSeconds } }
-          : definition.kind === "clock-countdown"
-            ? { clockCountdown: { ...definition.settings.clockCountdown, durationSeconds } }
-            : { dynamicTitle: { ...definition.settings.dynamicTitle, durationSeconds } };
-      return {
-        ...effect,
-        broadcast: { ...definition, settings: { ...definition.settings, ...settingsPatch } },
-      };
-    });
   }
 
   async function selectStingerSequence(effectId: string) {
@@ -1988,18 +1962,19 @@ export function App() {
           },
         };
       });
-      setEffectsMessage(
-        `Последовательность: ${sequence.frameCount} кадр(ов) с номера ${sequence.startNumber}` +
-          `, ${durationSeconds.toFixed(2)} с при ${frameRate} fps.` +
-          (sequence.missing.length > 0
-            ? ` Пропущены кадры: ${sequence.missing.join(", ")} — переход оборвётся на первом из них.`
-            : ""),
-      );
+      setEffectsMessage(tr(
+        `Последовательность: ${sequence.frameCount} кадр(ов) с номера ${sequence.startNumber}, ` +
+          `${durationSeconds.toFixed(2)} с при ${frameRate} fps.` +
+          (sequence.missing.length > 0 ? ` Пропущены кадры: ${sequence.missing.join(", ")} — переход оборвётся на первом из них.` : ""),
+        `Sequence: ${sequence.frameCount} frames starting at ${sequence.startNumber}, ` +
+          `${durationSeconds.toFixed(2)} s at ${frameRate} fps.` +
+          (sequence.missing.length > 0 ? ` Missing frames: ${sequence.missing.join(", ")} — the transition will stop at the first gap.` : ""),
+      ));
       if (sequence.missing.length > 0) {
-        setOperationError(
-          `В последовательности не хватает кадров (${sequence.missing.length}). ` +
-            "FFmpeg остановит чтение на первом пропуске, и переход оборвётся посреди стыка.",
-        );
+        setOperationError(tr(
+          `В последовательности не хватает кадров (${sequence.missing.length}). FFmpeg остановит чтение на первом пропуске, и переход оборвётся посреди стыка.`,
+          `The sequence has ${sequence.missing.length} missing frame(s). FFmpeg will stop at the first gap and cut the transition short.`,
+        ));
       }
     } catch (reason) {
       setOperationError(errorMessage(reason));
@@ -2015,7 +1990,10 @@ export function App() {
     setOperationError(null);
     try {
       const [probe] = await probeMediaPaths([filePath]);
-      if (!probe) throw new Error("FFprobe не вернул данные файла перехода");
+      if (!probe) throw new Error(tr(
+        "FFprobe не вернул данные файла перехода",
+        "FFprobe returned no transition file data",
+      ));
       const sourceHasAlpha = pixelFormatHasAlpha(probe.pixelFormat);
       updateBroadcastSettings(effectId, (effect) => {
         const current = effect.broadcast!.settings.stingerTransition;
@@ -2045,14 +2023,17 @@ export function App() {
           },
         };
       });
-      setEffectsMessage(
-        `Стингер разобран: ${probe.durationSeconds.toFixed(2)} с · ` +
-          `${probe.frameRate.toFixed(2)} fps · ${probe.pixelFormat} · ` +
-          `alpha ${sourceHasAlpha ? "есть" : "не обнаружена"} · ` +
-          `audio ${probe.hasAudio ? "есть" : "нет"}.`,
-      );
+      setEffectsMessage(tr(
+        `Стингер разобран: ${probe.durationSeconds.toFixed(2)} с · ${probe.frameRate.toFixed(2)} fps · ` +
+          `${probe.pixelFormat} · alpha ${sourceHasAlpha ? "есть" : "не обнаружена"} · audio ${probe.hasAudio ? "есть" : "нет"}.`,
+        `Stinger analyzed: ${probe.durationSeconds.toFixed(2)} s · ${probe.frameRate.toFixed(2)} fps · ` +
+          `${probe.pixelFormat} · alpha ${sourceHasAlpha ? "yes" : "not detected"} · audio ${probe.hasAudio ? "yes" : "no"}.`,
+      ));
     } catch (reason) {
-      setOperationError(`Не удалось разобрать стингер: ${errorMessage(reason)}`);
+      setOperationError(tr(
+        `Не удалось разобрать стингер: ${errorMessage(reason)}`,
+        `Could not analyze stinger: ${errorMessage(reason)}`,
+      ));
     } finally {
       setEffectsBusy(false);
     }
@@ -2123,7 +2104,10 @@ export function App() {
       const errors = [...new Set(plan.errors)];
       const warnings = [...new Set(plan.warnings)];
       if (plan.layers.length === 0 && plan.scenes.length === 0) {
-        setOperationError(errors[0] ?? `${effect.name}: эффекту не к чему применяться.`);
+        setOperationError(errors[0] ?? tr(
+          `${effect.name}: эффекту не к чему применяться.`,
+          `${effect.name}: there is nothing to apply this effect to.`,
+        ));
         return null;
       }
       const currentApplied = applyBroadcastPlan(currentAssets, plan);
@@ -2132,12 +2116,16 @@ export function App() {
       setPlaylist(currentApplied.items);
       setFuturePlaylist(futureApplied.items);
       if (!options.silent) {
-        setEffectsMessage(
+        setEffectsMessage(tr(
           `${effect.name}: применён к ${touched} ролику(ам).` +
             (fontRepaired ? " Шрифт надписи был не задан — подставлен системный с кириллицей." : "") +
             (warnings.length > 0 ? ` Предупреждений: ${warnings.length} — ${warnings[0]}` : "") +
             (errors.length > 0 ? ` Ошибок привязки: ${errors.length} — ${errors[0]}` : ""),
-        );
+          `${effect.name}: applied to ${touched} clip(s).` +
+            (fontRepaired ? " No title font was set, so a system font with Cyrillic support was selected." : "") +
+            (warnings.length > 0 ? ` Warnings: ${warnings.length} — ${warnings[0]}` : "") +
+            (errors.length > 0 ? ` Binding errors: ${errors.length} — ${errors[0]}` : ""),
+        ));
       }
       return { touched, warnings, errors };
     } catch (reason) {
@@ -2341,9 +2329,10 @@ export function App() {
    */
   function prepareScheduleLogo(filePath: string, source: string) {
     if (filePath.toLowerCase().endsWith(".json")) {
-      setOperationError(
+      setOperationError(tr(
         "Логотип должен быть готовым файлом: .png, .webp, .gif, .mov или .webm.",
-      );
+        "The logo must be a ready-to-use .png, .webp, .gif, .mov or .webm file.",
+      ));
       return;
     }
     applyScheduleLogo(filePath, source);
@@ -2354,9 +2343,10 @@ export function App() {
     if (!selection) return;
     const logoPath = preferredLogoPath(selection.imagePaths);
     if (!logoPath) {
-      setOperationError(
+      setOperationError(tr(
         "В выбранной папке нет подходящего изображения или анимации.",
-      );
+        "The selected folder has no supported image or animation.",
+      ));
       return;
     }
     await prepareScheduleLogo(logoPath, selection.directoryPath);
@@ -2750,6 +2740,7 @@ export function App() {
         </div>
       ) : null}
 
+      <Suspense fallback={<ScreenLoading />}>
       {view === "import" ? (
         <ImportAnalyzeScreen
           activeSchedule={activeSchedule}
@@ -2904,6 +2895,7 @@ export function App() {
           )?.name ?? null}
         />
       ) : null}
+      </Suspense>
 
       {titleLibraryOpen && editingScene ? (
         <TitleLibraryDialog
@@ -2912,8 +2904,8 @@ export function App() {
           issues={titleLibrary.issues}
           items={titleLibrary.items}
           onClose={() => setTitleLibraryOpen(false)}
-          onPick={(filePath) => void pickTitleFromLibrary(editingScene.effectId, filePath)}
-          onPickFile={() => void openTitleFile(editingScene.effectId)}
+          onPick={(filePath) => void pickTitleFromLibrary(filePath)}
+          onPickFile={() => void openTitleFile()}
           onRefresh={() => void refreshTitleLibrary(titleLibrary.directoryPath || undefined)}
           onSelectFolder={async () => {
             const picked = await window.gruberDesktop?.selectTitleLibrary();
@@ -2934,41 +2926,72 @@ export function App() {
         />
       ) : null}
 
+      <Suspense fallback={null}>
       {editingScene ? (
         <TitleEditorScreen
-          backdropUrl={editorBackdropUrl}
+          key={editingScene.template.id}
+          backdropUrl={null}
           busy={effectsBusy}
           durationSeconds={editingScene.durationSeconds}
           fonts={systemFonts}
-          onChange={(scene) => updateBroadcastSettings(editingScene.effectId, (effect) => ({
-            ...effect,
-            broadcast: effect.broadcast && { ...effect.broadcast, scene },
-          }))}
-          onClose={() => setEditingSceneEffectId(null)}
-          onDurationChange={(seconds) => setSceneShowDuration(editingScene.effectId, seconds)}
+          onChange={(template) => setEditingScene((current) => current ? { ...current, template } : current)}
+          onClose={() => {
+            setSceneDrafts((current) => ({ ...current, [editingScene.effectId]: editingScene }));
+            setEditingScene(null);
+          }}
+          onDurationChange={(durationSeconds) => setEditingScene((current) => current
+            ? { ...current, durationSeconds: Math.max(0.1, Math.min(86_400, durationSeconds)) }
+            : current)}
           onOpenLibrary={() => {
             setTitleLibraryOpen(true);
             void refreshTitleLibrary(titleLibrary.directoryPath || undefined);
           }}
-          onPickMedia={(nodeId) => void selectSceneMedia(editingScene.effectId, nodeId)}
-          onSaveAs={() => void saveTitleAs(editingScene.effectId)}
+          onPickMedia={(nodeId) => void selectSceneMedia(nodeId)}
+          onImportVector={() => void importSceneVectorLayers()}
+          onSaveAs={() => void saveTitleAs(editingScene.template)}
           onSave={() => {
-            setEditingSceneEffectId(null);
-            setEffectsMessage(
+            updateBroadcastSettings(editingScene.effectId, (effect) => {
+              const definition = effect.broadcast;
+              if (!definition) return effect;
+              const durationSeconds = editingScene.durationSeconds;
+              const settingsPatch = definition.kind === "next-program"
+                ? { nextProgram: { ...definition.settings.nextProgram, durationSeconds } }
+                : definition.kind === "ticker-crawl"
+                  ? { tickerCrawl: { ...definition.settings.tickerCrawl, durationSeconds } }
+                  : definition.kind === "clock-countdown"
+                    ? { clockCountdown: { ...definition.settings.clockCountdown, durationSeconds } }
+                    : { dynamicTitle: { ...definition.settings.dynamicTitle, durationSeconds } };
+              return {
+                ...effect,
+                broadcast: {
+                  ...definition,
+                  scene: editingScene.template,
+                  settings: { ...definition.settings, ...settingsPatch },
+                },
+              };
+            });
+            setSceneDrafts((current) => ({ ...current, [editingScene.effectId]: editingScene }));
+            setEditingScene(null);
+            setEffectsMessage(tr(
               `${editingScene.effectName}: сцена сохранена. Перенесите настройки в назначенные ролики, чтобы правка ушла в эфир.`,
-            );
+              `${editingScene.effectName}: scene saved. Update assigned clips to send the change to air.`,
+            ));
           }}
           template={editingScene.template}
         />
       ) : null}
+      </Suspense>
 
       {autoResumeIn !== null ? (
         <div className="auto-resume" role="alert">
           <div>
-            <strong>Автостарт эфира</strong>
-            <span>Эфир поднимется с прерванного места через {autoResumeIn} с</span>
+            <strong>{tr("Автостарт эфира", "Automatic playout start")}</strong>
+            <span>{tr(
+              `Эфир поднимется с прерванного места через ${autoResumeIn} с`,
+              `Playout will resume from the interrupted position in ${autoResumeIn} s`,
+            )}</span>
           </div>
-          <button onClick={() => setAutoResumeIn(null)} type="button">Отменить</button>
+          <button onClick={() => setAutoResumeIn(null)} type="button">{tr("Отменить", "Cancel")}</button>
         </div>
       ) : null}
 
@@ -2997,12 +3020,17 @@ export function App() {
 
       <GlobalStatusBar
         connection={connection}
-        serverAddress={mediaServerAddress()}
+        serverAddress={serverAddress}
         status={playoutStatus}
       />
     </div>
     </PlayoutStatusProvider>
   );
+}
+
+function ScreenLoading() {
+  const { tr } = useI18n();
+  return <div className="screen-loading" role="status">{tr("Загрузка раздела…", "Loading section…")}</div>;
 }
 
 function EmptyPlaylist({
@@ -3042,28 +3070,6 @@ function EmptyPlaylist({
       </div>
     </main>
   );
-}
-
-async function fetchHealth(): Promise<unknown> {
-  const response = await fetch("/api/health", { signal: AbortSignal.timeout(1_500) });
-
-  if (!response.ok) {
-    throw new Error(`Media service returned ${response.status}`);
-  }
-
-  return response.json() as Promise<unknown>;
-}
-
-function mediaServerAddress(): string {
-  const configuredUrl = window.gruberDesktop?.mediaApiBaseUrl;
-  if (!configuredUrl) {
-    return window.location.host || "127.0.0.1:4310";
-  }
-  try {
-    return new URL(configuredUrl).host;
-  } catch {
-    return configuredUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  }
 }
 
 function formatBytes(bytes: number): string {
@@ -3496,7 +3502,7 @@ function pixelFormatHasAlpha(pixelFormat: string): boolean {
 }
 
 /** Версия интерфейса. Сверяется с версией media-service при подключении. */
-const applicationVersion = "8.0.1";
+const applicationVersion = __FLUXIO_VERSION__;
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);

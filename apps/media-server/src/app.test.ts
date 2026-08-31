@@ -34,6 +34,7 @@ import {
   parseTickerSourceDocument,
 } from "./effects/broadcast-task.js";
 import { readFontFamily, supportsCyrillic } from "./effects/system-fonts.js";
+import { importVectorLayers } from "./effects/vector-import.js";
 import {
   buildFfmpegClipAudioProducerCommand,
   clipAudioByteCount,
@@ -137,6 +138,21 @@ test("GET /api/health returns the shared service contract", async () => {
     assert.equal(health.status, process.env.DATABASE_URL ? "ready" : "degraded");
   } finally {
     await app.close();
+  }
+});
+
+test("a plain PDF imports as one editable scene layer", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-vector-import-"));
+  const source = path.join(directory, "simple.pdf");
+  try {
+    await writeFile(source, "%PDF-1.4\n1 0 obj <</Type/Catalog/Pages 2 0 R>> endobj\n2 0 obj <</Type/Pages/Kids[3 0 R]/Count 1>> endobj\n3 0 obj <</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<<>>/Contents 4 0 R>> endobj\n4 0 obj <</Length 0>>stream\n\nendstream endobj\ntrailer <</Root 1 0 R>>\n%%EOF");
+    const imported = await importVectorLayers(source, directory);
+    assert.equal(imported.layered, false);
+    assert.equal(imported.layers.length, 1);
+    assert.equal(path.extname(imported.layers[0]!.filePath), ".png");
+    assert.ok((await readFile(imported.layers[0]!.filePath)).length > 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -856,6 +872,43 @@ test("composite clip preview renders the programme graph without opening the bro
   // меньше работы при той же картинке.
   assert.match(command.filterGraph, /scale=960:540/);
   assert.doesNotMatch(command.filterGraph, /scale=1280:720/);
+});
+
+test("a scene reaches the composite preview, not just the air renderer", () => {
+  // Проверить титр до Start было негде: предпросмотр строился без сцен, и
+  // применённая плашка выглядела как не применившаяся.
+  const request = baseRequest();
+  const item: PreparedPlayoutItem = {
+    ...preparedItems()[0]!,
+    scenes: [{
+      x: 0,
+      y: 470,
+      width: 892,
+      height: 95,
+      startSeconds: 1.5,
+      frameCount: 125,
+      request: "{}",
+    }],
+  };
+  const command = buildFfmpegCompositePreviewCommand(request, item, "/tmp/composite-preview");
+  const rendered = command.args.join(" ");
+
+  // Сцена приходит своей трубой — тот же уговор, что у эфирного рендерера.
+  assert.match(rendered, /-f rawvideo -pix_fmt rgba -s 892x95 .* -i pipe:3/);
+  // Наложение ложится на предпросмотровую ветку, а не на программную.
+  assert.match(command.filterGraph, /\[vpreview\]\[vscenein0\]overlay=0:470:eof_action=pass/);
+  assert.match(rendered, /-map \[vpreviewout\]/);
+  // Показ начинается не с начала ролика: вход обязан отыграть на своём месте.
+  assert.match(command.filterGraph, /setpts=PTS-STARTPTS\+1\.5\/TB/);
+});
+
+test("a preview without scenes keeps the command it always had", () => {
+  const request = baseRequest();
+  const command = buildFfmpegCompositePreviewCommand(request, preparedItems()[0]!, "/tmp/preview");
+  const rendered = command.args.join(" ");
+  assert.match(rendered, /-map \[vpreview\] -map \[apreview\]/);
+  assert.doesNotMatch(rendered, /pipe:3/);
+  assert.doesNotMatch(command.filterGraph, /vscene/);
 });
 
 test("a 168-hour playlist keeps FFmpeg inputs out of the Windows command line", () => {

@@ -257,6 +257,29 @@ export function resolveNodeBox(
   let height = pick(override?.height, trackValueAt(node.transform.height, timing, timeSeconds)) *
     format.height;
 
+  // Группа обхватывает своё содержимое.
+  //
+  // Это не украшение рамки выделения: собственный прямоугольник у группы жил
+  // своей жизнью — рамка стояла там, где её однажды растянули, а содержимое
+  // ехало отдельно. Снаружи это выглядело как «группа сломалась»: обрезка
+  // резала по пустому месту, маска выезжала из-за края кадра, а не из-за края
+  // плашки, и поворот шёл вокруг точки вне содержимого. Габариты детей — то
+  // единственное, что у группы есть на самом деле.
+  //
+  // Явная рамка по-прежнему возможна — `fitToNodeId` ниже: она берёт границы
+  // от выбранного узла, обычно от подложки.
+  if (node.kind === "group" && !node.fitToNodeId && depth < 4) {
+    const around = groupContentBox(node, template, format, timing, timeSeconds, textWidths, depth);
+    if (around) {
+      return {
+        nodeId: node.id,
+        ...around,
+        opacity: trackValueAt(node.transform.opacity, timing, timeSeconds),
+        hidden: override?.hidden === true,
+      };
+    }
+  }
+
   // Группа берёт размер от узла-подложки: без собственных границ контейнер
   // нечем резать, и раскрытие пряталось бы за краем кадра, а не плашки.
   if (node.fitToNodeId && depth < 4) {
@@ -296,7 +319,12 @@ export function resolveNodeBox(
         const sourceBox = resolveNodeBox(
           source, template, format, timing, timeSeconds, textWidths, depth + 1,
         );
-        followOffset = sourceBox.x + sourceBox.width + padX -
+        // Точка привязки прибавляется обратно: примыкание задаёт левый край
+        // хвоста правым краем источника, и от того, откуда узел считает свой
+        // поворот, оно зависеть не имеет права. Без этой поправки перенос
+        // привязки утаскивал хвост из-под плашки на его же ширину.
+        followOffset = sourceBox.x + sourceBox.width + padX +
+          width * node.transform.anchorX -
           pick(override?.x, trackValueAt(node.transform.x, timing, timeSeconds)) * format.width;
       }
     } else {
@@ -314,14 +342,28 @@ export function resolveNodeBox(
     }
   }
 
-  const scale = trackValueAt(node.transform.scale, timing, timeSeconds);
+  // Масштаб группы — преобразование её содержимого, а не изменение её
+  // собственной коробки: коробка группы служит рамкой обрезки, и, будь она
+  // отмасштабирована здесь, растеризатор применил бы масштаб к ней дважды —
+  // сначала размером, потом преобразованием холста.
+  const scale = node.kind === "group"
+    ? 1
+    : trackValueAt(node.transform.scale, timing, timeSeconds);
   width *= scale;
   height *= scale;
 
+  // У группы `x` и `y` — сдвиг содержимого, а её собственная коробка служит
+  // рамкой обрезки и точкой отсчёта поворота. Вычесть из неё привязку значит
+  // увести рамку от содержимого: дети считают своё место от того же `x` и
+  // остаются на месте, а рамка уезжает — и с включённой обрезкой срезает
+  // плашку по пустому месту. Точка привязки у группы задаёт **точку внутри**
+  // коробки, а не смещает её.
+  const anchorShiftX = node.kind === "group" ? 0 : width * node.transform.anchorX;
+  const anchorShiftY = node.kind === "group" ? 0 : height * node.transform.anchorY;
   const x = pick(override?.x, trackValueAt(node.transform.x, timing, timeSeconds)) * format.width -
-    width * node.transform.anchorX + followOffset;
+    anchorShiftX + followOffset;
   const y = pick(override?.y, trackValueAt(node.transform.y, timing, timeSeconds)) * format.height -
-    height * node.transform.anchorY;
+    anchorShiftY;
 
   // Группа складывается с ребёнком: её сдвиг и прозрачность действуют на всех
   // детей сразу. Ради этого группа и нужна — чтобы плашка с текстом и маркером
@@ -351,6 +393,44 @@ export function resolveNodeBox(
     opacity,
     hidden: override?.hidden === true,
   };
+}
+
+/**
+ * Габариты содержимого группы в пикселях кадра.
+ *
+ * `null` — детей нет: у пустой группы обхватывать нечего, и она остаётся при
+ * своих дорожках, чтобы рамка не схлопнулась в точку прямо под руками.
+ *
+ * Обрезка предков здесь не учитывается намеренно: группа обхватывает то, что
+ * нарисовали её дети, а срежет ли их кто-то выше — вопрос отрисовки, а не
+ * габаритов.
+ */
+function groupContentBox(
+  group: SceneNode,
+  template: SceneTemplate,
+  format: SceneFormat,
+  timing: SceneTiming,
+  timeSeconds: number,
+  textWidths: Readonly<Record<string, number>>,
+  depth: number,
+): { x: number; y: number; width: number; height: number } | null {
+  let left = Number.POSITIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const child of template.nodes) {
+    if (child.parentId !== group.id) continue;
+    const box = resolveNodeBox(
+      child, template, format, timing, timeSeconds, textWidths, depth + 1,
+    );
+    if (box.hidden || box.width <= 0 || box.height <= 0) continue;
+    left = Math.min(left, box.x);
+    top = Math.min(top, box.y);
+    right = Math.max(right, box.x + box.width);
+    bottom = Math.max(bottom, box.y + box.height);
+  }
+  if (!Number.isFinite(left)) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 export interface SceneRegion {
@@ -387,14 +467,20 @@ export function sceneRegion(
     if (node.kind === "group") continue;
     const box = resolveNodeBox(node, template, format, timing, timeSeconds, textWidths);
     if (box.hidden || box.opacity <= 0 || box.width <= 0 || box.height <= 0) continue;
+    // Масштаб и поворот группы выносят узел за его собственный прямоугольник,
+    // и область, посчитанная по нему, срезала бы увеличенную надпись.
+    const drawn = transformedBounds(
+      box,
+      ancestorTransforms(node, template, format, timing, timeSeconds, textWidths),
+    );
     // Тень выходит за прямоугольник узла и обязана попасть в область, иначе
     // её срежет по краю полосы.
     const spread = node.shadow.enabled ? fromHeight(node.shadow.blur, format) * 1.5 : 0;
     const shift = node.shadow.enabled ? fromHeight(node.shadow.offsetY, format) : 0;
-    left = Math.min(left, box.x - spread);
-    top = Math.min(top, box.y - spread + Math.min(0, shift));
-    right = Math.max(right, box.x + box.width + spread);
-    bottom = Math.max(bottom, box.y + box.height + spread + Math.max(0, shift));
+    left = Math.min(left, drawn.x - spread);
+    top = Math.min(top, drawn.y - spread + Math.min(0, shift));
+    right = Math.max(right, drawn.x + drawn.width + spread);
+    bottom = Math.max(bottom, drawn.y + drawn.height + spread + Math.max(0, shift));
   }
 
   if (!Number.isFinite(left) || right <= left || bottom <= top) return null;
@@ -510,6 +596,10 @@ export function revealClip(
 ): { x: number; y: number; width: number; height: number } | null {
   const amount = Math.min(1, Math.max(0, trackValueAt(node.transform.reveal, timing, timeSeconds)));
   if (amount >= 1) return null;
+  // Выезд режет по рамке узла и не меняет её: наружу выходит не растущее
+  // окно, а сама картинка, выползающая из-под края. Растущее окно у выезда
+  // открывало бы строку дважды — и краем маски, и её собственным движением.
+  if (node.transform.revealMode === "slide") return { ...box };
   const axis = node.transform.revealAxis;
   const width = axis === "y" ? box.width : box.width * amount;
   const height = axis === "x" ? box.height : box.height * amount;
@@ -519,6 +609,63 @@ export function revealClip(
     width,
     height,
   };
+}
+
+/**
+ * Сдвиг картинки при раскрытии-выезде.
+ *
+ * Узел выезжает **оттуда, где стоит точка среза**: слева — значит в начале он
+ * убран влево за край своей рамки и приезжает на место. Середина сдвига не
+ * даёт: из неё выезжать некуда, и раскрытие остаётся проявлением под маской.
+ *
+ * У шторки сдвига нет вовсе — она открывает неподвижную картинку.
+ */
+export function revealShift(
+  node: SceneNode,
+  box: { width: number; height: number },
+  timing: SceneTiming,
+  timeSeconds: number,
+): { dx: number; dy: number } {
+  if (node.transform.revealMode !== "slide") return { dx: 0, dy: 0 };
+  const amount = Math.min(1, Math.max(0, trackValueAt(node.transform.reveal, timing, timeSeconds)));
+  if (amount >= 1) return { dx: 0, dy: 0 };
+  const rest = 1 - amount;
+  const axis = node.transform.revealAxis;
+  // 0 — из левого края, 1 — из правого; 0,5 — ниоткуда, сдвиг нулевой.
+  const alongX = axis === "y" ? 0 : (node.transform.revealOriginX * 2 - 1) * box.width * rest;
+  const alongY = axis === "x" ? 0 : (node.transform.revealOriginY * 2 - 1) * box.height * rest;
+  return { dx: alongX, dy: alongY };
+}
+
+/**
+ * Сдвиг, который накладывают на узел выезжающие группы-предки.
+ *
+ * Обрезку предка даёт `containerClip`, а вот его картинку двигать надо здесь:
+ * иначе группа выезжала бы рамкой, а содержимое стояло бы на месте.
+ */
+export function ancestorRevealShift(
+  node: SceneNode,
+  template: SceneTemplate,
+  format: SceneFormat,
+  timing: SceneTiming,
+  timeSeconds: number,
+  textWidths: Readonly<Record<string, number>> = {},
+): { dx: number; dy: number } {
+  let dx = 0;
+  let dy = 0;
+  let parentId = node.parentId;
+  for (let step = 0; parentId && step < 8; step += 1) {
+    const parent: SceneNode | undefined = template.nodes.find((entry) => entry.id === parentId);
+    if (!parent) break;
+    if (parent.transform.revealMode === "slide") {
+      const box = resolveNodeBox(parent, template, format, timing, timeSeconds, textWidths);
+      const shift = revealShift(parent, box, timing, timeSeconds);
+      dx += shift.dx;
+      dy += shift.dy;
+    }
+    parentId = parent.parentId;
+  }
+  return { dx, dy };
 }
 
 /**
@@ -543,14 +690,120 @@ export function containerClip(
   for (let step = 0; parentId && step < 8; step += 1) {
     const parent: SceneNode | undefined = template.nodes.find((entry) => entry.id === parentId);
     if (!parent) break;
+    const box = resolveNodeBox(parent, template, format, timing, timeSeconds, textWidths);
     if (parent.clipsChildren) {
-      const box = resolveNodeBox(parent, template, format, timing, timeSeconds, textWidths);
       const clip = revealClip(parent, box, timing, timeSeconds) ?? box;
       result = result ? intersect(result, clip) : clip;
+    } else {
+      // Раскрытие группы режет детей и без включённого контейнера: маска —
+      // единственный способ открыть плашку с текстом как одно целое, и
+      // требовать ради неё отдельной галочки значит показать оператору
+      // анимацию, которая молча ничего не делает. Полностью открытая маска
+      // возвращает `null` и не режет ничего.
+      const clip = revealClip(parent, box, timing, timeSeconds);
+      if (clip) result = result ? intersect(result, clip) : clip;
     }
     parentId = parent.parentId;
   }
   return result;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Преобразования групп
+ * ------------------------------------------------------------------------- */
+
+/** Один шаг преобразования: поворот и масштаб вокруг точки привязки предка. */
+export interface SceneAncestorTransform {
+  /** Точка привязки предка в пикселях кадра. */
+  pivotX: number;
+  pivotY: number;
+  scaleX: number;
+  scaleY: number;
+  rotationDegrees: number;
+}
+
+/**
+ * Масштаб и поворот, которые накладывают на узел его группы-предки.
+ *
+ * Сдвиг и прозрачность группы складываются с ребёнком прямо в
+ * `resolveNodeBox`, а масштаб и поворот выражаются коробкой не полностью:
+ * повёрнутая группа не остаётся прямоугольником. Поэтому они отдаются
+ * отдельным списком и накладываются растеризатором на холст.
+ *
+ * Порядок — **от внешней группы к ближней**: холст применяет их подряд, и
+ * точка привязки ближней группы задана в непреобразованных координатах,
+ * которые внешний шаг сам же и переносит.
+ */
+export function ancestorTransforms(
+  node: SceneNode,
+  template: SceneTemplate,
+  format: SceneFormat,
+  timing: SceneTiming,
+  timeSeconds: number,
+  textWidths: Readonly<Record<string, number>> = {},
+): SceneAncestorTransform[] {
+  const steps: SceneAncestorTransform[] = [];
+  let parentId = node.parentId;
+  for (let step = 0; parentId && step < 8; step += 1) {
+    const parent: SceneNode | undefined = template.nodes.find((entry) => entry.id === parentId);
+    if (!parent) break;
+    const scaleX = trackValueAt(parent.transform.scale, timing, timeSeconds);
+    const scaleY = scaleX * trackValueAt(parent.transform.scaleY, timing, timeSeconds);
+    const rotationDegrees = trackValueAt(parent.transform.rotationDegrees, timing, timeSeconds);
+    if (scaleX !== 1 || scaleY !== 1 || rotationDegrees !== 0) {
+      const box = resolveNodeBox(parent, template, format, timing, timeSeconds, textWidths);
+      steps.push({
+        pivotX: box.x + box.width * parent.transform.anchorX,
+        pivotY: box.y + box.height * parent.transform.anchorY,
+        scaleX,
+        scaleY,
+        rotationDegrees,
+      });
+    }
+    parentId = parent.parentId;
+  }
+  return steps.reverse();
+}
+
+/**
+ * Границы коробки после преобразований предков.
+ *
+ * Нужны области кадра: отмасштабированная группой надпись выходит за свой
+ * прямоугольник, и полоса, посчитанная по непреобразованной коробке, срезала
+ * бы её по краю.
+ */
+export function transformedBounds(
+  box: { x: number; y: number; width: number; height: number },
+  steps: readonly SceneAncestorTransform[],
+): { x: number; y: number; width: number; height: number } {
+  if (steps.length === 0) return box;
+  let corners = [
+    { x: box.x, y: box.y },
+    { x: box.x + box.width, y: box.y },
+    { x: box.x, y: box.y + box.height },
+    { x: box.x + box.width, y: box.y + box.height },
+  ];
+  // Шаги идут от внешнего к ближнему — тем же порядком, каким их накладывает
+  // холст, поэтому и здесь применяются в обратном: ближний действует первым.
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index]!;
+    const radians = (step.rotationDegrees * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    corners = corners.map((corner) => {
+      const dx = (corner.x - step.pivotX) * step.scaleX;
+      const dy = (corner.y - step.pivotY) * step.scaleY;
+      return {
+        x: step.pivotX + dx * cos - dy * sin,
+        y: step.pivotY + dx * sin + dy * cos,
+      };
+    });
+  }
+  const xs = corners.map((corner) => corner.x);
+  const ys = corners.map((corner) => corner.y);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  return { x: left, y: top, width: Math.max(...xs) - left, height: Math.max(...ys) - top };
 }
 
 function intersect(

@@ -1,29 +1,33 @@
-# Версионирование FluxIO
+# Версионирование
 
-Текущая версия приложения: **v8.0.1**.
+FluxIO использует Semantic Versioning:
 
-Начиная с версии `v4.2.0`, каждый завершённый этап разработки увеличивает
-patch-компонент на единицу:
+- major — несовместимая смена formats/API/operator workflow;
+- minor — новая совместимая capability;
+- patch — исправление или завершённый совместимый vertical slice.
 
-```text
-v4.2.0 -> ... -> v5.0.8 -> v6.0.0 -> ... -> v6.0.22 -> v6.0.24 -> v7.0.0 -> v7.0.1 -> v7.0.2 -> v7.0.3 -> v7.0.4 -> v7.0.5 -> v7.0.6 -> v7.0.7 -> v7.0.8 -> v7.0.9 -> v7.0.10 -> v7.0.11 -> v7.0.12 -> v7.0.13 -> v7.0.14 -> v7.0.15 -> v7.0.16 -> v7.0.17 -> v8.0.0 -> v8.0.1
-```
+Текущая версия хранится в корневом `package.json`. UI, media-service, setup и
+splash читают её автоматически. Версии package metadata в workspaces и lockfile
+обновляются npm-aware командой и должны совпадать.
 
-В рамках одного этапа промежуточные исправления не создают несколько разных
-версий. Номер увеличивается один раз, когда весь запрошенный update реализован,
-протестирован и задокументирован.
+## Совместимость
 
-Major-компонент увеличивается, когда этап меняет структуру данных или
-операторский поток так, что прежние настройки перестают читаться как раньше.
-`v8.0.0` — такой случай: графика перестала быть самостоятельным элементом
-библиотеки и стала свойством эффекта, поэтому сохранённые сессии с общими
-пресетами требуют внимания при обновлении.
+- API version сейчас `v1`.
+- Workspace snapshot поддерживает version 1/2 через defaults/migration logic.
+- Encoding profile format version 1.
+- `.fto` имеет собственный formatVersion.
+- `.air` — legacy schedule input; новый export — `.txt`.
+- Старый service с новым UI запрещён операционно: UI показывает warning, потому
+  что schema старого service может срезать новые fields.
 
-При обновлении синхронизируются:
+## Перед bump
 
-- корневой `package.json` и npm lockfile;
-- Electron, web, media-server и contracts packages;
-- версия `/api/health` media-server;
-- startup splash;
-- Electron installer filename и application metadata;
-- документация, зависящая от версии.
+1. Определить compatibility impact.
+2. Добавить migration/defaults.
+3. Обновить root и workspace package versions + lockfile.
+4. Проверить health version test.
+5. Обновить format version только при изменении самого file format.
+6. Обновить документацию и release notes.
+7. Выполнить release checklist.
+
+Не меняйте номер версии global text replacement.

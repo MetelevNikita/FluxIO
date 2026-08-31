@@ -106,8 +106,8 @@ Animation in/out и Stinger — выбора нет, только файл). Э�
 не знают. Правь по цепочке: настройки в `broadcastEffectSettingsSchema` (contracts) → чистый
 планировщик в `apps/web/src/broadcast-effects.ts` (+ тест) → панель в
 `apps/web/src/screens/BroadcastEffectInspector.tsx`. Держись разделения «план — применение»:
-`planBroadcastEffect` чистый. Инструкция оператора —
-`docs/broadcast-effects-engineer-runbook.md`, карта потока — `docs/effects-flow-map.html`.
+`planBroadcastEffect` чистый. Инструкция оператора — `docs/graphics-and-titles.md`,
+архитектурная карта потока — `docs/architecture.md`.
 
 **Список эффектов только фильтруется, но никогда не сортируется.** Порядок задал оператор, и он же
 определяет порядок наложения слоёв: `createBroadcastEffect` дописывает эффект в конец библиотеки,
@@ -399,16 +399,13 @@ node --input-type=module -e "import { builtInTitlePresetFiles } from './packages
 **Тесты — node:test поверх скомпилированного вывода**, не ts-раннер: `tsc -p tsconfig.test.json`,
 затем `node --test dist-test/*.js`. Юнит-тесты чистых функций, без моков процессов.
 
-**Версия приложения продублирована в 13 местах.** Правь **точечно**, по одной строке:
-сплошная замена `7.0.0` -> `7.0.1` ломает `127.0.0.1` (внутри адреса есть та же подстрока)
-и диапазоны зависимостей в lockfile. При бампе синхронизируй: корневой `package.json` +
-lockfile, `package.json` всех четырёх workspace-ов, `apps/media-server/src/app.ts` (`serviceVersion`),
-`apps/media-server/src/app.test.ts`, `apps/web/src/App.tsx`, `apps/web/src/encoding-settings-profile.test.ts`,
-`apps/desktop/src/splash.html`, `setup.mjs` (`applicationVersion`), `README.md`, `docs/versioning.md`.
-Правила нумерации — `docs/versioning.md`: patch +1 за завершённый этап, а не за каждую правку.
+**Версия приложения** в runtime берётся из корневого `package.json`: так работают setup,
+media-service, web-интерфейс и splash Electron. При выпуске синхронизируй версии корневого и
+workspace `package.json` через npm-команду вместе с lockfile; не делай глобальную замену по
+репозиторию. Правила нумерации и проверка выпуска — `docs/versioning.md`.
 
-**Документация этапа** — новый файл в `docs/progress/NN-MM-краткое-имя-vX.Y.Z.md`.
-Документация на русском.
+**Документация evergreen**: обновляй тематический файл в `docs/`, а историю этапов оставляй в Git.
+Долгоживущие архитектурные решения оформляй ADR в `docs/adr/`. Документация на русском.
 
 ## Ловушки
 

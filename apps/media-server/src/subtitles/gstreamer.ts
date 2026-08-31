@@ -101,7 +101,7 @@ export function buildGstreamerDvbSubtitleCommand({
  * Windows-shaped paths keeps POSIX filenames untouched and prevents
  * C:\\Users\\... from becoming C:Users... inside filesrc.
  */
-export function gstreamerFileLocation(inputPath: string): string {
+function gstreamerFileLocation(inputPath: string): string {
   const isWindowsDrivePath = /^[a-z]:[\\/]/i.test(inputPath);
   const isWindowsUncPath = /^\\\\/.test(inputPath);
   return isWindowsDrivePath || isWindowsUncPath

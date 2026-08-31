@@ -11,6 +11,7 @@ import {
 } from "./scene.js";
 import {
   atLeastOnePixel,
+  ancestorTransforms,
   bezierEasing,
   keyframeValueAt,
   regionSavings,
@@ -23,6 +24,7 @@ import {
   revealClip,
   splitUnits,
   textUnits,
+  transformedBounds,
 } from "./scene-timing.js";
 
 /* ------------------------------- режиссёр -------------------------------- */
@@ -203,6 +205,100 @@ test("the region grows to fit the shadow, which spills outside the node", () => 
   assert.ok(shadowed.height > flat.height);
 });
 
+test("a group's box is the bounds of what it holds", () => {
+  // Собственный прямоугольник группы не рисуется ничем: у неё есть только то,
+  // что нарисовали дети. Рамка, живущая отдельно, резала бы по пустому месту.
+  const template = grouped(1);
+  const f = format("hd", 1920, 1080);
+  const timing = sceneTiming(template.director, 5);
+  const at = 3;
+  const box = resolveNodeBox(template.nodes[0]!, template, f, timing, at, { title: 400 });
+  const children = template.nodes
+    .filter((node) => node.parentId === "band")
+    .map((node) => resolveNodeBox(node, template, f, timing, at, { title: 400 }));
+
+  const left = Math.min(...children.map((child) => child.x));
+  const right = Math.max(...children.map((child) => child.x + child.width));
+  assert.ok(Math.abs(box.x - left) < 1e-6, "рамка не по левому краю содержимого");
+  assert.ok(Math.abs(box.x + box.width - right) < 1e-6, "рамка не по правому краю содержимого");
+  // И это не кадр: группа во весь экран ничего не обхватывает.
+  assert.ok(box.width < f.width);
+});
+
+test("an empty group keeps its own tracks instead of collapsing to a point", () => {
+  const template = grouped(1);
+  const lonely: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.filter((node) => node.kind === "group"),
+  };
+  const f = format("hd", 1920, 1080);
+  const box = resolveNodeBox(
+    lonely.nodes[0]!, lonely, f, sceneTiming(lonely.director, 5), 3,
+  );
+  assert.ok(box.width > 0 && box.height > 0, "пустая группа схлопнулась в точку");
+});
+
+test("a group's box does not move with its own anchor point", () => {
+  // У группы `x` — сдвиг содержимого, а коробка служит рамкой обрезки. Вычесть
+  // из неё привязку значит увести рамку от детей: они считают место от того же
+  // `x` и остаются, а рамка уезжает — и с включённой обрезкой режет по пустому.
+  const template = grouped(1);
+  const f = format("hd", 1920, 1080);
+  const timing = sceneTiming(template.director, 5);
+  const at = 3;
+  const box = resolveNodeBox(template.nodes[0]!, template, f, timing, at);
+
+  const moved: SceneTemplate = {
+    ...template,
+    nodes: template.nodes.map((node) => (node.kind === "group"
+      ? { ...node, transform: { ...node.transform, anchorX: 1, anchorY: 1 } }
+      : node)),
+  };
+  const after = resolveNodeBox(moved.nodes[0]!, moved, f, timing, at);
+  assert.ok(Math.abs(after.x - box.x) < 1e-6, "рамка группы уехала за привязкой");
+  assert.ok(Math.abs(after.y - box.y) < 1e-6, "рамка группы уехала за привязкой");
+});
+
+test("the region grows with the group that scales its children", () => {
+  // Масштаб группы вынимает узлы за их собственные прямоугольники. Область,
+  // посчитанная по непреобразованной коробке, срезала бы увеличенную надпись
+  // по краю полосы — и заметно это только в эфире.
+  const flat = grouped(1);
+  const f = format("hd", 1920, 1080);
+  const before = sceneRegion(flat, f, sceneTiming(flat.director, 5), 3, { title: 400 })!;
+
+  const big = grouped(1.05);
+  const after = sceneRegion(big, f, sceneTiming(big.director, 5), 3, { title: 400 })!;
+  assert.ok(after.width > before.width, "область не выросла вместе с группой");
+  assert.ok(after.height > before.height, "область не выросла вместе с группой");
+});
+
+test("a group's transform steps come outermost first and skip groups at rest", () => {
+  const still = grouped(1);
+  const f = format("hd", 1920, 1080);
+  assert.deepEqual(
+    ancestorTransforms(still.nodes[1]!, still, f, sceneTiming(still.director, 5), 3),
+    [],
+  );
+
+  const turning = grouped(1.05);
+  const steps = ancestorTransforms(
+    turning.nodes[1]!, turning, f, sceneTiming(turning.director, 5), 3, { title: 400 },
+  );
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0]!.scaleX, 1.05);
+});
+
+test("bounds under a transform cover the turned corners, not the original box", () => {
+  const box = { x: 100, y: 100, width: 200, height: 50 };
+  const turned = transformedBounds(box, [
+    { pivotX: 100, pivotY: 100, scaleX: 1, scaleY: 1, rotationDegrees: 90 },
+  ]);
+  // Поворот на прямой угол меняет стороны местами.
+  assert.ok(Math.abs(turned.width - 50) < 1e-6);
+  assert.ok(Math.abs(turned.height - 200) < 1e-6);
+});
+
 test("a scene with nothing visible asks for no region at all", () => {
   const template = lowerThird();
   for (const node of template.nodes) node.transform.opacity = sceneTrack(0);
@@ -324,6 +420,32 @@ function lowerThird(): SceneTemplate {
   });
 }
 
+/** Та же нижняя треть, но обёрнутая в группу с заданным масштабом. */
+function grouped(scale: number): SceneTemplate {
+  const template = lowerThird();
+  const band: SceneNode = sceneNodeSchema.parse({
+    id: "band",
+    name: "Группа",
+    kind: "group",
+    parentId: null,
+    transform: {
+      x: sceneTrack(0),
+      y: sceneTrack(0),
+      width: sceneTrack(0.4),
+      height: sceneTrack(0.16),
+      anchorX: 0,
+      anchorY: 0,
+      scale: sceneTrack(scale),
+      rotationDegrees: sceneTrack(0),
+      opacity: sceneTrack(1),
+    },
+  });
+  return {
+    ...template,
+    nodes: [band, ...template.nodes.map((node) => ({ ...node, parentId: "band" }))],
+  };
+}
+
 /* -------------------------------- кривые --------------------------------- */
 
 test("a bezier curve passes through its ends exactly", () => {
@@ -407,7 +529,12 @@ test("the mask grows from the chosen edge, not always from the left", () => {
   const half = (originX: number) => {
     const node = {
       ...template.nodes[0]!,
-      transform: { ...template.nodes[0]!.transform, reveal: sceneTrack(0.5), revealOriginX: originX },
+      transform: {
+        ...template.nodes[0]!.transform,
+        reveal: sceneTrack(0.5),
+        revealMode: "wipe" as const,
+        revealOriginX: originX,
+      },
     };
     return revealClip(node, box, timing, 3)!;
   };
@@ -426,7 +553,9 @@ test("a closed mask has zero width, which the renderer must skip", () => {
   const timing = sceneTiming(template.director, 5);
   const node = {
     ...template.nodes[0]!,
-    transform: { ...template.nodes[0]!.transform, reveal: sceneTrack(0) },
+    transform: {
+      ...template.nodes[0]!.transform, reveal: sceneTrack(0), revealMode: "wipe" as const,
+    },
   };
   const clip = revealClip(node, { x: 0, y: 0, width: 200, height: 40 }, timing, 3)!;
   assert.equal(clip.width, 0);
@@ -440,6 +569,7 @@ test("reveal follows its keyframes like any other track", () => {
     ...template.nodes[0]!,
     transform: {
       ...template.nodes[0]!.transform,
+      revealMode: "wipe" as const,
       reveal: {
         value: 1,
         inKeyframes: [

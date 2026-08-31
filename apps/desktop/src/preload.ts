@@ -17,6 +17,7 @@ const SELECT_BROADCAST_TASK_FILE_CHANNEL: DesktopChannel = "dialog:select-broadc
 const SELECT_TICKER_SOURCE_FILE_CHANNEL: DesktopChannel = "dialog:select-ticker-source-file";
 const SELECT_STINGER_FILE_CHANNEL: DesktopChannel = "dialog:select-stinger-file";
 const SELECT_DECORATION_FILE_CHANNEL: DesktopChannel = "dialog:select-decoration-file";
+const SELECT_VECTOR_FILE_CHANNEL: DesktopChannel = "dialog:select-vector-file";
 const SAVE_TITLE_FILE_CHANNEL: DesktopChannel = "dialog:save-title-file";
 const SELECT_TITLE_FILE_CHANNEL: DesktopChannel = "dialog:select-title-file";
 const READ_TITLE_LIBRARY_CHANNEL: DesktopChannel = "dialog:read-title-library";
@@ -71,6 +72,8 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
     ipcRenderer.invoke(SELECT_STINGER_FILE_CHANNEL) as Promise<string | null>,
   selectDecorationFile: (): Promise<string | null> =>
     ipcRenderer.invoke(SELECT_DECORATION_FILE_CHANNEL) as Promise<string | null>,
+  selectVectorFile: (): Promise<string | null> =>
+    ipcRenderer.invoke(SELECT_VECTOR_FILE_CHANNEL) as Promise<string | null>,
   saveTitleFile: (input: { content: string; defaultName: string }): Promise<string | null> =>
     ipcRenderer.invoke(SAVE_TITLE_FILE_CHANNEL, input) as Promise<string | null>,
   selectTitleFile: (): Promise<{ content: string; filePath: string } | null> =>

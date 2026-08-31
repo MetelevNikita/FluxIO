@@ -24,9 +24,12 @@ import {
 } from "../broadcast-effects";
 import {
   BroadcastJsonMappingDialog,
-  type JsonMappingSummary,
   type JsonMappingTarget,
 } from "../components/BroadcastJsonMappingDialog";
+import {
+  broadcastEffectTitle,
+  type BroadcastTaskSummary,
+} from "../broadcast-effect-catalog";
 import {
   memo,
   useEffect,
@@ -43,8 +46,6 @@ import { useI18n, type Translate } from "../i18n";
  * поэтому у каждого свой набор полей; общее здесь только оформление текста и
  * оформление эффекта: сцена либо готовое alpha-медиа.
  */
-
-export type BroadcastTaskSummary = JsonMappingSummary;
 
 interface BroadcastEffectInspectorProps {
   busy: boolean;
@@ -64,66 +65,15 @@ interface BroadcastEffectInspectorProps {
   onApplyTaskToProject: () => void;
   assignedClipCount: number;
   clips: { id: string; name: string }[];
-}
-
-export const broadcastEffectCatalog: {
-  kind: BroadcastEffectKind;
-  title: string;
-  titleRu: string;
-  summary: string;
-  summaryEn: string;
-}[] = [
-  {
-    kind: "animation-in-out",
-    summary: "Входная и выходная анимация ролика с привязкой файлом задания",
-    summaryEn: "Clip intro and outro animation driven by a task file",
-    title: "Animation in/out",
-    titleRu: "Анимация входа/выхода",
-  },
-  {
-    kind: "dynamic-title",
-    summary: "Плашка с произвольным текстом из интерфейса или файла задания",
-    summaryEn: "Lower third with text from the interface or a task file",
-    title: "Dynamic title",
-    titleRu: "Динамическая плашка",
-  },
-  {
-    kind: "next-program",
-    summary: "Плашка «Смотрите далее» с названием следующего материала",
-    summaryEn: "Up-next title with the name of the following programme item",
-    title: "Next program",
-    titleRu: "Следующая программа",
-  },
-  {
-    kind: "ticker-crawl",
-    summary: "Бегущая строка с постоянной скоростью при любой длине текста",
-    summaryEn: "Ticker crawl with constant speed for any text length",
-    title: "Ticker crawl",
-    titleRu: "Бегущая строка",
-  },
-  {
-    kind: "clock-countdown",
-    summary: "Экранные часы по эфирному времени или обратный отсчёт",
-    summaryEn: "On-screen air-time clock or countdown",
-    title: "Clock / countdown",
-    titleRu: "Часы / отсчёт",
-  },
-  {
-    kind: "stinger-transition",
-    summary: "Брендированный переход, закрывающий стык двух роликов",
-    summaryEn: "Branded transition covering the cut between two clips",
-    title: "Stinger transition",
-    titleRu: "Стингер-переход",
-  },
-];
-
-export function broadcastEffectTitle(
-  kind: BroadcastEffectKind,
-  tr?: (russian: string, english: string) => string,
-): string {
-  const entry = broadcastEffectCatalog.find((candidate) => candidate.kind === kind);
-  if (!entry) return kind;
-  return tr ? tr(entry.titleRu, entry.title) : entry.titleRu;
+  /**
+   * Открыт ли разбор JSON.
+   *
+   * Состояние принадлежит экрану, а не инспектору: кнопка, которой разбор
+   * вызывают, стоит в «Применении» — там же, где выбирают сам файл и по нему
+   * раскладывают.
+   */
+  mappingOpen: boolean;
+  onMappingOpenChange: (open: boolean) => void;
 }
 
 export function BroadcastEffectInspector({
@@ -143,6 +93,8 @@ export function BroadcastEffectInspector({
   onApplyTaskToProject,
   assignedClipCount,
   clips,
+  mappingOpen,
+  onMappingOpenChange,
 }: BroadcastEffectInspectorProps) {
   const { tr } = useI18n();
   const definition = effect.broadcast;
@@ -204,13 +156,16 @@ export function BroadcastEffectInspector({
     () => summarizeBroadcastTaskMatches(taskEntries, clips),
     [taskEntries, clips],
   );
-  const [mappingOpen, setMappingOpen] = useState(false);
-  const lastOpenedTaskPath = useRef<string | null>(null);
-  useEffect(() => {
-    if (!taskSummary?.filePath || taskSummary.filePath === lastOpenedTaskPath.current) return;
-    lastOpenedTaskPath.current = taskSummary.filePath;
-    setMappingOpen(true);
-  }, [taskSummary?.filePath]);
+  /**
+   * Разбор JSON открывается **кнопкой**, а не сам.
+   *
+   * Раньше он открывался, как только приходил ещё не показанный путь файла, а
+   * память об уже показанном жила в самом инспекторе. Инспектор размонтируется
+   * при уходе с вкладки, память обнулялась, и уже выбранный файл каждый раз
+   * выглядел новым: окно выскакивало на каждый вход в «Эффекты» и на каждое
+   * восстановление сессии.
+   */
+  const setMappingOpen = onMappingOpenChange;
 
   /**
    * Оформление эффекта.
@@ -626,8 +581,8 @@ export function BroadcastEffectInspector({
                 <PresetKeyField
                   busy={busy}
                   hint={tr(
-                    "этот Text Layer очищается; реальный текст рисует FFmpeg",
-                    "this Text Layer is cleared; FFmpeg draws the live text",
+                    "поле старого файлового оформления; реальный текст рисует FluxIO",
+                    "legacy file-design field; FluxIO draws the live text",
                   )}
                   keys={presetKeys}
                   label={tr("Поле для текста", "Text field")}
@@ -650,8 +605,8 @@ export function BroadcastEffectInspector({
                 />
                 <p className="broadcast-hint broadcast-field-wide">
                   {tr(
-                    "Назовите Shape Layer подложки в After Effects",
-                    "Name the plate Shape Layer in After Effects",
+                    "В старом файловом шаблоне назовите слой подложки",
+                    "In a legacy file template, name the plate layer",
                   )}{" "}
                   <code>fit:&lt;{tr("имя текстового слоя", "text layer name")}&gt;</code> —{" "}
                   {tr(
@@ -749,8 +704,8 @@ export function BroadcastEffectInspector({
               {definition.decorationFilePath ? (
                 <p className="broadcast-hint broadcast-field-wide">
                   {tr(
-                    "Назовите Shape Layer подложки в After Effects",
-                    "Name the plate Shape Layer in After Effects",
+                    "В старом файловом шаблоне назовите слой подложки",
+                    "In a legacy file template, name the plate layer",
                   )}{" "}
                   <code>fit:&lt;{tr("имя поля названия", "title field name")}&gt;</code>.{" "}
                   {tr(

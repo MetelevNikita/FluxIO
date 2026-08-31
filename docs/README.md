@@ -1,27 +1,43 @@
 # Документация FluxIO
 
-## Запуск и эксплуатация
+Документация описывает текущее поведение кода, а не историю релизов. Если текст
+расходится с Zod-схемой из `packages/contracts`, источником правды является
+схема, а документацию нужно исправить в том же изменении.
 
-- [`development-runbook.md`](development-runbook.md) — интерактивная test/development установка одной командой без Docker.
-- [`production-runbook.md`](production-runbook.md) — clone → setup wizard → background service на Linux/macOS/Windows.
-- [`scte35-engineer-runbook.md`](scte35-engineer-runbook.md) — операторская настройка, запуск и независимая проверка SCTE-35 по UDP/SRT.
-- [`dvb-subtitles-engineer-runbook.md`](dvb-subtitles-engineer-runbook.md) — отдельный выбираемый DVB subtitle PID, PMT signaling и проверка на головной станции.
+## Оператор
 
-## Проектирование
+1. [Руководство оператора](operator-guide.md) — ежедневная работа от импорта до
+   остановки эфира.
+2. [Расписания и медиатека](schedules-and-media.md) — `.air/.txt`, графика,
+   дополнительные audio tracks и SRT.
+3. [Графика, эффекты и титры](graphics-and-titles.md) — два уровня графики,
+   сцены, `.fto` и JSON Parser.
+4. [Диагностика](troubleshooting.md) — симптомы, проверки и действия.
 
-- [`product-requirements.md`](product-requirements.md) — назначение, границы MVP и требования надёжности.
-- [`architecture.md`](architecture.md) — компоненты, данные, FFmpeg pipeline и безопасность.
-- [`design-system.md`](design-system.md) — дизайн-токены и фактическое поведение интерфейса из Figma.
-- [`effects-flow-map.html`](effects-flow-map.html) — карта потока работы с эфирными эффектами сверху вниз: от каталога до кадра в эфире.
-- [`development-plan.md`](development-plan.md) — завершённые этапы и следующая очередь работ.
-- [`adr`](adr) — журнал архитектурных решений.
-- [`progress`](progress) — отчёты по законченным вертикальным срезам и команды проверки.
+## Эфирный инженер
 
-## Правило обновления
+1. [Установка и конфигурация](installation.md) — зависимости, setup, `.env` и
+   platform services.
+2. [Эфир, кодирование и выходы](playout.md) — UDP/SRT/RTMP, PID, PCR, SCTE-35,
+   DVB subtitles и hardware encoders.
+3. [Эксплуатация и восстановление](operations-and-recovery.md) — журналы,
+   backup, recovery, обновление и pre-air checklist.
+4. [Форматы данных](data-formats.md) — переносимые и внутренние файлы.
 
-После каждого этапа одновременно обновляются:
+## Разработчик
 
-1. реализация;
-2. воспроизводимая проверка;
-3. архитектура и инструкции запуска;
-4. соответствующий отчёт в `progress`.
+1. [Архитектура](architecture.md) — границы компонентов и invariants.
+2. [Разработка](development.md) — структура кода и порядок сквозных изменений.
+3. [API media-service](api.md) — маршруты и схемы.
+4. [Тестирование и выпуск](testing-and-release.md) — уровни проверок и release
+   procedure.
+5. [Технический долг](technical-debt.md) — приоритеты, риск и критерии закрытия.
+6. [Версионирование](versioning.md) и [ADR](adr).
+
+## Правило поддержки
+
+- Не заводить отчёт на каждый patch: историю хранит Git.
+- После изменения поведения обновлять соответствующее evergreen-руководство.
+- Команды в документации должны выполняться из корня репозитория.
+- Секреты, реальные endpoint и production-пути в примеры не помещать.
+- Новое ограничение сразу добавлять в руководство оператора и troubleshooting.

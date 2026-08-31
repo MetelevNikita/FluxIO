@@ -1,13 +1,16 @@
 import type {
   SceneField, SceneGradient, SceneLayoutTarget, SceneNode, SceneTemplate, SystemFont,
 } from "@gruber/contracts";
-import { Diamond, FolderOpen, KeyRound, Link2, Link2Off, RotateCcw, X } from "lucide-react";
+import { ChevronRight, Diamond, FolderOpen, KeyRound, Link2, Link2Off, RotateCcw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   clearLayoutOverride, groupChildren, nodeKindTitle, setGroupContainer, setNodeAnchor,
   setRevealOrigin, textAnimatorPresets,
 } from "../scene-edit";
 import { useI18n } from "../i18n";
+
+/** Типографские пункты показываем относительно эталонного кадра 1080p. */
+const pointsPerSceneHeight = 1_080 * 72 / 96;
 
 /* -------------------------------------------------------------------------- *
  * Инспектор свойств узла.
@@ -96,7 +99,7 @@ export function SceneInspector({
     <aside className="scene-inspector">
       <header className="scene-inspector-head">
         <strong>{node.name}</strong>
-        <span>{nodeKindTitle(node.kind)}</span>
+        <span>{nodeKindTitle(node.kind, tr)}</span>
       </header>
 
       {target ? (
@@ -463,6 +466,22 @@ export function SceneInspector({
             })} />
         </Grid>
         <label className="scene-row">
+          <span>{tr("Как открывается", "Reveal style")}</span>
+          <select
+            onChange={(event) => onChange({
+              ...node,
+              transform: {
+                ...node.transform,
+                revealMode: event.target.value as "wipe" | "slide",
+              },
+            })}
+            value={node.transform.revealMode}
+          >
+            <option value="slide">{tr("Выезд из-под маски", "Slides out of the mask")}</option>
+            <option value="wipe">{tr("Шторка на месте", "Wipe in place")}</option>
+          </select>
+        </label>
+        <label className="scene-row">
           <span>{tr("Чем открывается", "Opens by")}</span>
           <select
             onChange={(event) => onChange({
@@ -498,14 +517,27 @@ export function SceneInspector({
           }))}
         </div>
         <p className="scene-hint">
-          {tr(
-            "Точка среза едет за привязкой: раскрытие выезжает из точки отсчёта узла. Увести её отдельно можно — сеткой ниже, уже после переноса привязки. Раскрытие ставится ключами: 0 % в начале входа, 100 % в конце.",
-            "The cut point sits at the anchor and follows it, so the reveal emerges from the node's own origin.",
-          )}
+          {node.transform.revealMode === "slide"
+            ? tr(
+              "Выезд идёт оттуда, где стоит точка: слева — картинка выползает из-за левого края своей рамки. Из середины выезжать некуда — там останется проявление под маской. Ставится ключами: 0 % в начале входа, 100 % в конце.",
+              "The slide comes from wherever the point sits: on the left, the picture crawls out from behind its own left edge. From the centre there is nowhere to slide from.",
+            )
+            : tr(
+              "Шторка открывает неподвижную картинку: окно растёт от точки среза. Точка едет за привязкой — увести её отдельно можно сеткой ниже, уже после переноса привязки. Ставится ключами: 0 % в начале входа, 100 % в конце.",
+              "A wipe opens a still picture: the window grows from the cut point, which follows the anchor.",
+            )}
         </p>
       </Section>
 
-      <Section title={tr("Привязка к тексту", "Bind to text")}>
+      <Section title={tr("Ширина по тексту", "Width from text")}>
+        {node.kind === "text" ? (
+          <p className="scene-hint">
+            {tr(
+              "Это надпись. Чтобы подложка тянулась за ней, выберите её здесь же — но у самой подложки: привязка живёт на том узле, который меняет размер.",
+              "This is the text itself. To make a plate stretch with it, set this binding on the plate — it lives on the node that changes size.",
+            )}
+          </p>
+        ) : null}
         <label className="scene-row">
           <span>{tr("Тянуться по узлу", "Grow with node")}</span>
           <select
@@ -773,8 +805,11 @@ function TextSection({
           </p>
         ) : null}
         <Grid>
-          <Num label={tr("Кегль", "Size")} value={node.textStyle.size} unit="%"
-            onCommit={(v) => onChange({ ...node, textStyle: { ...node.textStyle, size: clamp(v, 0.001, 0.4) } })} />
+          <Num label={tr("Кегль", "Font size")} value={node.textStyle.size * pointsPerSceneHeight} unit="pt" raw
+            onCommit={(v) => onChange({
+              ...node,
+              textStyle: { ...node.textStyle, size: clamp(v, 1, 300) / pointsPerSceneHeight },
+            })} />
           <Color label={tr("Цвет", "Colour")} value={node.textStyle.color}
             onChange={(v) => onChange({ ...node, textStyle: { ...node.textStyle, color: v } })} />
           <label className="scene-row">
@@ -834,11 +869,12 @@ function KeyButton({
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true);
   return (
-    <section className="scene-section">
-      <h4>{title}</h4>
-      {children}
-    </section>
+    <details className="scene-section" onToggle={(event) => setOpen(event.currentTarget.open)} open={open}>
+      <summary><ChevronRight aria-hidden="true" size={11} /> {title}</summary>
+      <div className="scene-section-body">{children}</div>
+    </details>
   );
 }
 

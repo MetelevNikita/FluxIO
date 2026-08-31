@@ -145,20 +145,36 @@ export interface FfmpegCommandOptions {
  */
 export const firstSceneFileDescriptor = 3;
 
-export function buildFfmpegClipVideoProducerCommand(
+/**
+ * Дописывает входы сцен и их наложения к уже собранной команде.
+ *
+ * Один помощник на эфирный рендерер и на предпросмотр ролика: разойдись они,
+ * оператор проверял бы титр по картинке, которой в эфире не будет. Сцены
+ * идут **последними** входами, чтобы не сдвинуть номера уже посчитанных —
+ * логотип, возраст и FX-слои ссылаются на свои по порядку.
+ *
+ * Возвращает метку выхода: без сцен это исходная метка, и в конвейере не
+ * меняется ровно ничего.
+ */
+function appendSceneOverlays(
+  args: string[],
+  filterGraph: string,
   request: StartPlayoutRequest,
-  item: PreparedPlayoutItem,
-  previewDirectory: string,
-): FfmpegCommand {
-  const base = buildFfmpegCommand(request, [item], previewDirectory);
-  const firstMap = base.args.indexOf("-map");
-  const args = base.args.slice(0, firstMap);
-  const progressIndex = args.indexOf("-progress");
-  if (progressIndex >= 0) args.splice(progressIndex, 2);
+  scenes: readonly PreparedSceneShow[],
+  sourceLabel: string,
+  outputLabel: string,
+): { filterGraph: string; label: string } {
+  const writeGraph = (graph: string) => {
+    const at = args.indexOf("-filter_complex");
+    if (at >= 0) args[at + 1] = graph;
+  };
+  // Граф записывается даже когда сцен нет: вызывающий передаёт сюда уже
+  // достроенный граф, и без записи в команду ушёл бы исходный.
+  if (scenes.length === 0) {
+    writeGraph(filterGraph);
+    return { filterGraph, label: sourceLabel };
+  }
 
-  // Сцены дописываются последними входами, чтобы не сдвинуть номера уже
-  // посчитанных: логотип, возраст и FX-слои ссылаются на свои по порядку.
-  const scenes = item.scenes ?? [];
   const sceneInputs: string[] = [];
   let inputIndex = args.reduce((count, value) => (value === "-i" ? count + 1 : count), 0);
   const sceneLabels: { label: string; scene: PreparedSceneShow }[] = [];
@@ -174,34 +190,53 @@ export function buildFfmpegClipVideoProducerCommand(
     inputIndex += 1;
   }
 
-  let filterGraph = `${buildFilterGraph(request, [item], false, false, false)};` +
-    "[aprogram]anullsink";
-  let source = "vprogram";
+  let graph = filterGraph;
+  let source = sourceLabel;
   for (const [order, entry] of sceneLabels.entries()) {
     const painted = `vscene${order}`;
     const shifted = `vscenein${order}`;
     // Показ начинается не с начала ролика: сдвигаем метки времени входа, иначе
     // сцена отыграет свой вход в первую секунду и застынет.
-    filterGraph += `;[${entry.label}]format=yuva420p,` +
+    graph += `;[${entry.label}]format=yuva420p,` +
       `setpts=PTS-STARTPTS+${decimal(entry.scene.startSeconds)}/TB[${shifted}]`;
-    filterGraph += `;[${source}][${shifted}]overlay=${Math.round(entry.scene.x)}:` +
+    graph += `;[${source}][${shifted}]overlay=${Math.round(entry.scene.x)}:` +
       `${Math.round(entry.scene.y)}:eof_action=pass:format=auto[${painted}]`;
     source = painted;
   }
-  if (sceneLabels.length > 0) filterGraph += `;[${source}]format=yuv420p[vout]`;
+  graph += `;[${source}]format=yuv420p[${outputLabel}]`;
 
   const filterIndex = args.indexOf("-filter_complex");
-  if (filterIndex >= 0) {
-    args.splice(filterIndex, 0, ...sceneInputs);
-    args[args.indexOf("-filter_complex") + 1] = filterGraph;
-  }
+  if (filterIndex >= 0) args.splice(filterIndex, 0, ...sceneInputs);
+  writeGraph(graph);
+  return { filterGraph: graph, label: outputLabel };
+}
+
+export function buildFfmpegClipVideoProducerCommand(
+  request: StartPlayoutRequest,
+  item: PreparedPlayoutItem,
+  previewDirectory: string,
+): FfmpegCommand {
+  const base = buildFfmpegCommand(request, [item], previewDirectory);
+  const firstMap = base.args.indexOf("-map");
+  const args = base.args.slice(0, firstMap);
+  const progressIndex = args.indexOf("-progress");
+  if (progressIndex >= 0) args.splice(progressIndex, 2);
+
+  const painted = appendSceneOverlays(
+    args,
+    `${buildFilterGraph(request, [item], false, false, false)};[aprogram]anullsink`,
+    request,
+    item.scenes ?? [],
+    "vprogram",
+    "vout",
+  );
   args.push(
-    "-map", sceneLabels.length > 0 ? "[vout]" : "[vprogram]",
+    "-map", `[${painted.label}]`,
     "-pix_fmt", "yuv420p",
     "-f", "rawvideo",
     "pipe:1",
   );
-  return { ...base, args, filterGraph };
+  return { ...base, args, filterGraph: painted.filterGraph };
 }
 
 /**
@@ -381,7 +416,7 @@ export function buildFfmpegProgramEncoderCommand(
 }
 
 /** Ширина, в которой считается предпросмотр ролика. */
-export const compositePreviewWidth = 960;
+const compositePreviewWidth = 960;
 
 /**
  * Кадр предпросмотра меньше эфирного.
@@ -392,7 +427,7 @@ export const compositePreviewWidth = 960;
  * считался в эфирном разрешении (на UHD — вчетверо тяжелее), и только потом
  * ужимался до 960 ради плеера: оператор видел это как «плей грузит процессор».
  */
-function previewSizedRequest(request: StartPlayoutRequest): StartPlayoutRequest {
+export function previewSizedRequest(request: StartPlayoutRequest): StartPlayoutRequest {
   const width = Math.min(request.video.width, compositePreviewWidth);
   if (width >= request.video.width) return request;
   const height = Math.max(
@@ -425,9 +460,23 @@ export function buildFfmpegCompositePreviewCommand(
   );
   if (firstMap < 0 || previewMap < 0) throw new Error("FFmpeg preview outputs are unavailable");
   const args = [...base.args.slice(0, firstMap), ...base.args.slice(previewMap)];
-  const filterGraph = `${base.filterGraph};[vprogram]nullsink;[aprogram]anullsink`;
   const filterIndex = args.indexOf("-filter_complex");
-  if (filterIndex >= 0) args[filterIndex + 1] = filterGraph;
+  if (filterIndex >= 0) {
+    args[filterIndex + 1] = `${base.filterGraph};[vprogram]nullsink;[aprogram]anullsink`;
+  }
+  // Сцены рисуются и в предпросмотре — тем же помощником, что и в эфире.
+  // Иначе титр проверить нечем: увидеть его до Start было негде, и «плашка
+  // применена, но её не видно» выглядело как несработавшее применение.
+  const painted = appendSceneOverlays(
+    args,
+    `${base.filterGraph};[vprogram]nullsink;[aprogram]anullsink`,
+    request,
+    item.scenes ?? [],
+    "vpreview",
+    "vpreviewout",
+  );
+  const filterGraph = painted.filterGraph;
+  replaceArgument(args, "-map", `[${painted.label}]`);
   replaceArgument(args, "-hls_start_number_source", "generic");
   replaceArgument(args, "-hls_segment_filename", path.join(previewDirectory, "segment-%06d.ts"));
   // Эфирный предпросмотр — «живое окно»: старые сегменты удаляются, и назад
@@ -454,7 +503,7 @@ export function buildFfmpegCompositePreviewCommand(
  * берутся из настроек эфира: заглушка обязана попасть в ту же сетку, что и
  * обычные ролики, иначе program encoder получит поток другого формата.
  */
-export function clipInputArgs(item: PreparedPlayoutItem, video: VideoEncoding): string[] {
+function clipInputArgs(item: PreparedPlayoutItem, video: VideoEncoding): string[] {
   if (!isBarsSource(item.filePath)) return ["-i", item.filePath];
   return [
     "-f",
@@ -1130,7 +1179,7 @@ function audioEncoderArgs(codec: "aac" | "mp2" | "ac3", bitrateKbps: number) {
 }
 
 /** Первая дорожка сохраняет историческую метку [aprogram]; далее [aprogram1], [aprogram2]… */
-export function audioLabel(index: number): string {
+function audioLabel(index: number): string {
   return index === 0 ? "aprogram" : `aprogram${index}`;
 }
 

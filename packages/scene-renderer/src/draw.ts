@@ -1,9 +1,12 @@
 import {
+  ancestorRevealShift,
+  ancestorTransforms,
   atLeastOnePixel,
   fromHeight,
   containerClip,
   resolveNodeBox,
   revealClip,
+  revealShift,
   sceneSegmentAt,
   textUnits,
   trackValueAt,
@@ -27,7 +30,6 @@ import { fitSampleText, fontSpec, measureNodeText, resolveText, singleLine } fro
  * кадра, а не из системных часов.
  * ------------------------------------------------------------------------- */
 
-/** Цвет с прозрачностью в том виде, в каком его понимает Canvas 2D. */
 /**
  * Заливка узла: цвет или градиент.
  *
@@ -270,6 +272,19 @@ function drawNode(
   surface.globalAlpha = box.opacity;
   surface.globalCompositeOperation = blendOperations[node.blend] ?? "source-over";
 
+  // Масштаб и поворот групп-предков. Идут **первыми**: они преобразуют и саму
+  // картинку узла, и обрезку контейнера, поэтому повёрнутая группа режет своих
+  // детей повёрнутой же рамкой. Сдвиг и прозрачность группы сюда не попадают —
+  // они уже сложены с ребёнком в `resolveNodeBox`.
+  for (const step of ancestorTransforms(
+    node, template, format, timing, input.timeSeconds, widths,
+  )) {
+    surface.translate(step.pivotX, step.pivotY);
+    if (step.scaleX !== 1 || step.scaleY !== 1) surface.scale(step.scaleX, step.scaleY);
+    if (step.rotationDegrees !== 0) surface.rotate((step.rotationDegrees * Math.PI) / 180);
+    surface.translate(-step.pivotX, -step.pivotY);
+  }
+
   // Контейнер режет содержимое по своим границам: ради этого группа и нужна —
   // «спрятать текст за краем плашки» иначе выразить нечем. Обрезка предков
   // идёт первой: она ограничивает всё, что узел нарисует дальше.
@@ -289,6 +304,28 @@ function drawNode(
     surface.beginPath();
     surface.rect(clip.x, clip.y, clip.width, clip.height);
     surface.clip();
+  }
+
+  // Выезд. Идёт **после** всех обрезок и до самой отрисовки: маска стоит на
+  // месте, а картинка едет под ней — иначе двигалась бы и рамка, и открывать
+  // было бы нечего. Сдвиг предков прибавляется здесь же: выезжающая группа
+  // обязана везти содержимое, а не одну свою рамку.
+  const ownShift = revealShift(node, box, timing, input.timeSeconds);
+  const inherited = ancestorRevealShift(
+    node, template, format, timing, input.timeSeconds, widths,
+  );
+  const shiftX = ownShift.dx + inherited.dx;
+  const shiftY = ownShift.dy + inherited.dy;
+  if (shiftX !== 0 || shiftY !== 0) {
+    // Уехавший за маску узел не рисуется вовсе. Полотно всё равно отсекло бы
+    // его целиком, но выезд начинается с нуля на каждом показе, и считать
+    // невидимое — работа, которой в реальном времени взяться неоткуда.
+    const visible = clip ?? container ?? box;
+    const moved = { x: box.x + shiftX, y: box.y + shiftY, width: box.width, height: box.height };
+    const overlaps = moved.x < visible.x + visible.width && moved.x + moved.width > visible.x &&
+      moved.y < visible.y + visible.height && moved.y + moved.height > visible.y;
+    if (!overlaps) { surface.restore(); return; }
+    surface.translate(shiftX, shiftY);
   }
 
   // Наклон и раздельный масштаб по осям — вокруг точки привязки, как поворот:
