@@ -238,13 +238,16 @@ export function preferredTextFont(fonts: readonly SystemFont[]): SystemFont | nu
 export function withSceneFont(
   scene: SceneTemplate | null,
   font: SystemFont | null,
+  availableFonts?: readonly SystemFont[],
 ): SceneTemplate | null {
-  if (!scene || !font) return scene;
+  if (!scene || (!font && !availableFonts?.length)) return scene;
   return {
     ...scene,
-    nodes: scene.nodes.map((node) => (node.kind !== "text" || node.textStyle.fontFilePath
-      ? node
-      : { ...node, textStyle: { ...node.textStyle, fontFilePath: font.filePath, fontFamily: font.family } })),
+    nodes: scene.nodes.map((node) => {
+      if (node.kind !== "text") return node;
+      const textStyle = withLocalFont(node.textStyle, font, availableFonts);
+      return textStyle === node.textStyle ? node : { ...node, textStyle };
+    }),
   };
 }
 
@@ -260,13 +263,13 @@ export function withSceneTargets(
 export function withDefaultTextFont(
   settings: BroadcastEffectSettings,
   font: SystemFont | null,
+  availableFonts?: readonly SystemFont[],
 ): BroadcastEffectSettings {
-  if (!font) return settings;
-  const apply = <T extends { style: BroadcastTextStyle }>(block: T): T => (
-    block.style.fontFilePath
-      ? block
-      : { ...block, style: { ...block.style, fontFilePath: font.filePath, fontFamily: font.family } }
-  );
+  if (!font && !availableFonts?.length) return settings;
+  const apply = <T extends { style: BroadcastTextStyle }>(block: T): T => {
+    const style = withLocalFont(block.style, font, availableFonts);
+    return style === block.style ? block : { ...block, style };
+  };
   return {
     ...settings,
     dynamicTitle: apply(settings.dynamicTitle),
@@ -274,6 +277,21 @@ export function withDefaultTextFont(
     tickerCrawl: apply(settings.tickerCrawl),
     clockCountdown: apply(settings.clockCountdown),
   };
+}
+
+function withLocalFont<T extends { fontFilePath: string | null; fontFamily: string }>(
+  style: T,
+  fallback: SystemFont | null,
+  availableFonts?: readonly SystemFont[],
+): T {
+  if (style.fontFilePath && (!availableFonts || availableFonts.some((entry) => entry.filePath === style.fontFilePath))) {
+    return style;
+  }
+  const family = style.fontFamily.trim().toLocaleLowerCase();
+  const replacement = availableFonts?.find((entry) => entry.family.toLocaleLowerCase() === family) ?? fallback;
+  return replacement
+    ? { ...style, fontFilePath: replacement.filePath, fontFamily: replacement.family }
+    : style;
 }
 
 /** Что вид принимает как оформление. */

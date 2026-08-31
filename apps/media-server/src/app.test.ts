@@ -3289,7 +3289,10 @@ test("ticker feed takes headlines from RSS and Atom and unescapes their text", (
 });
 
 test("font scan reads the family name and detects Cyrillic coverage", async () => {
+  const windowsFonts = path.join(process.env.WINDIR ?? "C:\\Windows", "Fonts");
   const candidates = [
+    path.join(windowsFonts, "arial.ttf"),
+    path.join(windowsFonts, "segoeui.ttf"),
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/System/Library/Fonts/Geneva.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -3696,7 +3699,8 @@ function sceneFixture() {
         kind: "text",
         text: { kind: "field", fieldKey: "title" },
         textStyle: {
-          fontFilePath: "/System/Library/Fonts/Supplemental/Arial.ttf",
+          fontFilePath: null,
+          fontFamily: "sans-serif",
           size: 0.048, color: "#FFFFFF", align: "left",
         },
       }),

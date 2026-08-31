@@ -16,6 +16,7 @@ import {
   retimeBroadcastEffectSpan,
   preferredTextFont,
   withDefaultTextFont,
+  withSceneFont,
   removeBroadcastEffect,
   snapToFrameGrid,
   summarizeBroadcastTaskMatches,
@@ -343,6 +344,28 @@ test("the default font fills every empty style and never overwrites a chosen one
 test("no Cyrillic font in the system leaves the settings untouched", () => {
   const settings = broadcastEffect("dynamic-title", {}).broadcast!.settings;
   assert.equal(withDefaultTextFont(settings, null), settings);
+});
+
+test("a title moved between operating systems rebinds its font by family", () => {
+  const scene = defaultSceneTemplate("dynamic-title")!;
+  const portable = {
+    ...scene,
+    nodes: scene.nodes.map((node) => node.kind === "text"
+      ? { ...node, textStyle: {
+          ...node.textStyle,
+          fontFilePath: "/System/Library/Fonts/Supplemental/Arial.ttf",
+          fontFamily: "Arial",
+        } }
+      : node),
+  };
+  const windowsArial = { family: "Arial", filePath: "C:\\Windows\\Fonts\\arial.ttf", cyrillic: true };
+  const windowsFallback = { family: "Segoe UI", filePath: "C:\\Windows\\Fonts\\segoeui.ttf", cyrillic: true };
+  const result = withSceneFont(portable, windowsFallback, [windowsArial, windowsFallback])!;
+
+  assert.equal(
+    result.nodes.find((node) => node.kind === "text")!.textStyle.fontFilePath,
+    windowsArial.filePath,
+  );
 });
 
 test("the in and out windows of one effect stay separate tracks", () => {

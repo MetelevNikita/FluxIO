@@ -1882,6 +1882,7 @@ export function App() {
       template: withSceneFont(
         adoptTitleTemplate(template, () => window.crypto.randomUUID().slice(0, 8)),
         preferredTextFont(systemFonts),
+        systemFonts,
       )!,
     } : current);
     setTitleLibraryOpen(false);
@@ -2057,12 +2058,12 @@ export function App() {
     // в библиотеку и говорим о ней.
     const defaultFont = preferredTextFont(systemFonts);
     const repairedSettings = effect.broadcast
-      ? withDefaultTextFont(effect.broadcast.settings, defaultFont)
+      ? withDefaultTextFont(effect.broadcast.settings, defaultFont, systemFonts)
       : null;
     // То же и у сцены: её текстовые узлы приходят без файла шрифта из сессий,
     // сохранённых до появления умолчания.
     const repairedScene = effect.broadcast
-      ? withSceneFont(effect.broadcast.scene, defaultFont)
+      ? withSceneFont(effect.broadcast.scene, defaultFont, systemFonts)
       : null;
     const fontRepaired = Boolean(
       effect.broadcast && (
