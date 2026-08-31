@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildLaunchAgentPlist,
@@ -17,12 +20,30 @@ import {
   npmCiArguments,
   parseEnv,
   platformServiceStopCommand,
+  pruneRetiredSourceFiles,
   probeGstreamerDvbPlugin,
   selectEnvBackupsToRemove,
   serializeEnv,
   validatePort,
   windowsToolCandidates,
 } from "./setup.mjs";
+
+test("setup removes retired sources left by an archive copied over an old version", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "fluxio-retired-sources-"));
+  const retired = path.join(root, "apps/media-server/src/effects/lottie.ts");
+  const current = path.join(root, "apps/media-server/src/effects/current.ts");
+  try {
+    await mkdir(path.dirname(retired), { recursive: true });
+    await writeFile(retired, "legacy");
+    await writeFile(current, "current");
+
+    assert.deepEqual(await pruneRetiredSourceFiles(root), ["apps/media-server/src/effects/lottie.ts"]);
+    await assert.rejects(readFile(retired));
+    assert.equal(await readFile(current, "utf8"), "current");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("setup uses the version flags expected by FFmpeg tools", () => {
   assert.deepEqual(commandVersionArguments("ffmpeg"), ["-version"]);

@@ -28,6 +28,12 @@ const npmInvocation = buildNpmInvocation();
 const applicationVersion = JSON.parse(
   readFileSync(path.join(projectRoot, "package.json"), "utf8"),
 ).version;
+const retiredSourceFiles = [
+  "apps/media-server/src/effects/font-metrics.ts",
+  "apps/media-server/src/effects/lottie.ts",
+  "apps/media-server/src/ffmpeg/text-overlay.ts",
+  "apps/web/src/lottie-properties.ts",
+];
 
 export function buildDatabaseUrl({
   database,
@@ -565,6 +571,10 @@ function buildEnvironmentValues({ database, existingEnv, mode, service, tools })
 //
 
 async function runBuildPipeline(commandEnv, mode, actions) {
+  const retired = await pruneRetiredSourceFiles();
+  if (retired.length > 0) {
+    console.log(`  Удалены устаревшие исходники предыдущей версии: ${retired.length}`);
+  }
   if (actions.installDependencies) {
     await runNpmCommand(npmCiArguments(), { env: commandEnv });
   }
@@ -589,6 +599,18 @@ async function runBuildPipeline(commandEnv, mode, actions) {
     packagingScript ? ["run", packagingScript] : ["run", "build"],
     { env: commandEnv },
   );
+}
+
+/** Убирает файлы, которые архив обновления не мог удалить из старой папки. */
+export async function pruneRetiredSourceFiles(root = projectRoot) {
+  const removed = [];
+  for (const relativePath of retiredSourceFiles) {
+    const filePath = path.join(root, relativePath);
+    if (!existsSync(filePath)) continue;
+    await rm(filePath);
+    removed.push(relativePath);
+  }
+  return removed;
 }
 
 async function finishInstallation(commandEnv, mode, actions, values) {

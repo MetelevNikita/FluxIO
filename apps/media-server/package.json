@@ -16,7 +16,7 @@
   "dependencies": {
     "@gruber/contracts": "*",
     "@gruber/scene-renderer": "*",
-    "@napi-rs/canvas": "^1.0.8",
+    "@napi-rs/canvas": "^0.1.100",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "fastify": "5.11.2",

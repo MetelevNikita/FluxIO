@@ -141,11 +141,19 @@ test("GET /api/health returns the shared service contract", async () => {
   }
 });
 
-test("a plain PDF imports as one editable scene layer", async () => {
+test("a vector PDF imports as one editable scene layer", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "fluxio-vector-import-"));
   const source = path.join(directory, "simple.pdf");
   try {
-    await writeFile(source, "%PDF-1.4\n1 0 obj <</Type/Catalog/Pages 2 0 R>> endobj\n2 0 obj <</Type/Pages/Kids[3 0 R]/Count 1>> endobj\n3 0 obj <</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<<>>/Contents 4 0 R>> endobj\n4 0 obj <</Length 0>>stream\n\nendstream endobj\ntrailer <</Root 1 0 R>>\n%%EOF");
+    const drawing = "1 0 0 rg\n10 10 80 80 re\nf\n";
+    await writeFile(source, `%PDF-1.4
+1 0 obj <</Type/Catalog/Pages 2 0 R>> endobj
+2 0 obj <</Type/Pages/Kids[3 0 R]/Count 1>> endobj
+3 0 obj <</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<<>>/Contents 4 0 R>> endobj
+4 0 obj <</Length ${Buffer.byteLength(drawing)}>>stream
+${drawing}endstream endobj
+trailer <</Root 1 0 R>>
+%%EOF`);
     const imported = await importVectorLayers(source, directory);
     assert.equal(imported.layered, false);
     assert.equal(imported.layers.length, 1);
