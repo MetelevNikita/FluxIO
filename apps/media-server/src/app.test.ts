@@ -290,6 +290,26 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
   assert.equal(recoverableCheckpointFromStatus(interruptedOnAir)?.outTimeSeconds, 12);
 });
 
+test("workspace autosave accepts an effect library larger than one thousand items", () => {
+  const effectLibrary = Array.from({ length: 1_001 }, (_, index) => ({
+    id: `effect-${index}`,
+    name: `Effect ${index}`,
+    filePath: `/effects/${index}.png`,
+    kind: "static" as const,
+    durationSeconds: 0,
+    width: 1_920,
+    height: 1_080,
+  }));
+  const snapshot = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "", scheduleLogoSource: "", ageLibrary: null, effectLibrary, settings: {},
+  });
+
+  assert.equal(snapshot.effectLibrary.length, effectLibrary.length);
+});
+
 test("hot-take wait continues until the active playout has stopped", async () => {
   let checks = 0;
   await waitForPlayoutStop(() => {

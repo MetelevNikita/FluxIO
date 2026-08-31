@@ -1536,7 +1536,9 @@ export const workspaceSessionSnapshotSchema = z.object({
   scheduleLogoPath: z.string(),
   scheduleLogoSource: z.string(),
   ageLibrary: workspaceOverlayLibrarySchema.nullable(),
-  effectLibrary: z.array(graphicEffectAssetSchema).max(200).default([]),
+  // Размер workspace уже ограничен HTTP body limit; число эффектов отдельно
+  // не режем — большие эфирные библиотеки содержат тысячи элементов.
+  effectLibrary: z.array(graphicEffectAssetSchema).default([]),
   subtitleLibrary: workspaceSubtitleLibrarySchema.nullable().default(null),
   startMarker: scheduleStartMarkerSchema.nullable().default(null),
   settings: z.record(z.string(), workspaceSettingValueSchema),
