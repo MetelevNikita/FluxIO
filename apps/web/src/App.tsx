@@ -91,7 +91,7 @@ import {
   removeEffectFromLibrary,
 } from "./effect-assignment";
 import { buildAudioProgram } from "./audio-program";
-import { defaultSceneTemplate } from "./default-scenes";
+import { defaultSceneTemplate, editableSceneTemplate } from "./default-scenes";
 import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
 import {
@@ -293,11 +293,20 @@ export function App() {
     const effect = effectLibrary.find((entry) => entry.id === effectId);
     const definition = effect?.broadcast;
     if (!effect || !definition?.scene) return;
+    // Незакрытая правка — сначала: черновик пишется и на Закрыть, поэтому он
+    // свежее сохранённой сцены.
     const savedDraft = sceneDrafts[effectId];
-    setEditingScene(savedDraft ? { ...savedDraft, effectName: effect.name } : {
+    if (savedDraft) {
+      setEditingScene({ ...savedDraft, effectName: effect.name });
+      return;
+    }
+    // Сохранённая плашка открывается снова — иначе собранный титр уходит в
+    // эфир, а править его нечем: черновик перезапуск не переживает.
+    const saved = editableSceneTemplate(definition.kind, definition.scene);
+    setEditingScene({
       effectId: effect.id,
       effectName: effect.name,
-      template: sceneTemplateSchema.parse({
+      template: saved ?? sceneTemplateSchema.parse({
         id: `scene-${window.crypto.randomUUID()}`,
         name: tr("Новый титр", "Untitled title"),
         targets: definition.scene.targets,
@@ -2971,7 +2980,13 @@ export function App() {
                 },
               };
             });
-            setSceneDrafts((current) => ({ ...current, [editingScene.effectId]: editingScene }));
+            // Черновик больше не нужен: сохранённая сцена лежит в самом
+            // эффекте, и следующее открытие берёт её. Оставленный черновик
+            // затирал бы правки, пришедшие в сцену помимо редактора.
+            setSceneDrafts((current) => {
+              const { [editingScene.effectId]: _saved, ...rest } = current;
+              return rest;
+            });
             setEditingScene(null);
             setEffectsMessage(tr(
               `${editingScene.effectName}: сцена сохранена. Перенесите настройки в назначенные ролики, чтобы правка ушла в эфир.`,

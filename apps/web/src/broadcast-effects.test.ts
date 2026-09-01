@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { GraphicEffectAsset } from "@gruber/contracts";
+import type { GraphicEffectAsset, SceneTemplate } from "@gruber/contracts";
 import {
   applyBroadcastPlan,
   effectBlocker,
   graphicFileRejection,
   joinTickerItems,
   mapBroadcastTaskRecords,
+  nextProgramSceneFields,
   normalizeTaskTitle,
   broadcastEffectSpans,
   clipDisplayTitle,
@@ -247,6 +248,51 @@ test("start offset counts from the end even when the clip came from a schedule",
   assert.deepEqual(result.errors, []);
   assert.equal(result.scenes[0]!.show.startSeconds, 3_570);
   assert.equal(result.scenes[0]!.show.durationSeconds, 7);
+});
+
+test("the announced title lands in the scene field the operator chose", () => {
+  const scene = defaultSceneTemplate("next-program")!;
+  const custom: SceneTemplate = {
+    ...scene,
+    fields: [
+      { key: "programme", label: "Программа", type: "text", sample: "Программа" },
+      { key: "airtime", label: "Время", type: "text", sample: "" },
+    ],
+  };
+  const settings = {
+    durationSeconds: 7,
+    fallbackTitle: "",
+    source: "playlist-name" as const,
+    startOffsetSeconds: 30,
+    style: style(),
+    subtitleKey: "airtime",
+    subtitleText: "в 21:00",
+    taskFilePath: null,
+    titleKey: "programme",
+  };
+
+  assert.deepEqual(nextProgramSceneFields(custom, settings, "Титаник"), {
+    programme: "Титаник",
+    airtime: "в 21:00",
+  });
+
+  // Ключ, которого в сцене нет, — это умолчание, а не выбор оператора: эффект
+  // создаётся с `next_title`, и плашка обязана продолжать выходить в эфир.
+  assert.deepEqual(
+    nextProgramSceneFields(custom, { ...settings, titleKey: "next_title", subtitleKey: "next_subtitle" }, "Титаник"),
+    { title: "Титаник", subtitle: "в 21:00" },
+  );
+});
+
+test("the announcement reaches the clip through the field the scene declares", () => {
+  const result = plan({
+    effect: sceneEffect("next-program", {}),
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  // Заводская сцена объявляет `title`, а настройки пришли с `next_title`.
+  assert.equal(result.scenes[0]!.show.fields.title, "Вечерние новости");
 });
 
 test("ticker joins messages and closes the loop with the separator", () => {

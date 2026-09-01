@@ -11,6 +11,7 @@ import {
 
 type Translate = (russian: string, english: string) => string;
 const russian: Translate = (value) => value;
+const english: Translate = (_russian, value) => value;
 
 /* -------------------------------------------------------------------------- *
  * Сцены по умолчанию.
@@ -320,4 +321,30 @@ export function defaultSceneTemplate(kind: BroadcastEffectKind, tr: Translate = 
   if (kind === "clock-countdown") return clockScene(tr);
   if (kind === "ticker-crawl") return tickerScene(tr);
   return null;
+}
+
+/**
+ * Что редактор открывает на правку у этого эффекта.
+ *
+ * Сохранённая плашка обязана открываться снова: она уходит в эфир, и если
+ * редактор каждый раз начинает с чистого холста, править собранный титр
+ * больше нечем. Черновик правки живёт только до перезапуска, а сцена эффекта
+ * переживает и сессию, поэтому источником правды здесь она.
+ *
+ * `null` — правки ещё не было: сцена осталась заводской, с которой эффект
+ * создан ради превью и эфира. Тогда редактор начинает с чистого холста.
+ * Отличаем по опознавателю шаблона: заводская сцена в редактор не попадает,
+ * а сохранённая приходит из него со своим — новым или пришедшим из файла.
+ */
+export function editableSceneTemplate(
+  kind: BroadcastEffectKind,
+  scene: SceneTemplate | null,
+): SceneTemplate | null {
+  if (!scene) return null;
+  // Опознаватель заводской плашки собран из её названия, а название переведено:
+  // эффект, созданный на английском интерфейсе, приходит с другим id. Считаем
+  // заводскими оба.
+  const factoryIds = [defaultSceneTemplate(kind, russian), defaultSceneTemplate(kind, english)]
+    .map((factory) => factory?.id);
+  return factoryIds.includes(scene.id) ? null : scene;
 }

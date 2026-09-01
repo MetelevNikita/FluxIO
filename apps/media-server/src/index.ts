@@ -1,4 +1,5 @@
 import { buildApp } from "./app.js";
+import { installBrokenPipeGuard } from "./ffmpeg/pipe-errors.js";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -24,8 +25,17 @@ const app = buildApp({
   logger: false,
 });
 
+// Труба, закрывшаяся без обработчика, уносила службу целиком: эфир обрывался
+// на середине ролика, а в журнале не оставалось ни строки. Пропущенный кадр
+// дешевле пропущенного эфира.
+const stopBrokenPipeGuard = installBrokenPipeGuard((message) => {
+  console.error(`[MEDIA] ${message}`);
+  app.applicationLogger.log("error", "SERVICE", message);
+});
+
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   console.info(`[MEDIA] Graceful shutdown requested (${signal})`);
+  stopBrokenPipeGuard();
   await app.close();
   process.exitCode = 0;
 }

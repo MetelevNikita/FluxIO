@@ -17,6 +17,7 @@
     "src/missing-graphics.ts",
     "src/missing-graphics.test.ts",
     "src/default-scenes.ts",
+    "src/default-scenes.test.ts",
     "src/scene-edit.ts",
     "src/title-file.ts",
     "src/title-file.test.ts",

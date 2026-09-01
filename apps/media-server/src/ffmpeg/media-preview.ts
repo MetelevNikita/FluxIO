@@ -13,6 +13,7 @@ import {
   type PreparedPlayoutItem,
   type PreparedSceneShow,
 } from "./command-builder.js";
+import { endPipeQuietly, guardPipeErrors } from "./pipe-errors.js";
 import { prepareScenes } from "./playout-supervisor.js";
 import { probeMedia } from "./probe.js";
 import { runCommand } from "./process.js";
@@ -325,15 +326,26 @@ export class MediaPreviewService {
         stdio: ["pipe", "pipe", "pipe"],
       }) as ChildProcessWithoutNullStreams;
       active.sceneProducers.add(producer);
+      // Труба предпросмотра закрывается вместе с ним, а рисовальщик к этому
+      // моменту держит ещё кадр. Необработанная ошибка сокета уронила бы всю
+      // службу — вместе с эфиром, к которому предпросмотр отношения не имеет.
+      target.on("error", () => {
+        // Отказ трубы предпросмотра ничего не решает: FFmpeg доигрывает без
+        // титра. Важно не оставить рисовальщика писать в пустоту — закрытия
+        // он не видит, потому что пишет в службу, а закрылась труба дальше.
+        producer.kill("SIGTERM");
+      });
+      guardPipeErrors(producer.stdin);
+      guardPipeErrors(producer.stdout);
       // Описание уходит в stdin: каталог сессии сносится при остановке, и файл
       // до запуска рисовальщика не доживал бы.
       producer.stdin.end(scene.request);
       producer.stdout.pipe(target);
       producer.stderr.resume();
-      producer.once("error", () => { target.end(); });
+      producer.once("error", () => { endPipeQuietly(target); });
       producer.once("close", () => {
         active.sceneProducers.delete(producer);
-        target.end();
+        endPipeQuietly(target);
       });
     }
   }

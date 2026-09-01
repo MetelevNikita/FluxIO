@@ -5,6 +5,7 @@ import type {
   BroadcastEffectSettings,
   BroadcastTextStyle,
   ClipAudioOverlay,
+  NextProgramSettings,
   EffectDecoration,
   GraphicEffectAsset,
   GraphicEffectLayer,
@@ -710,11 +711,40 @@ function planNextProgram(context: PlanContext): void {
       );
       continue;
     }
-    pushScene(context, clip, scene, {
-      title,
-      subtitle: settings.subtitleText,
-    }, clip.durationSeconds - settings.startOffsetSeconds, settings.durationSeconds);
+    pushScene(
+      context, clip, scene, nextProgramSceneFields(scene, settings, title),
+      clip.durationSeconds - settings.startOffsetSeconds, settings.durationSeconds,
+    );
   }
+}
+
+/** Общепринятые ключи полей сцены: с ними эффект создаётся, ими он и жил. */
+const sceneTitleFieldKey = "title";
+const sceneSubtitleFieldKey = "subtitle";
+
+/**
+ * Куда лягут название и подпись «Смотрите далее».
+ *
+ * Поле выбирает оператор: ключи объявляет сцена, инспектор показывает их
+ * списком. Но выбор мог остаться на умолчании `next_title`, которого в сцене
+ * нет — именно с ним эффект и создаётся. Незаявленный ключ значит «поле не
+ * выбирали»: значение уходит в общепринятые `title` и `subtitle`, иначе плашки,
+ * которые уже идут в эфир, разом остались бы без текста.
+ *
+ * Подпись пишется первой: выбери оператор одно поле на обе строки, в кадре
+ * должно остаться название.
+ */
+export function nextProgramSceneFields(
+  scene: SceneTemplate,
+  settings: NextProgramSettings,
+  title: string,
+): Record<string, string> {
+  const declared = new Set(scene.fields.map((field) => field.key));
+  const subtitleKey = declared.has(settings.subtitleKey)
+    ? settings.subtitleKey
+    : sceneSubtitleFieldKey;
+  const titleKey = declared.has(settings.titleKey) ? settings.titleKey : sceneTitleFieldKey;
+  return { [subtitleKey]: settings.subtitleText, [titleKey]: title };
 }
 
 /**

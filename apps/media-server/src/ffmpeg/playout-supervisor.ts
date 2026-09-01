@@ -38,6 +38,7 @@ import {
   type PreparedPlayoutItem,
 } from "./command-builder.js";
 import { FfmpegCapabilitiesService } from "./capabilities.js";
+import { endPipeQuietly, guardPipeErrors, isExpectedPipeError } from "./pipe-errors.js";
 import { probeMedia } from "./probe.js";
 import {
   hardwareSupportsInterlace,
@@ -1178,7 +1179,7 @@ export class PlayoutSupervisor {
     const handleInputPipeError = (error: NodeJS.ErrnoException) => {
       // The renderer can still have one buffered raw frame when the encoder
       // closes at loop drain/stop. EPIPE is expected during that hand-off.
-      if (error.code !== "EPIPE") this.#handleProcessError(error);
+      if (!isExpectedPipeError(error)) this.#handleProcessError(error);
     };
     child.stdin.on("error", handleInputPipeError);
     for (let pipeIndex = 3; pipeIndex < child.stdio.length; pipeIndex += 1) {
@@ -1241,6 +1242,25 @@ export class PlayoutSupervisor {
       }) as ChildProcessWithoutNullStreams;
       this.#sceneProducers.add(producer);
 
+      // Труба рендерера закрывается вместе с роликом, а рисовальщик к этому
+      // моменту держит ещё кадр: закрытая труба здесь — обычная смена ролика,
+      // а не отказ. Без обработчика она всплывает необработанной ошибкой
+      // сокета и роняет службу целиком — вместе с эфиром, который к трубе
+      // отношения не имеет.
+      target.on("error", (error: NodeJS.ErrnoException) => {
+        if (!isExpectedPipeError(error)) {
+          this.#appendEvent(
+            `Scene ${order + 1} of clip ${index + 1} pipe failed: ${error.message}`,
+          );
+        }
+        // Сам рисовальщик закрытия не видит: он пишет в службу, а закрылась
+        // труба дальше по цепочке. Не погасив его, мы оставим процесс рисовать
+        // в пустоту до конца эфирной сессии.
+        producer.kill("SIGTERM");
+      });
+      guardPipeErrors(producer.stdin);
+      guardPipeErrors(producer.stdout);
+
       // Описание уходит в stdin: каталог превью очищается при старте сессии,
       // и файл до запуска рисовальщика не доживал.
       producer.stdin.end(scene.request);
@@ -1248,14 +1268,14 @@ export class PlayoutSupervisor {
       this.#readSceneProducerLogs(producer, index, order);
       producer.once("error", (error) => {
         this.#appendEvent(`Scene ${order + 1} of clip ${index + 1} failed to start: ${error.message}`);
-        target.end();
+        endPipeQuietly(target);
       });
       producer.once("close", (code) => {
         this.#sceneProducers.delete(producer);
         if (code !== 0) {
           this.#appendEvent(`Scene ${order + 1} of clip ${index + 1} exited with code ${code}`);
         }
-        target.end();
+        endPipeQuietly(target);
       });
     }
   }
@@ -1308,6 +1328,13 @@ export class PlayoutSupervisor {
       videoReady: false,
     };
     this.#producerRuntimes.set(child, runtime);
+    // Мост уничтожается на остановке эфира, а рендерер в этот момент может
+    // дописывать кадр: закрытая труба здесь штатна, всё остальное — нет.
+    const reportVideoPipe = (error: NodeJS.ErrnoException) => {
+      this.#appendEvent(`Clip ${index + 1} video pipe failed: ${error.message}`);
+    };
+    guardPipeErrors(child.stdout, reportVideoPipe);
+    guardPipeErrors(runtime.videoBridge, reportVideoPipe);
     child.stdout.once("data", () => this.#handleClipProducerData(runtime, "video"));
     runtime.videoBridge.once("end", () => {
       runtime.videoEnded = true;
@@ -1373,6 +1400,13 @@ export class PlayoutSupervisor {
       writtenBytes: 0,
     };
 
+    const reportAudioPipe = (error: NodeJS.ErrnoException) => {
+      this.#appendEvent(
+        `Clip ${runtime.index + 1} audio ${label} pipe failed: ${error.message}`,
+      );
+    };
+    guardPipeErrors(child.stdout, reportAudioPipe);
+    guardPipeErrors(audio.bridge, reportAudioPipe);
     child.stdout.once("data", () => this.#handleClipAudioData(runtime, audio));
     audio.bridge.once("end", () => {
       audio.ended = true;

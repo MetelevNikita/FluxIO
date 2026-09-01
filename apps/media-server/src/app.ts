@@ -21,9 +21,17 @@ import { systemRoute, serviceVersion } from "./router/v1/systemRoute.js";
 import { workspaceRoute } from "./router/v1/workspaceRoute.js";
 import { WorkspaceCheckpoint } from "./workspace-checkpoint.js";
 
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Журнал службы: он же нужен точке входа для страховки от падений. */
+    applicationLogger: ApplicationLogger;
+  }
+}
+
 export function buildApp(options: FastifyServerOptions = {}) {
   const app = Fastify(options);
   const context = createRouteContext();
+  app.decorate("applicationLogger", context.logger);
   const checkpoint = new WorkspaceCheckpoint(context);
   let stopEventLoopWatch: (() => void) | null = null;
 

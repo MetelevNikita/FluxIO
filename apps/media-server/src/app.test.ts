@@ -4,6 +4,7 @@ import { createSocket } from "node:dgram";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   defaultMpegTsOutputSettings,
@@ -77,6 +78,12 @@ import {
   describeSequenceNumbers,
   sequencePattern,
 } from "./effects/image-sequence.js";
+import {
+  brokenPipeGuard,
+  endPipeQuietly,
+  guardPipeErrors,
+  isExpectedPipeError,
+} from "./ffmpeg/pipe-errors.js";
 import { runCommand } from "./ffmpeg/process.js";
 import { SceneRenderer } from "./scene/surface.js";
 import { planSceneShow, produceSceneShow } from "./scene/producer.js";
@@ -815,6 +822,71 @@ test("a renderer that stops early is topped up with silence, never truncated", (
   assert.equal(clipAudioSilenceBytes(expected, expected - 96_000), 96_000);
   // Лишние байты encoder уже забрал — обрезать нечего.
   assert.equal(clipAudioSilenceBytes(expected, expected + 96_000), 0);
+});
+
+test("a closed pipe is a clip change, not a failure of the service", () => {
+  for (const code of ["EPIPE", "ECONNRESET", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"]) {
+    assert.ok(isExpectedPipeError(Object.assign(new Error("write"), { code })));
+  }
+  assert.equal(isExpectedPipeError(Object.assign(new Error("no space"), { code: "ENOSPC" })), false);
+  assert.equal(isExpectedPipeError(new Error("plain")), false);
+});
+
+test("a scene pipe error never escapes as an unhandled stream error", () => {
+  const target = new PassThrough();
+  const reported: string[] = [];
+  guardPipeErrors(target, (error) => reported.push(error.message));
+
+  // Ровно тот путь, которым падала служба: pipe() переизлучает ошибку на
+  // приёмник, и без пользовательского обработчика она уносит процесс с собой.
+  target.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+  assert.deepEqual(reported, []);
+
+  target.emit("error", Object.assign(new Error("no space left"), { code: "ENOSPC" }));
+  assert.deepEqual(reported, ["no space left"]);
+});
+
+test("closing a pipe twice is quiet, because both ends close it", () => {
+  const target = new PassThrough();
+  guardPipeErrors(target);
+  endPipeQuietly(target);
+  endPipeQuietly(target);
+  assert.equal(target.writableEnded, true);
+
+  const destroyed = new PassThrough();
+  guardPipeErrors(destroyed);
+  destroyed.destroy();
+  endPipeQuietly(destroyed);
+  assert.equal(destroyed.writableEnded, false);
+});
+
+test("a stray broken pipe no longer takes the whole service down with it", () => {
+  const reported: string[] = [];
+  const fatal: Error[] = [];
+  let clock = 0;
+  const guard = brokenPipeGuard(
+    (message) => reported.push(message),
+    (error) => fatal.push(error),
+    10_000,
+    () => clock,
+  );
+  const broken = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+
+  guard(broken());
+  // Труба закрывается на каждом кадре: одинаковые строки придерживаются.
+  clock += 5_000;
+  guard(broken());
+  clock += 6_000;
+  guard(broken());
+
+  assert.equal(reported.length, 2);
+  assert.match(reported[0] ?? "", /EPIPE/);
+  assert.deepEqual(fatal, []);
+
+  // Всё, что закрытием трубы не объясняется, по-прежнему роняет процесс.
+  guard(Object.assign(new Error("no space left"), { code: "ENOSPC" }));
+  assert.equal(reported.length, 2);
+  assert.equal(fatal.length, 1);
 });
 
 test("a logo that plays once still outlives the clip, or overlay would cut the programme", () => {
