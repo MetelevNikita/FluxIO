@@ -1,7 +1,7 @@
 import type { SceneNode, SceneNodeKind, SceneTemplate } from "@gruber/contracts";
 import {
   ChevronDown, ChevronRight, Circle, Copy, Eye, EyeOff, Image as ImageIcon,
-  Square, Trash2, Type, Video,
+  Lock, Square, Trash2, Type, Unlock, Video,
 } from "lucide-react";
 import { Fragment, useRef, useState, type DragEvent, type PointerEvent } from "react";
 import { nodeKindTitle, trackIsAnimated } from "../scene-edit";
@@ -33,9 +33,12 @@ interface SceneTreeProps {
   /** Весь набор выбранного, включая активный узел. */
   selectedIds: readonly string[];
   hiddenIds: ReadonlySet<string>;
+  lockedIds: ReadonlySet<string>;
+  protectedIds: ReadonlySet<string>;
   onSelect: (nodeId: string, additive?: boolean) => void;
   onMove: (movedId: string, parentId: string | null, beforeId: string | null) => void;
   onToggleHidden: (nodeId: string) => void;
+  onToggleLocked: (nodeId: string) => void;
   onDuplicate: (nodeId: string) => void;
   onRemove: (nodeId: string) => void;
   onRename: (nodeId: string, name: string) => void;
@@ -49,8 +52,8 @@ interface DropTarget {
 }
 
 export function SceneTree({
-  template, selectedId, selectedIds, hiddenIds,
-  onSelect, onMove, onToggleHidden, onDuplicate, onRemove, onRename,
+  template, selectedId, selectedIds, hiddenIds, lockedIds, protectedIds,
+  onSelect, onMove, onToggleHidden, onToggleLocked, onDuplicate, onRemove, onRename,
 }: SceneTreeProps) {
   const { tr } = useI18n();
   const [dragged, setDragged] = useState<string | null>(null);
@@ -115,7 +118,7 @@ export function SceneTree({
 
   /** Можно ли положить перетаскиваемый узел в эту группу. */
   function acceptsDrop(groupId: string): boolean {
-    if (!dragged || dragged === groupId) return false;
+    if (!dragged || dragged === groupId || protectedIds.has(groupId)) return false;
     // В собственного потомка узел не переезжает: цепочка родителей замкнулась
     // бы в кольцо, и раскладка ушла бы в бесконечный обход.
     let parentId: string | null = groupId;
@@ -143,6 +146,40 @@ export function SceneTree({
     onSelect(nodeId, event.ctrlKey || event.metaKey || event.shiftKey);
   }
 
+  /** Считает цель по снимку строк до drag: placeholder больше не качает список под мышью. */
+  function updateDrop(event: DragEvent) {
+    event.preventDefault();
+    if (!dragged) return;
+    const index = ordered.findIndex((node) => {
+      const rect = dragRects.current.get(node.id);
+      return rect ? event.clientY < rect.bottom : false;
+    });
+    if (index < 0) {
+      showDrop({ index: ordered.length, parentId: null, beforeId: null, intoGroupId: null });
+      return;
+    }
+    const node = ordered[index]!;
+    if (node.id === dragged) return;
+    const rect = dragRects.current.get(node.id);
+    if (!rect) return;
+    if (node.kind === "group" && acceptsDrop(node.id) && groupZone(event, rect)) {
+      const firstChild = ordered.find((entry) => entry.parentId === node.id);
+      showDrop({
+        index: index + 1, parentId: node.id,
+        beforeId: firstChild?.id ?? null, intoGroupId: node.id,
+      });
+      return;
+    }
+    const after = event.clientY >= rect.top + rect.height / 2;
+    const siblings = ordered.filter((entry) => entry.parentId === node.parentId);
+    const siblingIndex = siblings.findIndex((entry) => entry.id === node.id);
+    showDrop({
+      index: index + (after ? 1 : 0), parentId: node.parentId,
+      beforeId: after ? siblings[siblingIndex + 1]?.id ?? null : node.id,
+      intoGroupId: null,
+    });
+  }
+
   return (
     <div className="scene-tree">
       <header>
@@ -160,17 +197,14 @@ export function SceneTree({
           попавший в группу, можно достать только роспуском всей группы. */}
       <ul
         className={dragged && byId.get(dragged)?.parentId ? "un-nesting" : ""}
-        onDragOver={(event) => {
-          event.preventDefault();
-          if (event.target === event.currentTarget) {
-            showDrop({ index: ordered.length, parentId: null, beforeId: null, intoGroupId: null });
-          }
-        }}
+        onDragOver={updateDrop}
         onDrop={commitDrop}
       >
         {ordered.map((node, index) => {
           const Icon = kindIcons[node.kind];
           const hidden = hiddenIds.has(node.id);
+          const locked = protectedIds.has(node.id);
+          const ownLock = lockedIds.has(node.id);
           // Анимация принадлежит узлу, а не сцене: у каждого слоя свои дорожки.
           // Без метки в списке это неочевидно — её и не находили.
           const animated = Object.values(node.transform)
@@ -193,11 +227,12 @@ export function SceneTree({
               style={{ paddingLeft: 10 + depth * 14 }}
               className={`${node.id === selectedId ? "selected" : ""} ${
                 selectedIds.includes(node.id) && node.id !== selectedId ? "co-selected" : ""
-              } ${hidden ? "hidden-node" : ""} ${node.parentId ? "in-group" : ""} ${
+              } ${hidden ? "hidden-node" : ""} ${locked ? "locked-node" : ""} ${node.parentId ? "in-group" : ""} ${
                 drop?.intoGroupId === node.id ? "drop-into" : ""
               }`}
-              draggable
+              draggable={!locked}
               onDragStart={(event) => {
+                if (locked) { event.preventDefault(); return; }
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData("text/plain", node.id);
                 dragRects.current = new Map(Array.from(
@@ -207,31 +242,6 @@ export function SceneTree({
                 setDragged(node.id);
               }}
               onDragEnd={() => { dragRects.current.clear(); setDragged(null); setDrop(null); }}
-              onDragOver={(event) => {
-                event.preventDefault();
-                if (node.id === dragged) return;
-                const rect = dragRects.current.get(node.id) ?? event.currentTarget.getBoundingClientRect();
-                const into = node.kind === "group" && acceptsDrop(node.id) && groupZone(event, rect);
-                if (into) {
-                  const firstChild = ordered.find((entry) => entry.parentId === node.id);
-                  showDrop({
-                    index: index + 1,
-                    parentId: node.id,
-                    beforeId: firstChild?.id ?? null,
-                    intoGroupId: node.id,
-                  });
-                  return;
-                }
-                const after = event.clientY - rect.top >= rect.height / 2;
-                const siblings = ordered.filter((entry) => entry.parentId === node.parentId);
-                const siblingIndex = siblings.findIndex((entry) => entry.id === node.id);
-                showDrop({
-                  index: index + (after ? 1 : 0),
-                  parentId: node.parentId,
-                  beforeId: after ? siblings[siblingIndex + 1]?.id ?? null : node.id,
-                  intoGroupId: null,
-                });
-              }}
               onDrop={commitDrop}
               onPointerDown={(event) => selectOnPointerDown(event, node.id)}
               onDoubleClick={() => setRenaming(node.id)}
@@ -277,6 +287,19 @@ export function SceneTree({
                 type="button"
               >
                 {hidden ? <EyeOff size={12} /> : <Eye size={12} />}
+              </button>
+              <button
+                className={`scene-tree-action ${locked ? "active" : ""}`}
+                disabled={locked && !ownLock}
+                onClick={(event) => { event.stopPropagation(); onToggleLocked(node.id); }}
+                title={locked && !ownLock
+                  ? tr("Заблокировано родительской группой", "Locked by the parent group")
+                  : ownLock
+                    ? tr("Разблокировать", "Unlock")
+                    : tr("Заблокировать перемещение", "Lock movement")}
+                type="button"
+              >
+                {locked ? <Lock size={12} /> : <Unlock size={12} />}
               </button>
               <button
                 className="scene-tree-action"

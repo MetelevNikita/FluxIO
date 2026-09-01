@@ -7,7 +7,9 @@ import {
   ChevronDown, ChevronRight, Circle, Diamond, Minus, Pause, Play, Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { snapKeyframeTime, trackIsAnimated, type SceneSegmentSide } from "../scene-edit";
+import {
+  absoluteKeyframeTime, snapKeyframeTime, trackIsAnimated, type SceneSegmentSide,
+} from "../scene-edit";
 import { EasingPicker } from "./EasingPicker";
 import { useI18n } from "../i18n";
 
@@ -49,6 +51,7 @@ interface SceneTimelineProps {
   template: SceneTemplate;
   node: SceneNode | null;
   durationSeconds: number;
+  frameRate: number;
   timeSeconds: number;
   playing: boolean;
   onTime: (seconds: number) => void;
@@ -68,7 +71,7 @@ interface SceneTimelineProps {
 }
 
 export function SceneTimeline({
-  template, node, durationSeconds, timeSeconds, playing,
+  template, node, durationSeconds, frameRate, timeSeconds, playing,
   onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframes, onRemoveKeyframe, onKeyframeEasing,
   onSelectNode,
 }: SceneTimelineProps) {
@@ -241,6 +244,9 @@ export function SceneTimeline({
   ) {
     const currentKey = { nodeId, key, side, atSeconds: frame.atSeconds };
     const selected = selectedKeys.some((entry) => sameKey(entry, currentKey));
+    const absoluteSeconds = absoluteKeyframeTime(side, frame.atSeconds, timing);
+    const position = `${absoluteSeconds.toFixed(2)}s · F${Math.round(absoluteSeconds * frameRate)}`;
+    const positionEdge = atRail / total < 0.08 ? "start" : atRail / total > 0.92 ? "end" : "";
     return (
       <button
         aria-pressed={selected}
@@ -290,12 +296,13 @@ export function SceneTimeline({
         }}
         style={{ left: pct(atRail) }}
         title={tr(
-          `${side === "in" ? "Вход" : "Выход"}, ${frame.atSeconds} с · ${frame.easing}\nТащите — сдвинуть, правая кнопка — кривая, двойной щелчок — убрать`,
-          `${side === "in" ? "In" : "Out"}, ${frame.atSeconds}s · ${frame.easing}\nDrag to move, right-click for a curve, double-click to remove`,
+          `${position} общей шкалы · ${side === "in" ? "вход" : "выход"} ${frame.atSeconds} с · ${frame.easing}\nТащите — сдвинуть, правая кнопка — кривая, двойной щелчок — убрать`,
+          `${position} on the main timeline · ${side} ${frame.atSeconds}s · ${frame.easing}\nDrag to move, right-click for a curve, double-click to remove`,
         )}
         type="button"
       >
         {frame.easing === "bezier" ? <Circle fill="currentColor" size={9} /> : <Diamond size={9} />}
+        {selected ? <span className={`scene-key-position ${positionEdge}`}>{position}</span> : null}
       </button>
     );
   }
@@ -315,7 +322,9 @@ export function SceneTimeline({
         <button className="scene-play" onClick={onTogglePlay} type="button">
           {playing ? <Pause size={13} /> : <Play size={13} />}
         </button>
-        <span className="scene-clock">{timeSeconds.toFixed(2)} / {total.toFixed(2)} {tr("с", "s")}</span>
+        <span className="scene-clock">
+          {timeSeconds.toFixed(2)} / {total.toFixed(2)} {tr("с", "s")} · F{Math.round(timeSeconds * frameRate)}
+        </span>
         <span className={`scene-segment-badge seg-${segment.segment}`}>
           {segment.segment === "in" ? tr("вход", "in")
             : segment.segment === "hold" ? tr("удержание", "hold") : tr("выход", "out")}
@@ -480,7 +489,8 @@ export function SceneTimeline({
               {open ? animated.map((key) => {
                 const track = entry.transform[key];
                 return (
-                  <div className="scene-track animated" key={key}>
+                  <div className={`scene-track animated ${selectedKeys.some((selected) =>
+                    selected.nodeId === entry.id && selected.key === key) ? "has-selected-key" : ""}`} key={key}>
                     <span className="scene-track-name">{tr(...trackTitles[key])}</span>
                     <div
                       className="scene-track-rail"

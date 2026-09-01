@@ -14,6 +14,7 @@ import {
 } from "@gruber/contracts";
 import {
   addNode,
+  absoluteKeyframeTime,
   applyBoxDrag,
   applyLayoutEdit,
   applyPreset,
@@ -549,6 +550,12 @@ test("a keyframe at the same instant replaces instead of piling up", () => {
   track = setKeyframe(track, "in", 0.5, 0.9);
   assert.equal(track.inKeyframes.length, 1);
   assert.equal(track.inKeyframes[0]!.value, 0.9);
+});
+
+test("an exit key reports its position on the whole-show timeline", () => {
+  const timing = sceneTiming({ inSeconds: 1, outSeconds: 2 }, 10);
+  assert.equal(absoluteKeyframeTime("in", 0.5, timing), 0.5);
+  assert.equal(absoluteKeyframeTime("out", 0.5, timing), 8.5);
 });
 
 test("editing an animated property at another time creates the next keyframe", () => {

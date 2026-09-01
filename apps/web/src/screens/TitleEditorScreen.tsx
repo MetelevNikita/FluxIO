@@ -13,7 +13,7 @@ import {
 } from "@gruber/contracts";
 import {
   AlertTriangle, Check, Circle, FileDown, FileUp, Film, FolderOpen, Image as ImageIcon,
-  Group, Maximize2, Minimize2, Redo2, Undo2, Ungroup,
+  Group, Redo2, Undo2, Ungroup,
   KeyRound, Ruler, Save, Sparkles, Square, Type, X,
 } from "lucide-react";
 import {
@@ -131,14 +131,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   const [playing, setPlaying] = useState(false);
   const [showSafe, setShowSafe] = useState(true);
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
-  /**
-   * Крупный предпросмотр.
-   *
-   * По умолчанию холст ужат в пользу дорожек времени: ключи ставят чаще, чем
-   * разглядывают кадр. Разглядеть кадр всё равно надо — поэтому холст
-   * увеличивается по кнопке, а не занимает экран постоянно.
-   */
-  const [zoomedPreview, setZoomedPreview] = useState(false);
+  const [lockedIds, setLockedIds] = useState<ReadonlySet<string>>(new Set());
   const [paneSizes, setPaneSizes] = useState(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(paneStorageKey) ?? "null") as Partial<typeof defaultPaneSizes> | null;
@@ -169,6 +162,11 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     for (const id of hiddenIds) for (const member of descendantIds(template, id)) family.add(member);
     return { ...template, nodes: template.nodes.filter((node) => !family.has(node.id)) };
   }, [template, hiddenIds]);
+  const protectedIds = useMemo(() => {
+    const family = new Set<string>();
+    for (const id of lockedIds) for (const member of descendantIds(template, id)) family.add(member);
+    return family;
+  }, [template, lockedIds]);
 
   const selected = template.nodes.find((node) => node.id === selectedId) ?? null;
   const fields = useMemo(() => sampleFieldValues(template), [template]);
@@ -196,6 +194,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
 
   /** Холст присылает готовый узел — считать его от текущего шаблона нельзя. */
   function transform(nodeId: string, node: SceneNode) {
+    if (protectedIds.has(nodeId)) return;
     patch(updateNode(template, nodeId, () => node));
   }
 
@@ -442,6 +441,8 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         <div className="title-editor-left">
           <SceneTree
             hiddenIds={hiddenIds}
+            lockedIds={lockedIds}
+            protectedIds={protectedIds}
             onDuplicate={(id) => {
               const copied = copyNode(template, id);
               if (!copied) return;
@@ -451,11 +452,18 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             }}
             onRemove={(id) => { patch(removeNode(template, id), true); if (id === selectedId) selectNode(null); }}
             onRename={(id, name) => patch(updateNode(template, id, (node) => ({ ...node, name })))}
-            onMove={(moved, parentId, before) => patch(moveNode(template, moved, parentId, before), true)}
+            onMove={(moved, parentId, before) => {
+              if (!protectedIds.has(moved)) patch(moveNode(template, moved, parentId, before), true);
+            }}
             onSelect={selectNode}
             onToggleHidden={(id) => setHiddenIds((current) => {
               const next = new Set(current);
               if (next.has(id)) next.delete(id); else next.add(id);
+              return next;
+            })}
+            onToggleLocked={(id) => setLockedIds((current) => {
+              const next = new Set(current);
+              if (!next.delete(id)) next.add(id);
               return next;
             })}
             selectedId={selectedId}
@@ -531,7 +539,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
           onReset={() => setPaneSizes((current) => ({ ...current, left: defaultPaneSizes.left }))}
         />
 
-        <div className={`title-editor-center ${zoomedPreview ? "zoomed" : ""}`}>
+        <div className="title-editor-center">
           <div className="scene-edit-target">
             <span>{tr("Правки идут", "Edits land")}</span>
             <button className={editTarget === null ? "active" : ""} onClick={() => setEditTarget(null)} type="button">
@@ -540,17 +548,6 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             <button className={editTarget === target ? "active" : ""} onClick={() => setEditTarget(target)} type="button">
               {tr(`поправкой ${layoutTitles[target]}`, `as a ${layoutTitles[target]} override`)}
             </button>
-            <button
-              className={`scene-zoom-toggle ${zoomedPreview ? "active" : ""}`}
-              onClick={() => setZoomedPreview((value) => !value)}
-              title={zoomedPreview
-                ? tr("Вернуть место дорожкам времени", "Give the room back to the tracks")
-                : tr("Разглядеть кадр крупнее", "Look at the frame larger")}
-              type="button"
-            >
-              {zoomedPreview ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
-              {zoomedPreview ? tr("Уменьшить кадр", "Shrink frame") : tr("Увеличить кадр", "Enlarge frame")}
-            </button>
           </div>
 
           <SceneCanvas
@@ -558,6 +555,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             durationSeconds={duration}
             fields={fields}
             format={format}
+            lockedIds={protectedIds}
             onSelect={selectNode}
             onEditText={(node, value) => {
               // Статичная строка живёт в самом узле, привязанная — в образце
@@ -662,6 +660,7 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
 
       <SceneTimeline
         durationSeconds={duration}
+        frameRate={format.drawRate}
         node={selected}
         onDirector={(directorPatch) => patch({ ...template, director: { ...template.director, ...directorPatch } })}
         onDuration={onDurationChange}

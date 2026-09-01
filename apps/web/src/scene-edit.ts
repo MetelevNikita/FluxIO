@@ -7,6 +7,7 @@ import {
   type SceneNode,
   type SceneNodeKind,
   type SceneTemplate,
+  type SceneTiming,
   type SceneTrack,
   type SceneBezier,
 } from "@gruber/contracts";
@@ -598,6 +599,15 @@ export function snapKeyframeTime(
 
 /** Какой половине режиссёра принадлежит ключ. */
 export type SceneSegmentSide = "in" | "out";
+
+/** Положение локального ключа на общей шкале показа. */
+export function absoluteKeyframeTime(
+  side: SceneSegmentSide,
+  localSeconds: number,
+  timing: SceneTiming,
+): number {
+  return side === "in" ? localSeconds : timing.inSeconds + timing.holdSeconds + localSeconds;
+}
 
 /**
  * Ставит или заменяет ключ на дорожке.

@@ -103,6 +103,8 @@ export interface SceneCanvasProps {
   selectedId: string | null;
   /** Весь набор выбранного: подсвечивается, но правится активный. */
   selectedIds: readonly string[];
+  /** Узлы, защищённые собственным замком или замком группы. */
+  lockedIds: ReadonlySet<string>;
   /** Кадр из плейлиста под сценой; пусто — шахматка. */
   backdropUrl: string | null;
   showSafeAreas: boolean;
@@ -129,7 +131,7 @@ export interface SceneCanvasProps {
 
 export function SceneCanvas({
   template, format, durationSeconds, timeSeconds, fields,
-  selectedId, selectedIds, backdropUrl, showSafeAreas, editTarget, onSelect, onTransform, onSelectedBox,
+  selectedId, selectedIds, lockedIds, backdropUrl, showSafeAreas, editTarget, onSelect, onTransform, onSelectedBox,
   onEditText,
 }: SceneCanvasProps) {
   const { tr } = useI18n();
@@ -155,7 +157,7 @@ export function SceneCanvas({
     const measure = () => {
       const available = element.clientWidth;
       const byHeight = element.clientHeight * displayAspect;
-      const width = Math.max(160, Math.min(available, byHeight));
+      const width = Math.max(1, Math.min(available, byHeight));
       setSize({ width: Math.round(width), height: Math.round(width / displayAspect) });
     };
     measure();
@@ -288,11 +290,12 @@ export function SceneCanvas({
 
   function handlePointerDown(event: ReactPointerEvent, grip: Grip, node: SceneNode) {
     event.stopPropagation();
+    onSelect(node.id, event.ctrlKey || event.metaKey);
+    if (lockedIds.has(node.id)) return;
     const point = pointToFraction(event);
     const box = boxOf(node);
     // Выделение идёт первым: захват указателя может не состояться — например,
     // у события без живого указателя, — и выделение не должно от этого зависеть.
-    onSelect(node.id, event.ctrlKey || event.metaKey);
     dragRef.current = {
       grip,
       nodeId: node.id,
@@ -464,7 +467,7 @@ export function SceneCanvas({
             return (
               <div
                 key={node.id}
-                className={`scene-hit ${node.id === selectedId ? "selected" : ""} ${
+                className={`scene-hit ${lockedIds.has(node.id) ? "locked" : ""} ${node.id === selectedId ? "selected" : ""} ${
                   selectedIds.includes(node.id) && node.id !== selectedId ? "co-selected" : ""
                 }`}
                 style={{ left: pct(box.x), top: pct(box.y), width: pct(box.width), height: pct(box.height) }}
@@ -544,13 +547,13 @@ export function SceneCanvas({
                 }}
                 title={`${tr("Точка привязки", "Anchor point")}: ${(selected.transform.anchorX * 100).toFixed(0)}% · ${(selected.transform.anchorY * 100).toFixed(0)}%`}
               />
-              {grips.map((grip) => (
+              {!lockedIds.has(selected.id) ? grips.map((grip) => (
                 <i
                   key={grip}
                   className={`scene-grip scene-grip-${grip} ${grip.length === 1 ? "edge" : ""}`}
                   onPointerDown={(event) => handlePointerDown(event, grip, selected)}
                 />
-              ))}
+              )) : null}
             </div>
           ) : null}
         </div>
