@@ -28,7 +28,6 @@ import {
   readTickerFeed,
   readTickerSourceFile,
 } from "../../effects/broadcast-task.js";
-import { scanSystemFonts } from "../../effects/system-fonts.js";
 import { probeMedia } from "../../ffmpeg/probe.js";
 import { readImageSequence } from "../../effects/image-sequence.js";
 import { importVectorLayers } from "../../effects/vector-import.js";
@@ -160,11 +159,12 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
     }
   });
 
-  // Список системных шрифтов с признаком кириллицы: drawtext рисует конкретным
-  // файлом, а шрифт без кириллицы выдаёт в эфир пустые прямоугольники.
+  // Список системных шрифтов с признаком кириллицы: шрифт без кириллицы
+  // выдаёт в эфир пустые прямоугольники. Список кешируется службой: разбор
+  // читает каждый файл шрифта целиком и на Windows стоит секунд.
   app.get("/api/effects/fonts", async (_request, reply) => {
     try {
-      return systemFontListSchema.parse({ items: await scanSystemFonts() });
+      return systemFontListSchema.parse({ items: await context.systemFonts.get() });
     } catch (error) {
       return badRequest(reply, error);
     }

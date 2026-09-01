@@ -521,7 +521,6 @@ export const EffectsScreen = memo(function EffectsScreen({
                     onChangeBroadcastEffect(draftEffect);
                     void onApplyBroadcastTaskToProject(draftEffect);
                   }}
-                  fonts={fonts}
                   onLoadTickerFeed={() => void onLoadTickerFeed(draftEffect.id)}
                   onEditScene={() => onEditScene(draftEffect.id)}
                   onSelectDecorationFile={() => void onSelectDecorationFile(draftEffect.id)}

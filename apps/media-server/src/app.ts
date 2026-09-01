@@ -5,6 +5,7 @@ import path from "node:path";
 //
 
 import { DatabaseService } from "./database/database.js";
+import { SystemFontsService } from "./effects/system-fonts.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
 import { PlayoutSupervisor } from "./ffmpeg/playout-supervisor.js";
@@ -92,14 +93,18 @@ function createRouteContext(): RouteContext {
     playout: new PlayoutSupervisor(
       capabilities,
       previewDirectory,
-      (entry) => {
-        console.info(`[PLAYOUT] ${entry}`);
+      (entry, options) => {
+        // Консоль Windows синхронна и останавливает однопоточную службу, когда
+        // оператор щёлкает внутри окна (QuickEdit). Поток в несколько строк в
+        // секунду туда не идёт — в журнале он остаётся целиком.
+        if (!options?.quiet) console.info(`[PLAYOUT] ${entry}`);
         logger.playoutEvent(entry);
       },
     ),
     previewDirectory,
     startedAt: new Date().toISOString(),
     syncedSessions: new Set<string>(),
+    systemFonts: new SystemFontsService(),
     systemMetrics: new SystemMetricsSampler(),
   };
 }

@@ -120,7 +120,20 @@ interface ClipProducerRuntime {
 
 export class PlayoutConflictError extends Error {}
 export class PlayoutPreflightError extends Error {}
-export type PlayoutEventSink = (entry: string) => void;
+/**
+ * Как событие уходит наружу.
+ *
+ * `quiet` — событие идёт в журнал и в статус, но не в консоль. Поток в
+ * несколько строк в секунду консоли не по силам: на Windows запись в неё
+ * синхронна, и однопоточная служба встаёт вместе с ней — вплоть до полной
+ * остановки, если оператор щёлкнул внутри консольного окна. Решает это
+ * supervisor, а не разбор текста снаружи: текст событий меняется.
+ */
+export interface PlayoutEventOptions {
+  quiet?: boolean;
+}
+
+export type PlayoutEventSink = (entry: string, options?: PlayoutEventOptions) => void;
 
 interface PreparedRequest {
   items: PreparedPlayoutItem[];
@@ -952,9 +965,13 @@ export class PlayoutSupervisor {
     this.#status.subtitles.lastPtsMs = ptsMs;
     this.#firstSubtitlePtsMs ??= ptsMs;
     this.#evaluateDvbSubtitleClock();
+    // Пакет субтитров наблюдается по несколько раз в секунду: в журнале это
+    // доказательство того, что дорожка реально идёт в эфир, а в консоли —
+    // поток, который её же и останавливает.
     this.#appendEvent(
       `DVB subtitle PES #${this.#status.subtitles.observedPes} observed in final TS ` +
         `on PID ${pid} at PTS ${formatClock(ptsMs / 1_000)}`,
+      { quiet: true },
     );
     return true;
   }
@@ -1022,9 +1039,9 @@ export class PlayoutSupervisor {
     }
   }
 
-  #appendEvent(message: string): void {
+  #appendEvent(message: string, options?: PlayoutEventOptions): void {
     this.#appendLog(message);
-    this.#eventSink?.(message);
+    this.#eventSink?.(message, options);
   }
 
   #handleFfmpegClose(code: number | null, signal: NodeJS.Signals | null): void {

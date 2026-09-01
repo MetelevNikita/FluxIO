@@ -11,6 +11,7 @@ import type {
   GraphicEffectLayer,
   PlayoutSceneShow,
   SceneLayoutTarget,
+  SceneNode,
   SceneTemplate,
   SystemFont,
 } from "@gruber/contracts";
@@ -839,8 +840,9 @@ function planClockCountdown(context: PlanContext): void {
   // Часы идут по эфирному времени ролика, а не по системным: рендерер
   // следующего ролика запускается заранее и нарисовал бы будущее.
   const withMode = withClockMode(scene, settings);
+  const fields = clockSceneFields(scene, settings);
   for (const clip of context.targets) {
-    pushScene(context, clip, withMode, {}, settings.startSeconds, settings.durationSeconds);
+    pushScene(context, clip, withMode, fields, settings.startSeconds, settings.durationSeconds);
   }
 }
 
@@ -995,32 +997,76 @@ function withTickerItems(
   };
 }
 
-/** Переносит режим часов и формат из настроек эффекта в узел сцены. */
+/**
+ * Узел, в который эффект ставит своё значение.
+ *
+ * Оператор выбирает его так же, как поле титра: объявляет поле в редакторе
+ * титров, а инспектор показывает объявленные сценой ключи списком. Ключ,
+ * которого в сцене нет, — это умолчание, а не выбор оператора: тогда значение
+ * получает узел, у которого источник уже такой. Так эффект работал до
+ * появления выбора, и на этом держится заводская сцена.
+ */
+function effectValueNodes(
+  scene: SceneTemplate,
+  dynamicKey: string,
+  kinds: readonly string[],
+): (node: SceneNode) => boolean {
+  const declared = scene.fields.some((field) => field.key === dynamicKey);
+  return (node) => (declared
+    ? node.text?.kind === "field" && node.text.fieldKey === dynamicKey
+    : Boolean(node.text && kinds.includes(node.text.kind)));
+}
+
+/**
+ * Переносит режим часов и формат из настроек эффекта в выбранный узел сцены.
+ *
+ * Готовое значение подставить нельзя: часы и отсчёт считает рендерер по номеру
+ * кадра, а посчитанная на планировании цифра ушла бы в эфир замороженной.
+ * Поэтому эффект меняет не текст узла, а его источник.
+ */
 function withClockMode(
   scene: SceneTemplate,
   settings: BroadcastEffectSettings["clockCountdown"],
 ): SceneTemplate {
+  const isValueNode = effectValueNodes(scene, settings.dynamicKey, ["clock", "countdown"]);
+  const source = settings.mode === "clock"
+    ? {
+        kind: "clock" as const,
+        format: settings.format,
+        timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
+      }
+    : {
+        kind: "countdown" as const,
+        format: settings.format,
+        source: settings.countdownSource,
+        seconds: settings.countdownSeconds,
+      };
   return {
     ...scene,
-    nodes: scene.nodes.map((node) => {
-      if (node.text?.kind !== "clock" && node.text?.kind !== "countdown") return node;
-      return {
-        ...node,
-        text: settings.mode === "clock"
-          ? {
-              kind: "clock" as const,
-              format: settings.format,
-              timezoneOffsetMinutes: settings.timezoneOffsetMinutes,
-            }
-          : {
-              kind: "countdown" as const,
-              format: settings.format,
-              source: settings.countdownSource,
-              seconds: settings.countdownSeconds,
-            },
-      };
-    }),
+    nodes: scene.nodes.map((node) => (isValueNode(node) ? { ...node, text: source } : node)),
   };
+}
+
+/**
+ * Значения полей сцены у часов.
+ *
+ * Значений оператор здесь не набирает — эффект знает только подпись, — а поле,
+ * оставшееся без значения, уходит в эфир пустым: рендерер отдаёт пустую строку
+ * для необъявленного ключа. Поэтому остальные поля показывают свой образец:
+ * это ровно то, что оператор видел в редакторе, и в кадре обязано остаться
+ * оно же.
+ */
+export function clockSceneFields(
+  scene: SceneTemplate,
+  settings: BroadcastEffectSettings["clockCountdown"],
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of scene.fields) values[field.key] = field.sample;
+  const caption = settings.captionText.trim();
+  if (caption && scene.fields.some((field) => field.key === settings.captionKey)) {
+    values[settings.captionKey] = settings.captionText;
+  }
+  return values;
 }
 
 /**

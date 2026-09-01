@@ -7,6 +7,7 @@ import {
   graphicFileRejection,
   joinTickerItems,
   mapBroadcastTaskRecords,
+  clockSceneFields,
   nextProgramSceneFields,
   normalizeTaskTitle,
   broadcastEffectSpans,
@@ -293,6 +294,75 @@ test("the announcement reaches the clip through the field the scene declares", (
   assert.deepEqual(result.errors, []);
   // Заводская сцена объявляет `title`, а настройки пришли с `next_title`.
   assert.equal(result.scenes[0]!.show.fields.title, "Вечерние новости");
+});
+
+test("the clock takes the scene field the operator declared, like a title does", () => {
+  const countdown = {
+    captionKey: "podpis",
+    captionText: "До конца эфира",
+    countdownSeconds: 60,
+    countdownSource: "clip-remaining" as const,
+    durationSeconds: 20,
+    dynamicKey: "ostalos",
+    format: "MM:SS" as const,
+    mode: "countdown" as const,
+    startSeconds: 5,
+    style: style(),
+    timezoneOffsetMinutes: 0,
+  };
+  const effect = sceneEffect("clock-countdown", { clockCountdown: countdown });
+  const scene = effect.broadcast!.scene!;
+  // Оператор собрал свою плашку: место под значение и подпись — объявленные поля.
+  const custom: SceneTemplate = {
+    ...scene,
+    fields: [
+      { key: "ostalos", label: "Осталось", type: "text", sample: "99:59" },
+      { key: "podpis", label: "Подпись", type: "text", sample: "образец" },
+    ],
+    nodes: scene.nodes.map((node) => (node.id === "clock"
+      ? { ...node, text: { kind: "field" as const, fieldKey: "ostalos" } }
+      : node)),
+  };
+  const result = plan({
+    effect: { ...effect, broadcast: { ...effect.broadcast!, scene: custom } },
+    targetIds: new Set(["a"]),
+  });
+
+  assert.deepEqual(result.errors, []);
+  const show = result.scenes[0]!.show;
+  const valueNode = show.template.nodes.find((node) => node.id === "clock")!;
+  // Значение считает рендерер по номеру кадра: эффект меняет источник узла,
+  // а не подставляет цифру, замороженную на планировании.
+  assert.equal(valueNode.text?.kind, "countdown");
+  assert.equal(valueNode.text?.kind === "countdown" ? valueNode.text.source : "", "clip-remaining");
+  // Подпись приходит из настроек, остальные поля — своим образцом: пустая
+  // строка погасила бы объявленное поле прямо в эфире.
+  assert.equal(show.fields.podpis, "До конца эфира");
+  assert.equal(show.fields.ostalos, "99:59");
+});
+
+test("without a chosen field the clock still lands on the node that already is one", () => {
+  const scene = defaultSceneTemplate("clock-countdown")!;
+  assert.deepEqual(clockSceneFields(scene, {
+    captionKey: "",
+    captionText: "",
+    countdownSeconds: 60,
+    countdownSource: "fixed",
+    durationSeconds: 60,
+    dynamicKey: "",
+    format: "HH:MM:SS",
+    mode: "clock",
+    startSeconds: 0,
+    style: style(),
+    timezoneOffsetMinutes: 0,
+  }), {});
+
+  const result = plan({
+    effect: sceneEffect("clock-countdown", {}),
+    targetIds: new Set(["a"]),
+  });
+  const clock = result.scenes[0]!.show.template.nodes.find((node) => node.id === "clock")!;
+  assert.equal(clock.text?.kind, "clock");
 });
 
 test("ticker joins messages and closes the loop with the separator", () => {

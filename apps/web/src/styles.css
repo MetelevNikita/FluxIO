@@ -4198,7 +4198,6 @@ input[type="range"] {
   outline: none;
 }
 
-.broadcast-field .broadcast-font-search { height: 24px; background: #0b0e11; }
 
 .stinger-source-facts {
   display: flex;
@@ -4514,16 +4513,6 @@ input[type="range"] {
   font-size: 8px;
   line-height: 1.6;
 }
-
-.broadcast-style > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 8px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.broadcast-style[open] > summary { margin-bottom: 8px; }
 
 /* Плейлист: слои и надписи второго уровня. */
 .fx-layer-chip.tier2 {

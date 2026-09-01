@@ -3,6 +3,7 @@ import type { FastifyReply } from "fastify";
 //
 
 import { DatabaseService } from "../database/database.js";
+import type { SystemFontsService } from "../effects/system-fonts.js";
 import { FfmpegCapabilitiesService } from "../ffmpeg/capabilities.js";
 import { MediaPreviewService } from "../ffmpeg/media-preview.js";
 import { PlayoutSupervisor } from "../ffmpeg/playout-supervisor.js";
@@ -21,6 +22,7 @@ export interface RouteContext {
   previewDirectory: string;
   startedAt: string;
   syncedSessions: Set<string>;
+  systemFonts: SystemFontsService;
   systemMetrics: SystemMetricsSampler;
 }
 

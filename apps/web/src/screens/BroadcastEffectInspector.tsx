@@ -4,7 +4,6 @@ import type {
   BroadcastTextStyle,
   EffectPlacement,
   GraphicEffectAsset,
-  SystemFont,
 } from "@gruber/contracts";
 import {
   FileJson2,
@@ -51,7 +50,6 @@ interface BroadcastEffectInspectorProps {
   busy: boolean;
   effect: GraphicEffectAsset;
   taskSummary: BroadcastTaskSummary | null;
-  fonts: SystemFont[];
   onChange: (effect: GraphicEffectAsset) => void;
   onSelectTaskFile: () => void;
   onSelectTickerSource: () => void;
@@ -80,7 +78,6 @@ export function BroadcastEffectInspector({
   busy,
   effect,
   taskSummary,
-  fonts,
   onChange,
   onSelectTaskFile,
   onSelectTickerSource,
@@ -616,12 +613,6 @@ export function BroadcastEffectInspector({
                 </p>
               </div>
             ) : null}
-            <TextStyleFields
-              busy={busy}
-              fonts={fonts}
-              onChange={(style) => updateSettings("dynamicTitle", { style })}
-              style={settings.dynamicTitle.style}
-            />
           </>
         ) : null}
 
@@ -715,12 +706,6 @@ export function BroadcastEffectInspector({
                 </p>
               ) : null}
             </div>
-            <TextStyleFields
-              busy={busy}
-              fonts={fonts}
-              onChange={(style) => updateSettings("nextProgram", { style })}
-              style={settings.nextProgram.style}
-            />
           </>
         ) : null}
 
@@ -925,12 +910,6 @@ export function BroadcastEffectInspector({
                 </p>
               </div>
             ) : null}
-            <TextStyleFields
-              busy={busy}
-              fonts={fonts}
-              onChange={(style) => updateSettings("tickerCrawl", { style })}
-              style={settings.tickerCrawl.style}
-            />
           </>
         ) : null}
 
@@ -1051,7 +1030,7 @@ export function BroadcastEffectInspector({
                 )}
               </p>
             ) : null}
-            {definition.decorationFilePath ? (
+            {definition.decorationFilePath || presetKeys.length > 0 ? (
               <div className="broadcast-grid">
                 <PresetKeyField
                   busy={busy}
@@ -1076,24 +1055,28 @@ export function BroadcastEffectInspector({
                   value={settings.clockCountdown.captionText}
                 />
                 <p className="broadcast-hint broadcast-field-wide">
-                  {settings.clockCountdown.dynamicKey
-                    ? tr(
-                        "Значение подставляется в объявленное поле сцены.",
-                        "The value goes into the declared scene field.",
-                      )
-                    : tr(
-                        "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё.",
-                        "Select a field so the effect value appears inside the plate instead of over it.",
-                      )}
+                  {definition.scene
+                    ? presetKeys.includes(settings.clockCountdown.dynamicKey)
+                      ? tr(
+                          "Часы встанут в это поле сцены — с его положением, кеглем и цветом.",
+                          "The clock takes this scene field: its position, size and color.",
+                        )
+                      : tr(
+                          "Поле не выбрано: часы получит узел, у которого источник уже «Часы» или «Обратный отсчёт». Чтобы поставить их в свою плашку, объявите её текст полем в редакторе титров.",
+                          "No field chosen: the clock goes to the node whose source is already Clock or Countdown. To place it in your own plate, declare that text as a field in the title editor.",
+                        )
+                    : settings.clockCountdown.dynamicKey
+                      ? tr(
+                          "Значение подставляется в объявленное поле сцены.",
+                          "The value goes into the declared scene field.",
+                        )
+                      : tr(
+                          "Выберите поле, чтобы значение эффекта встало внутрь плашки, а не поверх неё.",
+                          "Select a field so the effect value appears inside the plate instead of over it.",
+                        )}
                 </p>
               </div>
             ) : null}
-            <TextStyleFields
-              busy={busy}
-              fonts={fonts}
-              onChange={(style) => updateSettings("clockCountdown", { style })}
-              style={settings.clockCountdown.style}
-            />
           </>
         ) : null}
 
@@ -1892,184 +1875,6 @@ function selectClockParts(parts: string[], format: string): string {
   if (format === "SS") return parts[2] ?? "00";
   return parts.join(":");
 }
-
-/**
- * Оформление надписи вынесено в `memo` из-за списка системных шрифтов: в нём
- * несколько сотен `option`, и пересборка на каждое нажатие клавиши в соседнем
- * поле заметно тормозила ввод.
- */
-const TextStyleFields = memo(function TextStyleFields({
-  busy,
-  fonts,
-  style,
-  onChange,
-}: {
-  busy: boolean;
-  fonts: SystemFont[];
-  style: BroadcastTextStyle;
-  onChange: (style: BroadcastTextStyle) => void;
-}) {
-  const { tr } = useI18n();
-  const [fontQuery, setFontQuery] = useState("");
-  const normalizedQuery = fontQuery.trim().toLocaleLowerCase("ru-RU");
-  const selected = fonts.find((font) => font.filePath === style.fontFilePath);
-  const visibleFonts = fonts.filter(
-    (font) =>
-      !normalizedQuery ||
-      font.family.toLocaleLowerCase("ru-RU").includes(normalizedQuery) ||
-      font.filePath === style.fontFilePath,
-  );
-  const cyrillic = visibleFonts.filter((font) => font.cyrillic);
-  const totalCyrillic = fonts.filter((font) => font.cyrillic).length;
-  return (
-    <details className="broadcast-style" open={false}>
-      <summary>{tr("Оформление надписи", "Text style")}</summary>
-      <div className="broadcast-grid">
-        <label className="broadcast-field broadcast-field-wide">
-          <span>
-            {tr("Шрифт", "Font")}
-            <i>
-              {totalCyrillic}{" "}
-              {tr(
-                `из ${fonts.length} системных шрифтов с кириллицей`,
-                `of ${fonts.length} system fonts support Cyrillic`,
-              )}
-            </i>
-          </span>
-          <input
-            aria-label={tr("Поиск системного шрифта", "Search system fonts")}
-            className="broadcast-font-search"
-            disabled={busy || fonts.length === 0}
-            onChange={(event) => setFontQuery(event.target.value)}
-            placeholder={tr("Поиск по названию…", "Search by name…")}
-            type="search"
-            value={fontQuery}
-          />
-          <select
-            disabled={busy || fonts.length === 0}
-            onChange={(event) => {
-              const font = fonts.find((candidate) => candidate.filePath === event.target.value);
-              onChange({
-                ...style,
-                fontFamily: font?.family ?? "",
-                fontFilePath: font?.filePath ?? null,
-              });
-            }}
-            value={style.fontFilePath ?? ""}
-          >
-            <option value="">{tr("Шрифт FFmpeg по умолчанию", "Default FFmpeg font")}</option>
-            {/* Шрифты без кириллицы отделены: выбрав такой, оператор получит в
-                эфире пустые прямоугольники вместо русского текста. */}
-            <optgroup label={tr("С поддержкой кириллицы", "Cyrillic supported")}>
-              {cyrillic.map((font) => (
-                <option key={font.filePath} value={font.filePath}>
-                  {font.family}
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label={tr("Без кириллицы — только латиница", "No Cyrillic — Latin only")}>
-              {visibleFonts
-                .filter((font) => !font.cyrillic)
-                .map((font) => (
-                  <option key={font.filePath} value={font.filePath}>
-                    {font.family}
-                  </option>
-                ))}
-            </optgroup>
-          </select>
-          {normalizedQuery && visibleFonts.length === 0 ? (
-            <i>{tr("Шрифты не найдены", "No fonts found")}</i>
-          ) : null}
-        </label>
-        {style.fontFilePath && selected && !selected.cyrillic ? (
-          <p className="broadcast-warning broadcast-field-wide">
-            {tr(
-              `В шрифте «${selected.family}» нет кириллицы: русский текст выйдет в эфир пустыми прямоугольниками.`,
-              `Font “${selected.family}” has no Cyrillic support: Russian text will appear as empty boxes on air.`,
-            )}
-          </p>
-        ) : null}
-        {fonts.length === 0 ? (
-          <p className="broadcast-hint broadcast-field-wide">
-            {tr(
-              "Шрифт по умолчанию берёт FFmpeg, и кириллицы в нём может не быть. Список системных шрифтов подгружается с media-service.",
-              "FFmpeg chooses the default font and it may not support Cyrillic. The media service supplies the system font list.",
-            )}
-          </p>
-        ) : null}
-        <NumberField
-          disabled={busy}
-          hint={tr("% от высоты кадра", "% of frame height")}
-          label={tr("Кегль", "Font size")}
-          min={0.5}
-          onChange={(fontSizePercent) => onChange({ ...style, fontSizePercent })}
-          step={0.1}
-          value={style.fontSizePercent}
-        />
-        <NumberField
-          disabled={busy}
-          hint={tr("% от ширины кадра", "% of frame width")}
-          label="X"
-          max={200}
-          min={-100}
-          onChange={(xPercent) => onChange({ ...style, xPercent })}
-          step={1}
-          value={style.xPercent}
-        />
-        <NumberField
-          disabled={busy}
-          hint={tr("% от высоты кадра", "% of frame height")}
-          label="Y"
-          max={200}
-          min={-100}
-          onChange={(yPercent) => onChange({ ...style, yPercent })}
-          step={1}
-          value={style.yPercent}
-        />
-        <label className="broadcast-field">
-          <span>{tr("Цвет текста", "Text color")}</span>
-          <input
-            disabled={busy}
-            onChange={(event) => onChange({ ...style, color: event.target.value })}
-            type="color"
-            value={style.color}
-          />
-        </label>
-        <label className="broadcast-field broadcast-field-checkbox">
-          <span>{tr("Подложка", "Background")}</span>
-          <input
-            checked={style.boxEnabled}
-            disabled={busy}
-            onChange={(event) => onChange({ ...style, boxEnabled: event.target.checked })}
-            type="checkbox"
-          />
-        </label>
-        {style.boxEnabled ? (
-          <>
-            <label className="broadcast-field">
-              <span>{tr("Цвет подложки", "Background color")}</span>
-              <input
-                disabled={busy}
-                onChange={(event) => onChange({ ...style, boxColor: event.target.value })}
-                type="color"
-                value={style.boxColor}
-              />
-            </label>
-            <NumberField
-              disabled={busy}
-              label={tr("Прозрачность", "Opacity")}
-              max={1}
-              min={0}
-              onChange={(boxOpacity) => onChange({ ...style, boxOpacity })}
-              step={0.02}
-              value={style.boxOpacity}
-            />
-          </>
-        ) : null}
-      </div>
-    </details>
-  );
-});
 
 /**
  * Числовое поле с собственным черновиком.

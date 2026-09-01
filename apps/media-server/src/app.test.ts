@@ -34,7 +34,11 @@ import {
   parseTickerFeed,
   parseTickerSourceDocument,
 } from "./effects/broadcast-task.js";
-import { readFontFamily, supportsCyrillic } from "./effects/system-fonts.js";
+import {
+  readFontFamily,
+  supportsCyrillic,
+  SystemFontsService,
+} from "./effects/system-fonts.js";
 import { importVectorLayers } from "./effects/vector-import.js";
 import {
   buildFfmpegClipAudioProducerCommand,
@@ -3415,6 +3419,24 @@ test("font scan reads the family name and detects Cyrillic coverage", async () =
   // Заведомо не шрифт разбирается без исключения и без ложного «есть кириллица».
   assert.equal(supportsCyrillic(Buffer.from("not a font at all")), false);
   assert.equal(readFontFamily(Buffer.from("not a font at all")), null);
+});
+
+test("the font list is scanned once: every request would re-read hundreds of files", async () => {
+  let scans = 0;
+  const service = new SystemFontsService(async () => {
+    scans += 1;
+    return [{ cyrillic: true, family: "PT Sans", filePath: "/fonts/PTS55F.ttf" }];
+  });
+
+  // Два запроса подряд не должны запустить второе сканирование — кешируется
+  // обещание, а не результат.
+  const [first, second] = await Promise.all([service.get(), service.get()]);
+  const third = await service.get();
+
+  assert.equal(scans, 1);
+  assert.equal(first?.[0]?.family, "PT Sans");
+  assert.deepEqual(second, first);
+  assert.deepEqual(third, first);
 });
 
 function baseRequest(): StartPlayoutRequest {

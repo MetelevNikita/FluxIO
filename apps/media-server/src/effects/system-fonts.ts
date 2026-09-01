@@ -38,6 +38,35 @@ function systemFontDirectories(): string[] {
   return ["/usr/share/fonts", "/usr/local/share/fonts", path.join(home, ".local/share/fonts")];
 }
 
+/**
+ * Кеш списка шрифтов на всё время работы службы.
+ *
+ * Разбор читает **каждый** файл шрифта целиком, а в `C:\Windows\Fonts` их
+ * сотни, включая коллекции CJK по десятку мегабайт, и каждое чтение проходит
+ * через антивирус. Служба однопоточная, поэтому сканирование, запущенное
+ * заново на каждый запрос, отбирает время у эфирных маршрутов ровно в момент
+ * открытия окна.
+ *
+ * Кеш живёт до перезапуска службы — так же, как возможности FFmpeg: набор
+ * шрифтов машины во время эфира не меняется, а установленный на ходу шрифт
+ * появится в списке после перезапуска.
+ */
+export class SystemFontsService {
+  #cached: Promise<SystemFont[]> | null = null;
+  readonly #scan: () => Promise<SystemFont[]>;
+
+  constructor(scan: () => Promise<SystemFont[]> = () => scanSystemFonts()) {
+    this.#scan = scan;
+  }
+
+  get(): Promise<SystemFont[]> {
+    // Кешируется обещание, а не результат: два запроса подряд не должны
+    // запустить два сканирования.
+    this.#cached ??= this.#scan();
+    return this.#cached;
+  }
+}
+
 export async function scanSystemFonts(
   directories = systemFontDirectories(),
 ): Promise<SystemFont[]> {
