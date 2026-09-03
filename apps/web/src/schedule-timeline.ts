@@ -43,7 +43,7 @@ export function buildScheduleTimeline(
       startsNewDay: dayKey !== previousDayKey,
     };
     previousDayKey = dayKey;
-    cursorSeconds += asset.declaredDurationSeconds ?? asset.durationSeconds;
+    cursorSeconds += itemDurationSeconds(asset);
     return entry;
   });
 }
@@ -92,4 +92,69 @@ function formatAirTime(value: Date): string {
     String(value.getMinutes()).padStart(2, "0"),
     String(value.getSeconds()).padStart(2, "0"),
   ].join(":");
+}
+
+export interface ScheduleCatchUpPoint {
+  assetId: string;
+  itemIndex: number;
+  /** Сколько секунд ролика уже прошло бы к этому моменту. */
+  itemOffsetSeconds: number;
+  /** Сколько прошло с начала расписания — для строки состояния. */
+  elapsedSeconds: number;
+}
+
+/**
+ * Где расписание находилось бы прямо сейчас, если бы эфир не прерывался.
+ *
+ * Это ответ на вопрос «с чего поднимать эфир после падения»: не с того места,
+ * где он оборвался, а с того, которое зритель ждёт увидеть в эту минуту.
+ * Расписание привязано к времени суток, поэтому после часового простоя
+ * подъём с места обрыва означал бы сдвинутый на час эфир — и дальше он ехал
+ * бы так до конца недели.
+ *
+ * Длительность берётся ровно та же, что и у списка расписания: разойдись они,
+ * строка «в эфире с 12:40» показывала бы одно, а подъём начинался с другого.
+ *
+ * `null` — расписание ещё не началось или уже кончилось: тогда решать нечего,
+ * и подъём остаётся за оператором.
+ */
+export function scheduleCatchUpPoint(
+  playlist: MediaAsset[],
+  metadata: ScheduleMetadata | null,
+  slot: ScheduleSlot,
+  now = new Date(),
+): ScheduleCatchUpPoint | null {
+  if (playlist.length === 0) return null;
+  const anchor = parseLocalDate(metadata?.anchorDate) ?? scheduleAnchor(slot, now);
+  const startsAt = new Date(anchor);
+  startsAt.setSeconds(
+    parseScheduleClock(metadata?.startTime ?? "12:00:00.00") + (metadata?.delaySeconds ?? 0),
+  );
+  const elapsedSeconds = (now.getTime() - startsAt.getTime()) / 1_000;
+  if (elapsedSeconds < 0) return null;
+
+  let cursorSeconds = 0;
+  for (const [itemIndex, asset] of playlist.entries()) {
+    const duration = itemDurationSeconds(asset);
+    if (elapsedSeconds < cursorSeconds + duration) {
+      return {
+        assetId: asset.id,
+        itemIndex,
+        // Хвост ролика короче кадра эфиру не нужен: начинать с последних
+        // сотых значит выдать в линию обрывок вместо передачи.
+        itemOffsetSeconds: Math.min(
+          Math.max(0, elapsedSeconds - cursorSeconds),
+          Math.max(0, duration - 0.04),
+        ),
+        elapsedSeconds,
+      };
+    }
+    cursorSeconds += duration;
+  }
+  return null;
+}
+
+/** Длительность строки расписания — одна на список и на догон. */
+function itemDurationSeconds(asset: MediaAsset): number {
+  return asset.declaredDurationSeconds ?? asset.durationSeconds;
 }

@@ -73,6 +73,7 @@ import {
   dvbSubtitleClockToleranceMs,
   dvbSubtitlePreRollMs,
   evaluateDvbSubtitleClock,
+  resolveVideoPtsOrigin,
 } from "../transport-clock.js";
 import {
   buildTransportPreviewCommand,
@@ -952,11 +953,9 @@ export class PlayoutSupervisor {
     if (!Number.isFinite(pts)) return false;
     const ptsMs = Math.max(0, Math.round(pts / 90));
     if (pid === videoPid) {
-      if (
-        this.#status.subtitles.videoPtsOriginMs == null ||
-        ptsMs < this.#status.subtitles.videoPtsOriginMs
-      ) {
-        this.#status.subtitles.videoPtsOriginMs = ptsMs;
+      const origin = resolveVideoPtsOrigin(this.#status.subtitles.videoPtsOriginMs, ptsMs);
+      if (origin !== this.#status.subtitles.videoPtsOriginMs) {
+        this.#status.subtitles.videoPtsOriginMs = origin;
         this.#evaluateDvbSubtitleClock();
       }
       return true;
@@ -991,6 +990,7 @@ export class PlayoutSupervisor {
     this.#status.subtitles.clockErrorMs = clockErrorMs;
     this.#status.subtitles.clockSynchronized = synchronized;
     const summary = `video origin ${formatClockWithMilliseconds(videoPtsOriginMs)}, ` +
+      `first cue at ${formatClock(cueStartSeconds)} of the schedule, ` +
       `first subtitle PTS ${formatClockWithMilliseconds(subtitlePtsMs)}, ` +
       `clock error ${formatSignedMilliseconds(clockErrorMs)}`;
     if (synchronized) {
@@ -1812,6 +1812,9 @@ export class PlayoutSupervisor {
       this.#subtitleRestartTimer = null;
     }
     const child = spawn(this.gstreamerCapabilities.launchPath, this.#subtitleArgs, {
+      // Своё дерево плагинов и свой реестр: GStreamer из комплекта лежит в
+      // каталоге установки, а кеш реестра службе некуда писать в $HOME.
+      env: this.gstreamerCapabilities.environment,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     });

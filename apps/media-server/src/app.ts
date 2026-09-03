@@ -19,6 +19,7 @@ import { mediaRoute } from "./router/v1/mediaRoute.js";
 import { playoutRoute } from "./router/v1/playoutRoute.js";
 import { scheduleRoute } from "./router/v1/scheduleRoute.js";
 import { systemRoute, serviceVersion } from "./router/v1/systemRoute.js";
+import { webRoute } from "./router/v1/webRoute.js";
 import { workspaceRoute } from "./router/v1/workspaceRoute.js";
 import { WorkspaceCheckpoint } from "./workspace-checkpoint.js";
 
@@ -106,6 +107,7 @@ function createRouteContext(): RouteContext {
     syncedSessions: new Set<string>(),
     systemFonts: new SystemFontsService(),
     systemMetrics: new SystemMetricsSampler(),
+    webDirectory: process.env.GRUBER_WEB_DIR || null,
   };
 }
 
@@ -118,6 +120,9 @@ function registerRoutes(app: FastifyInstance, context: RouteContext): void {
   void app.register(playoutRoute, context);
   void app.register(workspaceRoute, context);
   void app.register(configurationsRoute, context);
+  // Раздача интерфейса регистрируется последней: её wildcard не должен
+  // перехватывать маршруты службы.
+  void app.register(webRoute, context);
 }
 
 async function closeServices(context: RouteContext): Promise<void> {

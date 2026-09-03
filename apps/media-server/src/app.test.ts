@@ -22,6 +22,11 @@ import {
 
   videoEncodingSchema,} from "@gruber/contracts";
 import { buildApp } from "./app.js";
+
+// Мастер установки запускает `npm test` с окружением станции: `setup.mjs`
+// передаёт значения `.env` в дочерний процесс, чтобы сборка видела базу.
+// Каталог интерфейса оттуда включил бы раздачу статики поверх маршрутов службы.
+delete process.env.GRUBER_WEB_DIR;
 import {
   buildDailyReport,
   emptyDailyStats,
@@ -88,6 +93,13 @@ import {
   guardPipeErrors,
   isExpectedPipeError,
 } from "./ffmpeg/pipe-errors.js";
+import {
+  cacheControlFor,
+  contentTypeFor,
+  isApplicationRoute,
+  resolveWebAsset,
+} from "./web/static.js";
+import { describeValidationError } from "./router/context.js";
 import { runCommand } from "./ffmpeg/process.js";
 import { SceneRenderer } from "./scene/surface.js";
 import { planSceneShow, produceSceneShow } from "./scene/producer.js";
@@ -127,6 +139,8 @@ import {
 } from "./subtitles/srt-project.js";
 import {
   evaluateDvbSubtitleClock,
+  resolveVideoPtsOrigin,
+  wrapPtsMs,
   ffmpegMpegTsOutputOffsetSeconds,
   mpegTsClockOriginSeconds,
   mpegTsPtsWrapMs,
@@ -327,6 +341,86 @@ test("workspace autosave accepts an effect library larger than one thousand item
   });
 
   assert.equal(snapshot.effectLibrary.length, effectLibrary.length);
+});
+
+test("the session keeps the translation folder with the languages found in it", () => {
+  const snapshot = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "", scheduleLogoSource: "", ageLibrary: null,
+    audioTrackLibrary: {
+      directoryPath: "/media/translations",
+      languages: [
+        { languageCode: "rus", label: "Русский", itemCount: 212 },
+        { languageCode: "eng", label: "English", itemCount: 209 },
+      ],
+    },
+    settings: {},
+  });
+
+  assert.equal(snapshot.audioTrackLibrary?.directoryPath, "/media/translations");
+  assert.equal(snapshot.audioTrackLibrary?.languages.length, 2);
+  // Переводы рядом с медиа: пустой путь — законное значение, а не «не выбрано».
+  const beside = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "", scheduleLogoSource: "", ageLibrary: null,
+    audioTrackLibrary: { directoryPath: "", languages: [] },
+    settings: {},
+  });
+  assert.equal(beside.audioTrackLibrary?.directoryPath, "");
+  // Сессия, записанная до появления поля, читается без него.
+  const legacy = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "", scheduleLogoSource: "", ageLibrary: null, settings: {},
+  });
+  assert.equal(legacy.audioTrackLibrary, null);
+});
+
+test("a rating folder larger than a hundred files no longer rejects the whole session", () => {
+  const snapshot = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "/brand/logo.png", scheduleLogoSource: "/brand",
+    ageLibrary: {
+      directoryPath: "/age",
+      imagePaths: Array.from({ length: 400 }, (_, index) => `/age/${index}.png`),
+    },
+    subtitleLibrary: {
+      directoryPath: "/subs",
+      filePaths: Array.from({ length: 4_000 }, (_, index) => `/subs/${index}.srt`),
+    },
+    settings: {},
+  });
+
+  // Отказ по одному списку ронял снимок целиком: после перезапуска пропадали
+  // и логотип, и папка возрастных плашек, и всё расписание.
+  assert.equal(snapshot.ageLibrary?.imagePaths.length, 400);
+  assert.equal(snapshot.subtitleLibrary?.filePaths.length, 4_000);
+  assert.equal(snapshot.scheduleLogoPath, "/brand/logo.png");
+});
+
+test("a rejected session save names the field, not the whole parse dump", () => {
+  const parsed = workspaceSessionSnapshotSchema.safeParse({
+    version: 2,
+    assets: [], currentPlaylist: [], futurePlaylist: [], activeSchedule: "current",
+    selectedAssetId: null, currentScheduleMetadata: null, futureScheduleMetadata: null,
+    scheduleLogoPath: "", scheduleLogoSource: "",
+    ageLibrary: { directoryPath: "/age", imagePaths: Array.from({ length: 2_000 }, () => "/age/x.png") },
+    settings: {},
+  });
+
+  assert.equal(parsed.success, false);
+  const description = describeValidationError(parsed.error);
+  assert.match(description, /ageLibrary\.imagePaths/);
+  assert.ok(description.length < 200, description);
+  // Обычная ошибка остаётся собой.
+  assert.equal(describeValidationError(new Error("connection refused")), "connection refused");
 });
 
 test("hot-take wait continues until the active playout has stopped", async () => {
@@ -586,6 +680,7 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
   const serialized = serializeSchedule({
     extension: "txt",
     broadcastEffects: [],
+    audioLanguages: [],
     startTime: "12:00:00.00",
     delaySeconds: 5,
     items: [
@@ -643,6 +738,60 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
   );
   assert.doesNotMatch(serialized.content, /titlePath \{\}/);
   assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
+});
+
+test("schedule carries the audio languages it was saved with", () => {
+  const serialized = serializeSchedule({
+    extension: "txt",
+    broadcastEffects: [],
+    startTime: "12:00:00.00",
+    delaySeconds: 0,
+    audioLanguages: [
+      { languageCode: "eng", label: "eng", itemCount: 2 },
+      { languageCode: "rus", label: "рус", itemCount: 1 },
+    ],
+    items: [{
+      type: "clip",
+      declaredDurationSeconds: 60,
+      filePath: "/media/one.mp4",
+      ageTitle: null,
+      logoPath: null,
+      broadcastShows: [],
+      graphicElements: [],
+      srtPath: null,
+      audioTracks: [{ language: "eng", languageCode: "eng", filePath: "/media/{eng} one.m4a" }],
+    }],
+  });
+
+  assert.match(serialized.content, /defineAudioLanguage \{eng\} label \{eng\} clips \{2\}/);
+  assert.match(serialized.content, /defineAudioLanguage \{rus\} label \{рус\} clips \{1\}/);
+
+  const parsed = parseScheduleText(serialized.content, "/tmp/schedule.txt");
+  assert.deepEqual(parsed.audioLanguages, [
+    { languageCode: "eng", label: "eng", itemCount: 2 },
+    { languageCode: "rus", label: "рус", itemCount: 1 },
+  ]);
+  assert.equal(parsed.items[0]?.audioTracks[0]?.languageCode, "eng");
+  assert.equal(parsed.warnings.length, 0);
+});
+
+test("schedule without a language header derives languages from its own tracks", () => {
+  // Расписания прежних версий заголовка не несут: языки собираются из самих
+  // строк дорожек, иначе оператор открывает файл с переводами и видит пустой
+  // набор языков.
+  const parsed = parseScheduleText([
+    "start on 12:00:00.00 - delay 0",
+    "clip 00:01:00.00 /media/one.mp4",
+    "insertAudioTrack_{рус} {/media/{рус} one.m4a}",
+    "clip 00:01:00.00 /media/two.mp4",
+    "insertAudioTrack_{рус} {/media/{рус} two.m4a}",
+    "insertAudioTrack_{eng} {/media/{eng} two.m4a}",
+  ].join("\n"));
+
+  assert.deepEqual(parsed.audioLanguages, [
+    { languageCode: "eng", label: "eng", itemCount: 1 },
+    { languageCode: "rus", label: "рус", itemCount: 2 },
+  ]);
 });
 
 test("schedule parser restores multiple FX layers and an explicit SRT path", () => {
@@ -2003,6 +2152,45 @@ test("DVB subtitle clock aligns the first subtitle cue with the video PTS epoch"
   assert.equal(wrapped.synchronized, true);
 });
 
+test("a schedule longer than the PTS wrap is not a broken subtitle clock", () => {
+  // Недельное расписание: первая реплика на 59-м часу программной шкалы, то
+  // есть ожидаемый PTS уходит за 26.5-часовую ёмкость поля дважды. Транспорт
+  // отдаёт его уже свёрнутым — 07:11:47.605, — и одна поправка оставляла от
+  // разницы ровно период: «-95443717 мс» при часах, сбитых на миллисекунду.
+  const weekLong = evaluateDvbSubtitleClock({
+    videoPtsOriginMs: 3_600_000,
+    subtitlePtsMs: 25_907_605,
+    firstCueStartSeconds: 213_195.04,
+    configuredOffsetMs: 0,
+  });
+  assert.equal(weekLong.synchronized, true);
+  assert.ok(Math.abs(weekLong.clockErrorMs) <= 1, `${weekLong.clockErrorMs} ms`);
+  assert.ok(weekLong.expectedSubtitlePtsMs < mpegTsPtsWrapMs);
+
+  // Настоящий рассинхрон за свёрткой не прячется.
+  const late = evaluateDvbSubtitleClock({
+    videoPtsOriginMs: 3_600_000,
+    subtitlePtsMs: 25_907_605 + 4_000,
+    firstCueStartSeconds: 213_195.04,
+    configuredOffsetMs: 0,
+  });
+  assert.equal(late.synchronized, false);
+  assert.equal(late.clockErrorMs, 4_000);
+
+  assert.equal(Math.round(wrapPtsMs(3_600_000 + 213_195_040)), 25_907_605);
+  assert.equal(wrapPtsMs(1_500), 1_500);
+});
+
+test("the video clock origin survives a PTS wrap 26.5 hours into the air", () => {
+  assert.equal(resolveVideoPtsOrigin(null, 3_600_000), 3_600_000);
+  // Переупорядочивание кадров опору опускает: она и есть наименьший PTS.
+  assert.equal(resolveVideoPtsOrigin(3_600_000, 3_599_400), 3_599_400);
+  // Переполнение счётчика — нет: иначе через 26.5 часов эфира субтитры
+  // сравнивались бы с началом новой эпохи.
+  assert.equal(resolveVideoPtsOrigin(3_600_000, 120), 3_600_000);
+  assert.equal(resolveVideoPtsOrigin(3_600_000, 7_200_000), 3_600_000);
+});
+
 test("FFmpeg keeps only actionable playout warnings in the application log", () => {
   const command = buildFfmpegCommand(
     baseRequest(),
@@ -2860,6 +3048,7 @@ test("a broadcast effect is written once and referenced by every clip that uses 
     extension: "txt",
     startTime: "06:00:00",
     delaySeconds: 0,
+    audioLanguages: [],
     broadcastEffects: [{ effectId: "fx2-title", name: "Нижняя треть", kind: "dynamic-title", data }],
     items: [
       {
@@ -2894,6 +3083,7 @@ test("a schedule round-trips its broadcast effects back into place", () => {
     extension: "txt",
     startTime: "06:00:00",
     delaySeconds: 0,
+    audioLanguages: [],
     broadcastEffects: [{ effectId: "fx2-title", name: "Нижняя треть", kind: "dynamic-title", data }],
     items: [{
       type: "movie", declaredDurationSeconds: 60, filePath: "/media/a.mp4",
@@ -3928,3 +4118,33 @@ function sceneShowFixture() {
     clipRemainingSeconds: 300,
   };
 }
+
+test("the interface server never serves a file from outside its own directory", () => {
+  const root = "/opt/fluxio/app/apps/web/dist";
+
+  assert.equal(resolveWebAsset(root, "/"), path.join(root, "index.html"));
+  assert.equal(resolveWebAsset(root, "/assets/main-A1b2C3d4.js"), path.join(root, "assets/main-A1b2C3d4.js"));
+
+  // Наружу ведут не только две точки в строке: закодированные, обратный слэш
+  // Windows и абсолютный путь ловятся тем же разбором.
+  assert.equal(resolveWebAsset(root, "/../../../.env"), null);
+  assert.equal(resolveWebAsset(root, "/%2e%2e/%2e%2e/.env"), null);
+  assert.equal(resolveWebAsset(root, "/..\\..\\.env"), null);
+  assert.equal(resolveWebAsset(root, "/assets/../../../../etc/passwd"), null);
+  assert.equal(resolveWebAsset(root, "/%00.env"), null);
+  assert.equal(resolveWebAsset(root, "/%zz"), null);
+
+  assert.equal(contentTypeFor("/x/main.js"), "text/javascript; charset=utf-8");
+  assert.equal(contentTypeFor("/x/index.html"), "text/html; charset=utf-8");
+  assert.equal(contentTypeFor("/x/logo.bin"), "application/octet-stream");
+
+  // Имя с хешем содержимого кешируется надолго, index.html — никогда: он
+  // ссылается на эти имена и оставил бы оператора на прошлой версии.
+  assert.match(cacheControlFor("/x/assets/main-A1b2C3d4.js"), /immutable/);
+  assert.equal(cacheControlFor("/x/index.html"), "no-store");
+
+  // Внутренний экран приложения отдаётся как index.html, запрос к API — нет.
+  assert.equal(isApplicationRoute("/playlist"), true);
+  assert.equal(isApplicationRoute("/assets/main-A1b2C3d4.js"), false);
+  assert.equal(isApplicationRoute("/api/playout/status"), false);
+});

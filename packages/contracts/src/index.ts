@@ -733,13 +733,16 @@ export const scanAudioTracksRequestSchema = z.object({
   mediaPaths: z.array(z.string().min(1)).min(1).max(1_000),
 });
 
+/** Язык, найденный в папке переводов: одна форма на разбор папки и на сессию. */
+export const audioScanLanguageSchema = z.object({
+  languageCode: z.string().regex(/^[a-z]{3}$/),
+  label: z.string(),
+  itemCount: z.number().int().nonnegative(),
+});
+
 export const audioTrackScanSchema = z.object({
   items: z.array(audioTrackMatchSchema),
-  languages: z.array(z.object({
-    languageCode: z.string().regex(/^[a-z]{3}$/),
-    label: z.string(),
-    itemCount: z.number().int().nonnegative(),
-  })),
+  languages: z.array(audioScanLanguageSchema),
 });
 
 /**
@@ -905,6 +908,13 @@ export const scheduleAudioTrackSchema = z.object({
   language: z.string().trim().min(1).max(32).refine((value) => !/[\r\n{}]/.test(value), {
     message: "Audio track language must not contain braces or line breaks",
   }),
+  /**
+   * Язык по ISO 639-2, приведённый разбором. В файле его нет — там стоит
+   * подпись оператора (`{рус}`, `{eng}`), — но набор дорожек программы
+   * собирается по коду, и приводить подпись к коду в интерфейсе значило бы
+   * держать вторую таблицу языков.
+   */
+  languageCode: z.string().regex(/^[a-z]{3}$/).nullable().default(null),
   filePath: z.string().min(1).refine((value) => !/[\r\n]/.test(value), {
     message: "Audio track path must not contain line breaks",
   }),
@@ -978,6 +988,15 @@ export const parsedScheduleItemSchema = z.object({
 export const parsedScheduleSchema = z.object({
   /** Определения эфирных эффектов из заголовка файла. */
   broadcastEffects: z.array(scheduleBroadcastEffectSchema).max(200).default([]),
+  /**
+   * Языки звуковых дорожек, с которыми расписание сохранено.
+   *
+   * Объявляются заголовком файла, а у расписаний прежних версий собираются из
+   * самих строк `insertAudioTrack`: после перезапуска папку переводов не
+   * пересканировать (это ffprobe по каждому файлу), и без этого списка
+   * оператор видел выбранную папку и пустой набор языков.
+   */
+  audioLanguages: z.array(audioScanLanguageSchema).max(64).default([]),
   sourceFilePath: z.string().min(1),
   encoding: z.enum(["utf-8", "windows-1251"]),
   startTime: z.string().regex(/^\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/),
@@ -1025,6 +1044,8 @@ export const serializeScheduleRequestSchema = z.object({
   delaySeconds: z.number().nonnegative(),
   /** Определения эффектов — заголовком, до первого ролика. */
   broadcastEffects: z.array(scheduleBroadcastEffectSchema).max(200).default([]),
+  /** Языки переводов, доступные на момент сохранения, — тоже заголовком. */
+  audioLanguages: z.array(audioScanLanguageSchema).max(64).default([]),
   items: z.array(scheduleExportItemSchema).min(1),
 });
 
@@ -1503,18 +1524,52 @@ export const workspaceScheduleMetadataSchema = z.object({
   warnings: z.array(z.string()),
 });
 
+/*
+ * Потолки здесь щедрые намеренно. Список путей — это строки, размер снимка
+ * ограничен лимитом тела запроса, а превышение любого `max` отвергает **весь**
+ * снимок: сессия перестаёт сохраняться целиком, и после перезапуска пропадают
+ * не только эти пути, но и всё, что оператор сделал с прошлого удачного
+ * сохранения. Резать список дешевле, чем терять рабочий день.
+ */
 export const workspaceOverlayLibrarySchema = z.object({
   directoryPath: z.string().min(1),
-  imagePaths: z.array(z.string().min(1)).max(100),
+  imagePaths: z.array(z.string().min(1)).max(1_000),
 });
 
 export const workspaceSubtitleLibrarySchema = z.object({
   directoryPath: z.string().min(1),
-  filePaths: z.array(z.string().min(1)).max(1_000),
+  filePaths: z.array(z.string().min(1)).max(10_000),
 });
 
+/**
+ * Папка переводов и языки, которые в ней нашлись.
+ *
+ * Путь живёт в настройках, а список языков — только здесь: при восстановлении
+ * сессии папку не пересканировать (это ffprobe по каждому файлу расписания), и
+ * без сохранённого списка оператор после перезапуска видит пустой набор языков
+ * при выбранной папке.
+ *
+ * Пустой путь — законное значение: переводы могут лежать рядом с медиа.
+ * Языков может найтись больше, чем дорожек в программе; отвергать из-за этого
+ * весь снимок нельзя.
+ */
+export const workspaceAudioTrackLibrarySchema = z.object({
+  directoryPath: z.string(),
+  languages: z.array(audioScanLanguageSchema).max(64),
+});
+
+/**
+ * Отметка старта расписания: ролик и место внутри него.
+ *
+ * Смещение здесь, а не отдельным состоянием: оператор выбирает точку эфира
+ * один раз — «с этой передачи, с 40-й секунды», — и после перезапуска она
+ * обязана вернуться вместе с самой отметкой. Умолчание — ноль: у отметок,
+ * сохранённых до v8.0.2, смещения нет, и старт с начала ролика для них
+ * единственно верное прочтение.
+ */
 export const scheduleStartMarkerSchema = z.object({
   assetId: z.string().min(1),
+  offsetSeconds: z.number().nonnegative().max(86_400).default(0),
   updatedAt: z.iso.datetime(),
 });
 
@@ -1536,6 +1591,7 @@ export const workspaceSessionSnapshotSchema = z.object({
   scheduleLogoPath: z.string(),
   scheduleLogoSource: z.string(),
   ageLibrary: workspaceOverlayLibrarySchema.nullable(),
+  audioTrackLibrary: workspaceAudioTrackLibrarySchema.nullable().default(null),
   // Размер workspace уже ограничен HTTP body limit; число эффектов отдельно
   // не режем — большие эфирные библиотеки содержат тысячи элементов.
   effectLibrary: z.array(graphicEffectAssetSchema).default([]),
@@ -1645,6 +1701,7 @@ export type ProgramAudioTrack = z.infer<typeof programAudioTrackSchema>;
 export type AudioProgram = z.infer<typeof audioProgramSchema>;
 export type AudioTrackMatch = z.infer<typeof audioTrackMatchSchema>;
 export type AudioTrackScan = z.infer<typeof audioTrackScanSchema>;
+export type AudioScanLanguage = z.infer<typeof audioScanLanguageSchema>;
 export type ScanAudioTracksRequest = z.infer<typeof scanAudioTracksRequestSchema>;
 export type VideoEncoding = z.infer<typeof videoEncodingSchema>;
 export type AudioEncoding = z.infer<typeof audioEncodingSchema>;
@@ -1657,6 +1714,7 @@ export type SubtitleOutput = z.infer<typeof subtitleOutputSchema>;
 export type DvbSubtitleStatus = z.infer<typeof dvbSubtitleStatusSchema>;
 export type StartPlayoutRequest = z.infer<typeof startPlayoutRequestSchema>;
 export type PlayoutStatus = z.infer<typeof playoutStatusSchema>;
+export type WorkspaceAudioTrackLibrary = z.infer<typeof workspaceAudioTrackLibrarySchema>;
 export type WorkspaceSessionAsset = z.infer<typeof workspaceSessionAssetSchema>;
 export type WorkspaceSessionSnapshot = z.infer<typeof workspaceSessionSnapshotSchema>;
 export type ScheduleStartMarker = z.infer<typeof scheduleStartMarkerSchema>;

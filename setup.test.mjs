@@ -311,6 +311,24 @@ test("setup generates a relocatable systemd unit for the cloned repository", () 
   assert.match(unit, /WorkingDirectory="\/srv\/Gruber Project"/);
   assert.match(unit, /EnvironmentFile="\/srv\/Gruber Project\/\.env"/);
   assert.match(unit, /ExecStart="\/usr\/local\/bin\/node" "\/srv\/Gruber Project\/apps\/media-server\/dist\/index\.js"/);
+  // Без комплекта unit ссылается на системный PostgreSQL, как и раньше.
+  assert.match(unit, /After=network-online\.target postgresql\.service/);
+  assert.doesNotMatch(unit, /Requires=/);
+});
+
+test("with a bundled cluster the service requires it, not just starts after it", () => {
+  const unit = buildSystemdUnit({
+    environmentPath: "/opt/fluxio/app/.env",
+    nodePath: "/opt/fluxio/runtime/node",
+    requiresUnit: "fluxio-postgres.service",
+    rootPath: "/opt/fluxio/app",
+    serviceUser: "fluxio",
+  });
+
+  // `After=` без `Requires=` не поднимает базу: media-service стартовал бы
+  // раньше неё и падал на первом же запросе.
+  assert.match(unit, /After=network-online\.target fluxio-postgres\.service/);
+  assert.match(unit, /Requires=fluxio-postgres\.service/);
 });
 
 test("setup generates macOS and Windows background launch definitions", () => {

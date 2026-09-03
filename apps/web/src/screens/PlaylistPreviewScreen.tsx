@@ -7,6 +7,7 @@ import {
   ChevronsUp,
   FlagTriangleRight,
   FilePlus2,
+  Film,
   FolderOpen,
   Image,
   Maximize2,
@@ -24,6 +25,7 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import {
   memo,
@@ -40,7 +42,9 @@ import {
   type BroadcastEffectSpan,
 } from "../broadcast-effects";
 import { airDurationSeconds } from "../clip-duration";
+import { ColourBars } from "../components/ColourBars";
 import { attachHlsVideo } from "../hls-video";
+import { usePlayoutStatus } from "../playout-status";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
@@ -64,7 +68,6 @@ import type {
   ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
   GraphicEffectAsset,
-  GraphicEffectLayer,
 } from "@gruber/contracts";
 
 interface PlaylistPreviewScreenProps {
@@ -129,7 +132,8 @@ interface PlaylistPreviewScreenProps {
   onSaveSessionList: () => Promise<void>;
   onNewPlaylist: () => Promise<void>;
   onClearStartMarker: () => void;
-  onStartFromItem: (assetId: string) => Promise<void>;
+  /** Ролик и место внутри него: точку старта выбирает окно «Взять в эфир». */
+  onStartFromItem: (assetId: string, offsetSeconds: number) => Promise<void>;
   onStartCompositePreview: (asset: MediaAsset, startSeconds: number) => Promise<ClipPreviewSession>;
   onSelectAgeDirectory?: () => Promise<void>;
   onSelectScheduleLogoDirectory?: () => Promise<void>;
@@ -220,6 +224,10 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   const seeking = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
+  /** Что показывает монитор: выбранный ролик или эфир. */
+  const [monitorSource, setMonitorSource] = useState<"clip" | "air">("clip");
+  /** Ролик, для которого открыт вопрос «с какого места запускать». */
+  const [takeTarget, setTakeTarget] = useState<MediaAsset | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewOffset, setPreviewOffset] = useState(0);
@@ -542,44 +550,6 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     return selectedIds.has(assetId) && selectedIds.size > 1
       ? [...selectedIds]
       : [assetId];
-  }
-
-  function addEffectToItems(assetId: string, effectId: string): void {
-    const effect = effectLibrary.find((entry) => entry.id === effectId);
-    if (!effect) return;
-    const targetIds = controlTargetIds(assetId);
-    onUpdateItems(targetIds, (asset) => {
-      const clipDuration = effectiveClipDuration(asset);
-      const endSeconds = Math.max(
-        0.04,
-        Math.min(clipDuration, effect.kind === "static" || effect.durationSeconds <= 0
-          ? clipDuration
-          : effect.durationSeconds),
-      );
-      const layer: GraphicEffectLayer = {
-        backgroundPath: effect.filePath,
-        blendMode: "alpha",
-        lumaThreshold: 0.08,
-        sequenceFrameRate: null,
-        sequenceStartNumber: null,
-        // Сдвиг задаётся эффектом второго уровня; уровень 3 ложится как есть.
-        offsetXPercent: 0,
-        offsetYPercent: 0,
-        sourceInSeconds: 0,
-        tier: 3,
-        id: `layer-${asset.id}-${effect.id}-${window.crypto.randomUUID()}`,
-        effectId: effect.id,
-        name: effect.name,
-        filePath: effect.filePath,
-        kind: effect.kind,
-        sourceDurationSeconds: effect.durationSeconds,
-        startSeconds: 0,
-        endSeconds,
-        titlePath: findMatchingEffectTitle(asset.name, effect),
-        titlePaths: [],
-      };
-      return { effects: [...(asset.effects ?? []), layer] };
-    });
   }
 
   function toggleSubtitlesForItems(assetId: string): void {
@@ -1102,6 +1072,12 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                   <span className={`collapsed-overlay logo ${asset.itemLogo?.enabled ? "enabled" : ""}`}>
                     LOGO {asset.itemLogo?.enabled ? "ON" : "OFF"}
                   </span>
+                  <span
+                    className={`collapsed-overlay titles ${titleChipCount(asset) > 0 ? "enabled" : ""}`}
+                    title={titleSummary(asset)}
+                  >
+                    ТИТРЫ {titleChipCount(asset) > 0 ? titleChipCount(asset) : "—"}
+                  </span>
                 </div>
               ) : (
               <div className="playlist-item-controls">
@@ -1170,7 +1146,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 <button
                   className={`playlist-start-button ${playoutActive ? "on-air" : ""}`}
                   disabled={activeSchedule !== "current" || takeBusy || asset.status !== "analyzed"}
-                  onClick={() => void onStartFromItem(asset.id)}
+                  onClick={() => setTakeTarget(asset)}
                   title={asset.status !== "analyzed"
                     ? "Analyze the clip successfully before selecting it as a start point"
                     : playoutActive
@@ -1195,76 +1171,67 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 >
                   <Captions size={11} /> SRT
                 </button>
-                <label className="fx-selector" title="Add a project effect as the next graphics layer">
-                  <Layers3 size={11} />
-                  <select
-                    aria-label={`Add FX to ${asset.name}`}
-                    disabled={effectLibrary.every((effect) => Boolean(effect.broadcast))}
-                    onChange={(event) => {
-                      if (event.target.value) addEffectToItems(asset.id, event.target.value);
-                      event.target.value = "";
-                    }}
-                    value=""
-                  >
-                    <option value="">FX</option>
-                    {/* Эффект второго уровня сам решает, куда и когда лечь,
-                        поэтому вручную одним слоем его не положить. */}
-                    {effectLibrary.filter((effect) => !effect.broadcast).map((effect) => (
-                      <option key={effect.id} value={effect.id}>{effect.name}</option>
-                    ))}
-                  </select>
-                </label>
-                {broadcastChips(asset).length > 0 ? (
-                  <span className="fx-layer-chips" title="Эфирные эффекты второго уровня">
-                    {broadcastChips(asset).map((chip) => (
-                      <span className="fx-layer-chip tier2" key={chip.effectId} title={chip.title}>
-                        <i>{shortEffectName(chip.name)} · {chip.badge}</i>
+                {/* Полка титров ролика. Раньше здесь стоял выпадающий список
+                    «FX» — с версии 8 в библиотеке остались только эффекты
+                    второго уровня, которые сами решают, куда и когда лечь, и
+                    список был всегда пуст. Теперь это место, куда эффекты
+                    приходят со вкладки Effects, и главное в нём — читаемость
+                    на прокрутке: инженер обязан видеть, что на ролике есть
+                    титры, не открывая ролик. */}
+                <div
+                  className={`playlist-fx-lane ${titleChipCount(asset) > 0 ? "filled" : "empty"}`}
+                  title={titleChipCount(asset) > 0
+                    ? "Титры и графика этого ролика. Снять — крестиком на карточке."
+                    : "Титров нет. Назначьте эффект на вкладке Effects — «На один ролик» или «На весь проект»."}
+                >
+                  <span className="playlist-fx-lane-head">
+                    <Layers3 size={11} />
+                    <b>ТИТРЫ</b>
+                    <i>{titleChipCount(asset)}</i>
+                  </span>
+                  {broadcastChips(asset).map((chip) => (
+                    <span className="fx-layer-chip tier2" key={chip.effectId} title={chip.title}>
+                      <i>{shortEffectName(chip.name)} · {chip.badge}</i>
+                      <button
+                        aria-label={`Remove ${chip.name} from ${asset.name}`}
+                        onClick={() => removeBroadcastFromItem(asset.id, chip.effectId)}
+                        title={`Снять «${chip.name}» с этого ролика целиком`}
+                        type="button"
+                      >
+                        <Trash2 size={9} />
+                      </button>
+                    </span>
+                  ))}
+                  {asset.effects?.filter((layer) => layer.tier !== 2).map((layer, index) => {
+                    const definition = effectLibrary.find((effect) => effect.id === layer.effectId);
+                    const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
+                    return (
+                      <span
+                        className={`fx-layer-chip ${titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}`}
+                        key={layer.id}
+                        title={titleMissing
+                          ? `No alpha title matched ${asset.name}`
+                          : layer.titlePath ?? layer.backgroundPath ?? layer.filePath}
+                      >
+                        <i>
+                          {index + 1} · {shortEffectName(layer.name)}
+                          {titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
+                        </i>
                         <button
-                          aria-label={`Remove ${chip.name} from ${asset.name}`}
-                          onClick={() => removeBroadcastFromItem(asset.id, chip.effectId)}
-                          title={`Снять «${chip.name}» с этого ролика целиком`}
+                          aria-label={`Remove ${layer.name} from ${asset.name}`}
+                          onClick={() => removeEffectLayerFromItem(asset.id, layer.id)}
+                          title={`Remove ${layer.name} from this clip`}
                           type="button"
                         >
                           <Trash2 size={9} />
                         </button>
                       </span>
-                    ))}
-                  </span>
-                ) : null}
-                {(asset.effects ?? []).some((layer) => layer.tier !== 2) ? (
-                  <span className="fx-layer-chips" title="FX order from lower to upper layer">
-                    {asset.effects?.filter((layer) => layer.tier !== 2).map((layer, index) => (
-                      (() => {
-                        const definition = effectLibrary.find((effect) => effect.id === layer.effectId);
-                        const titleMissing = Boolean(definition?.titleDirectoryPath && !layer.titlePath);
-                        return (
-                          <span
-                            className={`fx-layer-chip ${layer.tier === 2 ? "tier2" : titleMissing ? "title-missing" : layer.titlePath ? "title-matched" : ""}`}
-                            key={layer.id}
-                            title={titleMissing
-                              ? `No alpha title matched ${asset.name}`
-                              : layer.titlePath ?? layer.backgroundPath ?? layer.filePath}
-                          >
-                            <i>
-                              {index + 1} · {shortEffectName(layer.name)}
-                              {layer.tier === 2
-                                ? " · L2"
-                                : titleMissing ? " · TITLE MISSING" : layer.titlePath ? " · BG+TITLE" : ""}
-                            </i>
-                            <button
-                              aria-label={`Remove ${layer.name} from ${asset.name}`}
-                              onClick={() => removeEffectLayerFromItem(asset.id, layer.id)}
-                              title={`Remove ${layer.name} from this clip`}
-                              type="button"
-                            >
-                              <Trash2 size={9} />
-                            </button>
-                          </span>
-                        );
-                      })()
-                    ))}
-                  </span>
-                ) : null}
+                    );
+                  })}
+                  {titleChipCount(asset) === 0 ? (
+                    <em>Назначаются на вкладке Effects</em>
+                  ) : null}
+                </div>
                 </div>
               </div>
               )}
@@ -1310,10 +1277,60 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
         </div>
       </aside>
 
+      {takeTarget ? (
+        <TakeOnAirDialog
+          asset={takeTarget}
+          busy={takeBusy}
+          onCancel={() => setTakeTarget(null)}
+          onStart={(offsetSeconds) => {
+            const assetId = takeTarget.id;
+            setTakeTarget(null);
+            void onStartFromItem(assetId, offsetSeconds);
+          }}
+          playoutActive={playoutActive}
+        />
+      ) : null}
+
       <section className="preview-workspace">
+        {/* Что показывает монитор: ролик расписания или то, что прямо сейчас
+            уходит в линию. Эфир берётся тем же потоком, что и в окне
+            Broadcast, — второй реализации предпросмотра эфира быть не должно,
+            иначе оператор верил бы той, которую увидел первой. */}
+        <div className="preview-source-switch" role="group" aria-label="Preview source">
+          <button
+            className={monitorSource === "clip" ? "active" : ""}
+            onClick={() => setMonitorSource("clip")}
+            type="button"
+          >
+            <Film size={12} /> Ролик расписания
+          </button>
+          <button
+            className={`${monitorSource === "air" ? "active" : ""} ${playoutActive ? "live" : ""}`}
+            onClick={() => {
+              // Локальный предпросмотр гасим: его считает тот же FFmpeg, что
+              // ведёт эфир, и оставленная за кадром сессия отбирала бы у него
+              // ресурс машины впустую.
+              void pausePreview();
+              setMonitorSource("air");
+            }}
+            type="button"
+          >
+            <RadioTower size={12} /> Смотреть эфир
+          </button>
+          <span className="preview-source-hint">
+            {monitorSource === "air"
+              ? playoutActive
+                ? "Выход после TSDuck — то же, что уходит на головную станцию"
+                : "Эфир не запущен: в мониторе цветные полосы"
+              : "Локальный предпросмотр выбранного ролика с графикой"}
+          </span>
+        </div>
+
         <div className="preview-stage">
         <div className="program-preview" ref={previewContainer}>
-          {previewUrl ? (
+          {monitorSource === "air" ? (
+            <AirMonitor />
+          ) : previewUrl ? (
             <video
               autoPlay
               onEnded={finishPreview}
@@ -1330,37 +1347,56 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 : previewSource}
             />
           )}
-          <div className="preview-hud preview-hud-top">
-            <span className="decoding-status">
-              {previewBusy ? <LoaderCircle className="spin" size={12} /> : <i />}
-              {previewBusy
-                ? "Preparing Preview"
-                : playing
-                  ? "Playing Preview"
-                  : previewError
-                    ? "Preview Error"
-                    : "Ready to Preview"}
-            </span>
-            <span>
-              {selectedAsset.resolution} @ {selectedAsset.fps} | {selectedAsset.codec}
-            </span>
-          </div>
-          <button
-            aria-label={playing ? "Pause preview" : "Play preview"}
-            className="preview-center-control"
-            disabled={previewBusy}
-            onClick={() => void togglePreview()}
-            title={previewError ?? undefined}
-            type="button"
-          >
-            {playing ? <Pause size={25} /> : <Play size={25} />}
-          </button>
-          {previewError ? (
-            <span className="preview-error-message" role="alert">{previewError}</span>
+          {monitorSource === "clip" ? (
+            <>
+              <div className="preview-hud preview-hud-top">
+                <span className="decoding-status">
+                  {previewBusy ? <LoaderCircle className="spin" size={12} /> : <i />}
+                  {previewBusy
+                    ? "Preparing Preview"
+                    : playing
+                      ? "Playing Preview"
+                      : previewError
+                        ? "Preview Error"
+                        : "Ready to Preview"}
+                </span>
+                <span>
+                  {selectedAsset.resolution} @ {selectedAsset.fps} | {selectedAsset.codec}
+                </span>
+              </div>
+              <button
+                aria-label={playing ? "Pause preview" : "Play preview"}
+                className="preview-center-control"
+                disabled={previewBusy}
+                onClick={() => void togglePreview()}
+                title={previewError ?? undefined}
+                type="button"
+              >
+                {playing ? <Pause size={25} /> : <Play size={25} />}
+              </button>
+              {previewError ? (
+                <span className="preview-error-message" role="alert">{previewError}</span>
+              ) : null}
+            </>
           ) : null}
         </div>
         </div>
 
+        {/* Что играет и сколько осталось. Обратный отсчёт до конца ролика —
+            то, по чему режиссёр ведёт эфир: процент прогресса на это не
+            отвечает. */}
+        <PreviewNowLine
+          clipName={selectedAsset.name}
+          clipRemainingSeconds={Math.max(0, effectiveClipDuration(selectedAsset) - currentTime)}
+          source={monitorSource}
+        />
+
+        {/* Транспорт и монтажная дорожка принадлежат ролику расписания. В
+            эфирном режиме они пропадают целиком: ползунок, обрезка и IN/OUT
+            рядом с идущим эфиром читаются как управление эфиром, а он ими не
+            управляется. */}
+        {monitorSource === "clip" ? (
+        <>
         <div className="transport-bar">
           <div className="seek-row">
             <span>{formatTimecode(0, selectedAsset.fps)}</span>
@@ -1544,6 +1580,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             />
           </div>
         </div>
+        </>
+        ) : null}
 
         <section className="scte35-marker-panel">
           <div className="scte35-marker-heading">
@@ -1600,10 +1638,16 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 value={markerUpid}
               />
             </label>
+            {/* Метка ставится в позицию головки предпросмотра, а в эфирном
+                режиме головки нет вовсе: кнопка поставила бы её туда, где
+                ползунок стоял до переключения. */}
             <button
               className="secondary-button"
-              disabled={!scte35Defaults.scte35PlanningEnabled}
+              disabled={!scte35Defaults.scte35PlanningEnabled || monitorSource === "air"}
               onClick={addScte35Marker}
+              title={monitorSource === "air"
+                ? "Вернитесь на «Ролик расписания»: метка ставится в позицию головки предпросмотра"
+                : undefined}
               type="button"
             >
               <FlagTriangleRight size={14} /> Add at Playhead
@@ -1962,6 +2006,211 @@ function broadcastChips(asset: MediaAsset): {
   });
 }
 
+/**
+ * С какого места поднимать эфир.
+ *
+ * Вопрос задаётся один раз и здесь: «взять в эфир» на живом эфире — это
+ * перезапуск процесса, и подтверждение всё равно было нужно. Пусть оно заодно
+ * отвечает на единственный вопрос, который у оператора в этот момент есть, —
+ * с начала ролика или с места, где передача идёт прямо сейчас.
+ *
+ * Секунды набираются в черновик строкой: `input[type=number]` отдаёт пустое
+ * значение для незаконченного ввода, и прямое `Number(value)` возвращало бы
+ * поле в ноль на каждой точке.
+ */
+function TakeOnAirDialog({
+  asset, busy, playoutActive, onCancel, onStart,
+}: {
+  asset: MediaAsset;
+  busy: boolean;
+  playoutActive: boolean;
+  onCancel: () => void;
+  onStart: (offsetSeconds: number) => void;
+}) {
+  const duration = effectiveClipDuration(asset);
+  const [draft, setDraft] = useState("0");
+  const parsed = Number(draft.replace(",", "."));
+  const offset = Number.isFinite(parsed)
+    ? Math.min(Math.max(0, parsed), Math.max(0, duration - 0.04))
+    : 0;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  return (
+    <div className="take-dialog-backdrop" onPointerDown={onCancel} role="presentation">
+      <div
+        aria-label={playoutActive ? "Взять в эфир" : "Точка старта расписания"}
+        className="take-dialog"
+        onPointerDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header>
+          <RadioTower size={13} />
+          <strong>{playoutActive ? "Взять в эфир" : "Точка старта расписания"}</strong>
+          <button aria-label="Закрыть" onClick={onCancel} type="button"><X size={13} /></button>
+        </header>
+
+        <p className="take-dialog-clip" title={asset.name}>{asset.name}</p>
+        <dl className="take-dialog-facts">
+          <div>
+            <dt>Хронометраж</dt>
+            <dd>{formatHours(duration)}</dd>
+          </div>
+          <div>
+            <dt>Старт с</dt>
+            <dd>{formatHours(offset)}</dd>
+          </div>
+        </dl>
+
+        <label className="take-dialog-offset">
+          <span>Место старта, с</span>
+          <input
+            autoFocus
+            max={Math.floor(duration)}
+            min={0}
+            onChange={(event) => setDraft(event.target.value)}
+            step={1}
+            type="number"
+            value={draft}
+          />
+        </label>
+
+        <div className="take-dialog-actions">
+          <button
+            className="take-dialog-primary"
+            disabled={busy}
+            onClick={() => onStart(offset)}
+            type="button"
+          >
+            {busy ? <LoaderCircle className="spin" size={13} /> : <MapPin size={13} />}
+            Старт с маркера
+          </button>
+          <button disabled={busy} onClick={() => onStart(0)} type="button">
+            <SkipBack size={13} /> Старт с начала
+          </button>
+        </div>
+
+        <small>
+          {playoutActive
+            ? "Текущий эфирный процесс будет перезапущен с выбранной точки."
+            : "Расписание пойдёт с этого ролика при следующем запуске эфира."}
+        </small>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Эфирный монитор внутри плейлиста.
+ *
+ * Поток тот же, что у окна Broadcast, и живой статус берётся из контекста, а
+ * не пропсом: статус приходит новым объектом раз в секунду, и пропсом он снял
+ * бы `memo` со всего экрана вместе со списком роликов.
+ *
+ * До старта и при эфире без расписания здесь стоят цветные полосы — ровно то,
+ * что в этот момент уходит в линию.
+ */
+function AirMonitor() {
+  const status = usePlayoutStatus();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [state, setState] = useState<"loading" | "playing" | "error">("loading");
+  const [error, setError] = useState<string | null>(null);
+  const active = status ? ["starting", "running", "stopping"].includes(status.state) : false;
+  const source = active && status?.previewPath ? mediaApiUrl(status.previewPath) : null;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !source) return;
+    setState("loading");
+    setError(null);
+    return attachHlsVideo(video, source, {
+      live: true,
+      onError: (message) => {
+        setState("error");
+        setError(message);
+      },
+      onPlaying: () => {
+        setState("playing");
+        setError(null);
+      },
+      onWaiting: () => setState("loading"),
+      retryLimit: 900,
+    });
+  }, [source]);
+
+  if (!source) return <ColourBars title="Эфир не запущен" />;
+  return (
+    <>
+      <video autoPlay muted playsInline ref={videoRef} />
+      {state !== "playing" ? (
+        <span className={`live-preview-state ${state}`} role={error ? "alert" : undefined}>
+          {state === "error" ? error : "Подключение к эфиру…"}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Строка «что играет и сколько осталось».
+ *
+ * В эфирном режиме имя и отсчёт берутся из живого статуса, в режиме ролика —
+ * из выбранного ролика: монитор и подпись обязаны говорить об одном и том же
+ * источнике, иначе подпись врёт ровно тогда, когда на неё смотрят.
+ */
+function PreviewNowLine({
+  source, clipName, clipRemainingSeconds,
+}: {
+  source: "clip" | "air";
+  clipName: string;
+  clipRemainingSeconds: number;
+}) {
+  const status = usePlayoutStatus();
+  const active = status ? ["starting", "running", "stopping"].includes(status.state) : false;
+  const air = source === "air";
+  const remaining = air
+    ? Math.max(0, (status?.currentItemDurationSeconds ?? 0) - (status?.currentItemElapsedSeconds ?? 0))
+    : clipRemainingSeconds;
+  const name = air
+    ? active ? status?.currentItemName ?? "Без названия" : "Эфир не запущен — цветные полосы"
+    : clipName;
+  return (
+    <div className={`preview-now-line ${air ? "air" : "clip"} ${air && !active ? "idle" : ""}`}>
+      <span className="preview-now-label">{air ? "В ЭФИРЕ" : "ПРЕДПРОСМОТР"}</span>
+      <strong title={name}>{name}</strong>
+      <span className="preview-now-countdown" title="Осталось до конца ролика">
+        {air && !active ? "--:--:--" : `−${formatHours(remaining)}`}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Сколько титров и слоёв графики стоит на ролике.
+ *
+ * Эффект второго уровня кладёт на ролик несколько сущностей сразу, поэтому
+ * считаем карточки полки, а не слои: иначе один титр выглядел бы тремя.
+ */
+function titleChipCount(asset: MediaAsset): number {
+  return broadcastChips(asset).length +
+    (asset.effects ?? []).filter((layer) => layer.tier !== 2).length;
+}
+
+/** Чем занят ролик — одной строкой для свёрнутой строки расписания. */
+function titleSummary(asset: MediaAsset): string {
+  const names = [
+    ...broadcastChips(asset).map((chip) => chip.name),
+    ...(asset.effects ?? []).filter((layer) => layer.tier !== 2).map((layer) => layer.name),
+  ];
+  return names.length > 0 ? names.join(" · ") : "Титров нет";
+}
+
 function fxDensityClass(asset: MediaAsset): string {
   const total = (asset.effects?.length ?? 0) + (asset.scenes?.length ?? 0);
   if (total > 8) return "has-many-fx fx-density-high";
@@ -1987,14 +2236,6 @@ function shortEffectName(value: string): string {
 
 function findMatchingSubtitle(mediaName: string, subtitlePaths: string[]): string | null {
   return matchingNamedAssetPath(mediaName, subtitlePaths);
-}
-
-function findMatchingEffectTitle(
-  mediaName: string,
-  effect: GraphicEffectAsset,
-): string | null {
-  if (!effect.titleDirectoryPath) return null;
-  return matchingNamedAssetPath(mediaName, effect.titlePaths);
 }
 
 /** Есть ли уже посчитанный кусок в этой точке: перемотка по нему проходит без перезапуска. */

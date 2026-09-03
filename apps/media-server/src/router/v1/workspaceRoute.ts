@@ -6,6 +6,7 @@ import { workspaceSessionSaveRequestSchema } from "@gruber/contracts";
 import {
   badRequest,
   databaseUnavailable,
+  describeValidationError,
   largePlaylistBodyLimitBytes,
   type RouteContext,
 } from "../context.js";
@@ -29,6 +30,14 @@ export async function workspaceRoute(app: FastifyInstance, context: RouteContext
         const body = workspaceSessionSaveRequestSchema.parse(request.body);
         return await database.saveWorkspaceSession(body, context.playout.getStatus());
       } catch (error) {
+        // Отказ сохранения — это молчаливая потеря всей работы: снимок не
+        // ложится целиком, и после перезапуска возвращается предыдущий. В
+        // интерфейсе видно только сообщение, поэтому причина пишется в журнал.
+        context.logger.log(
+          "error",
+          "SESSION",
+          `Сессия не сохранена: ${describeValidationError(error)}`,
+        );
         return badRequest(reply, error);
       }
     },

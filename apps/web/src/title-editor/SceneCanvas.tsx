@@ -118,8 +118,10 @@ export interface SceneCanvasProps {
    *
    * Инспектору она нужна для переноса привязки: у плашки, привязанной к
    * тексту, ширина считается по тексту, и базовое значение тут не годится.
+   * Положение отдаётся вместе с размером — по нему экран показывает, где
+   * узел стоит относительно центра кадра.
    */
-  onSelectedBox: (box: { width: number; height: number } | null) => void;
+  onSelectedBox: (box: { x: number; y: number; width: number; height: number } | null) => void;
   /**
    * Правка текста прямо в кадре по двойному щелчку.
    *
@@ -288,11 +290,36 @@ export function SceneCanvas({
     };
   }
 
-  function handlePointerDown(event: ReactPointerEvent, grip: Grip, node: SceneNode) {
+  /**
+   * Верхний узел под указателем — всё, кроме групп.
+   *
+   * Нужен ровно одному случаю: выбранная группа ловит мышь всей своей
+   * коробкой, и добраться до содержимого иначе можно было бы только через
+   * список слоёв. Alt-щелчок отдаёт то, что нарисовано под курсором.
+   */
+  function leafAt(point: { x: number; y: number }): SceneNode | null {
+    for (let index = template.nodes.length - 1; index >= 0; index -= 1) {
+      const candidate = template.nodes[index];
+      if (!candidate || candidate.kind === "group") continue;
+      const box = boxOf(candidate);
+      if (box.hidden) continue;
+      if (point.x < box.x || point.x > box.x + box.width) continue;
+      if (point.y < box.y || point.y > box.y + box.height) continue;
+      return candidate;
+    }
+    return null;
+  }
+
+  function handlePointerDown(event: ReactPointerEvent, grip: Grip, target: SceneNode) {
     event.stopPropagation();
+    const point = pointToFraction(event);
+    // Alt проваливается сквозь группу к её содержимому: без этого выбранная
+    // группа закрывает собой детей, и взять один узел мышью нечем.
+    const node = grip === "move" && target.kind === "group" && event.altKey
+      ? leafAt(point) ?? target
+      : target;
     onSelect(node.id, event.ctrlKey || event.metaKey);
     if (lockedIds.has(node.id)) return;
-    const point = pointToFraction(event);
     const box = boxOf(node);
     // Выделение идёт первым: захват указателя может не состояться — например,
     // у события без живого указателя, — и выделение не должно от этого зависеть.
@@ -419,12 +446,15 @@ export function SceneCanvas({
   const editingBox = editingNode ? boxOf(editingNode) : null;
 
   const selectedBox = selected ? boxOf(selected) : null;
-  const reportedBox = selectedBox ? { width: selectedBox.width, height: selectedBox.height } : null;
+  const reportedBox = selectedBox
+    ? { x: selectedBox.x, y: selectedBox.y, width: selectedBox.width, height: selectedBox.height }
+    : null;
   useEffect(() => {
     onSelectedBox(reportedBox);
-    // Ширина и высота — единственное, что нужно инспектору: следить за всей
-    // коробкой значило бы дёргать его на каждый кадр проигрывания.
-  }, [reportedBox?.width, reportedBox?.height, onSelectedBox]);
+    // Следим за числами, а не за объектом: коробка пересчитывается на каждой
+    // отрисовке, и объект в зависимостях дёргал бы экран на каждом кадре
+    // проигрывания даже у неподвижного узла.
+  }, [reportedBox?.x, reportedBox?.y, reportedBox?.width, reportedBox?.height, onSelectedBox]);
   const pct = (value: number) => `${value * 100}%`;
 
   return (
@@ -461,23 +491,40 @@ export function SceneCanvas({
           {/* Узлы: прозрачные прямоугольники, которые ловят мышь. Порядок тот
               же, что и в отрисовке, поэтому верхний узел перехватывает клик. */}
           {template.nodes.map((node) => {
-            if (node.kind === "group") return null;
             const box = boxOf(node);
             if (box.hidden) return null;
+            const group = node.kind === "group";
+            // Группа тоже ловит мышь — иначе собранную плашку нечем таскать по
+            // кадру целиком, а ради этого группа и нужна. Порядок слоёв
+            // задаётся явно: невыбранная группа лежит **под** своим
+            // содержимым (щелчок по узлу берёт узел), выбранная — над ним
+            // (взялись за группу — тащим её всю). Полагаться на порядок в
+            // разметке нельзя: группа стоит в списке выше своих детей.
+            if (group && (box.width <= 0 || box.height <= 0)) return null;
+            const zIndex = group ? (node.id === selectedId ? 3 : 0) : 1;
             return (
               <div
                 key={node.id}
-                className={`scene-hit ${lockedIds.has(node.id) ? "locked" : ""} ${node.id === selectedId ? "selected" : ""} ${
+                className={`scene-hit ${group ? "group" : ""} ${lockedIds.has(node.id) ? "locked" : ""} ${node.id === selectedId ? "selected" : ""} ${
                   selectedIds.includes(node.id) && node.id !== selectedId ? "co-selected" : ""
                 }`}
-                style={{ left: pct(box.x), top: pct(box.y), width: pct(box.width), height: pct(box.height) }}
+                style={{
+                  left: pct(box.x), top: pct(box.y),
+                  width: pct(box.width), height: pct(box.height),
+                  zIndex,
+                }}
                 onPointerDown={(event) => handlePointerDown(event, "move", node)}
                 onDoubleClick={() => {
                   const current = editableText(node, fields);
                   if (current === null) return;
                   setEditing({ nodeId: node.id, value: current });
                 }}
-                title={node.name}
+                title={group
+                  ? tr(
+                    `${node.name} — тащите за любое место группы, Alt выбирает узел внутри`,
+                    `${node.name} — drag anywhere inside the group, Alt picks a node inside`,
+                  )
+                  : node.name}
               />
             );
           })}

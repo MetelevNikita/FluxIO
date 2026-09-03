@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   launcherPaths,
+  packagedDesktopExecutable,
   mediaServerIsActive,
   normalizeMediaApiUrl,
   terminateProcessTree,
@@ -66,4 +67,32 @@ test("Windows launcher terminates the complete child process tree", async () => 
     "taskkill.exe",
     ["/PID", "4321", "/T", "/F"],
   ]]);
+});
+
+test("the launcher starts the packaged application when the bundle carries one", () => {
+  const readDirectory = (directory) => {
+    if (directory === "/opt/fluxio/desktop") return ["FluxIO.app", "LICENSE"];
+    if (directory === "/opt/fluxio/win") return ["FluxIO.exe", "resources", "LICENSE.txt"];
+    if (directory === "/opt/fluxio/linux") return ["fluxio", "resources", "chrome_100_percent.pak"];
+    return null;
+  };
+
+  // Имя приложения задаёт electron-builder по продукту, поэтому оно ищется, а
+  // не угадывается; на macOS исполняемый файл лежит внутри каталога `.app`.
+  assert.equal(
+    packagedDesktopExecutable("/opt/fluxio/desktop", "darwin", readDirectory),
+    "/opt/fluxio/desktop/FluxIO.app/Contents/MacOS/FluxIO",
+  );
+  assert.equal(
+    packagedDesktopExecutable("/opt/fluxio/win", "win32", readDirectory),
+    "/opt/fluxio/win/FluxIO.exe",
+  );
+  assert.equal(
+    packagedDesktopExecutable("/opt/fluxio/linux", "linux", readDirectory),
+    "/opt/fluxio/linux/fluxio",
+  );
+
+  // В дереве разработки упакованного приложения нет — интерфейс поднимает
+  // Electron из node_modules, как и раньше.
+  assert.equal(packagedDesktopExecutable("/repo/desktop", "darwin", readDirectory), null);
 });

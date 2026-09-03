@@ -5,6 +5,7 @@ import {
   broadcastEffectDefinitionSchema,
   broadcastEffectSettingsSchema,
   graphicEffectAssetSchema,
+  type AudioScanLanguage,
   type BroadcastEffectKind,
   type BroadcastTaskFileContent,
   type GraphicEffectAsset,
@@ -91,6 +92,7 @@ import {
   removeEffectFromLibrary,
 } from "./effect-assignment";
 import { buildAudioProgram } from "./audio-program";
+import { scheduleCatchUpPoint } from "./schedule-timeline";
 import { defaultSceneTemplate, editableSceneTemplate } from "./default-scenes";
 import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
@@ -474,7 +476,12 @@ export function App() {
           setRecoveryCheckpoint(saved.checkpoint?.interrupted ? saved.checkpoint : null);
         })
         .catch((error) => {
-          setOperationError(`Workspace autosave failed: ${errorMessage(error)}`);
+          // Сохранение всё-или-ничего: отказ значит, что с этого момента не
+          // сохраняется ничего — ни пути, ни расписание. Молчать нельзя.
+          setOperationError(tr(
+            `Сессия не сохраняется: ${errorMessage(error)}. Изменения не переживут перезапуск.`,
+            `Workspace autosave failed: ${errorMessage(error)}. Changes will not survive a restart.`,
+          ));
         });
     }, 2_500);
     return () => window.clearTimeout(timer);
@@ -490,6 +497,7 @@ export function App() {
     scheduleLogoPath,
     scheduleLogoSource,
     ageLibrary,
+    audioTrackLibrary,
     effectLibrary,
     subtitleLibrary,
     scheduleStartMarker,
@@ -659,6 +667,21 @@ export function App() {
       snapshot.scheduleLogoSource || (restoredSettings.logoEnabled ? restoredSettings.logoPath : ""),
     );
     setAgeLibrary(snapshot.ageLibrary);
+    setAudioTrackLibrary(snapshot.audioTrackLibrary);
+    // Папка переводов подхватывается сама. Сохранённого списка языков мало:
+    // дорожки ролика — это пути к файлам, и после перезапуска их надо снова
+    // найти на диске, иначе оператор видит выбранную папку, набор языков и
+    // ролики без единой дорожки. Сканирование идёт только если папку
+    // открывали: это ffprobe по каждому файлу расписания.
+    const restoredAudioDirectory =
+      snapshot.audioTrackLibrary?.directoryPath || restoredSettings.audioTrackDirectory || "";
+    if (snapshot.audioTrackLibrary && restoredAudioDirectory) {
+      void refreshAudioTracks(
+        restoredAudioDirectory,
+        { current: restoredCurrentPlaylist, future: restoredFuturePlaylist },
+        false,
+      );
+    }
     const restoredEffects = snapshot.effectLibrary.map((effect) => {
       if (!effect.broadcast || effect.broadcast.dataMapping.filePath) return effect;
       const legacyPath = broadcastTaskFilePath(effect);
@@ -939,6 +962,16 @@ export function App() {
           subtitles: item.srtPath
             ? { enabled: true, filePath: item.srtPath }
             : undefined,
+          // Дорожки перевода приходят строками под роликом. Без них после
+          // открытия сохранённого расписания оператор видел выбранную папку и
+          // пустой набор языков: пересканировать её при импорте нечем.
+          audioTracks: item.audioTracks.map((track) => ({
+            languageCode: track.languageCode ?? "und",
+            label: track.language,
+            filePath: track.filePath,
+            streamIndex: 0,
+            durationSeconds: null,
+          })),
         } satisfies MediaAsset;
       });
       const metadata = scheduleMetadata(parsed, slot);
@@ -979,8 +1012,22 @@ export function App() {
       }
       setActiveSchedule(slot);
       setSelectedAssetId(scheduledAssets[0]?.id ?? "");
+      // Языки, с которыми расписание сохраняли, объявлены его заголовком.
+      // Набор дорожек программы фиксируется на старте по этому списку, поэтому
+      // восстановить его надо до первого Start, а не «когда-нибудь потом».
+      if (parsed.audioLanguages.length > 0) {
+        setAudioTrackLibrary((current) => ({
+          directoryPath: current?.directoryPath ?? settings.audioTrackDirectory ?? "",
+          languages: parsed.audioLanguages,
+        }));
+        setSettings((current) => ({ ...current, audioTracksEnabled: true }));
+      }
       setScheduleActionMessage(
-        `${slot === "current" ? "Current" : "Future"} schedule imported: ${scheduledAssets.length} items.`,
+        `${slot === "current" ? "Current" : "Future"} schedule imported: ${scheduledAssets.length} items` +
+          (parsed.audioLanguages.length > 0
+            ? ` · языки: ${parsed.audioLanguages.map((language) => language.label).join(" · ")}`
+            : "") +
+          ".",
       );
       const failed = scheduledAssets.filter((asset) => asset.status === "error");
       if (failed.length > 0) {
@@ -1159,6 +1206,9 @@ export function App() {
         scheduleLogoPath,
         scheduleLogoSource,
         ageLibrary,
+        // Путь к переводам лежит в настройках, а найденные языки — только
+        // здесь: пересканировать папку при восстановлении нечем.
+        audioTrackLibrary,
         effectLibrary,
         subtitleLibrary,
         startMarker: scheduleStartMarker,
@@ -1808,6 +1858,20 @@ export function App() {
     setAutoResumeIn(autoResumeDelaySeconds);
   }, [settings.autoResumeOnLaunch, recoveryCheckpoint, playlist.length, playoutStatus]);
 
+  /**
+   * Куда поднимется эфир по расписанию. Считается на каждой секунде отсчёта:
+   * пока идёт отсчёт, точка догона живая и может перейти на следующий ролик.
+   */
+  const autoResumeTarget = useMemo(() => {
+    if (autoResumeIn === null) return null;
+    const point = scheduleCatchUpPoint(playlist, currentScheduleMetadata, "current");
+    if (!point) return null;
+    return {
+      name: playlist.find((asset) => asset.id === point.assetId)?.name ?? "",
+      offsetSeconds: point.itemOffsetSeconds,
+    };
+  }, [autoResumeIn, playlist, currentScheduleMetadata]);
+
   useEffect(() => {
     if (autoResumeIn === null) return;
     if (autoResumeIn <= 0) {
@@ -2189,36 +2253,62 @@ export function App() {
     await refreshAudioTracks(selected.directoryPath);
   }
 
-  /** Пересобирает дорожки для обоих плейлистов и включает многоязычный звук. */
-  async function refreshAudioTracks(directoryPath: string | null) {
-    const mediaPaths = [...playlist, ...futurePlaylist]
+  /**
+   * Пересобирает дорожки для обоих плейлистов и включает многоязычный звук.
+   *
+   * `source` передаётся при восстановлении сессии: плейлисты в этот момент
+   * только что отданы в `setState`, и читать их из состояния ещё нечем.
+   * `announce` разделяет два случая: выбор папки оператором — событие, о
+   * котором пишем в строку состояния и включаем многоязычный звук, а тихий
+   * подхват после перезапуска не имеет права ни перебивать сообщение о
+   * восстановлении сессии, ни включать то, что оператор выключил сам.
+   */
+  async function refreshAudioTracks(
+    directoryPath: string | null,
+    source?: { current: MediaAsset[]; future: MediaAsset[] },
+    announce = true,
+  ) {
+    const mediaPaths = [...(source?.current ?? playlist), ...(source?.future ?? futurePlaylist)]
       .map((asset) => asset.filePath)
       .filter(Boolean);
     if (mediaPaths.length === 0) {
-      setAudioTrackLibrary(null);
+      if (announce) setAudioTrackLibrary(null);
       return;
     }
 
     try {
       const scan = await scanAudioTracks(directoryPath, mediaPaths);
       const byPath = new Map(scan.items.map((item) => [item.mediaFilePath, item.tracks]));
-      const attach = (items: MediaAsset[]) => items.map((asset) => ({
-        ...asset,
-        audioTracks: byPath.get(asset.filePath) ?? [],
-      }));
+      const attach = (items: MediaAsset[]) => items.map((asset) => {
+        const found = byPath.get(asset.filePath) ?? [];
+        // Тихий подхват после перезапуска не стирает сохранённые дорожки, если
+        // файлов не нашлось: диск с переводами может быть ещё не примонтирован,
+        // а автосохранение записало бы пустоту поверх рабочих путей. Выбор
+        // папки оператором, наоборот, пересобирает набор целиком — он для того
+        // её и открыл.
+        if (!announce && found.length === 0) return asset;
+        return { ...asset, audioTracks: found };
+      });
       setPlaylist(attach);
       setFuturePlaylist(attach);
-      setAudioTrackLibrary({ directoryPath: directoryPath ?? "", languages: scan.languages });
-      if (scan.languages.length > 0) {
+      // Папка без совпадений не стирает сохранённый набор языков: после
+      // переноса проекта файлов перевода может не оказаться на месте, а набор
+      // дорожек программы фиксируется на Start и нужен оператору целиком.
+      if (scan.languages.length > 0 || announce) {
+        setAudioTrackLibrary({ directoryPath: directoryPath ?? "", languages: scan.languages });
+      }
+      if (announce && scan.languages.length > 0) {
         setSettings((current) => ({ ...current, audioTracksEnabled: true }));
       }
-      setScheduleActionMessage(
-        scan.languages.length > 0
-          ? `Audio tracks: ${scan.languages.map((l) => `{${l.label}}`).join(" ")}`
-          : "Audio tracks: nothing matched the media file names.",
-      );
+      if (announce) {
+        setScheduleActionMessage(
+          scan.languages.length > 0
+            ? `Audio tracks: ${scan.languages.map((l) => `{${l.label}}`).join(" ")}`
+            : "Audio tracks: nothing matched the media file names.",
+        );
+      }
     } catch (error) {
-      setOperationError(errorMessage(error));
+      if (announce) setOperationError(errorMessage(error));
     }
   }
 
@@ -2474,6 +2564,11 @@ export function App() {
       const request: SerializeScheduleRequest = {
         delaySeconds: metadata?.delaySeconds ?? 0,
         extension,
+        // Языки переводов уходят в файл заголовком: расписание открывают на
+        // другой машине и через неделю, а пересканировать папку переводов при
+        // открытии нечем — это ffprobe по каждому файлу расписания.
+        audioLanguages: audioTrackLibrary?.languages
+          ?? languagesFromPlaylist(visiblePlaylist),
         broadcastEffects: effectLibrary
           .filter((effect) => effect.broadcast && usedEffectIds.has(effect.id))
           .map((effect) => ({
@@ -2517,6 +2612,7 @@ export function App() {
           srtEnabled: Boolean(asset.subtitles?.enabled),
           audioTracks: (asset.audioTracks ?? []).map((track) => ({
             language: track.label,
+            languageCode: track.languageCode,
             filePath: track.filePath,
           })),
         })),
@@ -2625,16 +2721,24 @@ export function App() {
     }
   }
 
-  function setStartMarker(assetId: string) {
+  function setStartMarker(assetId: string, offsetSeconds = 0) {
     if (activeSchedule !== "current") {
       setOperationError("A schedule start marker can only be set in the Current playlist.");
       return;
     }
     const asset = playlist.find((item) => item.id === assetId);
     if (!asset) return;
-    setScheduleStartMarker({ assetId, updatedAt: new Date().toISOString() });
+    const offset = Math.min(
+      Math.max(0, offsetSeconds),
+      Math.max(0, effectiveAssetDuration(asset) - 0.04),
+    );
+    setScheduleStartMarker({ assetId, offsetSeconds: offset, updatedAt: new Date().toISOString() });
     setOperationError(null);
-    setScheduleActionMessage(`Schedule will start from "${asset.name}".`);
+    setScheduleActionMessage(
+      offset > 0
+        ? `Schedule will start from "${asset.name}" at ${formatClock(offset)}.`
+        : `Schedule will start from "${asset.name}".`,
+    );
   }
 
   function clearStartMarker() {
@@ -2642,7 +2746,7 @@ export function App() {
     setScheduleActionMessage("Schedule start marker cleared.");
   }
 
-  async function startFromPlaylistItem(assetId: string) {
+  async function startFromPlaylistItem(assetId: string, offsetSeconds = 0) {
     if (activeSchedule !== "current") {
       setOperationError("Hot take is only available from the Current playlist.");
       return;
@@ -2656,15 +2760,11 @@ export function App() {
     const active = playoutStatus
       ? ["starting", "running", "stopping"].includes(playoutStatus.state)
       : false;
-    if (!active) {
-      setStartMarker(assetId);
-      return;
-    }
-    if (!window.confirm(
-      `Take "${asset.name}" on air now? The current playout process will be restarted.`,
-    )) return;
+    // Точку старта оператор уже выбрал в окне «Взять в эфир»: второй вопрос
+    // подряд ничего не проверяет, а на живом эфире стоит секунд.
+    setStartMarker(assetId, offsetSeconds);
+    if (!active) return;
 
-    setStartMarker(assetId);
     setTakeBusy(true);
     setOperationError(null);
     try {
@@ -2672,10 +2772,15 @@ export function App() {
         buildStartRequest(playlist, settings, futurePlaylist),
         playlist,
         assetId,
+        offsetSeconds,
       );
       setPlayoutStatus(await takePlayoutSession(request));
       setRecoveryCheckpoint(null);
-      setScheduleActionMessage(`Hot take is on air from "${asset.name}".`);
+      setScheduleActionMessage(
+        offsetSeconds > 0
+          ? `Hot take is on air from "${asset.name}" at ${formatClock(offsetSeconds)}.`
+          : `Hot take is on air from "${asset.name}".`,
+      );
     } catch (error) {
       setOperationError(errorMessage(error));
     } finally {
@@ -2694,19 +2799,35 @@ export function App() {
     setOperationError(null);
     try {
       const baseRequest = buildStartRequest(playlist, settings, futurePlaylist);
-      const request = mode === "resume" && recoveryCheckpoint
+      // Подъём после сбоя идёт по часам, а не с места обрыва: расписание
+      // привязано ко времени суток, и после часового простоя место обрыва
+      // означало бы эфир, сдвинутый на час до конца недели. Чекпоинт остаётся
+      // запасным путём — на плейлист без расписания часам опереться не на что.
+      const catchUp = mode === "resume"
+        ? scheduleCatchUpPoint(playlist, currentScheduleMetadata, "current")
+        : null;
+      const request = mode === "resume" && catchUp
+        ? buildStartRequestFromAsset(
+            baseRequest, playlist, catchUp.assetId, catchUp.itemOffsetSeconds,
+          )
+        : mode === "resume" && recoveryCheckpoint
         ? buildRecoveryStartRequest(baseRequest, playlist, recoveryCheckpoint)
         : mode === "default" && scheduleStartMarker
           ? buildStartRequestFromAsset(
               baseRequest,
               playlist,
               scheduleStartMarker.assetId,
+              scheduleStartMarker.offsetSeconds,
             )
           : baseRequest;
       setPlayoutStatus(await startPlayoutSession(request));
       setRecoveryCheckpoint(null);
       setScheduleActionMessage(
-        mode === "resume"
+        mode === "resume" && catchUp
+          ? `Playout caught up with the schedule: "${
+            playlist.find((asset) => asset.id === catchUp.assetId)?.name ?? "clip"
+          }" at ${formatClock(catchUp.itemOffsetSeconds)}.`
+          : mode === "resume"
           ? `Playout resumed from ${formatClock(recoveryCheckpoint?.outTimeSeconds ?? 0)}.`
           : mode === "default" && scheduleStartMarker
             ? `Playout started from "${playlist.find((asset) => asset.id === scheduleStartMarker.assetId)?.name ?? "marked clip"}".`
@@ -3002,10 +3123,17 @@ export function App() {
         <div className="auto-resume" role="alert">
           <div>
             <strong>{tr("Автостарт эфира", "Automatic playout start")}</strong>
-            <span>{tr(
-              `Эфир поднимется с прерванного места через ${autoResumeIn} с`,
-              `Playout will resume from the interrupted position in ${autoResumeIn} s`,
-            )}</span>
+            {/* Куда именно поднимется эфир, видно до подъёма: отменить его
+                оператор успевает только пока идёт отсчёт. */}
+            <span>{autoResumeTarget
+              ? tr(
+                `Через ${autoResumeIn} с эфир пойдёт по расписанию: «${autoResumeTarget.name}», с ${formatClock(autoResumeTarget.offsetSeconds)}`,
+                `In ${autoResumeIn} s playout follows the schedule: “${autoResumeTarget.name}” at ${formatClock(autoResumeTarget.offsetSeconds)}`,
+              )
+              : tr(
+                `Эфир поднимется с прерванного места через ${autoResumeIn} с`,
+                `Playout will resume from the interrupted position in ${autoResumeIn} s`,
+              )}</span>
           </div>
           <button onClick={() => setAutoResumeIn(null)} type="button">{tr("Отменить", "Cancel")}</button>
         </div>
@@ -3437,27 +3565,42 @@ function recoveryPointForPlaylist(
   };
 }
 
-function buildRecoveryStartRequest(
+/**
+ * Запрос, начинающийся с середины ролика.
+ *
+ * Одно место на все три пути — восстановление после сбоя, отметка старта и
+ * «взять в эфир»: сдвиг внутри ролика везде означает одно и то же, а
+ * разъехавшись, эти пути дали бы графику, которая на одном из них выходит не
+ * там. Показ графики и сцен переносится вместе с началом, возрастная плашка
+ * при сдвиге снимается (её место — начало ролика), а метки SCTE-35 до точки
+ * входа уже не наступят.
+ */
+function offsetStartRequest(
   request: StartPlayoutRequest,
-  playlist: MediaAsset[],
-  checkpoint: WorkspaceSessionCheckpoint,
+  itemIndex: number,
+  offsetSeconds: number,
 ): StartPlayoutRequest {
-  const point = recoveryPointForPlaylist(playlist, checkpoint);
-  if (!point) throw new Error("Saved recovery checkpoint does not match the current playlist");
-  const remaining = request.playlist.slice(point.itemIndex);
+  const remaining = request.playlist.slice(itemIndex);
   const first = remaining[0];
-  if (!first) throw new Error("No media remains after the saved recovery checkpoint");
-  const trimInSeconds = first.trimInSeconds + point.itemOffsetSeconds;
+  if (!first) throw new Error("No media remains after the selected start clip");
+  if (offsetSeconds <= 0) return { ...request, playlist: remaining };
+  const trimInSeconds = first.trimInSeconds + offsetSeconds;
   remaining[0] = {
     ...first,
     trimInSeconds,
-    ageTitle: point.itemOffsetSeconds > 0 ? null : first.ageTitle,
+    ageTitle: null,
     effects: (first.effects ?? [])
-      .filter((layer) => layer.endSeconds > point.itemOffsetSeconds)
+      .filter((layer) => layer.endSeconds > offsetSeconds)
       .map((layer) => ({
         ...layer,
-        startSeconds: Math.max(0, layer.startSeconds - point.itemOffsetSeconds),
-        endSeconds: layer.endSeconds - point.itemOffsetSeconds,
+        startSeconds: Math.max(0, layer.startSeconds - offsetSeconds),
+        endSeconds: layer.endSeconds - offsetSeconds,
+      })),
+    scenes: (first.scenes ?? [])
+      .filter((show) => show.startSeconds + show.durationSeconds > offsetSeconds)
+      .map((show) => ({
+        ...show,
+        startSeconds: Math.max(0, show.startSeconds - offsetSeconds),
       })),
     scte35Markers: first.scte35Markers.filter(
       (marker) => marker.positionSeconds >= trimInSeconds,
@@ -3466,10 +3609,21 @@ function buildRecoveryStartRequest(
   return { ...request, playlist: remaining };
 }
 
+function buildRecoveryStartRequest(
+  request: StartPlayoutRequest,
+  playlist: MediaAsset[],
+  checkpoint: WorkspaceSessionCheckpoint,
+): StartPlayoutRequest {
+  const point = recoveryPointForPlaylist(playlist, checkpoint);
+  if (!point) throw new Error("Saved recovery checkpoint does not match the current playlist");
+  return offsetStartRequest(request, point.itemIndex, point.itemOffsetSeconds);
+}
+
 function buildStartRequestFromAsset(
   request: StartPlayoutRequest,
   playlist: MediaAsset[],
   assetId: string,
+  offsetSeconds = 0,
 ): StartPlayoutRequest {
   if (!playlist.some((asset) => asset.id === assetId)) {
     throw new Error("The selected start clip is no longer present in the Current playlist");
@@ -3478,9 +3632,7 @@ function buildStartRequestFromAsset(
   if (itemIndex < 0) {
     throw new Error("The selected start clip could not be mapped to the playout request");
   }
-  const remaining = request.playlist.slice(itemIndex);
-  if (remaining.length === 0) throw new Error("No media remains after the selected start clip");
-  return { ...request, playlist: remaining };
+  return offsetStartRequest(request, itemIndex, offsetSeconds);
 }
 
 /** Ролик как цель эффекта второго уровня: длительность — эфирная, а не файла. */
@@ -3522,6 +3674,26 @@ const applicationVersion = __FLUXIO_VERSION__;
 
 function effectiveAssetDuration(asset: MediaAsset): number {
   return airDurationSeconds(asset);
+}
+
+/**
+ * Языки, которые реально стоят на роликах.
+ *
+ * Запасной путь для случая, когда папку переводов в этой сессии не открывали,
+ * а дорожки на роликах уже есть — например, расписание пришло из файла.
+ */
+function languagesFromPlaylist(items: MediaAsset[]): AudioScanLanguage[] {
+  const counts = new Map<string, { label: string; itemCount: number }>();
+  for (const asset of items) {
+    for (const track of asset.audioTracks ?? []) {
+      const known = counts.get(track.languageCode);
+      if (known) known.itemCount += 1;
+      else counts.set(track.languageCode, { label: track.label, itemCount: 1 });
+    }
+  }
+  return [...counts.entries()]
+    .map(([languageCode, value]) => ({ languageCode, ...value }))
+    .sort((left, right) => left.languageCode.localeCompare(right.languageCode));
 }
 
 function primitiveSettings(

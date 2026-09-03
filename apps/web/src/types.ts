@@ -3,6 +3,7 @@ import type {
   PlayoutSceneShow,
   GraphicEffectLayer,
   VideoHardware,
+  WorkspaceAudioTrackLibrary,
 } from "@gruber/contracts";
 
 export type AppView = "import" | "effects" | "playlist" | "broadcast";
@@ -85,10 +86,8 @@ export interface AudioTrackInfo {
   durationSeconds: number | null;
 }
 
-export interface AudioTrackLibrary {
-  directoryPath: string;
-  languages: { languageCode: string; label: string; itemCount: number }[];
-}
+/** Форма одна на сессию и на разбор папки: описывать её дважды нечем. */
+export type AudioTrackLibrary = WorkspaceAudioTrackLibrary;
 
 export interface ScheduleOverlayLibrary {
   directoryPath: string;

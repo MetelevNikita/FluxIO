@@ -11,6 +11,37 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { formatBundleSummary } from "./scripts/bundle-manifest.mjs";
+import {
+  bundleMigrationsDirectory,
+  bundleToolPaths,
+  detectBundleRoot,
+  readBundleManifest,
+  verifyBundleComponents,
+} from "./scripts/bundle-install.mjs";
+import { gstreamerEnvironment } from "./scripts/bundle-gstreamer.mjs";
+import { applyBundleMigrations, readBundleMigrations } from "./scripts/bundle-migrations.mjs";
+import {
+  applyBundleUpdate,
+  planUpdate,
+  updateRefusal,
+} from "./scripts/bundle-update.mjs";
+import {
+  buildPostgresLaunchAgentPlist,
+  buildPostgresSystemdUnit,
+  buildPostgresWindowsTaskCommand,
+  clusterDataDirectory,
+  clusterEnvironment,
+  ensureRoleAndDatabase,
+  pgCtlStartArguments,
+  postgresExecutables,
+  postgresLaunchAgentLabel,
+  postgresServiceName,
+  postgresWindowsTaskName,
+  provisionCluster,
+  readOrCreateSuperuserPassword,
+} from "./scripts/bundle-postgres.mjs";
+
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
 const noStart = process.argv.includes("--no-start");
@@ -20,6 +51,31 @@ const noStart = process.argv.includes("--no-start");
  */
 const offlineFlagPassed = process.argv.includes("--offline");
 let offline = offlineFlagPassed;
+/**
+ * Установка из офлайн-комплекта.
+ *
+ * Комплект — это уже собранное дерево плюс медиастек, Node и схема. Мастер в
+ * этом режиме ничего не собирает и никуда не ходит: он проверяет целостность,
+ * поднимает базу, применяет миграции и записывает `.env` с путями из комплекта.
+ */
+const bundleFlag = process.argv.find((argument) => argument.startsWith("--bundle"));
+const bundlePathArgument = bundleFlag?.includes("=") ? bundleFlag.split("=").slice(1).join("=") : null;
+/**
+ * Обновление установленного комплекта: `--update=<каталог установки>`.
+ *
+ * Новый комплект распаковывается рядом и переносит в установленный каталог
+ * только изменившиеся компоненты. База и `.env` остаются на месте — иначе
+ * обновление стоило бы оператору всей станции.
+ */
+const updateFlag = process.argv.find((argument) => argument.startsWith("--update"));
+const updatePathArgument = updateFlag?.includes("=")
+  ? updateFlag.split("=").slice(1).join("=")
+  : null;
+let bundleRoot = null;
+let bundleManifest = null;
+let bundleTools = {};
+/** Кластер из комплекта: заполняется, когда мастер его развернул. */
+let bundlePostgres = null;
 /** Сколько резервных копий `.env` держим на диске: последняя и предыдущая. */
 const envBackupsToKeep = 2;
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
@@ -201,6 +257,10 @@ async function main() {
     refreshWindowsProcessPath();
   }
 
+  // Обновление передаёт работу мастеру установленного каталога и на этом
+  // заканчивается: остальные шаги делает уже он.
+  if (await prepareBundle()) return;
+
   const existingEnv = await loadExistingEnv();
   const prompt = new Prompt();
 
@@ -216,7 +276,7 @@ async function main() {
     const service = await askMediaService(prompt, existingEnv);
     const actions = await askWizardActions(prompt, mode);
 
-    if (offline) {
+    if (offline && !bundleRoot) {
       assertOfflineBuildDependencies({ requireElectron: true });
     }
 
@@ -245,6 +305,10 @@ async function main() {
  * поэтому спросить нужно до всего остального.
  */
 async function askOfflineMode(prompt) {
+  if (bundleRoot) {
+    console.log("\n1. Тип установки: офлайн-комплект");
+    return true;
+  }
   if (offlineFlagPassed) {
     console.log("\n1. Тип установки: офлайн (передан --offline)");
     return true;
@@ -275,10 +339,15 @@ async function askDatabase(prompt, mode, existingEnv) {
   const host = "127.0.0.1";
 
   console.log("\n2. PostgreSQL (без Docker)");
-  const ready = await prompt.confirm(
-    "Пользователь и база уже существуют?",
-    mode === "production",
-  );
+  // Кластер из комплекта разворачивает сам мастер: спрашивать про чужого
+  // администратора и существующую базу здесь нечего.
+  const bundled = Boolean(bundleTools.initdb && bundleTools.pgCtl);
+  if (bundled) {
+    console.log(`  Кластер из комплекта: ${clusterDataDirectory(bundleRoot)}`);
+  }
+  const ready = bundled
+    ? false
+    : await prompt.confirm("Пользователь и база уже существуют?", mode === "production");
 
   console.log("  PostgreSQL: 127.0.0.1 (локально, SSL отключён)");
   const port = await prompt.text(
@@ -297,7 +366,7 @@ async function askDatabase(prompt, mode, existingEnv) {
     validatePgName,
   );
   const password = await askDatabasePassword(prompt, ready, existing.password ?? "");
-  const admin = await askDatabaseAdmin(prompt, ready);
+  const admin = bundled ? null : await askDatabaseAdmin(prompt, ready);
 
   return { admin, database, host, password, port, ready, username };
 }
@@ -326,7 +395,16 @@ async function askDatabaseAdmin(prompt, databaseReady) {
 async function askMediaService(prompt, existingEnv) {
   console.log("\n3. Media-service, FFmpeg, TSDuck и GStreamer");
 
-  const apiHost = await prompt.text("GRUBER_HOST", existingEnv.GRUBER_HOST ?? "127.0.0.1");
+  // Профиль сервера открывает интерфейс по сети: службу тогда слушает не петля,
+  // а сетевой адрес, и статику отдаёт она же.
+  const serveInterface = await prompt.confirm(
+    "Открыть интерфейс оператора по сети (профиль «сервер без монитора»)?",
+    Boolean(existingEnv.GRUBER_WEB_DIR),
+  );
+  const apiHost = await prompt.text(
+    "GRUBER_HOST",
+    serveInterface ? "0.0.0.0" : existingEnv.GRUBER_HOST ?? "127.0.0.1",
+  );
   const apiPort = await prompt.text(
     "GRUBER_PORT",
     existingEnv.GRUBER_PORT ?? "4310",
@@ -356,7 +434,15 @@ async function askMediaService(prompt, existingEnv) {
     detected.gstreamer ?? existingEnv.GSTREAMER_LAUNCH_PATH ?? "gst-launch-1.0",
   );
 
-  return { apiHost, apiPort, ffmpegPath, ffprobePath, gstreamerPath, tsduckPath };
+  return {
+    apiHost,
+    apiPort,
+    ffmpegPath,
+    ffprobePath,
+    gstreamerPath,
+    serveInterface,
+    tsduckPath,
+  };
 }
 
 function detectMediaToolPaths(existingEnv) {
@@ -378,7 +464,11 @@ async function askWizardActions(prompt, mode) {
   console.log("\n4. Действия мастера");
 
   const installDependencies = await askInstallDependencies(prompt);
-  const runChecks = await prompt.confirm("Запустить typecheck и tests?", true);
+  // В комплекте едет собранное дерево без исходников и без TypeScript:
+  // проверять нечем, да и проверено это на сборочной машине.
+  const runChecks = bundleRoot
+    ? false
+    : await prompt.confirm("Запустить typecheck и tests?", true);
   const buildInstaller = await askBuildInstaller(prompt, mode);
   const createShortcut = await askDesktopShortcut(prompt, mode);
   const serviceKind = platformServiceKind();
@@ -399,6 +489,10 @@ async function askWizardActions(prompt, mode) {
 }
 
 async function askInstallDependencies(prompt) {
+  if (bundleRoot) {
+    console.log("  Комплект: зависимости уже в дереве, сборка не требуется.");
+    return false;
+  }
   if (offline) {
     console.log("  Offline: npm ci и автоматические загрузки отключены.");
     return false;
@@ -463,6 +557,27 @@ async function askStartNow(prompt, installBackgroundService) {
 //
 
 async function resolveMediaTools(prompt, service) {
+  // Комплект отвечает за медиастек сам: пути известны, искать по системе и тем
+  // более что-то доустанавливать нечего.
+  if (bundleTools.ffmpeg && bundleTools.ffprobe && bundleTools.tsduck && bundleTools.gstreamer) {
+    console.log("  ✓ Медиастек из комплекта:");
+    for (const [label, toolPath] of [
+      ["FFmpeg", bundleTools.ffmpeg],
+      ["ffprobe", bundleTools.ffprobe],
+      ["TSDuck", bundleTools.tsduck],
+      ["GStreamer", bundleTools.gstreamer],
+    ]) {
+      console.log(`    ${label}: ${toolPath}`);
+    }
+    verifyGstreamerDvbPlugin(bundleTools.gstreamer);
+    return {
+      ffmpeg: bundleTools.ffmpeg,
+      ffprobe: bundleTools.ffprobe,
+      gstreamer: bundleTools.gstreamer,
+      tsduck: bundleTools.tsduck,
+    };
+  }
+
   const ffmpeg = await ensureTool(prompt, service.ffmpegPath, "FFmpeg", "ffmpeg", "ffmpeg", offline);
   const ffprobe = await ensureTool(prompt, service.ffprobePath, "ffprobe", "ffmpeg", "ffprobe", offline);
   const tsduck = await ensureTool(prompt, service.tsduckPath, "TSDuck", "tsduck", "tsp", offline);
@@ -487,7 +602,13 @@ function verifyGstreamerDvbPlugin(gstreamerLaunchPath) {
   }
 
   console.log("  … проверяю GStreamer dvbsubenc (первый запуск строит кэш плагинов, до нескольких минут)");
-  const probe = probeGstreamerDvbPlugin(gstreamerLaunchPath);
+  // Проверка идёт в том же окружении, в котором GStreamer потом работает в
+  // эфире: заодно она строит реестр плагинов там, где служба сможет его
+  // прочитать. Иначе минуты построения достались бы первому ролику с
+  // субтитрами, а не установке.
+  const probe = probeGstreamerDvbPlugin(gstreamerLaunchPath, {
+    environment: bundleGstreamerEnvironment(),
+  });
 
   if (probe.available) {
     console.log(`  ✓ GStreamer dvbsubenc: ${probe.inspectPath}`);
@@ -513,9 +634,13 @@ function verifyGstreamerDvbPlugin(gstreamerLaunchPath) {
 }
 
 async function preparePostgres(prompt, database) {
+  if (bundleRoot && bundleTools.initdb && bundleTools.pgCtl) {
+    await prepareBundledPostgres(database);
+    return;
+  }
   if (database.ready) return;
 
-  const psqlPath = await ensureTool(
+  const psqlPath = bundleTools.psql ?? await ensureTool(
     prompt,
     "psql",
     "PostgreSQL client",
@@ -523,7 +648,7 @@ async function preparePostgres(prompt, database) {
     "psql",
     offline,
   );
-  const pgIsReadyPath = discoverToolPath(
+  const pgIsReadyPath = bundleTools.pgIsReady ?? discoverToolPath(
     siblingExecutable(psqlPath, "pg_isready"),
     "pg_isready",
   );
@@ -563,7 +688,260 @@ function buildEnvironmentValues({ database, existingEnv, mode, service, tools })
     TSDUCK_PATH: tools.tsduck,
     GSTREAMER_LAUNCH_PATH: tools.gstreamer,
     GSTREAMER_INSPECT_PATH: siblingExecutable(tools.gstreamer, "gst-inspect-1.0"),
+    // Пустые значения для обычной установки: служба тогда работает с системным
+    // GStreamer ровно как раньше.
+    GSTREAMER_ROOT: bundleGstreamerRoot() ?? "",
+    GSTREAMER_REGISTRY: bundleGstreamerRegistry() ?? "",
+    // Каталог интерфейса нужен только серверному профилю: на рабочем месте его
+    // отдаёт Electron из своих ресурсов.
+    GRUBER_WEB_DIR: service.serveInterface
+      ? path.join(projectRoot, "apps", "web", "dist")
+      : "",
   };
+}
+
+//
+// Офлайн-комплект
+//
+
+/**
+ * Готовит установку из комплекта: находит его, проверяет описание и
+ * целостность, запоминает пути к инструментам.
+ *
+ * Всё это делается **до** первого вопроса мастера: испорченный или чужой
+ * комплект должен остановить установку раньше, чем оператор ответит на пять
+ * экранов и мастер начнёт писать на диск.
+ */
+async function prepareBundle() {
+  const detected = detectBundleRoot(projectRoot, bundlePathArgument);
+  if (!bundleFlag && !updateFlag && !detected) return false;
+  if (!detected) {
+    throw new Error(
+      "Каталог комплекта не найден. Укажите его явно: --bundle=<путь к каталогу с manifest.json>",
+    );
+  }
+
+  bundleRoot = detected;
+  bundleManifest = await readBundleManifest(bundleRoot);
+
+  console.log(`\nОфлайн-комплект: ${bundleRoot}`);
+  console.log(formatBundleSummary(bundleManifest));
+
+  if (bundleManifest.version !== applicationVersion) {
+    // Мастер едет внутри комплекта, поэтому версии обязаны совпадать. Расхождение
+    // значит, что setup.mjs запущен из чужого дерева — и соберёт он тоже чужое.
+    throw new Error(
+      `Комплект собран для ${bundleManifest.version}, а мастер запущен из дерева ` +
+        `${applicationVersion}. Запускайте setup.mjs из самого комплекта.`,
+    );
+  }
+
+  // Целостность проверяется и перед обновлением: битый комплект не должен
+  // попасть в работающую установку ни одним файлом.
+  console.log("\n  Проверка целостности…");
+  await verifyBundleComponents(bundleRoot, bundleManifest, ({ component, ok }) => {
+    console.log(`    ${ok ? "✓" : "✗"} ${component.id}`);
+  });
+
+  if (updateFlag) {
+    // Обновление переносит компоненты и передаёт работу мастеру установленного
+    // каталога: `projectRoot` считается от расположения файла, и `.env`, служба
+    // и ярлык обязаны указывать на установку, а не на распакованный рядом
+    // комплект.
+    await updateInstallation(bundleRoot, bundleManifest);
+    return true;
+  }
+
+  bundleTools = bundleToolPaths(bundleRoot, bundleManifest);
+
+  // Каталог реестра плагинов создаётся заранее: его строит проверка
+  // `dvbsubenc` на следующем шаге, и писать ей должно быть куда.
+  const registry = bundleGstreamerRegistry();
+  if (registry) await mkdir(path.dirname(registry), { recursive: true });
+  return false;
+}
+
+/**
+ * Разворачивает и поднимает кластер из комплекта.
+ *
+ * Данные ложатся в каталог установки, порт и адрес — из ответов мастера, слушает
+ * кластер только петлю: по сети ходит интерфейс, а к базе обращается один
+ * media-service на той же машине.
+ */
+async function prepareBundledPostgres(database) {
+  const toolRoot = path.join(bundleRoot, bundleManifest.tools.postgres);
+  const executables = postgresExecutables(toolRoot);
+  for (const required of ["initdb", "pgCtl"]) {
+    if (!executables[required]) {
+      throw new Error(`В комплекте нет ${required}: каталог ${toolRoot} собран неполностью`);
+    }
+  }
+
+  const superuser = "fluxio_admin";
+  const superuserPassword = await readOrCreateSuperuserPassword(
+    bundleRoot,
+    () => randomBytes(24).toString("base64url"),
+  );
+  const cluster = await provisionCluster({
+    executables,
+    installRoot: bundleRoot,
+    log: (message) => console.log(message),
+    port: database.port,
+    run: (command, args, options) => runCommand(command, args, options),
+    superuser,
+    superuserPassword,
+  });
+
+  // Мастер запускают повторно, и второй `pg_ctl start` по работающему кластеру
+  // — ошибка. Спрашиваем готовность, а не глушим отказ: глушёный отказ скрыл бы
+  // и настоящую поломку старта.
+  if (bundledClusterRunning(executables.pgIsReady, database.port)) {
+    console.log("  Кластер уже работает.");
+  } else {
+    console.log("  Запускаю кластер…");
+    await runCommand(
+      executables.pgCtl,
+      pgCtlStartArguments({ dataDirectory: cluster.dataDirectory, logFile: cluster.startupLog }),
+      { env: clusterEnvironment() },
+    );
+  }
+
+  const { default: pg } = await import("pg");
+  const admin = new pg.Client({
+    database: "postgres",
+    host: "127.0.0.1",
+    password: superuserPassword,
+    port: database.port,
+    user: superuser,
+  });
+  await admin.connect();
+  try {
+    const created = await ensureRoleAndDatabase(admin, {
+      database: database.database,
+      password: database.password,
+      username: database.username,
+    });
+    console.log(
+      `  ✓ Роль ${database.username}: ${created.role ? "создана" : "уже была"}; ` +
+        `база ${database.database}: ${created.database ? "создана" : "уже была"}`,
+    );
+  } finally {
+    await admin.end();
+  }
+
+  bundlePostgres = { cluster, executables, port: database.port };
+}
+
+/** Каталог GStreamer из комплекта или `null`, если его там нет. */
+function bundleGstreamerRoot() {
+  const relative = bundleManifest?.tools?.gstreamer;
+  return bundleRoot && relative ? path.join(bundleRoot, relative) : null;
+}
+
+/**
+ * Куда GStreamer складывает реестр плагинов.
+ *
+ * По умолчанию это `$HOME`, куда служба под systemd писать не может, — и реестр
+ * пересобирался бы при каждом старте, отнимая минуты у первого ролика с
+ * субтитрами. В комплекте он живёт рядом с данными кластера.
+ */
+function bundleGstreamerRegistry() {
+  return bundleRoot ? path.join(bundleRoot, "data", "gstreamer", "registry.bin") : null;
+}
+
+function bundleGstreamerEnvironment() {
+  const root = bundleGstreamerRoot();
+  const registry = bundleGstreamerRegistry();
+  if (!root && !registry) return process.env;
+  return gstreamerEnvironment({
+    environment: process.env,
+    registryPath: registry ?? undefined,
+    root: root ?? undefined,
+  });
+}
+
+function bundledClusterRunning(pgIsReady, port) {
+  if (!pgIsReady) return false;
+  const result = spawnSync(pgIsReady, ["-h", "127.0.0.1", "-p", String(port), "-q"], {
+    env: clusterEnvironment(),
+    stdio: "ignore",
+    timeout: 10_000,
+  });
+  return result.status === 0;
+}
+
+/**
+ * Переносит новый комплект в уже установленный каталог.
+ *
+ * Возвращает каталог установки: с этого момента мастер работает с ним, а не с
+ * распакованным рядом комплектом.
+ */
+async function updateInstallation(sourceRoot, incoming) {
+  if (!updatePathArgument) {
+    throw new Error("Укажите каталог установки: --update=<путь к установленному комплекту>");
+  }
+  const installationRoot = path.resolve(updatePathArgument);
+  console.log(`\nОбновление установки: ${installationRoot}`);
+
+  const installed = await readBundleManifest(installationRoot);
+  const refusal = updateRefusal(installed, incoming);
+  if (refusal) throw new Error(refusal);
+
+  const plan = planUpdate(installed, incoming);
+  console.log(`  ${installed.version} → ${incoming.version}`);
+  console.log(`  переносится: ${plan.changed.join(", ") || "нечего"}`);
+  console.log(`  остаётся как есть: ${plan.unchanged.join(", ") || "нечего"}`);
+
+  const result = await applyBundleUpdate({
+    incoming,
+    installationRoot,
+    log: (message) => console.log(message),
+    plan,
+    sourceRoot,
+  });
+  console.log(
+    `  перенесено компонентов: ${result.moved}, оставлено на месте: ${result.kept}`,
+  );
+  console.log("  База и .env не тронуты.");
+
+  const node = path.join(installationRoot, incoming.node.path);
+  const wizard = path.join(installationRoot, "app", "setup.mjs");
+  console.log("\n  Дальше работает мастер обновлённой установки.\n");
+  const handedOver = spawnSync(
+    node,
+    [wizard, `--bundle=${installationRoot}`, ...process.argv.slice(2).filter(
+      (argument) => !argument.startsWith("--update") && !argument.startsWith("--bundle"),
+    )],
+    { cwd: installationRoot, stdio: "inherit" },
+  );
+  if (handedOver.error) throw handedOver.error;
+  process.exitCode = handedOver.status ?? 0;
+}
+
+/**
+ * Применяет схему из комплекта.
+ *
+ * Вместо `prisma migrate deploy`: CLI со schema engine весит 66 МБ и на целевой
+ * машине больше ни для чего не нужен. Запись в `_prisma_migrations` идёт в том
+ * же формате, поэтому база остаётся понятной обычной Prisma.
+ */
+async function applyBundleSchema(databaseUrl) {
+  const migrations = await readBundleMigrations(bundleMigrationsDirectory(bundleRoot));
+  const { default: pg } = await import("pg");
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await applyBundleMigrations(client, migrations, (name) => {
+      console.log(`  ✓ ${name}`);
+    });
+    console.log(
+      result.applied.length === 0
+        ? `  Схема актуальна: ${result.total} миграция(й) уже применены.`
+        : `  Применено миграций: ${result.applied.length} из ${result.total}.`,
+    );
+  } finally {
+    await client.end();
+  }
 }
 
 //
@@ -571,6 +949,13 @@ function buildEnvironmentValues({ database, existingEnv, mode, service, tools })
 //
 
 async function runBuildPipeline(commandEnv, mode, actions) {
+  if (bundleRoot) {
+    // Дерево собрано на сборочной машине, Prisma CLI в комплект не едет:
+    // остаётся применить схему и отдать управление службе.
+    await applyBundleSchema(commandEnv.DATABASE_URL);
+    return;
+  }
+
   const retired = await pruneRetiredSourceFiles();
   if (retired.length > 0) {
     console.log(`  Удалены устаревшие исходники предыдущей версии: ${retired.length}`);
@@ -990,6 +1375,7 @@ function siblingExecutable(command, executableName, platform = process.platform)
 export function probeGstreamerDvbPlugin(
   launchPath,
   {
+    environment = process.env,
     platform = process.platform,
     spawnSyncImpl = spawnSync,
     timeoutMs = 300_000,
@@ -1003,6 +1389,7 @@ export function probeGstreamerDvbPlugin(
   for (let attempt = 1; attempt <= Math.max(1, attempts); attempt += 1) {
     result = spawnSyncImpl(inspectPath, ["--exists", "dvbsubenc"], {
       encoding: "utf8",
+      env: environment,
       timeout: timeoutMs,
       windowsHide: true,
     });
@@ -1389,12 +1776,24 @@ async function installSystemdService({ environmentPath, serviceUser, start }) {
   if (passwdCheck.status !== 0) {
     throw new Error(`Linux-пользователь ${serviceUser} не существует`);
   }
+  // Кластер из комплекта поднимается своим unit-ом и до media-service:
+  // после перезагрузки эфир обязан вернуться сам, а без базы автоподъём не
+  // восстановит ни расписание, ни точку прерывания.
+  if (bundlePostgres) {
+    await installBundledPostgresUnit({ serviceUser, start });
+  }
+
   const unitPath = path.join(tmpdir(), `gruber-media-${process.pid}.service`);
   const unit = buildSystemdUnit({
     environmentPath,
     nodePath: process.execPath,
+    requiresUnit: bundlePostgres ? postgresServiceName : null,
     rootPath: projectRoot,
     serviceUser,
+    // `ProtectSystem=strict` делает каталог установки read-only, а реестр
+    // плагинов GStreamer службе писать надо — иначе он пересобирается на
+    // каждом старте и отнимает минуты у первого ролика с субтитрами.
+    writablePaths: bundleRoot ? [path.join(bundleRoot, "data")] : [],
   });
   await writeFile(unitPath, unit, { encoding: "utf8", mode: 0o644 });
   try {
@@ -1425,12 +1824,49 @@ async function installSystemdService({ environmentPath, serviceUser, start }) {
   };
 }
 
-export function buildSystemdUnit({ environmentPath, nodePath, rootPath, serviceUser }) {
+/**
+ * `requiresUnit` — кластер из комплекта. Он поднимается своим unit-ом, и без
+ * жёсткой связи media-service стартует раньше базы и падает на первом запросе:
+ * `After=` тут мало, нужен именно `Requires=`.
+ */
+async function installBundledPostgresUnit({ serviceUser, start }) {
+  const unit = buildPostgresSystemdUnit({
+    dataDirectory: bundlePostgres.cluster.dataDirectory,
+    pgCtl: bundlePostgres.executables.pgCtl,
+    serviceUser,
+    startupLog: bundlePostgres.cluster.startupLog,
+  });
+  const unitPath = path.join(tmpdir(), `fluxio-postgres-${process.pid}.service`);
+  await writeFile(unitPath, unit, { encoding: "utf8", mode: 0o644 });
+  try {
+    await runCommand("sudo", [
+      "install",
+      "-m",
+      "0644",
+      unitPath,
+      `/etc/systemd/system/${postgresServiceName}`,
+    ]);
+    await runCommand("sudo", ["systemctl", "daemon-reload"]);
+    await runCommand("sudo", ["systemctl", "enable", postgresServiceName]);
+    if (start) await runCommand("sudo", ["systemctl", "restart", postgresServiceName]);
+  } finally {
+    await rm(unitPath, { force: true });
+  }
+}
+
+export function buildSystemdUnit({
+  environmentPath,
+  nodePath,
+  requiresUnit = null,
+  rootPath,
+  serviceUser,
+  writablePaths = [],
+}) {
   return `[Unit]
 Description=FluxIO Media Service
-After=network-online.target postgresql.service
+After=network-online.target ${requiresUnit ?? "postgresql.service"}
 Wants=network-online.target
-
+${requiresUnit ? `Requires=${requiresUnit}\n` : ""}
 [Service]
 Type=simple
 User=${serviceUser}
@@ -1450,7 +1886,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/run/gruber-playout
+ReadWritePaths=${["/run/gruber-playout", ...writablePaths].map(quoteSystemd).join(" ")}
 
 [Install]
 WantedBy=multi-user.target
@@ -1462,6 +1898,7 @@ function quoteSystemd(value) {
 }
 
 async function installLaunchAgent({ start }) {
+  if (bundlePostgres) await installBundledPostgresAgent({ start });
   const label = "live.gruber.media";
   const agentsDirectory = path.join(homedir(), "Library", "LaunchAgents");
   const logsDirectory = path.join(homedir(), "Library", "Logs", "GruberPlayout");
@@ -1493,6 +1930,53 @@ async function installLaunchAgent({ start }) {
   };
 }
 
+/**
+ * Автозапуск кластера на macOS.
+ *
+ * Агент запускает сам `postgres` под присмотром launchd. Порядок с агентом
+ * службы launchd не гарантирует, но `KeepAlive` службы вытягивает: к следующей
+ * попытке база уже поднята.
+ */
+async function installBundledPostgresAgent({ start }) {
+  const agentsDirectory = path.join(homedir(), "Library", "LaunchAgents");
+  const logsDirectory = path.join(homedir(), "Library", "Logs", "GruberPlayout");
+  await mkdir(agentsDirectory, { recursive: true });
+  await mkdir(logsDirectory, { recursive: true });
+  const plistPath = path.join(agentsDirectory, `${postgresLaunchAgentLabel}.plist`);
+  await writeFile(
+    plistPath,
+    buildPostgresLaunchAgentPlist({
+      dataDirectory: bundlePostgres.cluster.dataDirectory,
+      label: postgresLaunchAgentLabel,
+      postgres: bundlePostgres.executables.postgres,
+      stderrPath: path.join(logsDirectory, "postgres-error.log"),
+      stdoutPath: path.join(logsDirectory, "postgres.log"),
+    }),
+    { encoding: "utf8", mode: 0o644 },
+  );
+  const domain = `gui/${process.getuid()}`;
+  spawnSync("launchctl", ["bootout", domain, plistPath], { stdio: "ignore" });
+  if (start) {
+    await runCommand("launchctl", ["bootstrap", domain, plistPath]);
+    await runCommand("launchctl", ["enable", `${domain}/${postgresLaunchAgentLabel}`]);
+  }
+}
+
+/** Автозапуск кластера на Windows: задача при старте системы. */
+async function installBundledPostgresTask({ start }) {
+  await runCommand("powershell.exe", [
+    "-NoProfile",
+    "-Command",
+    buildPostgresWindowsTaskCommand({
+      dataDirectory: bundlePostgres.cluster.dataDirectory,
+      pgCtl: bundlePostgres.executables.pgCtl,
+      start,
+      startupLog: bundlePostgres.cluster.startupLog,
+      taskName: postgresWindowsTaskName,
+    }),
+  ]);
+}
+
 export function buildLaunchAgentPlist({
   label,
   nodePath,
@@ -1521,6 +2005,7 @@ export function buildLaunchAgentPlist({
 }
 
 async function installWindowsTask({ start }) {
+  if (bundlePostgres) await installBundledPostgresTask({ start });
   const taskName = "Gruber Playout Media Service";
   const scriptPath = path.join(projectRoot, "apps/media-server/dist/index.js");
   const command = buildWindowsTaskCommand({

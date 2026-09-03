@@ -43,9 +43,11 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
+const host = process.env.GRUBER_HOST ?? "127.0.0.1";
+
 try {
   const address = await app.listen({
-    host: process.env.GRUBER_HOST ?? "127.0.0.1",
+    host,
     port: readPort(process.env.GRUBER_PORT),
   });
   console.info(`[MEDIA] Active at ${address}; waiting for playout`);

@@ -1660,6 +1660,14 @@ p {
   color: var(--accent);
 }
 
+/* Титры на свёрнутой строке — тем же цветом, что и чипы графики: прокручивая
+   расписание, инженер узнаёт их по цвету, а не по подписи. */
+.collapsed-overlay.titles.enabled {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.08);
+}
+
 .collapsed-state.on-air {
   border-color: rgba(74, 222, 128, 0.5);
   color: #86efac;
@@ -2014,7 +2022,6 @@ p {
   font-size: 10px;
 }
 
-.fx-selector,
 .subtitle-toggle {
   height: 22px;
   display: inline-flex;
@@ -2030,66 +2037,84 @@ p {
   font-weight: 800;
 }
 
-.fx-selector select {
-  width: 45px;
-  min-height: 18px;
-  border: 0;
-  padding: 0;
-  color: var(--accent);
+/* Полка титров ролика. Место, куда приходят эффекты со вкладки Effects, и
+   главное в нём — читаемость на прокрутке: пустая полка выглядит пунктирной
+   рамкой, занятая — сплошной со счётчиком, и различить их можно, не
+   вчитываясь в названия. */
+.playlist-fx-lane {
+  min-width: 0;
+  height: 24px;
+  display: flex;
+  flex: 1 1 210px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
   background: #0a0b0d;
-  color-scheme: dark;
-  font-size: 8px;
-  font-weight: 800;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.fx-selector select option {
-  color: #f5f7fa;
-  background: #0a0b0d;
+.playlist-fx-lane::-webkit-scrollbar { display: none; }
+
+.playlist-fx-lane.filled {
+  border-style: solid;
+  border-color: rgba(56, 189, 248, 0.34);
+  background: rgba(14, 165, 233, 0.06);
 }
 
-.fx-selector select option:checked {
-  color: #111;
-  background: var(--accent);
-}
-
-.fx-layer-chips {
+.playlist-fx-lane-head {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+  color: var(--muted-dark);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
 }
 
-.playlist-row.has-many-fx .fx-layer-chips {
-  min-width: 0;
-  width: min(100%, 316px);
-  display: grid;
-  flex: 1 1 180px;
-  grid-template-columns: repeat(2, minmax(76px, 1fr));
-  align-items: start;
-  /* Высота строки фиксирована: чипы уходят в колонки, а не растягивают ролик. */
+.playlist-fx-lane.filled .playlist-fx-lane-head { color: #7dd3fc; }
+
+.playlist-fx-lane-head i {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--surface-strong);
+  color: inherit;
+  font-style: normal;
+  text-align: center;
+}
+
+.playlist-fx-lane em {
+  flex: 0 0 auto;
+  color: var(--muted-dark);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Много графики — чипы переносятся строками внутри полки, а не растягивают
+   строку расписания: высота ролика в списке фиксирована. */
+.playlist-row.has-many-fx .playlist-fx-lane {
+  height: auto;
   max-height: 48px;
-  gap: 2px 3px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  padding: 3px 6px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
 
-.playlist-row.has-many-fx .fx-layer-chip {
-  width: 100%;
-  max-width: none;
-}
+.playlist-row.has-many-fx .fx-layer-chip { max-width: 150px; }
 
-/* Чем больше графики, тем больше колонок и мельче чип — высота та же. */
-.playlist-row.fx-density-medium .fx-layer-chips {
-  grid-template-columns: repeat(3, minmax(58px, 1fr));
-}
-
+/* Чем больше графики, тем мельче чип — высота полки та же. */
 .playlist-row.fx-density-medium .fx-layer-chip { height: 19px; }
 .playlist-row.fx-density-medium .fx-layer-chip > i { padding: 0 3px; font-size: 6.5px; }
 .playlist-row.fx-density-medium .fx-layer-chip > button { width: 15px; min-width: 15px; }
-
-.playlist-row.fx-density-high .fx-layer-chips {
-  grid-template-columns: repeat(4, minmax(46px, 1fr));
-}
 
 .playlist-row.fx-density-high .fx-layer-chip { height: 16px; }
 .playlist-row.fx-density-high .fx-layer-chip > i { padding: 0 2px; font-size: 6px; }
@@ -2329,11 +2354,258 @@ p {
 
 .video-track > span b { color: var(--accent); }
 
+/* Окно «Взять в эфир». Маленькое и об одном: с какого места поднимать эфир.
+   Раньше здесь стоял системный confirm, который спрашивал «точно?» и не давал
+   ответить на единственный вопрос, который у оператора есть. */
+.take-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 4, 8, 0.62);
+}
+
+.take-dialog {
+  width: min(360px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 26px 60px -24px rgba(0, 0, 0, 0.9);
+}
+
+.take-dialog > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+}
+
+.take-dialog > header strong {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.take-dialog > header button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-deep);
+  color: var(--muted);
+}
+
+.take-dialog > header button:hover { color: var(--text); border-color: var(--border-strong); }
+
+.take-dialog-clip {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.take-dialog-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.take-dialog-facts div {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-deep);
+}
+
+.take-dialog-facts dt {
+  color: var(--muted-dark);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.take-dialog-facts dd {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.take-dialog-offset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.take-dialog-offset input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.take-dialog-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+
+.take-dialog-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.take-dialog-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.take-dialog-actions button:disabled { opacity: 0.5; }
+
+.take-dialog-actions .take-dialog-primary {
+  border-color: rgba(245, 213, 101, 0.5);
+  background: rgba(245, 213, 101, 0.12);
+  color: var(--accent);
+}
+
+.take-dialog small { color: var(--muted-dark); font-size: 9.5px; line-height: 1.45; }
+
+/* Переключатель источника монитора стоит над картинкой: смотреть ролик или
+   смотреть эфир — это первое, что оператор решает, подойдя к плейлисту. */
+.preview-source-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px 0;
+  background: #050607;
+}
+
+.preview-source-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.preview-source-switch button:hover { color: var(--text); border-color: var(--border-strong); }
+
+.preview-source-switch button.active {
+  border-color: var(--tier2-border);
+  background: var(--tier2-soft);
+  color: var(--tier2);
+}
+
+/* Идущий эфир виден по кнопке, а не только по картинке: оператор смотрит на
+   плейлист, а не в монитор. */
+.preview-source-switch button.live.active {
+  border-color: rgba(74, 222, 128, 0.5);
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
+.preview-source-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-dark);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .preview-stage {
   display: flex;
   justify-content: center;
   padding: 12px 16px;
   background: #050607;
+}
+
+/* Что играет и сколько осталось. Отсчёт моноширинный и крупнее подписи: на
+   него смотрят издалека, в последние секунды ролика. */
+.preview-now-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 16px 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.preview-now-line.air { border-color: rgba(74, 222, 128, 0.35); }
+.preview-now-line.air.idle { border-color: var(--border); }
+
+.preview-now-label {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--surface-strong);
+  color: var(--muted-dark);
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.preview-now-line.air:not(.idle) .preview-now-label {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.preview-now-line strong {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-now-line.air.idle strong { color: var(--muted-dark); font-weight: 500; }
+
+.preview-now-countdown {
+  flex: none;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.preview-now-line.air.idle .preview-now-countdown { color: var(--muted-dark); }
+
+/* Полосы занимают монитор целиком — как и видео эфира. */
+.program-preview > .colour-bars {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .program-preview {
@@ -5268,11 +5540,77 @@ input[type="range"] {
 
 .title-editor-center {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* Строк ровно столько, сколько блоков: цель правок, холст, строка выбранного
+     слоя, готовые входы и замечания. Лишняя строка отбирает высоту у холста. */
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
   gap: 10px;
   padding: 12px 16px;
   min-width: 0;
 }
+
+/* Что держим и где оно стоит. Под холстом, а не в инспекторе: дизайнер смотрит
+   в кадр, и координата, за которой надо перевести взгляд на другую панель, не
+   читается вовсе. Отсчёт от центра кадра — эфирная раскладка симметрична. */
+.scene-selection-readout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+}
+
+.scene-selection-readout.idle { color: var(--muted-dark); }
+.scene-selection-readout strong {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-readout-kind {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 3px;
+  background: var(--tier2-soft);
+  color: var(--tier2);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.scene-selection-readout em {
+  flex: none;
+  font-style: normal;
+  color: var(--muted-dark);
+}
+
+.scene-readout-spacer { flex: 1 1 auto; }
+
+.scene-selection-readout dl {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0;
+  flex: none;
+}
+
+.scene-selection-readout dt { color: var(--muted-dark); }
+.scene-selection-readout dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-selection-readout small { flex: none; color: var(--muted-dark); font-size: 9.5px; }
 
 /* ------------------------------ дерево слоёв ------------------------------ */
 
@@ -5523,7 +5861,14 @@ input[type="range"] {
 .scene-hit:hover { border-color: rgba(77, 141, 253, 0.5); }
 .scene-hit.selected { border-color: transparent; }
 
-.scene-frame { position: absolute; border: 1px solid var(--tier2); pointer-events: none; }
+/* Группа ловит мышь всей своей коробкой — собранную плашку тащат за любое
+   место. Пунктир отличает захват группы от захвата узла: иначе непонятно,
+   поедет один элемент или всё содержимое. */
+.scene-hit.group:hover { border-color: rgba(245, 213, 101, 0.55); border-style: dashed; }
+
+/* Рамка выделения и ручки лежат поверх зоны захвата выбранной группы: иначе
+   группа накрывает собой собственные ручки размера. */
+.scene-frame { position: absolute; z-index: 4; border: 1px solid var(--tier2); pointer-events: none; }
 
 .scene-grip {
   position: absolute;
@@ -5548,7 +5893,7 @@ input[type="range"] {
 .scene-grip-w { top: 50%; left: -4px; width: 7px; height: 16px; margin-top: -8px; cursor: ew-resize; }
 .scene-grip-e { top: 50%; right: -4px; width: 7px; height: 16px; margin-top: -8px; cursor: ew-resize; }
 
-.scene-guide { position: absolute; pointer-events: none; }
+.scene-guide { position: absolute; z-index: 5; pointer-events: none; }
 .scene-guide.x { top: 0; bottom: 0; width: 1px; }
 .scene-guide.y { left: 0; right: 0; height: 1px; }
 .scene-guide-safe { background: var(--accent); }
@@ -5745,18 +6090,26 @@ input[type="range"] {
 
 /* ----------------------------- дорожка времени ---------------------------- */
 
+/* Дорожка времени занимает ровно ту высоту, которую ей отдал разделитель:
+   прокручивается **список слоёв** внутри, а не панель целиком. Внешняя
+   прокрутка здесь уже давала боковую полосу — ключ на конце показа выходит на
+   7 px за свою дорожку, и этого хватало, чтобы панель поехала вбок. */
 .scene-timeline {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   border-top: 1px solid var(--border);
   background: var(--surface);
   padding: 9px 16px 12px;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .scene-timeline > header {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* На узком окне поля режиссёра переносятся, а не выдавливают шкалу за край. */
+  flex-wrap: wrap;
   margin-bottom: 8px;
 }
 
@@ -5998,11 +6351,14 @@ input[type="range"] {
    дизайнер уже правил ускорение, а где стоит умолчание. */
 .scene-key.curved { filter: drop-shadow(0 0 3px currentColor); }
 
+/* Выбор кривой висит над панелью времени, а сама панель обрезает содержимое:
+   отсчёт от окна — единственное, что оставляет его видимым. Высота дорожек
+   задаётся разделителем, поэтому от него же считается и нижний край. */
 .easing-picker {
-  position: absolute;
-  right: 16px;
-  bottom: 100%;
-  margin-bottom: 8px;
+  position: fixed;
+  z-index: 60;
+  right: 24px;
+  bottom: calc(var(--title-timeline-height, 250px) + 16px);
   width: 320px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -6673,8 +7029,17 @@ button.scene-tree-twist:hover { color: var(--text); }
   margin-top: 8px;
   display: grid;
   gap: 2px;
-  /* Высоту, отданную кадром, забирают дорожки: ради них редактор и открыт. */
-  max-height: 44vh;
+  /* Высоту, отданную кадром, забирают дорожки: ради них редактор и открыт.
+     Потолка в `vh` здесь быть не должно — высоту задаёт разделитель панели,
+     и второй потолок либо резал список, либо заводил вторую прокрутку. */
+  align-content: start;
+  min-height: 0;
+  /* Ключ на конце показа выходит за правый край своей дорожки на половину
+     своего значка; отступ отдаёт ему место, а `hidden` не даёт этому
+     превратиться в боковую прокрутку. Одной `overflow-y` мало: CSS
+     доводит вторую ось от `visible` до `auto` сам. */
+  padding-right: 9px;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -7061,4 +7426,80 @@ button.scene-tree-twist:hover { color: var(--text); }
   min-height: 16rem;
   place-items: center;
   color: var(--text-secondary, #8b98a5);
+}
+
+/* Вход оператора: только серверный профиль, на рабочем месте службу закрывает петля. */
+.login-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(320px, 90vw);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+
+.login-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.login-card input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0b0e11;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.login-card button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  border: 1px solid var(--tier2-border);
+  border-radius: 6px;
+  background: var(--tier2-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.login-card button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.login-error {
+  color: #ff8f8f;
 }

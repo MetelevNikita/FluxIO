@@ -28,7 +28,8 @@ import { useSceneHistory } from "../title-editor/useSceneHistory";
 import {
   addNode, applyLayoutEdit, applyPreset, copyNode, createSceneNode, declareField, descendantIds,
   editTrackAt,
-  groupNodes, moveKeyframes, moveNode, pasteNode, removeField, removeKeyframe, removeNode,
+  groupChildren, groupNodes, moveKeyframes, moveNode, nodeKindTitle, pasteNode, removeField,
+  removeKeyframe, removeNode,
   sampleFieldValues, sceneIssues, setKeyframe, setKeyframeEasing,
   trackIsAnimated, ungroupNode, updateNode,
   type SceneNodeClipboard, type ScenePreset, type SceneSegmentSide,
@@ -127,7 +128,9 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   const [editTarget, setEditTarget] = useState<SceneLayoutTarget | null>(null);
   const [timeSeconds, setTimeSeconds] = useState(0);
   /** Нарисованная коробка выделенного узла — приходит с холста. */
-  const [drawnBox, setDrawnBox] = useState<{ width: number; height: number } | null>(null);
+  const [drawnBox, setDrawnBox] = useState<
+    { x: number; y: number; width: number; height: number } | null
+  >(null);
   const [playing, setPlaying] = useState(false);
   const [showSafe, setShowSafe] = useState(true);
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
@@ -587,6 +590,59 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             timeSeconds={timeSeconds}
           />
 
+          {/* Что держим и где оно стоит. Отсчёт идёт от центра кадра, а не от
+              его угла: эфирная раскладка симметрична, и «−320 по X» говорит
+              дизайнеру больше, чем доля от левого края. */}
+          <div className={`scene-selection-readout ${selected ? "" : "idle"}`}>
+            {selected ? (
+              <>
+                <span className="scene-readout-kind">
+                  {selected.kind === "group"
+                    ? tr("Группа", "Group")
+                    : nodeKindTitle(selected.kind, tr)}
+                </span>
+                <strong title={selected.name}>{selected.name}</strong>
+                {selected.kind === "group" ? (
+                  <em>
+                    {tr(
+                      `${groupChildren(template, selected.id).length} узла(ов)`,
+                      `${groupChildren(template, selected.id).length} nodes`,
+                    )}
+                  </em>
+                ) : null}
+                {selectedIds.length > 1 ? (
+                  <em>{tr(`выбрано ${selectedIds.length}`, `${selectedIds.length} selected`)}</em>
+                ) : null}
+                <span className="scene-readout-spacer" />
+                {drawnBox ? (
+                  <>
+                    <dl>
+                      <dt>X</dt>
+                      <dd>{formatOffset((drawnBox.x + drawnBox.width / 2 - 0.5) * format.width)}</dd>
+                      <dt>Y</dt>
+                      <dd>{formatOffset((drawnBox.y + drawnBox.height / 2 - 0.5) * format.height)}</dd>
+                    </dl>
+                    <dl>
+                      <dt>{tr("Размер", "Size")}</dt>
+                      <dd>
+                        {Math.round(drawnBox.width * format.width)} ×{" "}
+                        {Math.round(drawnBox.height * format.height)}
+                      </dd>
+                    </dl>
+                    <small>{tr("пикселей от центра кадра", "pixels from the frame centre")}</small>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <span>
+                {tr(
+                  "Слой не выбран: щёлкните по кадру или выберите его в списке слоёв.",
+                  "No layer selected: click the frame or pick one in the layer list.",
+                )}
+              </span>
+            )}
+          </div>
+
           {selected ? (
             <div className="scene-preset-row">
               <span>{tr("Готовый вход", "Entrance")}</span>
@@ -677,6 +733,12 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     </div>
   );
 });
+
+/** Смещение от центра кадра: знак обязателен, иначе «120» читается как позиция. */
+function formatOffset(pixels: number): string {
+  const rounded = Math.round(pixels);
+  return rounded > 0 ? `+${rounded}` : String(rounded);
+}
 
 function clampPane(value: number, minimum: number, maximum: number): number {
   return Math.round(Math.min(Math.max(minimum, maximum), Math.max(minimum, value)));

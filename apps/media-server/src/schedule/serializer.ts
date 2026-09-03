@@ -11,6 +11,18 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
     `start on ${schedule.startTime} - delay ${formatNumber(schedule.delaySeconds)}`,
   ];
 
+  // Языки переводов объявляются заголовком: расписание уносят на другую машину
+  // и открывают через неделю, а пересканировать папку переводов при открытии
+  // нечем — это ffprobe по каждому файлу. Строки `insertAudioTrack` под
+  // роликами остаются: заголовок говорит, какие языки были у станции, они —
+  // какой файл лёг на какой ролик.
+  for (const language of schedule.audioLanguages) {
+    lines.push(
+      `defineAudioLanguage {${language.languageCode}} ` +
+        `label {${language.label}} clips {${language.itemCount}}`,
+    );
+  }
+
   // Определения эфирных эффектов идут заголовком, до первого ролика: один титр
   // на двухстах роликах иначе означал бы двести копий своей сцены в файле.
   for (const effect of schedule.broadcastEffects) {

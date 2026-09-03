@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -15,8 +15,57 @@ export function launcherPaths(rootPath = projectRoot) {
     desktopDirectory: rootPathApi.join(rootPath, "apps", "desktop"),
     electronCli: rootPathApi.join(rootPath, "node_modules", "electron", "cli.js"),
     mediaEntry: rootPathApi.join(rootPath, "apps", "media-server", "dist", "index.js"),
+    // Комплект кладёт упакованное приложение рядом с деревом: `app/` и
+    // `desktop/` — соседи внутри каталога установки.
+    packagedDesktopDirectory: rootPathApi.join(rootPath, "..", "desktop"),
     webEntry: rootPathApi.join(rootPath, "apps", "web", "dist", "index.html"),
   };
+}
+
+/**
+ * Запуск упакованного Electron-приложения из офлайн-комплекта.
+ *
+ * В дереве разработки интерфейс поднимает `node_modules/electron/cli.js`, но в
+ * комплект Electron едет уже упакованным — 250 МБ модуля там не нужны. Ярлык на
+ * рабочем столе обязан вести в это приложение, иначе оператор жмёт на него и
+ * получает «Electron CLI is missing».
+ *
+ * Имя приложения не угадывается: electron-builder называет его по продукту, и
+ * на macOS это ещё и каталог `.app`.
+ */
+export function packagedDesktopExecutable(
+  desktopDirectory,
+  platform = process.platform,
+  readDirectory = defaultReadDirectory,
+) {
+  const entries = readDirectory(desktopDirectory);
+  if (entries === null) return null;
+  const pathApi = pathApiForRoot(desktopDirectory);
+
+  if (platform === "darwin") {
+    const application = entries.find((entry) => entry.endsWith(".app"));
+    if (!application) return null;
+    const name = application.slice(0, -".app".length);
+    return pathApi.join(desktopDirectory, application, "Contents", "MacOS", name);
+  }
+
+  if (platform === "win32") {
+    const executable = entries.find((entry) => entry.toLowerCase().endsWith(".exe"));
+    return executable ? pathApi.join(desktopDirectory, executable) : null;
+  }
+
+  // Linux: у распакованной сборки исполняемый файл лежит в корне каталога и
+  // расширения не имеет — отличаем его от ресурсов по отсутствию точки.
+  const executable = entries.find((entry) => !entry.includes("."));
+  return executable ? pathApi.join(desktopDirectory, executable) : null;
+}
+
+function defaultReadDirectory(directoryPath) {
+  try {
+    return readdirSync(directoryPath);
+  } catch {
+    return null;
+  }
 }
 
 function pathApiForRoot(rootPath) {
@@ -72,11 +121,16 @@ async function main() {
       await waitForMediaServer(mediaApiUrl, ownedMediaProcess, 30_000);
     }
 
-    electronProcess = spawnManaged(
-      process.execPath,
-      [paths.electronCli, paths.desktopDirectory, "--gruber-production"],
-      environment,
-    );
+    // Комплект несёт упакованное приложение; в дереве разработки его нет, и
+    // интерфейс поднимает Electron из node_modules.
+    const packaged = packagedDesktopExecutable(paths.packagedDesktopDirectory);
+    electronProcess = packaged
+      ? spawnManaged(packaged, ["--gruber-production"], environment)
+      : spawnManaged(
+          process.execPath,
+          [paths.electronCli, paths.desktopDirectory, "--gruber-production"],
+          environment,
+        );
     const outcome = await waitForElectronOrSignal(electronProcess);
     if (outcome.kind === "signal") {
       console.log(
@@ -107,10 +161,13 @@ function loadProjectEnvironment() {
 
 function assertLauncherFiles(paths) {
   const required = [
-    ["Electron CLI", paths.electronCli],
     ["media-server build", paths.mediaEntry],
     ["web build", paths.webEntry],
   ];
+  // Одно из двух: упакованное приложение из комплекта или Electron из дерева.
+  if (!packagedDesktopExecutable(paths.packagedDesktopDirectory)) {
+    required.push(["Electron CLI", paths.electronCli]);
+  }
   for (const [label, filePath] of required) {
     if (!existsSync(filePath)) {
       throw new Error(`${label} is missing: ${filePath}. Run node setup.mjs in Production mode.`);

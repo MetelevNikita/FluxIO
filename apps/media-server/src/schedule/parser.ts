@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   parsedScheduleSchema,
+  type AudioScanLanguage,
   type ParsedSchedule,
   type ParsedScheduleItem,
   type ScheduleGraphicElement,
@@ -9,6 +10,7 @@ import {
   type ScheduleBroadcastEffect,
   type ScheduleBroadcastShow,
 } from "@gruber/contracts";
+import { languageLabel, resolveLanguageCode } from "../audio/languages.js";
 
 const targetDurationSeconds = 7 * 24 * 60 * 60;
 const maximumScheduleBytes = 5 * 1024 * 1024;
@@ -20,6 +22,9 @@ const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
 // фигурных скобок внутри быть не может и разбор по ним безопасен.
 const broadcastDefinePattern =
   /^defineBroadcastEffect\s*\{([^}]*)\}\s+name\s*\{([^}]*)\}\s+kind\s*\{([^}]*)\}\s+data\s*\{([^}]*)\}\s*$/i;
+// Языки переводов объявляются заголовком файла — так же, как эфирные эффекты.
+const audioLanguagePattern =
+  /^defineAudioLanguage\s*\{([^}]*)\}\s+label\s*\{([^}]*)\}(?:\s+clips\s*\{(\d+)\})?\s*$/i;
 const broadcastShowPattern =
   /^insertBroadcastEffect\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}\s+endOn\s*\{([^}]*)\}(?:\s+fields\s*\{([^}]*)\})?\s*$/i;
 
@@ -46,6 +51,27 @@ export async function parseScheduleFile(filePath: string): Promise<ParsedSchedul
   const content = await readFile(filePath);
   const decoded = decodeScheduleBuffer(content);
   return parseScheduleText(decoded.text, filePath, decoded.encoding);
+}
+
+/**
+ * Языки, встреченные в самих строках дорожек.
+ *
+ * Нужны расписаниям, сохранённым до появления заголовка: без них оператор
+ * открывал файл с переводами и видел пустой набор языков.
+ */
+function collectAudioLanguages(items: ParsedScheduleItem[]): AudioScanLanguage[] {
+  const counts = new Map<string, { label: string; itemCount: number }>();
+  for (const item of items) {
+    for (const track of item.audioTracks) {
+      const languageCode = track.languageCode ?? resolveLanguageCode(track.language);
+      const known = counts.get(languageCode);
+      if (known) known.itemCount += 1;
+      else counts.set(languageCode, { label: track.language, itemCount: 1 });
+    }
+  }
+  return [...counts.entries()]
+    .map(([languageCode, value]) => ({ languageCode, ...value }))
+    .sort((left, right) => left.languageCode.localeCompare(right.languageCode));
 }
 
 export function decodeScheduleBuffer(buffer: Uint8Array): {
@@ -80,6 +106,8 @@ export function parseScheduleText(
   // Определения эфирных эффектов и их показы. Определения общие для файла,
   // показы копятся до строки ролика — как и остальная графика.
   const broadcastEffects: ScheduleBroadcastEffect[] = [];
+  /** Языки из заголовка. Пусто — соберём их из самих строк дорожек. */
+  const declaredLanguages: AudioScanLanguage[] = [];
   let pendingBroadcastShows: ScheduleBroadcastShow[] = [];
   let pendingSrtPath: string | null = null;
   let pendingSrtEnabled = true;
@@ -111,6 +139,23 @@ export function parseScheduleText(
     const logo = line.match(logoPattern);
     if (logo) {
       pendingLogoPath = requiredDirectiveValue(logo[1], "insertLogoTitle", entry.lineNumber);
+      continue;
+    }
+    const declaredLanguage = line.match(audioLanguagePattern);
+    if (declaredLanguage) {
+      const token = requiredDirectiveValue(
+        declaredLanguage[1], "defineAudioLanguage", entry.lineNumber,
+      );
+      const languageCode = resolveLanguageCode(token);
+      if (declaredLanguages.some((language) => language.languageCode === languageCode)) {
+        warnings.push(`Line ${entry.lineNumber}: duplicate audio language ${token} ignored`);
+        continue;
+      }
+      declaredLanguages.push({
+        languageCode,
+        label: optionalDirectiveValue(declaredLanguage[2]) ?? languageLabel(token),
+        itemCount: Number(declaredLanguage[3] ?? 0),
+      });
       continue;
     }
     const defined = line.match(broadcastDefinePattern);
@@ -216,7 +261,11 @@ export function parseScheduleText(
         warnings.push(`Line ${entry.lineNumber}: duplicate audio track ${language} ignored`);
         continue;
       }
-      previous.audioTracks.push({ language, filePath });
+      previous.audioTracks.push({
+        language,
+        languageCode: resolveLanguageCode(language),
+        filePath,
+      });
       continue;
     }
 
@@ -290,6 +339,9 @@ export function parseScheduleText(
     0,
   );
   return parsedScheduleSchema.parse({
+    audioLanguages: declaredLanguages.length > 0
+      ? declaredLanguages
+      : collectAudioLanguages(items),
     broadcastEffects,
     delaySeconds,
     encoding,
