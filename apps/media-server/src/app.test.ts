@@ -4120,7 +4120,11 @@ function sceneShowFixture() {
 }
 
 test("the interface server never serves a file from outside its own directory", () => {
-  const root = "/opt/fluxio/app/apps/web/dist";
+  // Корень приводится тем же `path.resolve`, что и сама раздача: на Windows
+  // абсолютный путь без буквы диска получает букву текущего, и литерал
+  // разошёлся бы с реализацией — тест падал бы на эфирной машине, ничего не
+  // говоря о самой проверке выхода за каталог.
+  const root = path.resolve("/opt/fluxio/app/apps/web/dist");
 
   assert.equal(resolveWebAsset(root, "/"), path.join(root, "index.html"));
   assert.equal(resolveWebAsset(root, "/assets/main-A1b2C3d4.js"), path.join(root, "assets/main-A1b2C3d4.js"));
