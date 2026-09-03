@@ -480,16 +480,22 @@ test("GStreamer from the bundle looks for plugins in the bundle, not in the syst
     root: "/opt/fluxio/tools/gstreamer",
   });
 
-  assert.equal(environment.GST_PLUGIN_SYSTEM_PATH, "/opt/fluxio/tools/gstreamer/lib/gstreamer-1.0");
-  assert.equal(
+  // Пути собирает `path.join`, а он берёт разделитель у **хозяйской** машины,
+  // не у параметра `platform`: на Windows та же ветка вернула бы `\`. Проверка
+  // здесь про то, куда смотрит GStreamer, поэтому разделитель приводим — иначе
+  // тест падал бы на Windows, ничего не говоря о самом окружении.
+  const samePath = (value, expected) => assert.equal(value?.replaceAll("\\", "/"), expected);
+
+  samePath(environment.GST_PLUGIN_SYSTEM_PATH, "/opt/fluxio/tools/gstreamer/lib/gstreamer-1.0");
+  samePath(
     environment.GST_PLUGIN_SCANNER,
     "/opt/fluxio/tools/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner",
   );
   // Плагины системы собраны другой сборкой и роняют процесс на первом элементе.
   assert.equal(environment.GST_PLUGIN_PATH, undefined);
   // textrender рисует через pango, а тому нужен fontconfig из того же дерева.
-  assert.equal(environment.FONTCONFIG_PATH, "/opt/fluxio/tools/gstreamer/etc/fonts");
-  assert.equal(environment.LD_LIBRARY_PATH, "/opt/fluxio/tools/gstreamer/lib");
+  samePath(environment.FONTCONFIG_PATH, "/opt/fluxio/tools/gstreamer/etc/fonts");
+  samePath(environment.LD_LIBRARY_PATH, "/opt/fluxio/tools/gstreamer/lib");
   // Реестр — в каталоге установки: в $HOME служба под systemd писать не может,
   // и он пересобирался бы при каждом старте.
   assert.equal(environment.GST_REGISTRY, "/opt/fluxio/data/gstreamer/registry.bin");
