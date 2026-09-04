@@ -3,7 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -157,6 +157,77 @@ export function npmCiArguments() {
   // They are build-time devDependencies even though the resulting service runs
   // with NODE_ENV=production.
   return ["ci", "--include=dev"];
+}
+
+/**
+ * Нативные библиотеки, которые Windows держит открытыми.
+ *
+ * `npm ci` сносит `node_modules` целиком, а `.node` работающего процесса
+ * Windows удалить не даёт: установка обрывается на `EPERM: unlink`, и по этому
+ * дампу непонятно, что виноват не установщик, а незакрытый FluxIO. На POSIX
+ * такой беды нет — там открытый файл удаляется, — но искать занятые всё равно
+ * дешевле, чем разбирать чужую ошибку.
+ */
+export function nativeModuleDirectories() {
+  return [
+    "node_modules/@napi-rs",
+    "node_modules/@prisma",
+    "node_modules/electron/dist",
+  ];
+}
+
+/**
+ * Занятые файлы среди нативных библиотек.
+ *
+ * Занятость проверяется переименованием на месте: открыть файл на чтение
+ * Windows даёт и занятому, а переименовать — нет. Файл возвращается на место
+ * сразу же, поэтому проверка ничего не ломает даже на полпути.
+ */
+export async function findLockedNativeFiles(root, {
+  readdir: readDirectory = readdir,
+  rename: renameFile = rename,
+} = {}) {
+  const locked = [];
+  for (const directory of nativeModuleDirectories()) {
+    const base = path.join(root, directory);
+    let entries;
+    try {
+      entries = await readDirectory(base, { recursive: true, withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.(node|dll|exe)$/i.test(entry.name)) continue;
+      const filePath = path.join(entry.parentPath ?? entry.path ?? base, entry.name);
+      const probe = `${filePath}.fluxio-probe`;
+      try {
+        await renameFile(filePath, probe);
+        await renameFile(probe, filePath);
+      } catch {
+        locked.push(filePath);
+      }
+    }
+  }
+  return locked;
+}
+
+/** Что сказать оператору про занятые файлы: причина и что с ней делать. */
+export function describeLockedNativeFiles(files) {
+  if (files.length === 0) return null;
+  const listed = files.slice(0, 3).map((file) => `  ${file}`).join("\n");
+  const rest = files.length > 3 ? `\n  … и ещё ${files.length - 3}` : "";
+  return [
+    "FluxIO ещё работает: переустановка зависимостей снесёт node_modules, а эти файлы",
+    "заняты запущенным процессом и не удаляются:",
+    `${listed}${rest}`,
+    "",
+    "Закройте окно FluxIO и остановите фоновую службу, затем повторите установку.",
+    "Если по этой машине идёт эфир — сначала выведите его из линии: остановка службы обрывает выдачу.",
+    process.platform === "win32"
+      ? "Windows: Stop-ScheduledTask -TaskName 'FluxIO', затем закройте оставшиеся node.exe в диспетчере задач."
+      : "Служба: sudo systemctl stop fluxio (Linux) или launchctl bootout (macOS).",
+    "Если процессов нет, файл мог захватить антивирус — повторите через минуту.",
+  ].join("\n");
 }
 
 export function desktopPackagingScript({
@@ -961,6 +1032,7 @@ async function runBuildPipeline(commandEnv, mode, actions) {
     console.log(`  Удалены устаревшие исходники предыдущей версии: ${retired.length}`);
   }
   if (actions.installDependencies) {
+    await ensureNodeModulesAreFree();
     await runNpmCommand(npmCiArguments(), { env: commandEnv });
   }
 
@@ -2377,6 +2449,23 @@ function waitForProcessOrSignal(child) {
     child.once("error", onError);
     child.once("exit", onExit);
   });
+}
+
+/**
+ * Проверяет, что `node_modules` свободен, до того как его снесут.
+ *
+ * Windows не даёт удалить `.node`, загруженный работающим процессом, и `npm ci`
+ * обрывается на `EPERM: unlink` — уже снеся половину дерева. По дампу npm при
+ * этом непонятно, что виноват не установщик, а незакрытый FluxIO.
+ *
+ * Останавливать процессы сам мастер не имеет права: на этой машине может идти
+ * эфир, и установка зависимостей — не повод его обрывать. Решение остаётся за
+ * оператором, поэтому мастер называет занятые файлы и команду остановки.
+ */
+async function ensureNodeModulesAreFree() {
+  const locked = await findLockedNativeFiles(projectRoot);
+  if (locked.length === 0) return;
+  throw new Error(describeLockedNativeFiles(locked));
 }
 
 async function stopInstalledService(service) {

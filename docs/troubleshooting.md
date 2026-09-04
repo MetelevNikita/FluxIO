@@ -4,6 +4,33 @@
 child process → transport → receiver. Не меняйте несколько параметров
 одновременно.
 
+## Установка: EPERM при `npm ci` на Windows
+
+```text
+npm error code EPERM
+npm error syscall unlink
+npm error path R:\FluxIO\node_modules\@napi-rs\canvas-win32-x64-msvc\skia.win32-x64-msvc.node
+```
+
+`npm ci` сносит `node_modules` целиком, а Windows не отдаёт `.node`, загруженный работающим
+процессом: `skia` держит media-service (он рисует сцены) или открытое окно FluxIO.
+
+С версии 8.0.3 мастер проверяет это **до** сноса дерева и называет занятые файлы вместо
+дампа npm. Порядок действий:
+
+1. если по машине идёт эфир — выведите его из линии, остановка службы обрывает выдачу;
+2. закройте окно FluxIO;
+3. остановите фоновую службу:
+   - Windows: `Stop-ScheduledTask -TaskName 'Gruber Playout Media Service'`
+   - Linux: `sudo systemctl stop fluxio`
+   - macOS: `launchctl bootout` по пути plist из вывода мастера;
+4. убедитесь, что не осталось `node.exe` с путём установки в командной строке;
+5. повторите `node setup.mjs`.
+
+Если процессов нет, а файл всё ещё занят, его держит антивирус — повторите через минуту.
+Мастер ничего не останавливает сам: на эфирной машине это означало бы разрыв выдачи ради
+установки зависимостей.
+
 ## SRT: линия падает сразу после старта
 
 ```text

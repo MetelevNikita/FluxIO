@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,7 +15,9 @@ import {
   buildWindowsShortcutCommand,
   buildWindowsTaskCommand,
   commandVersionArguments,
+  describeLockedNativeFiles,
   desktopPackagingScript,
+  findLockedNativeFiles,
   electronRuntimePath,
   mergeWindowsPathValues,
   npmCiArguments,
@@ -207,6 +210,42 @@ test("setup leaves the backups alone until there are more than it keeps", () => 
     ".env.backup-2026-08-24T10-56-29-861Z",
   ];
   assert.deepEqual(selectEnvBackupsToRemove(files), []);
+});
+
+test("setup refuses to wipe node_modules while FluxIO still holds it", async () => {
+  // `npm ci` сносит дерево целиком, а Windows не отдаёт `.node`, загруженный
+  // работающим процессом: установка обрывалась на `EPERM: unlink`, уже снеся
+  // половину зависимостей. Проверка идёт до сноса и называет виновника.
+  const root = await mkdtemp(path.join(tmpdir(), "fluxio-locked-"));
+  try {
+    const nativeDirectory = path.join(root, "node_modules", "@napi-rs", "canvas-win32-x64-msvc");
+    await mkdir(nativeDirectory, { recursive: true });
+    const native = path.join(nativeDirectory, "skia.win32-x64-msvc.node");
+    await writeFile(native, "binary");
+    await writeFile(path.join(nativeDirectory, "index.js"), "// не нативный файл");
+
+    // Свободное дерево проходит проверку и остаётся целым.
+    assert.deepEqual(await findLockedNativeFiles(root), []);
+    assert.equal(existsSync(native), true);
+
+    // Занятый файл Windows не даёт переименовать — так его и узнаём.
+    const locked = await findLockedNativeFiles(root, {
+      rename: (from) => {
+        if (from.endsWith(".node")) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        return Promise.resolve();
+      },
+    });
+    assert.deepEqual(locked, [native]);
+    // Файл возвращается на место даже когда проверка спотыкается на полпути.
+    assert.equal(existsSync(native), true);
+
+    const message = describeLockedNativeFiles(locked);
+    assert.match(message, /skia\.win32-x64-msvc\.node/);
+    assert.match(message, /эфир/);
+    assert.equal(describeLockedNativeFiles([]), null);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 test("setup validates TCP ports", () => {
