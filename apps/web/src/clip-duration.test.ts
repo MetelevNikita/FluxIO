@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { airDurationSeconds } from "./clip-duration.js";
+import { airDurationSeconds, playableClips } from "./clip-duration.js";
 
 test("air duration is the shorter of the file and the schedule", () => {
   assert.equal(airDurationSeconds({ declaredDurationSeconds: 90, durationSeconds: 120 }), 90);
@@ -37,4 +37,19 @@ test("a clip whose file is missing holds no air time", () => {
     airDurationSeconds({ durationSeconds: 150, declaredDurationSeconds: 120, status: "analyzed" }),
     120,
   );
+});
+
+test("playout skips the rows whose file is missing, without dropping them from the grid", () => {
+  const playlist = [
+    { id: "one", status: "analyzed" },
+    { id: "gone", status: "error" },
+    { id: "two", status: "pending" },
+  ];
+  // В эфир уходит всё, кроме нечитаемого: FFmpeg упал бы на нём и увёл бы
+  // линию, а строка расписания при этом остаётся у оператора на месте.
+  assert.deepEqual(playableClips(playlist).map((asset) => asset.id), ["one", "two"]);
+  assert.equal(playlist.length, 3);
+  // Расписание без единого читаемого ролика — законный пустой список: линия
+  // поднимется на цветных полосах, и файлы можно подставить под живым эфиром.
+  assert.deepEqual(playableClips([{ id: "gone", status: "error" }]), []);
 });

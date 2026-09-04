@@ -22,6 +22,7 @@ import {
 
   videoEncodingSchema,} from "@gruber/contracts";
 import { buildApp } from "./app.js";
+import { describeTsdDuckExit } from "./ffmpeg/playout-supervisor.js";
 
 // Мастер установки запускает `npm test` с окружением станции: `setup.mjs`
 // передаёт значения `.env` в дочерний процесс, чтобы сборка видела базу.
@@ -738,6 +739,40 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
   );
   assert.doesNotMatch(serialized.content, /titlePath \{\}/);
   assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
+});
+
+test("a dead transport stage says why it died, not just its exit code", () => {
+  // Оператор видел «TSDuck SRT relay exited with 1» и шёл в журнал за строкой,
+  // которая уже была прочитана. Причина и подсказка обязаны стоять в статусе:
+  // проверять надо головную станцию, а не FluxIO.
+  const srt = describeTsdDuckExit(
+    "SRT relay",
+    1,
+    "* Error: srt: error during srt_connect: Connection setup failure: connection timed out",
+    { protocol: "srt", host: "203.0.113.9", port: 9000, mode: "caller" },
+  );
+  assert.match(srt, /203\.0\.113\.9:9000/);
+  assert.match(srt, /did not answer/);
+  assert.match(srt, /passphrase/);
+
+  // Приёмник, который ждёт звонящего, требует другой проверки.
+  const listener = describeTsdDuckExit(
+    "SRT relay",
+    1,
+    "srt_connect: Connection setup failure",
+    { protocol: "srt", host: "0.0.0.0", port: 9000, mode: "listener" },
+  );
+  assert.match(listener, /No SRT caller connected/);
+
+  // Прочие падения остаются как есть: выдумывать им причину нельзя.
+  assert.equal(
+    describeTsdDuckExit("UDP PCR relay", 2, null),
+    "TSDuck UDP PCR relay exited with 2",
+  );
+  assert.equal(
+    describeTsdDuckExit("injector", "SIGKILL", "* Error: no such file"),
+    "TSDuck injector exited with SIGKILL: * Error: no such file",
+  );
 });
 
 test("a rejected session says what broke, not the whole Zod dump", async () => {

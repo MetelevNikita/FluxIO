@@ -908,6 +908,9 @@ export class PlayoutSupervisor {
     }
   }
 
+  /** Последняя ошибка из лога TSDuck — ею объясняется падение линии. */
+  #tsduckLastError: string | null = null;
+
   #readTsdDuckLogs(chunk: Buffer): void {
     this.#tsduckLogBuffer += chunk.toString("utf8");
     const lines = this.#tsduckLogBuffer.split(/\r?\n/);
@@ -924,6 +927,10 @@ export class PlayoutSupervisor {
         this.#appendEvent(`TSDuck continuity warning #${this.#status.continuityErrors}: ${message}`);
       } else if (/\b(error|failed|dropping|obsolete)\b/i.test(line)) {
         const message = redactSecrets(line.trim(), this.#request);
+        // Причина падения живёт в логе, а в статус попадал только код выхода:
+        // оператор видел «exited with 1» и шёл читать журнал, чтобы узнать,
+        // что приёмник SRT не отвечает.
+        this.#tsduckLastError = message;
         this.#appendEvent(`TSDuck: ${message}`);
         if (this.#status.scte35.enabled && /dropping|obsolete/i.test(line)) {
           this.#status.scte35.state = "failed";
@@ -1685,6 +1692,7 @@ export class PlayoutSupervisor {
     });
     this.#tsduckChild = child;
     this.#tsduckLogBuffer = "";
+    this.#tsduckLastError = null;
     child.stderr.on("data", (chunk: Buffer) => this.#readTsdDuckLogs(chunk));
     child.stdout.on("data", (chunk: Buffer) => this.#readTsdDuckLogs(chunk));
     child.once("close", (code, signal) => this.#handleTsdDuckClose(child, code, signal));
@@ -2001,7 +2009,12 @@ export class PlayoutSupervisor {
       : this.#request?.endpoint.protocol === "udp"
         ? "UDP PCR relay"
         : "SRT relay";
-    const error = `TSDuck ${role} exited with ${code ?? signal ?? "unknown"}`;
+    const error = describeTsdDuckExit(
+      role,
+      code ?? signal ?? "unknown",
+      this.#tsduckLastError,
+      this.#request?.endpoint,
+    );
     if (this.#status.scte35.enabled) {
       this.#status.scte35.state = "failed";
       this.#status.scte35.error = error;
@@ -2669,6 +2682,36 @@ function assertPlaylistPrefixUnchanged(
       );
     }
   }
+}
+
+/**
+ * Почему упала транспортная стадия — словами оператора.
+ *
+ * Код выхода сам по себе не говорит ничего: «TSDuck SRT relay exited with 1»
+ * заставляет идти в журнал за строкой, которая уже была прочитана. Чаще всего
+ * это SRT в режиме caller, который не достучался до приёмника, — и тогда
+ * проверять надо не FluxIO, а головную станцию, порт и парольную фразу.
+ */
+export function describeTsdDuckExit(
+  role: string,
+  reason: number | string,
+  lastError: string | null,
+  endpoint?: { protocol: string; host?: string; port?: number; mode?: string } | null,
+): string {
+  const base = `TSDuck ${role} exited with ${reason}`;
+  if (!lastError) return base;
+  const withCause = `${base}: ${lastError}`;
+  if (!/srt_connect|connection setup failure|connection timed out/i.test(lastError)) {
+    return withCause;
+  }
+  const address = endpoint?.host && endpoint.port
+    ? `${endpoint.host}:${endpoint.port}`
+    : "the configured endpoint";
+  return endpoint?.mode === "listener"
+    ? `${withCause}. No SRT caller connected to ${address}.`
+    : `${withCause}. The SRT receiver at ${address} did not answer: check that it is ` +
+      "listening, that the port is open through the firewall, and that the passphrase " +
+      "and stream id match.";
 }
 
 export function alignHotChangePlaylist<T extends { id: string }>(

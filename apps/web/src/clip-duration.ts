@@ -30,3 +30,17 @@ export function airDurationSeconds(asset: {
   if (source != null && declared != null) return Math.min(source, declared);
   return declared ?? source ?? 0;
 }
+
+/**
+ * Ролики, которые эфир действительно может сыграть.
+ *
+ * Строка без файла остаётся в расписании оператора — её собирали руками, и
+ * выбросить её значит соврать о сетке, — но в эфир уйти не может: FFmpeg упал
+ * бы на первом же кадре и увёл бы за собой всю линию. Поэтому в запрос такие
+ * строки не попадают вовсе: эфир идёт мимо них, а оператор в это время
+ * подставляет файл. Как только файл появился, ролик возвращается в эфирный
+ * список ближайшей горячей заменой — перезапускать линию не нужно.
+ */
+export function playableClips<T extends { status?: string }>(playlist: readonly T[]): T[] {
+  return playlist.filter((asset) => asset.status !== "error");
+}

@@ -59,7 +59,7 @@ import {
 } from "./title-file";
 import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
-import { airDurationSeconds } from "./clip-duration";
+import { airDurationSeconds, playableClips } from "./clip-duration";
 import { useStableCallback } from "./stable-callback";
 import {
   applyGraphicReplacements,
@@ -3185,6 +3185,15 @@ export function App() {
           : baseRequest;
       setPlayoutStatus(await startPlayoutSession(request));
       setRecoveryCheckpoint(null);
+      // Пропущенные ролики — не мелочь: эфир пошёл короче, чем показывает
+      // сетка, и оператор должен знать, сколько строк ждут файла.
+      const skipped = playlist.length - playableClips(playlist).length;
+      if (skipped > 0) {
+        setOperationError(
+          `Эфир идёт мимо ${skipped} ролик(ов) без файла. Подставьте файлы кнопкой Link file — ` +
+          "они вернутся в эфир на ходу, без перезапуска.",
+        );
+      }
       setScheduleActionMessage(
         mode === "resume" && catchUp
           ? `Playout caught up with the schedule: "${
@@ -3905,7 +3914,7 @@ function buildStartRequest(
 }
 
 function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlist"] {
-  return playlist.map((asset) => ({
+  return playableClips(playlist).map((asset) => ({
     id: asset.id,
     name: asset.name,
     filePath: asset.filePath,
@@ -4031,7 +4040,24 @@ function buildRecoveryStartRequest(
 ): StartPlayoutRequest {
   const point = recoveryPointForPlaylist(playlist, checkpoint);
   if (!point) throw new Error("Saved recovery checkpoint does not match the current playlist");
-  return offsetStartRequest(request, point.itemIndex, point.itemOffsetSeconds);
+  // Место обрыва могло прийтись на ролик, файла которого больше нет: поднимаем
+  // эфир со следующего читаемого, а не отказываемся подниматься вовсе.
+  return buildStartRequestFromAsset(
+    request, playlist, point.asset.id, point.itemOffsetSeconds,
+  );
+}
+
+/**
+ * Первый ролик, который эфир может сыграть, начиная с выбранного.
+ *
+ * Выбранный может оказаться без файла — оператор ставит отметку на строку
+ * расписания, а не на файл. Эфир тогда начинается со следующего доступного:
+ * отказ на старте здесь хуже, чем начало на ролик позже.
+ */
+function firstPlayableFrom(playlist: MediaAsset[], assetId: string): string | null {
+  const index = playlist.findIndex((asset) => asset.id === assetId);
+  if (index < 0) return null;
+  return playableClips(playlist.slice(index))[0]?.id ?? null;
 }
 
 function buildStartRequestFromAsset(
@@ -4043,11 +4069,17 @@ function buildStartRequestFromAsset(
   if (!playlist.some((asset) => asset.id === assetId)) {
     throw new Error("The selected start clip is no longer present in the Current playlist");
   }
-  const itemIndex = request.playlist.findIndex((item) => item.id === assetId);
+  const playableId = firstPlayableFrom(playlist, assetId);
+  if (!playableId) {
+    throw new Error("No clip with a readable file remains after the selected start point");
+  }
+  const itemIndex = request.playlist.findIndex((item) => item.id === playableId);
   if (itemIndex < 0) {
     throw new Error("The selected start clip could not be mapped to the playout request");
   }
-  return offsetStartRequest(request, itemIndex, offsetSeconds);
+  // Смещение относится к выбранному ролику: если эфир начинается со
+  // следующего, начинать его с середины незачем.
+  return offsetStartRequest(request, itemIndex, playableId === assetId ? offsetSeconds : 0);
 }
 
 /** Ролик как цель эффекта второго уровня: длительность — эфирная, а не файла. */
