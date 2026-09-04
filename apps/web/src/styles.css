@@ -1518,6 +1518,19 @@ p {
 
 .toolbar-button:disabled { opacity: 0.32; }
 
+/* Счётчик буфера: по нему видно, сколько роликов вставится, — иначе Ctrl+V
+   на недельном расписании это выстрел вслепую. */
+.toolbar-button > i {
+  min-width: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--tier2-soft);
+  color: var(--tier2);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 /* Разрушающие действия отличаются цветом ещё до наведения: «удалить всё выше»
    промахом мыши стоит оператору половины расписания. */
 .toolbar-button.danger:hover:not(:disabled) {

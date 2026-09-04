@@ -49,8 +49,16 @@ export function describeValidationError(error: unknown, limit = 3): string {
   return issues.length > limit ? `${listed}; ещё ${issues.length - limit}` : listed;
 }
 
+/**
+ * Отказ с внятной причиной.
+ *
+ * Разбор Zod уходит в ответ целиком только выглядя как отладка: оператор видел
+ * простыню из сотни одинаковых записей вместо одной строки о том, что
+ * сломалось. Для обычных ошибок `describeValidationError` возвращает их
+ * сообщение как есть.
+ */
 export function badRequest(reply: FastifyReply, error: unknown) {
-  return reply.code(400).send({ error: errorMessage(error) });
+  return reply.code(400).send({ error: describeValidationError(error) });
 }
 
 export function notFound(reply: FastifyReply, error: unknown) {

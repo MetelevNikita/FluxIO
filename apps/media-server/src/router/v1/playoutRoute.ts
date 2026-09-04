@@ -16,7 +16,7 @@ import {
   PlayoutPreflightError,
 } from "../../ffmpeg/playout-supervisor.js";
 import {
-  errorMessage,
+  describeValidationError,
   largePlaylistBodyLimitBytes,
   type RouteContext,
 } from "../context.js";
@@ -129,7 +129,9 @@ function playoutErrorReply(reply: FastifyReply, error: unknown) {
     return reply.code(400).send({ error: error.message });
   }
 
-  return reply.code(400).send({ error: errorMessage(error) });
+  // Разбор Zod в ответ не уходит: оператор видит одну строку о том, что
+  // сломалось, а не сотню одинаковых записей.
+  return reply.code(400).send({ error: describeValidationError(error) });
 }
 
 async function recordSessionStart(

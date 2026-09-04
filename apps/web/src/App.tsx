@@ -93,6 +93,7 @@ import {
 } from "./effect-assignment";
 import { buildAudioProgram } from "./audio-program";
 import { scheduleCatchUpPoint } from "./schedule-timeline";
+import { sceneShowId, withValidSceneShowIds } from "./schedule-ids";
 import { defaultSceneTemplate, editableSceneTemplate } from "./default-scenes";
 import type { AudioTrackLibrary } from "./types";
 import { mediaPath } from "./runtime";
@@ -360,6 +361,8 @@ export function App() {
   const stableRemovePlaylistItems = useStableCallback(removePlaylistItems);
   const stableMoveItemsToOtherSchedule = useStableCallback(moveItemsToOtherSchedule);
   const stableLinkMissingFile = useStableCallback(linkMissingFile);
+  const stablePastePlaylistItems = useStableCallback(pastePlaylistItems);
+  const stableReplaceClipEverywhere = useStableCallback(replaceClipEverywhere);
   const stableRevealAssetInFolder = useStableCallback(revealAssetInFolder);
   const stableClearActiveImport = useStableCallback(clearActiveImport);
   const stableStartPlayoutFromActiveSchedule = useStableCallback(
@@ -1039,7 +1042,12 @@ export function App() {
             const scene = definition?.broadcast?.scene;
             if (!scene) return [];
             return [{
-              id: `schedule-scene-${index}-${show.effectId}`,
+              // Опознаватель показа ограничен контрактом 64 символами, а
+              // опознаватель эффекта сам по себе `fx2-<вид>-<uuid>`: прямая
+              // склейка перерастала потолок, и снимок сессии отвергался
+              // целиком — «сессия перестала сохраняться» без всякой связи с
+              // импортом, который её и сломал.
+              id: sceneShowId("sch", String(index), show.effectId),
               effectId: show.effectId,
               template: scene,
               fields: show.fields ? decodeScheduleBlob<Record<string, string>>(show.fields) : {},
@@ -1223,7 +1231,19 @@ export function App() {
     else setFuturePlaylist(place);
   }
 
-  function addProbes(probes: MediaProbe[], slot: ScheduleSlot = "current") {
+  /**
+   * Разобранные файлы — в медиатеку и в расписание.
+   *
+   * В библиотеке файлы сливаются по пути: второй экземпляр одного файла ей не
+   * нужен. В расписании — наоборот: каждая постановка это своя строка, иначе
+   * повторная загрузка той же папки не добавляла ничего, а два одинаковых
+   * ролика делили бы один опознаватель вместе со своими титрами и метками.
+   */
+  function addProbes(
+    probes: MediaProbe[],
+    slot: ScheduleSlot = "current",
+    insertBeforeId: string | null = null,
+  ) {
     const ageAssigned = assignAgeAssets(
       probes.map(probeToAsset),
       mapAgeAssetPaths(ageLibrary?.imagePaths ?? []),
@@ -1232,10 +1252,13 @@ export function App() {
     const imported = settings.logoEnabled && settings.logoPath
       ? assignChannelLogo(ageAssigned, settings.logoPath, settings)
       : ageAssigned;
+    const rows = imported.map((asset) => ({
+      ...asset,
+      id: newScheduleRowId(asset.filePath),
+    }));
     setAssets((current) => mergeAssets(current, imported));
-    if (slot === "current") setPlaylist((current) => mergeAssets(current, imported));
-    else setFuturePlaylist((current) => mergeAssets(current, imported));
-    setSelectedAssetId((current) => current || imported[0]?.id || "");
+    insertIntoSchedule(rows, slot, insertBeforeId);
+    setSelectedAssetId((current) => current || rows[0]?.id || "");
   }
 
   function movePlaylistItems(sourceIds: string[], targetId: string) {
@@ -1362,6 +1385,85 @@ export function App() {
     }
   }
 
+  /**
+   * Копии роликов на новое место в расписании.
+   *
+   * Копия — это новая строка со своим опознавателем: общий делал бы из двух
+   * показов один, и правка титра на одном меняла бы другой. Всё остальное —
+   * титры, AGE, логотип, метки, звуковые дорожки — переезжает как есть: ради
+   * этого ролик и копируют.
+   */
+  function pastePlaylistItems(sources: MediaAsset[], insertBeforeId: string | null) {
+    if (sources.length === 0) return;
+    const copies = sources.map((asset) => ({
+      ...asset,
+      id: newScheduleRowId(asset.filePath),
+    }));
+    insertIntoSchedule(copies, activeSchedule, insertBeforeId);
+    setScheduleActionMessage(
+      `Pasted ${copies.length} clip(s) into the ${activeSchedule} schedule.`,
+    );
+  }
+
+  /**
+   * Замена ролика во всех его строках сразу.
+   *
+   * Один ролик стоит в неделе десятками повторов — отбивка, заставка, реклама.
+   * Когда его переснимают, менять файл в каждой строке руками значит забыть
+   * половину: по одному промаху в эфир уйдёт старый материал. Поэтому меняются
+   * все строки с тем же путём, а обвязка каждой остаётся при ней.
+   */
+  async function replaceClipEverywhere(assetId: string) {
+    const asset = visiblePlaylist.find((item) => item.id === assetId);
+    if (!asset) return;
+    const previousPath = asset.filePath;
+    const picked = await window.gruberDesktop?.selectMediaFiles();
+    const filePath = picked?.[0];
+    if (!filePath) return;
+    setMediaBusy(true);
+    setOperationError(null);
+    try {
+      const [probe] = await probeMediaPaths([filePath]);
+      if (!probe) throw new Error("The media service could not analyze the selected file");
+      const probed = probeToAsset(probe);
+      let replaced = 0;
+      const swap = (items: MediaAsset[]) => items.map((item) => {
+        if (item.filePath !== previousPath) return item;
+        replaced += 1;
+        return {
+          ...item,
+          ...probed,
+          // Строка расписания остаётся собой: менялся файл, а не место в
+          // сетке и не то, что на нём стоит.
+          id: item.id,
+          scheduleType: item.scheduleType,
+          declaredDurationSeconds: item.declaredDurationSeconds,
+          scheduleLineNumber: item.scheduleLineNumber,
+          ageTitle: item.ageTitle,
+          itemLogo: item.itemLogo,
+          effects: item.effects,
+          scenes: item.scenes,
+          audioTracks: item.audioTracks,
+          subtitles: item.subtitles,
+          scte35Markers: item.scte35Markers,
+        };
+      });
+      setPlaylist(swap);
+      setFuturePlaylist(swap);
+      setAssets((current) => mergeAssets(
+        current.filter((item) => item.filePath !== previousPath),
+        [probed],
+      ));
+      setScheduleActionMessage(
+        `Replaced ${replaced} row(s) of "${asset.name}" with "${probed.name}".`,
+      );
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
   async function revealAssetInFolder(filePath: string) {
     if (!filePath) return;
     const shown = await window.gruberDesktop?.revealInFolder(filePath);
@@ -1447,12 +1549,19 @@ export function App() {
   }
 
   function buildWorkspaceSaveRequest(): WorkspaceSessionSaveRequest {
+    // Сессия проверяется одной схемой целиком: один переросший опознаватель
+    // показа отменяет всё сохранение, и оператор теряет работу с прошлого
+    // удачного снимка. Состояния, собранные прежними версиями, приводим здесь
+    // — переимпортировать расписание ради этого никто не должен.
+    const assetsForSnapshot = assets.map(withValidSceneShowIds);
+    const currentForSnapshot = playlist.map(withValidSceneShowIds);
+    const futureForSnapshot = futurePlaylist.map(withValidSceneShowIds);
     return {
       snapshot: {
         version: 2,
-        assets,
-        currentPlaylist: playlist,
-        futurePlaylist,
+        assets: assetsForSnapshot,
+        currentPlaylist: currentForSnapshot,
+        futurePlaylist: futureForSnapshot,
         activeSchedule,
         selectedAssetId: selectedAssetId || null,
         currentScheduleMetadata,
@@ -3272,6 +3381,8 @@ export function App() {
             onRemoveItems={stableRemovePlaylistItems}
             onMoveToOtherSchedule={stableMoveItemsToOtherSchedule}
             onLinkMissingFile={stableLinkMissingFile}
+            onPasteItems={stablePastePlaylistItems}
+            onReplaceClip={desktopBridgeAvailable ? stableReplaceClipEverywhere : undefined}
             onRevealInFolder={desktopBridgeAvailable ? stableRevealAssetInFolder : undefined}
             onClearSchedule={stableClearActiveImport}
             onStartPlayout={stableStartPlayoutFromActiveSchedule}

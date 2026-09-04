@@ -5,6 +5,8 @@ import {
   ArrowUp,
   ArrowUpFromLine,
   Captions,
+  ClipboardPaste,
+  Copy,
   Crosshair,
   Eraser,
   ChevronDown,
@@ -26,6 +28,7 @@ import {
   Play,
   Redo2,
   Repeat2,
+  Replace,
   RadioTower,
   Search,
   Save,
@@ -161,6 +164,10 @@ interface PlaylistPreviewScreenProps {
   onMoveToOtherSchedule: (assetIds: string[]) => void;
   /** Подставить файл вместо потерянного, не теряя строку расписания. */
   onLinkMissingFile: (assetId: string) => Promise<void>;
+  /** Вставить копии роликов перед указанной строкой; `null` — в конец. */
+  onPasteItems: (sources: MediaAsset[], insertBeforeId: string | null) => void;
+  /** Заменить файл во всех строках этого ролика; в браузере моста нет. */
+  onReplaceClip?: (assetId: string) => Promise<void>;
   /** Показать файл в проводнике; в браузере моста нет — проп пустой. */
   onRevealInFolder?: (filePath: string) => Promise<void>;
   /** Очистить активное расписание целиком. */
@@ -244,6 +251,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   onRemoveItems,
   onMoveToOtherSchedule,
   onLinkMissingFile,
+  onPasteItems,
+  onReplaceClip,
   onRevealInFolder,
   onClearSchedule,
   onStartPlayout,
@@ -294,6 +303,15 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   const [dropBeforeId, setDropBeforeId] = useState<string | null>(null);
   /** Дни, свёрнутые целиком: в неделе их семь, и листать все не нужно. */
   const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => new Set());
+  /**
+   * Скопированные ролики.
+   *
+   * Держим снимок самих строк, а не их опознаватели: между копированием и
+   * вставкой ролик могли удалить или заменить, а вставить надо ровно то, что
+   * копировали — вместе с титрами, AGE и метками.
+   */
+  const clipboard = useRef<MediaAsset[]>([]);
+  const [clipboardSize, setClipboardSize] = useState(0);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewOffset, setPreviewOffset] = useState(0);
@@ -329,7 +347,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
-      const target = event.target as HTMLElement | null;
+      // Цель события — не всегда элемент: у события, отправленного окну,
+      // `closest` нет вовсе, и обработчик падал на первой же проверке.
+      const target = event.target instanceof Element ? event.target : null;
       // Поля ввода забирают сочетания себе: Ctrl+Z в строке поиска обязан
       // отменять набранное, а не последнюю правку расписания.
       if (target?.closest("input, select, textarea, [contenteditable='true']")) return;
@@ -354,11 +374,25 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
       if (key === "z") {
         event.preventDefault();
         onUndo();
+        return;
+      }
+      if (key === "c") {
+        const chosen = playlist.filter((asset) => selectedIds.has(asset.id));
+        if (chosen.length === 0) return;
+        event.preventDefault();
+        clipboard.current = chosen;
+        setClipboardSize(chosen.length);
+        return;
+      }
+      if (key === "v") {
+        if (clipboard.current.length === 0) return;
+        event.preventDefault();
+        pasteClipboard();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [playlist, onUndo, onRedo]);
+  }, [playlist, selectedIds, selectedAsset.id, onUndo, onRedo, onPasteItems]);
 
   useEffect(() => {
     const demoTimeline = selectedAsset.id === "production";
@@ -766,6 +800,21 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
       selectionAnchorId.current = asset.id;
       return;
     }
+  }
+
+  /**
+   * Вставка скопированного за выбранной строкой.
+   *
+   * Копия встаёт **после** выбранного ролика, и выбранный остаётся выше её:
+   * оператор показывает пальцем на строку, за которой должен пойти повтор.
+   * Без выбора — в конец расписания.
+   */
+  function pasteClipboard(): void {
+    const sources = clipboard.current;
+    if (sources.length === 0) return;
+    const index = playlist.findIndex((asset) => asset.id === selectedAsset.id);
+    const insertBeforeId = index < 0 ? null : playlist[index + 1]?.id ?? null;
+    onPasteItems(sources, insertBeforeId);
   }
 
   /** Ролики выше/ниже выбранного: ими режут расписание по месту. */
@@ -1299,6 +1348,49 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               type="button"
             >
               <ArrowDownFromLine size={14} />
+            </button>
+            {/* Копия ролика встаёт за выбранной строкой — тем же действием,
+                что и Ctrl+C / Ctrl+V: клавиши знают монтажёры, кнопки нужны
+                тем, кто ведёт эфир мышью. */}
+            <button
+              className="toolbar-button"
+              disabled={selectedIds.size === 0}
+              onClick={() => {
+                const chosen = playlist.filter((asset) => selectedIds.has(asset.id));
+                if (chosen.length === 0) return;
+                clipboard.current = chosen;
+                setClipboardSize(chosen.length);
+              }}
+              title="Копировать выделенные ролики · Ctrl+C"
+              type="button"
+            >
+              <Copy size={14} />
+            </button>
+            <button
+              className="toolbar-button"
+              disabled={clipboardSize === 0}
+              onClick={pasteClipboard}
+              title={clipboardSize === 0
+                ? "Буфер пуст: скопируйте ролик через Ctrl+C"
+                : `Вставить ${clipboardSize} ролик(ов) за «${selectedAsset.name}» · Ctrl+V`}
+              type="button"
+            >
+              <ClipboardPaste size={14} />
+              {clipboardSize > 0 ? <i>{clipboardSize}</i> : null}
+            </button>
+            {/* Замена ролика во всех его строках: один материал стоит в неделе
+                десятками повторов, и менять их по одному значит забыть
+                половину — в эфир уйдёт старый файл. */}
+            <button
+              className="toolbar-button"
+              disabled={!onReplaceClip || selectedIds.size === 0}
+              onClick={() => void onReplaceClip?.(selectedAsset.id)}
+              title={onReplaceClip
+                ? `Заменить файл во всех строках «${selectedAsset.name}»`
+                : "Замена файла доступна в приложении: браузер не открывает проводник"}
+              type="button"
+            >
+              <Replace size={14} />
             </button>
             <button
               className="toolbar-button danger"

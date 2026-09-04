@@ -740,6 +740,26 @@ test("schedule serializer preserves reordered items, graphics and subtitle marku
   assert.equal(formatScheduleTimecode(360_000.5), "100:00:00.50");
 });
 
+test("a rejected session says what broke, not the whole Zod dump", async () => {
+  // Оператор видел сотню одинаковых записей разбора вместо одной строки. Ответ
+  // обязан называть поле и претензию: снимок отвергается целиком, и по нему
+  // надо понять, что именно чинить.
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/playout/take",
+      payload: { playlist: [{ id: "one" }] },
+    });
+    assert.equal(response.statusCode, 400);
+    const message = response.json().error as string;
+    assert.ok(message.length < 400, `сообщение длиной ${message.length}: ${message}`);
+    assert.doesNotMatch(message, /"code"/);
+  } finally {
+    await app.close();
+  }
+});
+
 test("schedule carries the audio languages it was saved with", () => {
   const serialized = serializeSchedule({
     extension: "txt",
