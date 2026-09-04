@@ -1,7 +1,9 @@
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowDownFromLine,
   ArrowUp,
+  ArrowUpFromLine,
   Captions,
   Crosshair,
   Eraser,
@@ -122,8 +124,9 @@ interface PlaylistPreviewScreenProps {
   onAirProgressPercent: number;
   recoveryAssetId: string | null;
   initialPreviewTimeSeconds: number | null;
-  onAddFiles: (files: File[]) => void;
-  onAddNativeFiles?: () => Promise<void>;
+  /** `insertBeforeId` — строка, перед которой встают новые ролики; `null` — в конец. */
+  onAddFiles: (files: File[], insertBeforeId?: string | null) => void;
+  onAddNativeFiles?: (insertBeforeId?: string | null) => Promise<void>;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItems: (sourceIds: string[], targetId: string) => void;
   onBulkAgeChange: (assetIds: string[], rating: string | null) => void;
@@ -255,6 +258,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   scte35Defaults,
 }: PlaylistPreviewScreenProps) {
   const fileInput = useRef<HTMLInputElement>(null);
+  /** Куда положить файлы, выбранные обычным полем браузера. */
+  const browserInsertBefore = useRef<string | null>(null);
   const previewContainer = useRef<HTMLDivElement>(null);
   const previewRequest = useRef(0);
   const previewSession = useRef<string | null>(null);
@@ -279,6 +284,14 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   const [rowMenu, setRowMenu] = useState<{ asset: MediaAsset; x: number; y: number } | null>(null);
   /** Файлы тащат из проводника прямо в расписание. */
   const [fileDropActive, setFileDropActive] = useState(false);
+  /**
+   * Куда встанут перетаскиваемые файлы.
+   *
+   * Ролик кладут **между** соседями — заставку между передачами, рекламу в
+   * разрыв, — поэтому сброс на строку разрезает расписание в этом месте, а не
+   * дописывает в хвост недели. `null` — сброс мимо строк, то есть в конец.
+   */
+  const [dropBeforeId, setDropBeforeId] = useState<string | null>(null);
   /** Дни, свёрнутые целиком: в неделе их семь, и листать все не нужно. */
   const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => new Set());
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -771,10 +784,35 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   }
 
   /** Файлы, притащенные из проводника прямо в расписание. */
-  function acceptDroppedFiles(files: FileList | null): void {
+  function acceptDroppedFiles(files: FileList | null, insertBeforeId: string | null): void {
     const dropped = Array.from(files ?? []);
     if (dropped.length === 0) return;
-    onAddFiles(dropped);
+    onAddFiles(dropped, insertBeforeId);
+  }
+
+  /**
+   * Куда добавить ролики относительно выделения.
+   *
+   * «До» — перед первым выделенным, «после» — за последним: при нескольких
+   * выделенных строках пачка встаёт единым куском, а не врезается в середину
+   * выделения.
+   */
+  function addRelativeToSelection(where: "before" | "after"): void {
+    const chosen = playlist.filter((asset) => selectedIds.has(asset.id));
+    const anchor = where === "before" ? chosen[0] : chosen[chosen.length - 1];
+    if (!anchor) return;
+    const index = playlist.findIndex((asset) => asset.id === anchor.id);
+    const insertBeforeId = where === "before"
+      ? anchor.id
+      : playlist[index + 1]?.id ?? null;
+    if (onAddNativeFiles) {
+      void onAddNativeFiles(insertBeforeId);
+      return;
+    }
+    // В браузере нативного выбора нет: открываем обычное поле файла и
+    // запоминаем место, куда положить выбранное.
+    browserInsertBefore.current = insertBeforeId;
+    fileInput.current?.click();
   }
 
   function controlTargetIds(assetId: string): string[] {
@@ -1231,12 +1269,36 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           <div className="playlist-toolbar-group">
             <button
               className="toolbar-button"
-              disabled={playlist.length === 0}
-              onClick={() => onAddNativeFiles ? void onAddNativeFiles() : fileInput.current?.click()}
-              title="Добавить ролики в расписание"
+              onClick={() => {
+                browserInsertBefore.current = null;
+                if (onAddNativeFiles) void onAddNativeFiles(null);
+                else fileInput.current?.click();
+              }}
+              title="Добавить ролики в конец расписания"
               type="button"
             >
               <FilePlus2 size={14} />
+            </button>
+            {/* Ролик кладут между соседями, а не в хвост недели: заставку — до
+                передачи, отбивку — после. Кнопки считают место от выделения,
+                поэтому работают и на нескольких выбранных строках. */}
+            <button
+              className="toolbar-button"
+              disabled={selectedIds.size === 0}
+              onClick={() => addRelativeToSelection("before")}
+              title="Добавить ролики перед выделенным"
+              type="button"
+            >
+              <ArrowUpFromLine size={14} />
+            </button>
+            <button
+              className="toolbar-button"
+              disabled={selectedIds.size === 0}
+              onClick={() => addRelativeToSelection("after")}
+              title="Добавить ролики после выделенного"
+              type="button"
+            >
+              <ArrowDownFromLine size={14} />
             </button>
             <button
               className="toolbar-button danger"
@@ -1346,6 +1408,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           onDragLeave={(event) => {
             if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
             setFileDropActive(false);
+            setDropBeforeId(null);
           }}
           onDragOver={(event) => {
             if (!event.dataTransfer.types.includes("Files")) return;
@@ -1356,7 +1419,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             if (!event.dataTransfer.types.includes("Files")) return;
             event.preventDefault();
             setFileDropActive(false);
-            acceptDroppedFiles(event.dataTransfer.files);
+            setDropBeforeId(null);
+            acceptDroppedFiles(event.dataTransfer.files, null);
           }}
           ref={playlistRows}
         >
@@ -1365,7 +1429,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               <FilePlus2 size={18} /> Отпустите файлы — они встанут в конец расписания
             </div>
           ) : null}
-          {timelineEntries.map((entry) => {
+          {timelineEntries.map((entry, index) => {
             const { asset } = entry;
             const onAir = onAirAssetId === asset.id;
             const stoppedHere = stoppedHereAssetId === asset.id;
@@ -1393,6 +1457,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               {/* Заголовок дня остаётся на месте даже когда день свёрнут:
                   им и держится сетка недели — по нему видно, где кончается
                   один эфирный день и начинается следующий. */}
+              {dropBeforeId === asset.id ? <div className="playlist-drop-line" /> : null}
               {entry.startsNewDay ? (
                 <div className={`schedule-day-divider ${dayFolded ? "folded" : ""}`}>
                   <button
@@ -1429,7 +1494,18 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 setRowMenu({ asset, x: event.clientX, y: event.clientY });
               }}
               onDragEnd={() => setDraggingIds([])}
-              onDragOver={(event) => event.preventDefault()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                // Файл, брошенный на строку, встаёт **перед** ней, если
+                // курсор в верхней половине, и после — если в нижней: так
+                // ведёт себя любой список, куда что-то вставляют.
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.dataTransfer.dropEffect = "copy";
+                const box = event.currentTarget.getBoundingClientRect();
+                const below = event.clientY > box.top + box.height / 2;
+                const nextId = timelineEntries[index + 1]?.asset.id ?? null;
+                setDropBeforeId(below ? nextId : asset.id);
+              }}
               onDragStart={() => {
                 const ids = selectedIds.has(asset.id) && selectedIds.size > 1
                   ? playlist.filter((item) => selectedIds.has(item.id)).map((item) => item.id)
@@ -1440,7 +1516,20 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 }
                 setDraggingIds(ids);
               }}
-              onDrop={() => {
+              onDrop={(event) => {
+                // Файлы из проводника разрезают расписание в этом месте;
+                // перетаскивание строк внутри списка осталось прежним.
+                if (event.dataTransfer.types.includes("Files")) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const box = event.currentTarget.getBoundingClientRect();
+                  const below = event.clientY > box.top + box.height / 2;
+                  const nextId = timelineEntries[index + 1]?.asset.id ?? null;
+                  acceptDroppedFiles(event.dataTransfer.files, below ? nextId : asset.id);
+                  setFileDropActive(false);
+                  setDropBeforeId(null);
+                  return;
+                }
                 if (draggingIds.length > 0) {
                   onMoveItems(draggingIds, asset.id);
                 }
@@ -1744,7 +1833,11 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
         <div className="playlist-footer">
           <span>{playlist.length} clips · {formatTimecode(playlistDuration, "25")} total</span>
           <button
-            onClick={() => onAddNativeFiles ? void onAddNativeFiles() : fileInput.current?.click()}
+            onClick={() => {
+              browserInsertBefore.current = null;
+              if (onAddNativeFiles) void onAddNativeFiles(null);
+              else fileInput.current?.click();
+            }}
             type="button"
           >
             + Add Clip
@@ -1759,7 +1852,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             onChange={(event) => {
               const chosen = Array.from(event.target.files ?? []);
               event.target.value = "";
-              if (chosen.length > 0) onAddFiles(chosen);
+              const insertBeforeId = browserInsertBefore.current;
+              browserInsertBefore.current = null;
+              if (chosen.length > 0) onAddFiles(chosen, insertBeforeId);
             }}
             ref={fileInput}
             type="file"

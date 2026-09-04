@@ -843,7 +843,11 @@ export function App() {
     }
   }
 
-  const addFiles = useCallback((files: File[], slot: ScheduleSlot = "current") => {
+  const addFiles = useCallback((
+    files: File[],
+    slot: ScheduleSlot = "current",
+    insertBeforeId: string | null = null,
+  ) => {
     const accepted = files.filter(
       (file) =>
         file.type.startsWith("video/") ||
@@ -855,13 +859,13 @@ export function App() {
         .map((file) => window.gruberDesktop?.getMediaFilePath(file) ?? "")
         .filter(Boolean);
       if (paths.length > 0) {
-        void analyzePaths(paths, slot);
+        void analyzePaths(paths, slot, insertBeforeId);
         return;
       }
     }
 
     const imported: MediaAsset[] = accepted.map((file, index) => ({
-      id: `local-${file.name}-${file.lastModified}-${index}`,
+      id: `local-${file.name}-${file.lastModified}-${index}-${window.crypto.randomUUID()}`,
       name: file.name,
       duration: "Analyzing…",
       durationSeconds: 0,
@@ -882,8 +886,7 @@ export function App() {
     }));
 
     setAssets((current) => [...current, ...imported]);
-    if (slot === "current") setPlaylist((current) => [...current, ...imported]);
-    else setFuturePlaylist((current) => [...current, ...imported]);
+    insertIntoSchedule(imported, slot, insertBeforeId);
     // Браузер отдаёт имя файла, а не путь к нему, и media-service такой ролик
     // открыть не может. Молчать об этом нельзя: строки встают в расписание и
     // выглядят рабочими, а в эфир уйдут чёрным кадром.
@@ -1133,29 +1136,91 @@ export function App() {
     }
   }
 
-  async function analyzePaths(paths: string[], slot: ScheduleSlot = "current") {
+  /**
+   * Разбор файлов и постановка их в расписание.
+   *
+   * `insertBeforeId` — строка, перед которой встанут новые ролики; `null` —
+   * в конец. Место важнее, чем кажется: заставку ставят между передачами, а
+   * не в хвост недели, и переносить её оттуда пришлось бы руками.
+   *
+   * Каждая постановка создаёт **новые строки**, даже если тот же файл уже
+   * стоит в расписании. Один ролик в эфирной неделе идёт по многу раз —
+   * отбивки, реклама, заставки, — и слияние по пути молча съедало повтор:
+   * оператор нажимал «добавить» и не видел ничего нового.
+   */
+  async function analyzePaths(
+    paths: string[],
+    slot: ScheduleSlot = "current",
+    insertBeforeId: string | null = null,
+  ) {
+    if (paths.length === 0) return;
     setMediaBusy(true);
     setOperationError(null);
-    const pathSet = new Set(paths);
-    const pending = paths.map(pendingAssetFromPath);
-    setAssets((current) => mergeAssets(current, pending));
-    if (slot === "current") setPlaylist((current) => mergeAssets(current, pending));
-    else setFuturePlaylist((current) => mergeAssets(current, pending));
+    const rows = paths.map((filePath) => ({
+      ...pendingAssetFromPath(filePath),
+      id: newScheduleRowId(filePath),
+    }));
+    const rowIds = new Set(rows.map((row) => row.id));
+    // Медиатека — это набор файлов, и там слияние по пути верно: второй
+    // экземпляр одного файла библиотеке не нужен.
+    setAssets((current) => mergeAssets(current, paths.map(pendingAssetFromPath)));
+    insertIntoSchedule(rows, slot, insertBeforeId);
     try {
-      addProbes(await probeMediaPaths(paths), slot);
+      const probes = await probeMediaPaths(paths);
+      const probedByPath = new Map(probes.map((probe) => [probe.filePath, probeToAsset(probe)]));
+      const ageAssets = mapAgeAssetPaths(ageLibrary?.imagePaths ?? []);
+      const dress = (asset: MediaAsset) => {
+        const [aged] = assignAgeAssets([asset], ageAssets, settings.ageTitleDurationSeconds);
+        const ready = aged ?? asset;
+        return settings.logoEnabled && settings.logoPath
+          ? assignChannelLogo([ready], settings.logoPath, settings)[0] ?? ready
+          : ready;
+      };
+      // Строки узнаются по опознавателю, а не по пути: одинаковых путей в
+      // расписании может быть сколько угодно, и разбор обязан попасть именно
+      // в те строки, которые только что поставили.
+      const applyProbe = (items: MediaAsset[]) => items.map((item) => {
+        if (!rowIds.has(item.id)) return item;
+        const probed = probedByPath.get(item.filePath);
+        return probed ? { ...dress(probed), id: item.id } : { ...item, status: "error" as const };
+      });
+      setAssets((current) => mergeAssets(current, probes.map(probeToAsset).map(dress)));
+      setPlaylist(applyProbe);
+      setFuturePlaylist(applyProbe);
+      setSelectedAssetId((current) => current || rows[0]?.id || "");
     } catch (error) {
       setOperationError(errorMessage(error));
       const markFailed = (items: MediaAsset[]) => items.map((item) =>
-        pathSet.has(item.filePath)
+        rowIds.has(item.id)
           ? { ...item, progress: undefined, status: "error" as const }
           : item
       );
-      setAssets(markFailed);
-      if (slot === "current") setPlaylist(markFailed);
-      else setFuturePlaylist(markFailed);
+      setAssets((current) => current.map((item) => (
+        paths.includes(item.filePath)
+          ? { ...item, progress: undefined, status: "error" as const }
+          : item
+      )));
+      setPlaylist(markFailed);
+      setFuturePlaylist(markFailed);
     } finally {
       setMediaBusy(false);
     }
+  }
+
+  /** Ставит готовые строки в расписание — перед указанной или в конец. */
+  function insertIntoSchedule(
+    rows: MediaAsset[],
+    slot: ScheduleSlot,
+    insertBeforeId: string | null,
+  ) {
+    const place = (current: MediaAsset[]) => {
+      if (!insertBeforeId) return [...current, ...rows];
+      const index = current.findIndex((asset) => asset.id === insertBeforeId);
+      if (index < 0) return [...current, ...rows];
+      return [...current.slice(0, index), ...rows, ...current.slice(index)];
+    };
+    if (slot === "current") setPlaylist(place);
+    else setFuturePlaylist(place);
   }
 
   function addProbes(probes: MediaProbe[], slot: ScheduleSlot = "current") {
@@ -1436,13 +1501,13 @@ export function App() {
     }
   }
 
-  function addFilesToActiveSchedule(files: File[]) {
-    addFiles(files, activeSchedule);
+  function addFilesToActiveSchedule(files: File[], insertBeforeId: string | null = null) {
+    addFiles(files, activeSchedule, insertBeforeId);
   }
 
-  async function addNativeFilesToActiveSchedule() {
+  async function addNativeFilesToActiveSchedule(insertBeforeId: string | null = null) {
     const paths = await window.gruberDesktop?.selectMediaFiles();
-    if (paths?.length) await analyzePaths(paths, activeSchedule);
+    if (paths?.length) await analyzePaths(paths, activeSchedule, insertBeforeId);
   }
 
   function addEffectToProject(effect: GraphicEffectAsset) {
@@ -3538,6 +3603,17 @@ function mergeAssets(current: MediaAsset[], incoming: MediaAsset[]): MediaAsset[
     ...merged,
     ...[...incomingByPath.values()].filter((asset) => !currentPaths.has(asset.filePath)),
   ];
+}
+
+/**
+ * Опознаватель строки расписания.
+ *
+ * Не хеш пути: один и тот же файл законно стоит в неделе десятки раз, и общий
+ * опознаватель склеивал бы эти строки в одну — вместе с их титрами, метками и
+ * выделением.
+ */
+function newScheduleRowId(filePath: string): string {
+  return `row-${hashString(filePath)}-${window.crypto.randomUUID()}`;
 }
 
 function pendingAssetFromPath(filePath: string): MediaAsset {

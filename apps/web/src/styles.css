@@ -2062,18 +2062,33 @@ p {
   background: var(--surface-hover);
 }
 
+/* Выбранная строка красится жёлтым так же заметно, как эфирная — зелёным, а
+   пропавшая — красным: у оператора три состояния строки, и различать их он
+   должен на прокрутке, не вчитываясь. */
 .playlist-row.selected {
   color: var(--text);
-  background: var(--accent-soft);
+  box-shadow: inset 4px 0 0 var(--accent), inset 0 0 28px rgba(245, 213, 101, 0.05);
+  background: linear-gradient(90deg, rgba(245, 213, 101, 0.2), rgba(245, 213, 101, 0.035) 78%);
 }
+
+.playlist-row.selected .playlist-status-stripe {
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(245, 213, 101, 0.75);
+}
+
+.playlist-row.selected .playlist-air-time { color: var(--accent); }
 
 .playlist-row.bulk-selected {
   box-shadow: inset 2px 0 0 #38bdf8;
   background: rgba(14, 165, 233, 0.055);
 }
 
+/* Щелчок ставит строке оба класса сразу, и голубая полоса набора перебивала
+   жёлтую: активная строка выглядела как просто добранная. Активная — жёлтая,
+   остальные строки набора остаются голубыми. */
 .playlist-row.selected.bulk-selected {
-  background: linear-gradient(90deg, rgba(14, 165, 233, 0.09), var(--accent-soft));
+  box-shadow: inset 4px 0 0 var(--accent), inset 0 0 28px rgba(245, 213, 101, 0.05);
+  background: linear-gradient(90deg, rgba(245, 213, 101, 0.2), rgba(245, 213, 101, 0.035) 78%);
 }
 
 .playlist-row.schedule-start-row {
@@ -2146,6 +2161,27 @@ p {
   outline: 1px dashed rgba(245, 213, 101, 0.55);
   outline-offset: -3px;
   background: rgba(245, 213, 101, 0.04);
+}
+
+/* Куда встанут перетаскиваемые файлы. Без этой черты сброс «между роликами»
+   не отличается от сброса в конец — и то, и другое выглядит как подсветка
+   всего списка. */
+.playlist-drop-line {
+  position: relative;
+  height: 0;
+  border-top: 2px solid var(--accent);
+  box-shadow: 0 0 10px rgba(245, 213, 101, 0.55);
+}
+
+.playlist-drop-line::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .playlist-drop-hint {
