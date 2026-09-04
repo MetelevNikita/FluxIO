@@ -28,12 +28,15 @@ const SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL: DesktopChannel = "dialog:select-audi
 const SAVE_SCHEDULE_FILE_CHANNEL: DesktopChannel = "dialog:save-schedule-file";
 const SELECT_ENCODING_SETTINGS_FILE_CHANNEL: DesktopChannel = "dialog:select-encoding-settings-file";
 const SAVE_ENCODING_SETTINGS_FILE_CHANNEL: DesktopChannel = "dialog:save-encoding-settings-file";
+const REVEAL_IN_FOLDER_CHANNEL: DesktopChannel = "shell:reveal-in-folder";
 const SERVICE_HEALTH_CHANNEL: DesktopChannel = "service:get-health";
 
 contextBridge.exposeInMainWorld("gruberDesktop", {
   getServiceHealth: (): Promise<unknown> =>
     ipcRenderer.invoke(SERVICE_HEALTH_CHANNEL) as Promise<unknown>,
   getMediaFilePath: (file: File): string => webUtils.getPathForFile(file),
+  revealInFolder: (filePath: string): Promise<boolean> =>
+    ipcRenderer.invoke(REVEAL_IN_FOLDER_CHANNEL, filePath) as Promise<boolean>,
   mediaApiBaseUrl:
     process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310",
   platform: process.platform,

@@ -28,6 +28,8 @@ export const SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL = "dialog:select-audio-track-d
 export const SAVE_SCHEDULE_FILE_CHANNEL = "dialog:save-schedule-file";
 export const SELECT_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:select-encoding-settings-file";
 export const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-settings-file";
+/** Показать файл в проводнике: оператор ищет ролик там, где он лежит. */
+export const REVEAL_IN_FOLDER_CHANNEL = "shell:reveal-in-folder";
 export const SERVICE_HEALTH_CHANNEL = "service:get-health";
 
 export type DesktopChannel =
@@ -54,4 +56,5 @@ export type DesktopChannel =
   | typeof SAVE_SCHEDULE_FILE_CHANNEL
   | typeof SELECT_ENCODING_SETTINGS_FILE_CHANNEL
   | typeof SAVE_ENCODING_SETTINGS_FILE_CHANNEL
+  | typeof REVEAL_IN_FOLDER_CHANNEL
   | typeof SERVICE_HEALTH_CHANNEL;

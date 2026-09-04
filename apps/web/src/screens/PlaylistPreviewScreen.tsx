@@ -1,13 +1,19 @@
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Captions,
+  Crosshair,
+  Eraser,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
   FlagTriangleRight,
   FilePlus2,
+  FileWarning,
   Film,
+  Link2,
   FolderOpen,
   Image,
   Maximize2,
@@ -16,13 +22,16 @@ import {
   MapPin,
   Pause,
   Play,
+  Redo2,
   Repeat2,
   RadioTower,
+  Search,
   Save,
   SkipBack,
   SkipForward,
   Square,
   Trash2,
+  Undo2,
   Volume2,
   VolumeX,
   X,
@@ -143,6 +152,24 @@ interface PlaylistPreviewScreenProps {
     assetIds: string[],
     updater: (asset: MediaAsset) => Partial<MediaAsset>,
   ) => void;
+  /** Удаление пачкой — одним шагом истории, а не по ролику за раз. */
+  onRemoveItems: (assetIds: string[]) => void;
+  /** Перенос между Current и Future без повторного импорта. */
+  onMoveToOtherSchedule: (assetIds: string[]) => void;
+  /** Подставить файл вместо потерянного, не теряя строку расписания. */
+  onLinkMissingFile: (assetId: string) => Promise<void>;
+  /** Показать файл в проводнике; в браузере моста нет — проп пустой. */
+  onRevealInFolder?: (filePath: string) => Promise<void>;
+  /** Очистить активное расписание целиком. */
+  onClearSchedule: () => void;
+  /** Поднять эфир с той сетки, в которой стоит оператор. */
+  onStartPlayout: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  /** Состояние эфира — только для подписи кнопки пуска. */
+  playoutState: string;
   effectLibrary: GraphicEffectAsset[];
   subtitleLibrary: SubtitleLibrary | null;
   onSelectSubtitleDirectory?: () => Promise<void>;
@@ -211,6 +238,17 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   onSelectScheduleLogoFile,
   onUpdateItem,
   onUpdateItems,
+  onRemoveItems,
+  onMoveToOtherSchedule,
+  onLinkMissingFile,
+  onRevealInFolder,
+  onClearSchedule,
+  onStartPlayout,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  playoutState,
   effectLibrary,
   subtitleLibrary,
   onSelectSubtitleDirectory,
@@ -224,10 +262,25 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   const seeking = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
-  /** Что показывает монитор: выбранный ролик или эфир. */
-  const [monitorSource, setMonitorSource] = useState<"clip" | "air">("clip");
+  /**
+   * Что показывает монитор: выбранный ролик или эфир.
+   *
+   * По умолчанию — эфир: оператор, открывая плейлист, первым делом смотрит,
+   * что уходит в линию, а не что лежит в выбранной строке.
+   */
+  const [monitorSource, setMonitorSource] = useState<"clip" | "air">("air");
   /** Ролик, для которого открыт вопрос «с какого места запускать». */
   const [takeTarget, setTakeTarget] = useState<MediaAsset | null>(null);
+  /** Строка поиска по расписанию: список не фильтруется, головка прыгает. */
+  const [search, setSearch] = useState("");
+  /** Куда попал последний прыжок поиска — по нему идёт следующий. */
+  const searchCursor = useRef(0);
+  /** Открытое меню строки: ролик и место, где нажали правую кнопку. */
+  const [rowMenu, setRowMenu] = useState<{ asset: MediaAsset; x: number; y: number } | null>(null);
+  /** Файлы тащат из проводника прямо в расписание. */
+  const [fileDropActive, setFileDropActive] = useState(false);
+  /** Дни, свёрнутые целиком: в неделе их семь, и листать все не нужно. */
+  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => new Set());
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewOffset, setPreviewOffset] = useState(0);
@@ -262,15 +315,37 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      if (!(event.ctrlKey || event.metaKey)) return;
       const target = event.target as HTMLElement | null;
+      // Поля ввода забирают сочетания себе: Ctrl+Z в строке поиска обязан
+      // отменять набранное, а не последнюю правку расписания.
       if (target?.closest("input, select, textarea, [contenteditable='true']")) return;
-      event.preventDefault();
-      setSelectedIds(new Set(playlist.map((asset) => asset.id)));
+      const key = event.key.toLowerCase();
+      if (key === "a") {
+        event.preventDefault();
+        setSelectedIds(new Set(playlist.map((asset) => asset.id)));
+        return;
+      }
+      // Возврат живёт на двух сочетаниях: Ctrl+Shift+Z знают монтажёры,
+      // Ctrl+Y — те, кто пришёл из офисных программ.
+      if (key === "z" && event.shiftKey) {
+        event.preventDefault();
+        onRedo();
+        return;
+      }
+      if (key === "y") {
+        event.preventDefault();
+        onRedo();
+        return;
+      }
+      if (key === "z") {
+        event.preventDefault();
+        onUndo();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [playlist]);
+  }, [playlist, onUndo, onRedo]);
 
   useEffect(() => {
     const demoTimeline = selectedAsset.id === "production";
@@ -356,8 +431,10 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   }, [currentTime, playing, realMediaPreview]);
 
   const scte35Markers = selectedAsset.scte35Markers ?? [];
+  // Пропавший ролик в сумму не входит: он не выйдет в эфир, и его минуты
+  // прятали бы недобор недели за длительностью, которой не существует.
   const playlistDuration = playlist.reduce(
-    (total, asset) => total + (asset.declaredDurationSeconds ?? asset.durationSeconds),
+    (total, asset) => total + airDurationSeconds(asset),
     scheduleMetadata?.delaySeconds ?? 0,
   );
   const scheduleTarget = scheduleMetadata?.targetDurationSeconds ?? 604_800;
@@ -367,10 +444,71 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     : scheduleVariance > 0
       ? "over"
       : "under";
+  /**
+   * Ролики, файла которых на диске нет.
+   *
+   * Строку расписания они не теряют — сетка эфира важнее, — но и молчать о них
+   * нельзя: в эфир такой ролик уйдёт чёрным кадром. Считаем их отдельно, чтобы
+   * хронометраж честно говорил, сколько времени сейчас держится на пустоте.
+   */
+  const missingAssets = useMemo(
+    () => playlist.filter((asset) => asset.status === "error"),
+    [playlist],
+  );
+  /** Сколько эфирного времени расписание не набирает из-за пропавших файлов. */
+  const missingDurationSeconds = useMemo(
+    () => missingAssets.reduce(
+      (total, asset) => total + (asset.declaredDurationSeconds ?? asset.durationSeconds),
+      0,
+    ),
+    [missingAssets],
+  );
   const timelineEntries = useMemo(
     () => buildScheduleTimeline(playlist, scheduleMetadata, activeSchedule),
     [activeSchedule, playlist, scheduleMetadata],
   );
+
+  /**
+   * Дни недели, из которых собрано расписание.
+   *
+   * Неделя эфира — это семь пачек по несколько десятков роликов, и переход к
+   * нужному дню прокруткой занимает больше времени, чем сама правка. День
+   * знает свой первый ролик (к нему прыгает панель), число строк и свой
+   * хронометраж — по нему видно, чем день набит.
+   */
+  const scheduleDays = useMemo(() => {
+    const days = new Map<string, {
+      key: string;
+      label: string;
+      dateLabel: string;
+      firstAssetId: string;
+      count: number;
+      durationSeconds: number;
+      missing: number;
+    }>();
+    for (const entry of timelineEntries) {
+      const known = days.get(entry.dayKey);
+      const duration = airDurationSeconds(entry.asset);
+      const missing = entry.asset.status === "error" ? 1 : 0;
+      if (known) {
+        known.count += 1;
+        known.durationSeconds += duration;
+        known.missing += missing;
+        continue;
+      }
+      days.set(entry.dayKey, {
+        key: entry.dayKey,
+        label: entry.dayLabel,
+        dateLabel: entry.dateLabel,
+        firstAssetId: entry.asset.id,
+        count: 1,
+        durationSeconds: duration,
+        missing,
+      });
+    }
+    return [...days.values()];
+  }, [timelineEntries]);
+
   const onAirAssetId = activeSchedule === "current" && playoutActive ? onAirItemId : null;
   const stoppedHereAssetId = activeSchedule === "current" ? recoveryAssetId : null;
   const collapsedCount = playlist.reduce(
@@ -544,6 +682,99 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
       selectionAnchorId.current = asset.id;
     }
     onSelectAsset(asset.id);
+  }
+
+  function toggleDay(dayKey: string): void {
+    setCollapsedDays((current) => {
+      const next = new Set(current);
+      if (!next.delete(dayKey)) next.add(dayKey);
+      return next;
+    });
+  }
+
+  /**
+   * Переход к дню недели.
+   *
+   * Свёрнутый день сначала раскрывается: прыжок к заголовку, за которым ничего
+   * нет, выглядит как «кнопка не сработала».
+   */
+  function jumpToDay(dayKey: string, firstAssetId: string): void {
+    setCollapsedDays((current) => {
+      if (!current.has(dayKey)) return current;
+      const next = new Set(current);
+      next.delete(dayKey);
+      return next;
+    });
+    window.requestAnimationFrame(() => scrollToAsset(firstAssetId));
+  }
+
+  /** Подводит строку расписания под глаз — серединой окна, а не краем. */
+  function scrollToAsset(assetId: string): void {
+    const row = playlistRows.current?.querySelector<HTMLElement>(`[data-asset-id="${assetId}"]`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  /**
+   * Вернуться к тому, что идёт в эфире.
+   *
+   * Недельное расписание листают далеко, и найти в нём текущий ролик глазами
+   * нечем. Если эфира нет — возвращаемся к отметке старта или к выбранному:
+   * кнопка не должна становиться мёртвой ровно тогда, когда эфир не идёт.
+   */
+  function locateOnAir(): void {
+    const target = onAirAssetId ?? scheduleStartMarker?.assetId ?? selectedAsset.id;
+    if (!target) return;
+    scrollToAsset(target);
+    onSelectAsset(target);
+    setSelectedIds(new Set([target]));
+    selectionAnchorId.current = target;
+  }
+
+  /**
+   * Прыжок к ближайшему совпадению.
+   *
+   * Список не фильтруется намеренно: расписание — это сетка времени, и
+   * выкинуть из неё непохожие строки значит показать оператору эфир, которого
+   * не существует. Поэтому поиск двигает только выделение.
+   */
+  function jumpToSearch(query: string, fromIndex: number): void {
+    const needle = query.trim().toLocaleLowerCase();
+    if (!needle) return;
+    const total = playlist.length;
+    for (let step = 0; step < total; step += 1) {
+      const index = (fromIndex + step) % total;
+      const asset = playlist[index];
+      if (!asset) continue;
+      if (!asset.name.toLocaleLowerCase().includes(needle)) continue;
+      searchCursor.current = index + 1;
+      scrollToAsset(asset.id);
+      onSelectAsset(asset.id);
+      setSelectedIds(new Set([asset.id]));
+      selectionAnchorId.current = asset.id;
+      return;
+    }
+  }
+
+  /** Ролики выше/ниже выбранного: ими режут расписание по месту. */
+  function trimAround(direction: "above" | "below"): void {
+    const index = playlist.findIndex((asset) => asset.id === selectedAsset.id);
+    if (index < 0) return;
+    const doomed = direction === "above"
+      ? playlist.slice(0, index)
+      : playlist.slice(index + 1);
+    if (doomed.length === 0) return;
+    const where = direction === "above" ? "выше" : "ниже";
+    if (!window.confirm(
+      `Удалить ${doomed.length} ролик(ов) ${where} «${selectedAsset.name}»? Действие отменяется через Ctrl+Z.`,
+    )) return;
+    onRemoveItems(doomed.map((asset) => asset.id));
+  }
+
+  /** Файлы, притащенные из проводника прямо в расписание. */
+  function acceptDroppedFiles(files: FileList | null): void {
+    const dropped = Array.from(files ?? []);
+    if (dropped.length === 0) return;
+    onAddFiles(dropped);
   }
 
   function controlTargetIds(assetId: string): string[] {
@@ -889,12 +1120,32 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             type="button"
           >Future <span>{futureCount}</span></button>
         </div>
-        <div className={`schedule-coverage ${scheduleCoverage}`}>
+        <div className={`schedule-coverage ${scheduleCoverage} ${missingAssets.length > 0 ? "has-missing" : ""}`}>
           <span>
             <b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b>
             {" → "}<b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b> +7 days
           </span>
           <strong>{formatHours(playlistDuration)} / 168:00:00</strong>
+          {/* Недобор и перебор — разные беды, и называть их одним словом
+              нельзя: первый оставляет эфир без картинки, второй срезает конец
+              недели. Обе величины стоят рядом, чтобы не считать их в уме. */}
+          <dl className="schedule-coverage-figures">
+            <div className={scheduleCoverage === "under" ? "warn" : ""}>
+              <dt>Недобор</dt>
+              <dd>{scheduleCoverage === "under" ? formatHours(Math.abs(scheduleVariance)) : "00:00:00"}</dd>
+            </div>
+            <div className={scheduleCoverage === "over" ? "warn" : ""}>
+              <dt>Перебор</dt>
+              <dd>{scheduleCoverage === "over" ? formatHours(scheduleVariance) : "00:00:00"}</dd>
+            </div>
+            <div className={missingAssets.length > 0 ? "missing" : ""}>
+              <dt>Нет файлов</dt>
+              <dd>
+                {missingAssets.length}
+                {missingAssets.length > 0 ? ` · ${formatHours(missingDurationSeconds)}` : ""}
+              </dd>
+            </div>
+          </dl>
           <em>
             {scheduleCoverage === "exact"
               ? "Schedule fits the 168-hour window"
@@ -909,25 +1160,173 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             </small>
           ) : <small>No .AIR/.TXT schedule loaded</small>}
         </div>
-        <div className="playlist-view-actions">
-          <span>
-            Item view
-            <b>{collapsedCount} collapsed</b>
-          </span>
-          <div>
+        {/* Панель управления расписанием. Всё, что делают с сеткой руками,
+            собрано в одном месте над списком: раньше половина этих действий
+            жила в строке ролика, половина — в футере, и оператор искал их
+            прокруткой на недельном расписании. */}
+        <div className="playlist-toolbar" role="toolbar" aria-label="Управление расписанием">
+          <div className="playlist-toolbar-group">
             <button
-              disabled={playlist.length === 0 || collapsedCount === 0}
-              onClick={() => setAllPlaylistItemsCollapsed(false)}
+              className="toolbar-button"
+              disabled={!canUndo}
+              onClick={onUndo}
+              title="Отменить · Ctrl+Z"
               type="button"
             >
-              <ChevronsDown size={13} /> Expand all
+              <Undo2 size={14} />
             </button>
             <button
-              disabled={playlist.length === 0 || allCollapsed}
-              onClick={() => setAllPlaylistItemsCollapsed(true)}
+              className="toolbar-button"
+              disabled={!canRedo}
+              onClick={onRedo}
+              title="Вернуть · Ctrl+Shift+Z или Ctrl+Y"
               type="button"
             >
-              <ChevronsUp size={13} /> Collapse all
+              <Redo2 size={14} />
+            </button>
+          </div>
+
+          <div className="playlist-toolbar-group search">
+            <button
+              className="toolbar-button"
+              disabled={playlist.length === 0}
+              onClick={locateOnAir}
+              title={onAirAssetId
+                ? "Показать ролик, который идёт в эфире"
+                : "Эфир не идёт: показать отметку старта или выбранный ролик"}
+              type="button"
+            >
+              <Crosshair size={14} />
+            </button>
+            <label className="playlist-search">
+              <Search size={13} />
+              <input
+                aria-label="Поиск ролика по расписанию"
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  searchCursor.current = 0;
+                  jumpToSearch(event.target.value, 0);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  jumpToSearch(search, searchCursor.current);
+                }}
+                placeholder="Найти ролик…"
+                type="search"
+                value={search}
+              />
+              {search ? (
+                <button
+                  aria-label="Сбросить поиск"
+                  onClick={() => { setSearch(""); searchCursor.current = 0; }}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              ) : null}
+            </label>
+          </div>
+
+          <div className="playlist-toolbar-group">
+            <button
+              className="toolbar-button"
+              disabled={playlist.length === 0}
+              onClick={() => onAddNativeFiles ? void onAddNativeFiles() : fileInput.current?.click()}
+              title="Добавить ролики в расписание"
+              type="button"
+            >
+              <FilePlus2 size={14} />
+            </button>
+            <button
+              className="toolbar-button danger"
+              disabled={playlist.length < 2}
+              onClick={() => trimAround("above")}
+              title={`Удалить всё выше «${selectedAsset.name}»`}
+              type="button"
+            >
+              <Trash2 size={13} /><ArrowUp size={11} />
+            </button>
+            <button
+              className="toolbar-button danger"
+              disabled={playlist.length < 2}
+              onClick={() => trimAround("below")}
+              title={`Удалить всё ниже «${selectedAsset.name}»`}
+              type="button"
+            >
+              <Trash2 size={13} /><ArrowDown size={11} />
+            </button>
+            <button
+              className="toolbar-button danger"
+              disabled={playlist.length === 0}
+              onClick={() => {
+                if (!window.confirm(
+                  `Очистить расписание ${activeSchedule === "current" ? "Current" : "Future"} целиком?`,
+                )) return;
+                onClearSchedule();
+              }}
+              title="Очистить расписание целиком"
+              type="button"
+            >
+              <Eraser size={14} />
+            </button>
+          </div>
+
+          <div className="playlist-toolbar-group">
+            <button
+              className={`toolbar-button air ${playoutActive ? "live" : ""}`}
+              disabled={playlist.length === 0}
+              onClick={onStartPlayout}
+              title={playoutActive
+                ? `Эфир идёт (${playoutState}) — перезапустить с расписания ${activeSchedule === "current" ? "Current" : "Future"}`
+                : `Запустить эфир с расписания ${activeSchedule === "current" ? "Current" : "Future"}`}
+              type="button"
+            >
+              <RadioTower size={14} />
+              <span>{activeSchedule === "current" ? "Current" : "Future"}</span>
+            </button>
+          </div>
+
+          {/* Дни недели: переход к нужному дню одним нажатием. Недельная сетка
+              это семь пачек по несколько десятков роликов, и прокрутка к
+              четвергу занимает больше времени, чем сама правка. */}
+          {scheduleDays.length > 1 ? (
+            <div className="playlist-toolbar-group days">
+              {scheduleDays.map((day) => (
+                <button
+                  className={`toolbar-day ${collapsedDays.has(day.key) ? "folded" : ""} ${day.missing > 0 ? "has-missing" : ""}`}
+                  key={day.key}
+                  onClick={() => jumpToDay(day.key, day.firstAssetId)}
+                  title={`${day.label}, ${day.dateLabel} · ${day.count} ролик(ов) · ${formatHours(day.durationSeconds)}${
+                    day.missing > 0 ? ` · нет файлов: ${day.missing}` : ""
+                  }`}
+                  type="button"
+                >
+                  {weekdayShort(day.label)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="playlist-toolbar-group right">
+            <span className="playlist-toolbar-count">{collapsedCount} свёрнуто</span>
+            <button
+              className="toolbar-button"
+              disabled={playlist.length === 0 || collapsedCount === 0}
+              onClick={() => setAllPlaylistItemsCollapsed(false)}
+              title="Развернуть все строки"
+              type="button"
+            >
+              <ChevronsDown size={14} />
+            </button>
+            <button
+              className="toolbar-button"
+              disabled={playlist.length === 0 || allCollapsed}
+              onClick={() => setAllPlaylistItemsCollapsed(true)}
+              title="Свернуть все строки"
+              type="button"
+            >
+              <ChevronsUp size={14} />
             </button>
           </div>
         </div>
@@ -937,7 +1336,35 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           <span>Clip name</span>
           <span>Codec</span>
         </div>
-        <div className="playlist-rows" ref={playlistRows}>
+        <div
+          className={`playlist-rows ${fileDropActive ? "file-drop" : ""}`}
+          onDragEnter={(event) => {
+            // Перетаскивание строк внутри списка сюда не относится: у него нет
+            // файлов, и подсветка «бросьте файлы» на нём только мешает.
+            if (event.dataTransfer.types.includes("Files")) setFileDropActive(true);
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            setFileDropActive(false);
+          }}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            setFileDropActive(false);
+            acceptDroppedFiles(event.dataTransfer.files);
+          }}
+          ref={playlistRows}
+        >
+          {fileDropActive ? (
+            <div className="playlist-drop-hint">
+              <FilePlus2 size={18} /> Отпустите файлы — они встанут в конец расписания
+            </div>
+          ) : null}
           {timelineEntries.map((entry) => {
             const { asset } = entry;
             const onAir = onAirAssetId === asset.id;
@@ -949,18 +1376,58 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                   effectiveClipDuration(asset) - onAirElapsedSeconds,
                 )
               : null;
+            // Файла нет на диске. Строку не выбрасываем — сетка эфира важнее
+            // одного пропавшего файла, — но красим её так же заметно, как
+            // идущий ролик: зелёное это «идёт», красное это «нечем играть».
+            const missing = asset.status === "error";
+            const dayFolded = collapsedDays.has(entry.dayKey);
+            const day = entry.startsNewDay
+              ? scheduleDays.find((candidate) => candidate.key === entry.dayKey)
+              : null;
+            // Свёрнутый день показывает только свой заголовок. Строки при этом
+            // не выбрасываются из расписания — они по-прежнему в эфире, просто
+            // не занимают экран.
+            if (dayFolded && !entry.startsNewDay) return null;
             return (
             <div className="playlist-timeline-entry" key={asset.id}>
+              {/* Заголовок дня остаётся на месте даже когда день свёрнут:
+                  им и держится сетка недели — по нему видно, где кончается
+                  один эфирный день и начинается следующий. */}
               {entry.startsNewDay ? (
-                <div className="schedule-day-divider">
+                <div className={`schedule-day-divider ${dayFolded ? "folded" : ""}`}>
+                  <button
+                    aria-expanded={!dayFolded}
+                    className="schedule-day-toggle"
+                    onClick={() => toggleDay(entry.dayKey)}
+                    title={dayFolded ? `Показать ${entry.dayLabel}` : `Скрыть ${entry.dayLabel}`}
+                    type="button"
+                  >
+                    {dayFolded ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                  </button>
                   <strong>{entry.dayLabel}</strong>
+                  {day ? (
+                    <em className={day.missing > 0 ? "has-missing" : ""}>
+                      {day.count} · {formatHours(day.durationSeconds)}
+                      {day.missing > 0 ? ` · нет файлов: ${day.missing}` : ""}
+                    </em>
+                  ) : null}
                   <span>{entry.dateLabel}</span>
                 </div>
               ) : null}
+            {dayFolded ? null : (
             <div
-              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} ${missing ? "missing-file-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
               data-asset-id={asset.id}
               draggable
+              onContextMenu={(event) => {
+                event.preventDefault();
+                if (!selectedIds.has(asset.id)) {
+                  setSelectedIds(new Set([asset.id]));
+                  selectionAnchorId.current = asset.id;
+                }
+                onSelectAsset(asset.id);
+                setRowMenu({ asset, x: event.clientX, y: event.clientY });
+              }}
               onDragEnd={() => setDraggingIds([])}
               onDragOver={(event) => event.preventDefault()}
               onDragStart={() => {
@@ -1020,7 +1487,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                   <strong title={asset.name}>{asset.name}</strong>
                   {!collapsed ? (
                     <span className="playlist-clip-meta">
-                      <span>{asset.duration}</span>
+                      {/* У пропавшего ролика хронометраж нулевой: в эфире его
+                          не будет, и всё, что стоит ниже, выйдет раньше. */}
+                      <span>{missing ? "00:00:00:00" : asset.duration}</span>
                       <select
                         aria-label={`Schedule type for ${asset.name}`}
                         className="playlist-schedule-type"
@@ -1066,6 +1535,11 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                     </span>
                   ) : null}
                   {stoppedHere ? <span className="collapsed-state stopped"><AlertTriangle size={11} /> STOPPED</span> : null}
+                  {missing ? (
+                    <span className="collapsed-state missing" title={asset.filePath}>
+                      <FileWarning size={11} /> NO FILE
+                    </span>
+                  ) : null}
                   <span className={`collapsed-overlay age ${asset.ageTitle?.enabled ? "enabled" : ""}`}>
                     AGE {asset.ageTitle?.enabled ? asset.ageTitle.text : "OFF"}
                   </span>
@@ -1143,6 +1617,16 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                   />
                   LOGO
                 </label>
+                {missing ? (
+                  <button
+                    className="playlist-link-file"
+                    onClick={() => void onLinkMissingFile(asset.id)}
+                    title={`Файл не найден: ${asset.filePath}. Указать файл вручную.`}
+                    type="button"
+                  >
+                    <Link2 size={12} /> Link file
+                  </button>
+                ) : null}
                 <button
                   className={`playlist-start-button ${playoutActive ? "on-air" : ""}`}
                   disabled={activeSchedule !== "current" || takeBusy || asset.status !== "analyzed"}
@@ -1252,6 +1736,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 </span>
               ) : null}
             </div>
+            )}
             </div>
             );
           })}
@@ -1264,18 +1749,38 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           >
             + Add Clip
           </button>
+          {/* Значение поля сбрасывается после каждого выбора: браузер не шлёт
+              `change`, если выбрали тот же файл, что и в прошлый раз, — и
+              снаружи это выглядит как «кнопка не работает». */}
           <input
-            accept="video/*,.mxf,.mkv,.ts"
+            accept="video/*,.mxf,.mkv,.ts,.mov,.mp4,.m4v,.avi"
             className="visually-hidden"
             multiple
-            onChange={(event) =>
-              onAddFiles(Array.from(event.target.files ?? []))
-            }
+            onChange={(event) => {
+              const chosen = Array.from(event.target.files ?? []);
+              event.target.value = "";
+              if (chosen.length > 0) onAddFiles(chosen);
+            }}
             ref={fileInput}
             type="file"
           />
         </div>
       </aside>
+
+      {rowMenu ? (
+        <RowContextMenu
+          asset={rowMenu.asset}
+          onClose={() => setRowMenu(null)}
+          onDelete={() => onRemoveItems(controlTargetIds(rowMenu.asset.id))}
+          onLinkFile={() => void onLinkMissingFile(rowMenu.asset.id)}
+          onMoveToOtherSchedule={() => onMoveToOtherSchedule(controlTargetIds(rowMenu.asset.id))}
+          onReveal={onRevealInFolder ? () => void onRevealInFolder(rowMenu.asset.filePath) : undefined}
+          selectedCount={controlTargetIds(rowMenu.asset.id).length}
+          targetSchedule={activeSchedule === "current" ? "Future" : "Current"}
+          x={rowMenu.x}
+          y={rowMenu.y}
+        />
+      ) : null}
 
       {takeTarget ? (
         <TakeOnAirDialog
@@ -2007,6 +2512,82 @@ function broadcastChips(asset: MediaAsset): {
 }
 
 /**
+ * Меню строки расписания — по правой кнопке.
+ *
+ * Три действия, которые оператор делает, глядя на строку: найти файл на диске,
+ * убрать ролик и перебросить его в соседнюю сетку. Больше сюда класть нельзя:
+ * меню, которое надо читать, медленнее панели, ради которой его и открыли.
+ */
+function RowContextMenu({
+  asset, x, y, selectedCount, targetSchedule,
+  onClose, onDelete, onLinkFile, onMoveToOtherSchedule, onReveal,
+}: {
+  asset: MediaAsset;
+  x: number;
+  y: number;
+  selectedCount: number;
+  targetSchedule: "Current" | "Future";
+  onClose: () => void;
+  onDelete: () => void;
+  onLinkFile: () => void;
+  onMoveToOtherSchedule: () => void;
+  onReveal?: () => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    // Прокрутка списка уводит меню от строки, к которой оно относится, —
+    // закрываем и на ней тоже.
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+
+  const run = (action: () => void) => () => {
+    action();
+    onClose();
+  };
+
+  return (
+    <div
+      className="row-context-menu"
+      onPointerDown={(event) => event.stopPropagation()}
+      role="menu"
+      style={{
+        // Меню у нижнего края окна открывается вверх: иначе последние строки
+        // расписания получают меню за пределами экрана.
+        left: Math.min(x, window.innerWidth - 240),
+        top: Math.min(y, window.innerHeight - 170),
+      }}
+    >
+      <span className="row-context-title" title={asset.filePath}>
+        {asset.name}
+        {selectedCount > 1 ? <b>{selectedCount}</b> : null}
+      </span>
+      <button disabled={!onReveal} onClick={run(() => onReveal?.())} role="menuitem" type="button">
+        <FolderOpen size={13} /> Reveal in Finder
+      </button>
+      {asset.status === "error" ? (
+        <button onClick={run(onLinkFile)} role="menuitem" type="button">
+          <Link2 size={13} /> Link file…
+        </button>
+      ) : null}
+      <button onClick={run(onMoveToOtherSchedule)} role="menuitem" type="button">
+        <FlagTriangleRight size={13} /> Move to {targetSchedule}
+      </button>
+      <button className="danger" onClick={run(onDelete)} role="menuitem" type="button">
+        <Trash2 size={13} /> Delete
+      </button>
+    </div>
+  );
+}
+
+/**
  * С какого места поднимать эфир.
  *
  * Вопрос задаётся один раз и здесь: «взять в эфир» на живом эфире — это
@@ -2221,6 +2802,26 @@ function fxDensityClass(asset: MediaAsset): string {
 
 function effectiveClipDuration(asset: MediaAsset): number {
   return Math.max(0.04, airDurationSeconds(asset));
+}
+
+/**
+ * Короткое имя дня недели.
+ *
+ * Обрезка по двум буквам даёт «По», «Че», «Пя» — так дни не пишет никто, и
+ * читаются они хуже полного слова, ради которого сокращение и делали.
+ */
+const weekdayAbbreviations: Record<string, string> = {
+  "Понедельник": "Пн",
+  "Вторник": "Вт",
+  "Среда": "Ср",
+  "Четверг": "Чт",
+  "Пятница": "Пт",
+  "Суббота": "Сб",
+  "Воскресенье": "Вс",
+};
+
+function weekdayShort(label: string): string {
+  return weekdayAbbreviations[label] ?? label.slice(0, 2);
 }
 
 /** Из чего собрана дорожка: оператор должен видеть, что это одна сущность. */

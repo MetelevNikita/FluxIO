@@ -10,6 +10,8 @@ declare global {
       selectLogoFile: () => Promise<string | null>;
       selectMediaDirectory: () => Promise<string | null>;
       selectMediaFiles: () => Promise<string[]>;
+      /** Показать файл в проводнике — им оператор ищет пропавший ролик. */
+      revealInFolder: (filePath: string) => Promise<boolean>;
       selectScheduleFile: () => Promise<string | null>;
       selectEncodingSettingsFile: () => Promise<{
         content: string;

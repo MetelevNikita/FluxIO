@@ -357,6 +357,14 @@ export function App() {
   const stableClearStartMarker = useStableCallback(clearStartMarker);
   const stableStartFromPlaylistItem = useStableCallback(startFromPlaylistItem);
   const stableStartCompositePreview = useStableCallback(startCompositePreview);
+  const stableRemovePlaylistItems = useStableCallback(removePlaylistItems);
+  const stableMoveItemsToOtherSchedule = useStableCallback(moveItemsToOtherSchedule);
+  const stableLinkMissingFile = useStableCallback(linkMissingFile);
+  const stableRevealAssetInFolder = useStableCallback(revealAssetInFolder);
+  const stableClearActiveImport = useStableCallback(clearActiveImport);
+  const stableStartPlayoutFromActiveSchedule = useStableCallback(
+    () => void startPlayoutFromActiveSchedule(),
+  );
   // Массив, собранный прямо в JSX, менял бы идентичность на каждом опросе и
   // тянул бы за собой весь экран плейлиста.
   const audioProgramLanguages = useMemo(
@@ -415,6 +423,68 @@ export function App() {
   const [takeBusy, setTakeBusy] = useState(false);
   const [settingsProfileBusy, setSettingsProfileBusy] = useState(false);
   const [settingsProfileMessage, setSettingsProfileMessage] = useState<string | null>(null);
+  /* ------------------- отмена и возврат правок расписания ------------------ */
+
+  /**
+   * История расписания — снимками обоих списков.
+   *
+   * Правки приходят из десятка мест: перестановка, удаление, AGE, логотип,
+   * эффекты, импорт. Заводить отмену в каждом значило бы забыть её в
+   * одиннадцатом, поэтому история слушает сами списки: любое изменение
+   * ссылки — шаг, который можно отменить.
+   */
+  const playlistHistory = useRef<{
+    past: { current: MediaAsset[]; future: MediaAsset[] }[];
+    ahead: { current: MediaAsset[]; future: MediaAsset[] }[];
+  }>({ past: [], ahead: [] });
+  const playlistSnapshot = useRef({ current: playlist, future: futurePlaylist });
+  /** Шаг применяет сама история — записывать его обратно нельзя. */
+  const applyingHistory = useRef(false);
+  const [historyDepth, setHistoryDepth] = useState({ undo: 0, redo: 0 });
+
+  useEffect(() => {
+    const previous = playlistSnapshot.current;
+    const next = { current: playlist, future: futurePlaylist };
+    playlistSnapshot.current = next;
+    if (previous.current === next.current && previous.future === next.future) return;
+    // Шаг применён самой историей или восстановлением сессии — записывать его
+    // обратно нельзя: иначе первое же «Отменить» возвращало бы пустое
+    // расписание, которое было до загрузки снимка.
+    if (applyingHistory.current) {
+      applyingHistory.current = false;
+      return;
+    }
+    const history = playlistHistory.current;
+    history.past.push(previous);
+    if (history.past.length > 80) history.past.shift();
+    history.ahead = [];
+    setHistoryDepth({ undo: history.past.length, redo: 0 });
+  }, [playlist, futurePlaylist]);
+
+  const undoPlaylistChange = useCallback(() => {
+    const history = playlistHistory.current;
+    const step = history.past.pop();
+    if (!step) return;
+    history.ahead.push(playlistSnapshot.current);
+    applyingHistory.current = true;
+    setPlaylist(step.current);
+    setFuturePlaylist(step.future);
+    setHistoryDepth({ undo: history.past.length, redo: history.ahead.length });
+  }, []);
+
+  const redoPlaylistChange = useCallback(() => {
+    const history = playlistHistory.current;
+    const step = history.ahead.pop();
+    if (!step) return;
+    history.past.push(playlistSnapshot.current);
+    applyingHistory.current = true;
+    setPlaylist(step.current);
+    setFuturePlaylist(step.future);
+    setHistoryDepth({ undo: history.past.length, redo: history.ahead.length });
+  }, []);
+
+  /** Есть ли нативный мост: в браузере часть диалогов открыть нечем. */
+  const desktopBridgeAvailable = Boolean(window.gruberDesktop);
   const workspaceRestoreStarted = useRef(false);
   const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
   const currentPlaylistSyncChain = useRef<Promise<void>>(Promise.resolve());
@@ -656,6 +726,9 @@ export function App() {
       ? recoveryPointForPlaylist(restoredCurrentPlaylist, session.checkpoint)
       : null;
     setAssets(restoredAssets);
+    // Загрузка снимка — не действие оператора, и отменять её нечем: сессия
+    // приходит из базы, а не из его правок.
+    applyingHistory.current = true;
     setPlaylist(restoredCurrentPlaylist);
     setFuturePlaylist(restoredFuturePlaylist);
     setCurrentScheduleMetadata(snapshot.currentScheduleMetadata);
@@ -811,6 +884,18 @@ export function App() {
     setAssets((current) => [...current, ...imported]);
     if (slot === "current") setPlaylist((current) => [...current, ...imported]);
     else setFuturePlaylist((current) => [...current, ...imported]);
+    // Браузер отдаёт имя файла, а не путь к нему, и media-service такой ролик
+    // открыть не может. Молчать об этом нельзя: строки встают в расписание и
+    // выглядят рабочими, а в эфир уйдут чёрным кадром.
+    if (imported.length > 0) {
+      setOperationError(
+        `Браузер не отдаёт пути к файлам: ${imported.length} ролик(ов) добавлены без анализа. ` +
+        "Откройте FluxIO в приложении или укажите файл кнопкой Link file в строке расписания.",
+      );
+    }
+    if (accepted.length === 0 && files.length > 0) {
+      setOperationError("Ни один из выбранных файлов не похож на видео.");
+    }
   }, []);
 
   async function addNativeFiles(slot: ScheduleSlot = "current") {
@@ -1113,6 +1198,110 @@ export function App() {
     }
     if (selectedAssetId === assetId) {
       setSelectedAssetId(next[removedIndex]?.id ?? next[removedIndex - 1]?.id ?? "");
+    }
+  }
+
+  /**
+   * Удаление пачкой — одним шагом истории.
+   *
+   * «Снять всё выше отметки» на недельном расписании это сотни роликов:
+   * поштучное удаление дало бы сотню шагов отмены и столько же перерисовок.
+   */
+  function removePlaylistItems(assetIds: string[]) {
+    const removing = new Set(assetIds);
+    if (removing.size === 0) return;
+    const next = visiblePlaylist.filter((asset) => !removing.has(asset.id));
+    setActivePlaylist(next);
+    if (activeSchedule === "current" && scheduleStartMarker && removing.has(scheduleStartMarker.assetId)) {
+      setScheduleStartMarker(null);
+    }
+    if (removing.has(selectedAssetId)) setSelectedAssetId(next[0]?.id ?? "");
+    setScheduleActionMessage(`Removed ${removing.size} clip(s) from the ${activeSchedule} schedule.`);
+  }
+
+  /**
+   * Переносит ролики между Current и Future.
+   *
+   * Расписание следующей недели собирают из текущего: перекладывать ролики
+   * повторным импортом значило бы потерять всё, что оператор на них поставил.
+   */
+  function moveItemsToOtherSchedule(assetIds: string[]) {
+    const moving = new Set(assetIds);
+    if (moving.size === 0) return;
+    const source = activeSchedule === "current" ? playlist : futurePlaylist;
+    const taken = source.filter((asset) => moving.has(asset.id));
+    if (taken.length === 0) return;
+    const rest = source.filter((asset) => !moving.has(asset.id));
+    if (activeSchedule === "current") {
+      setPlaylist(rest);
+      setFuturePlaylist((current) => [...current, ...taken]);
+      if (scheduleStartMarker && moving.has(scheduleStartMarker.assetId)) setScheduleStartMarker(null);
+    } else {
+      setFuturePlaylist(rest);
+      setPlaylist((current) => [...current, ...taken]);
+    }
+    if (moving.has(selectedAssetId)) setSelectedAssetId(rest[0]?.id ?? "");
+    setScheduleActionMessage(
+      `Moved ${taken.length} clip(s) to ${activeSchedule === "current" ? "Future" : "Current"}.`,
+    );
+  }
+
+  /**
+   * Подставляет файл вместо потерянного.
+   *
+   * Расписание хранит пути, а не файлы: после переноса проекта ролик остаётся
+   * в сетке, но читать его нечем. Ролик при этом не выбрасывается — эфирная
+   * сетка обязана сохраниться, — поэтому оператор указывает новый файл прямо
+   * в строке, и она перечитывается ffprobe.
+   */
+  async function linkMissingFile(assetId: string) {
+    const asset = visiblePlaylist.find((item) => item.id === assetId);
+    if (!asset) return;
+    const picked = await window.gruberDesktop?.selectMediaFiles();
+    const filePath = picked?.[0];
+    if (!filePath) return;
+    setMediaBusy(true);
+    setOperationError(null);
+    try {
+      const [probe] = await probeMediaPaths([filePath]);
+      if (!probe) throw new Error("The media service could not analyze the selected file");
+      const probed = probeToAsset(probe);
+      // Опознаватель и вся эфирная обвязка ролика остаются прежними: менялся
+      // файл, а не строка расписания. Иначе с роликом ушли бы титры,
+      // возрастная плашка, метки SCTE-35 и его место в отметке старта.
+      const relinked = (items: MediaAsset[]) => items.map((item) => (item.id === assetId
+        ? {
+            ...item,
+            ...probed,
+            id: item.id,
+            scheduleType: item.scheduleType,
+            declaredDurationSeconds: item.declaredDurationSeconds,
+            scheduleLineNumber: item.scheduleLineNumber,
+            ageTitle: item.ageTitle,
+            itemLogo: item.itemLogo,
+            effects: item.effects,
+            scenes: item.scenes,
+            audioTracks: item.audioTracks,
+            subtitles: item.subtitles,
+            scte35Markers: item.scte35Markers,
+          }
+        : item));
+      setAssets(relinked);
+      setPlaylist(relinked);
+      setFuturePlaylist(relinked);
+      setScheduleActionMessage(`Linked "${probed.name}" to the schedule row of "${asset.name}".`);
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
+  async function revealAssetInFolder(filePath: string) {
+    if (!filePath) return;
+    const shown = await window.gruberDesktop?.revealInFolder(filePath);
+    if (shown === false) {
+      setOperationError(`Could not open the folder for ${filePath}.`);
     }
   }
 
@@ -2838,6 +3027,34 @@ export function App() {
     }
   }
 
+  /**
+   * Пуск эфира с той сетки, в которой стоит оператор.
+   *
+   * С вкладки Future это единственный способ поднять её, не дожидаясь
+   * повышения: в запрос уходит именно она, а Current остаётся продолжением
+   * только тогда, когда эфир идёт с неё.
+   */
+  async function startPlayoutFromActiveSchedule() {
+    if (activeSchedule === "current") {
+      await startPlayout(scheduleStartMarker ? "default" : "beginning");
+      return;
+    }
+    setOperationError(null);
+    try {
+      if (futurePlaylist.length === 0) {
+        setOperationError("The Future schedule is empty.");
+        return;
+      }
+      setPlayoutStatus(await startPlayoutSession(
+        buildStartRequest(futurePlaylist, settings, []),
+      ));
+      setRecoveryCheckpoint(null);
+      setScheduleActionMessage("Playout started from the Future schedule.");
+    } catch (error) {
+      setOperationError(errorMessage(error));
+    }
+  }
+
   async function stopPlayout() {
     setOperationError(null);
     try {
@@ -2987,6 +3204,17 @@ export function App() {
             onClearStartMarker={stableClearStartMarker}
             onStartFromItem={stableStartFromPlaylistItem}
             onStartCompositePreview={stableStartCompositePreview}
+            onRemoveItems={stableRemovePlaylistItems}
+            onMoveToOtherSchedule={stableMoveItemsToOtherSchedule}
+            onLinkMissingFile={stableLinkMissingFile}
+            onRevealInFolder={desktopBridgeAvailable ? stableRevealAssetInFolder : undefined}
+            onClearSchedule={stableClearActiveImport}
+            onStartPlayout={stableStartPlayoutFromActiveSchedule}
+            onUndo={undoPlaylistChange}
+            onRedo={redoPlaylistChange}
+            canUndo={historyDepth.undo > 0}
+            canRedo={historyDepth.redo > 0}
+            playoutState={playoutStatus?.state ?? "idle"}
           />
         ) : (
           <EmptyPlaylist

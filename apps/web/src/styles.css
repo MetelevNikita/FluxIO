@@ -1375,10 +1375,12 @@ p {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Кегль здесь на 15% крупнее остального списка: на эту строку смотрят с
+   расстояния вытянутой руки, между делом, и мелкие цифры в ней не читаются. */
 .schedule-coverage > span,
 .schedule-coverage > strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: 11.5px;
 }
 
 .schedule-coverage > strong { text-align: right; }
@@ -1388,7 +1390,7 @@ p {
   grid-column: 1 / -1;
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10.5px;
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1397,6 +1399,222 @@ p {
 .schedule-coverage.over > em { color: #fb7185; }
 .schedule-coverage.under > em { color: var(--warning); }
 .schedule-coverage.exact > em { color: #4ade80; }
+
+/* Недобор, перебор и пропавшие файлы — три разные беды, и стоят они рядом:
+   считать их в уме по одной сводной строке оператор не должен. */
+.schedule-coverage-figures {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 2px 0 0;
+}
+
+.schedule-coverage-figures > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-deep);
+}
+
+.schedule-coverage-figures dt {
+  color: var(--muted-dark);
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.schedule-coverage-figures dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-coverage-figures > div.warn { border-color: rgba(251, 113, 133, 0.45); }
+.schedule-coverage-figures > div.warn dd { color: #fb7185; }
+.schedule-coverage-figures > div.warn dt { color: #fb7185; }
+
+/* Пропавшие файлы красим тем же красным, что и их строки в расписании:
+   один цвет — одна беда, и связь читается без подписи. */
+.schedule-coverage-figures > div.missing {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.schedule-coverage-figures > div.missing dt,
+.schedule-coverage-figures > div.missing dd { color: #fca5a5; }
+
+/* -------------------- панель управления расписанием ---------------------- */
+
+/* Всё, что делают с сеткой руками, стоит над списком одной строкой: отмена,
+   поиск, обрезка, пуск. Раньше половина этих действий жила в строке ролика, и
+   на недельном расписании их искали прокруткой. */
+.playlist-toolbar {
+  min-height: 38px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 5px 8px 5px 12px;
+  background: rgba(17, 20, 24, 0.78);
+}
+
+.playlist-toolbar-group {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Группы разделены чертой, а не пустотой: без неё десяток иконок в ряд
+   читается как один сплошной набор, и «удалить всё» стоит вплотную к
+   безобидной прокрутке. */
+.playlist-toolbar-group + .playlist-toolbar-group {
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+}
+
+.playlist-toolbar-group.right {
+  margin-left: auto;
+  border-left: none;
+  padding-left: 0;
+}
+
+/* Поиск отдаёт место кнопкам: они постоянного размера, а строку можно сжать
+   до пары слов и всё равно набрать в неё имя. */
+.playlist-toolbar-group.search { flex: 1 1 140px; min-width: 0; }
+
+.playlist-toolbar-count {
+  color: var(--muted-dark);
+  font-size: 9px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.toolbar-button {
+  height: 26px;
+  min-width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 7px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.toolbar-button:hover:not(:disabled) {
+  border-color: rgba(245, 213, 101, 0.42);
+  color: var(--accent);
+}
+
+.toolbar-button:disabled { opacity: 0.32; }
+
+/* Разрушающие действия отличаются цветом ещё до наведения: «удалить всё выше»
+   промахом мыши стоит оператору половины расписания. */
+.toolbar-button.danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.toolbar-button.air {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: #86efac;
+}
+
+.toolbar-button.air:hover:not(:disabled) {
+  border-color: #4ade80;
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+/* Идущий эфир виден по кнопке пуска, а не только в мониторе. */
+.toolbar-button.air.live {
+  background: rgba(34, 197, 94, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.35);
+}
+
+.playlist-search {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 7px;
+  color: var(--muted-dark);
+  background: var(--surface-deep);
+}
+
+.playlist-search:focus-within { border-color: rgba(245, 213, 101, 0.42); }
+
+.playlist-search { flex: 1 1 auto; min-width: 0; }
+
+/* Дни недели: короткая метка, потому что их семь и они должны помещаться в
+   строку рядом со всем остальным. Свёрнутый день виден по приглушённой
+   кнопке — иначе после сворачивания непонятно, куда делись ролики. */
+.playlist-toolbar-group.days { flex-wrap: wrap; gap: 3px; }
+
+.toolbar-day {
+  min-width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.toolbar-day:hover { border-color: rgba(245, 213, 101, 0.42); color: var(--accent); }
+.toolbar-day.folded { opacity: 0.45; border-style: dashed; }
+
+/* День с пропавшими файлами помечен той же краской, что и его строки. */
+.toolbar-day.has-missing {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fca5a5;
+}
+
+.playlist-search input {
+  min-width: 0;
+  width: 100%;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 10.5px;
+  outline: none;
+}
+
+.playlist-search input::-webkit-search-cancel-button { display: none; }
+
+.playlist-search button {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 3px;
+  padding: 0;
+  color: var(--muted-dark);
+  background: transparent;
+}
+
+.playlist-search button:hover { color: var(--text); background: var(--surface-strong); }
 
 .playlist-view-actions {
   height: 34px;
@@ -1484,6 +1702,39 @@ p {
   min-width: 0;
 }
 
+.schedule-day-toggle {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0;
+  color: var(--muted);
+  background: rgba(12, 14, 17, 0.6);
+}
+
+.schedule-day-toggle:hover { color: var(--accent); border-color: rgba(245, 213, 101, 0.45); }
+
+/* Дата прижата к правому краю, сводка идёт сразу за названием дня. */
+.schedule-day-divider > span:last-child { margin-left: auto; }
+
+.schedule-day-divider em {
+  color: var(--muted-dark);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  font-style: normal;
+}
+
+.schedule-day-divider em.has-missing { color: #fca5a5; }
+
+/* Свёрнутый день остаётся в сетке заголовком: по нему видно, где кончается
+   один эфирный день и начинается следующий. */
+.schedule-day-divider.folded {
+  border-bottom-color: rgba(245, 213, 101, 0.3);
+  background: linear-gradient(90deg, rgba(245, 213, 101, 0.2), rgba(12, 14, 17, 0.97) 58%);
+}
+
 .schedule-day-divider {
   position: sticky;
   z-index: 5;
@@ -1491,10 +1742,10 @@ p {
   height: 34px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   border-top: 1px solid rgba(245, 213, 101, 0.25);
   border-bottom: 1px solid var(--border);
-  padding: 0 12px 0 18px;
+  gap: 10px;
+  padding: 0 12px 0 10px;
   color: var(--text);
   background: linear-gradient(90deg, rgba(245, 213, 101, 0.13), rgba(12, 14, 17, 0.97) 58%);
   box-shadow: inset 3px 0 0 var(--accent), 0 4px 12px rgba(0, 0, 0, 0.24);
@@ -1841,6 +2092,134 @@ p {
   box-shadow: inset 4px 0 0 #4ade80, inset 0 0 28px rgba(34, 197, 94, 0.065);
   background: linear-gradient(90deg, rgba(34, 197, 94, 0.19), rgba(34, 197, 94, 0.035) 78%);
 }
+
+/* Файла нет на диске. Красим так же заметно, как идущий ролик: зелёное — это
+   «играет», красное — «играть нечем». Строка при этом остаётся в сетке: без
+   неё расписание врёт о времени выхода всего, что стоит ниже. */
+.playlist-row.missing-file-row {
+  color: var(--text);
+  box-shadow: inset 4px 0 0 #f87171, inset 0 0 28px rgba(239, 68, 68, 0.07);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.19), rgba(239, 68, 68, 0.035) 78%);
+}
+
+.playlist-row.missing-file-row .playlist-status-stripe {
+  background: #f87171;
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.75);
+}
+
+.playlist-row.missing-file-row .playlist-air-time,
+.playlist-row.missing-file-row .playlist-clip-info > strong { color: #fca5a5; }
+
+/* Идущий эфир важнее пропажи: если ролик пропал, но всё ещё в эфире, строка
+   остаётся зелёной — оператор смотрит на неё как на источник картинки. */
+.playlist-row.missing-file-row.on-air-row {
+  box-shadow: inset 4px 0 0 #4ade80, inset 0 0 28px rgba(34, 197, 94, 0.065);
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.19), rgba(34, 197, 94, 0.035) 78%);
+}
+
+.playlist-link-file {
+  height: 22px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  border-radius: 4px;
+  padding: 0 8px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.12);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.playlist-link-file:hover { color: #fff; background: rgba(239, 68, 68, 0.28); }
+
+.collapsed-state.missing {
+  border-color: rgba(248, 113, 113, 0.5);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* Файлы, притащенные из проводника, встают в конец расписания. Подсказка
+   появляется только под файлами: перестановка строк внутри списка своя. */
+.playlist-rows.file-drop {
+  outline: 1px dashed rgba(245, 213, 101, 0.55);
+  outline-offset: -3px;
+  background: rgba(245, 213, 101, 0.04);
+}
+
+.playlist-drop-hint {
+  position: sticky;
+  z-index: 6;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--accent);
+  background: rgba(12, 14, 17, 0.92);
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* Меню строки: по правой кнопке, у самого курсора. */
+.row-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 210px;
+  display: grid;
+  gap: 1px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  box-shadow: 0 20px 44px -20px rgba(0, 0, 0, 0.9);
+}
+
+.row-context-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-context-title b {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--tier2-soft);
+  color: var(--tier2);
+  font-size: 9px;
+}
+
+.row-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+}
+
+.row-context-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+.row-context-menu button:disabled { opacity: 0.35; }
+.row-context-menu button.danger { color: #fca5a5; }
+.row-context-menu button.danger:hover { background: rgba(239, 68, 68, 0.14); }
 
 .playlist-row.on-air-row .playlist-status-stripe {
   background: #4ade80;

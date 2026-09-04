@@ -1,3 +1,4 @@
+import { airDurationSeconds } from "./clip-duration.js";
 import type { MediaAsset, ScheduleMetadata, ScheduleSlot } from "./types.js";
 
 const RUSSIAN_WEEKDAYS = [
@@ -154,7 +155,13 @@ export function scheduleCatchUpPoint(
   return null;
 }
 
-/** Длительность строки расписания — одна на список и на догон. */
+/**
+ * Длительность строки расписания — одна на список, на догон и на сводку.
+ *
+ * Ролик без файла считается нулевым: в эфире его не будет, и всё, что стоит
+ * ниже, выйдет раньше. Показывать сетку так, будто пропавший ролик отыграет
+ * свои минуты, — значит врать о времени выхода каждой следующей передачи.
+ */
 function itemDurationSeconds(asset: MediaAsset): number {
-  return asset.declaredDurationSeconds ?? asset.durationSeconds;
+  return airDurationSeconds(asset);
 }

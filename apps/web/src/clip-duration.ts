@@ -15,7 +15,14 @@
 export function airDurationSeconds(asset: {
   durationSeconds: number;
   declaredDurationSeconds?: number | null;
+  status?: string;
 }): number {
+  // Файла на диске нет — эфирного времени такой ролик не занимает. Строку в
+  // расписании он сохраняет (сетку собирал оператор, и выбрасывать её нельзя),
+  // но держать за собой минуты, которых в эфире не будет, не имеет права:
+  // иначе расписание показывает время выхода, до которого никто не доживёт, а
+  // недобор недели прячется за длительностью пропавших роликов.
+  if (asset.status === "error") return 0;
   const source = asset.durationSeconds > 0 ? asset.durationSeconds : null;
   const declared = asset.declaredDurationSeconds && asset.declaredDurationSeconds > 0
     ? asset.declaredDurationSeconds

@@ -100,6 +100,31 @@ test("catch-up point uses the declared duration, like the rundown does", () => {
   assert.equal(Math.round(point?.itemOffsetSeconds ?? -1), 1_200);
 });
 
+test("a schedule row without its file shifts everything below it earlier", () => {
+  // Ролик, файла которого нет, эфирного времени не занимает: следующая
+  // передача выходит на его месте, а не после него.
+  const missing: MediaAsset = { ...asset("gone", 600), status: "error" };
+  const timeline = buildScheduleTimeline(
+    [asset("one", 600), missing, asset("three", 600)],
+    metadata("2026-08-03", "12:00:00.00", 0),
+    "current",
+  );
+  assert.deepEqual(timeline.map((entry) => entry.startTime), [
+    "12:00:00",
+    "12:10:00",
+    "12:10:00",
+  ]);
+
+  // По часам догон тоже идёт мимо пропавшего ролика.
+  const point = scheduleCatchUpPoint(
+    [asset("one", 600), missing, asset("three", 600)],
+    metadata("2026-08-03", "12:00:00.00", 0),
+    "current",
+    new Date(2026, 7, 3, 12, 15, 0),
+  );
+  assert.equal(point?.assetId, "three");
+});
+
 function asset(id: string, durationSeconds: number): MediaAsset {
   return {
     id,

@@ -1,4 +1,4 @@
-import { ipcMain } from "electron";
+import { ipcMain, shell } from "electron";
 
 //
 
@@ -26,6 +26,7 @@ import {
   SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL,
   SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL,
   SELECT_SUBTITLE_DIRECTORY_CHANNEL,
+  REVEAL_IN_FOLDER_CHANNEL,
   SERVICE_HEALTH_CHANNEL,
 } from "./channels.js";
 import {
@@ -69,6 +70,15 @@ export function registerIpcHandlers(): void {
 //
 
 function registerMediaHandlers(): void {
+  // Показать ролик в проводнике. Путь приходит из renderer, поэтому берём его
+  // как строку и ничего по нему не открываем: `showItemInFolder` только
+  // подсвечивает файл в файловом менеджере, запуска у него нет.
+  ipcMain.handle(REVEAL_IN_FOLDER_CHANNEL, async (_event, filePath: unknown) => {
+    if (typeof filePath !== "string" || filePath.trim() === "") return false;
+    shell.showItemInFolder(filePath);
+    return true;
+  });
+
   ipcMain.handle(SELECT_MEDIA_FILES_CHANNEL, async () =>
     selectFiles("Select media files", [
       { name: "Video files", extensions: videoExtensions },

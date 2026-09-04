@@ -19,3 +19,22 @@ test("without a schedule the analysed file wins, and an empty clip stays zero", 
   assert.equal(airDurationSeconds({ durationSeconds: 42 }), 42);
   assert.equal(airDurationSeconds({ declaredDurationSeconds: 0, durationSeconds: 0 }), 0);
 });
+
+test("a clip whose file is missing holds no air time", () => {
+  // Строка расписания остаётся — сетку собирал оператор, — но минут за собой
+  // не держит: в эфире этого ролика не будет, и всё, что стоит ниже, выйдет
+  // раньше. Иначе недобор недели прячется за длительностью, которой нет.
+  assert.equal(
+    airDurationSeconds({ durationSeconds: 150, declaredDurationSeconds: 150, status: "error" }),
+    0,
+  );
+  assert.equal(
+    airDurationSeconds({ durationSeconds: 0, declaredDurationSeconds: 150, status: "error" }),
+    0,
+  );
+  // Разобранный ролик считается как раньше — статус на него не влияет.
+  assert.equal(
+    airDurationSeconds({ durationSeconds: 150, declaredDurationSeconds: 120, status: "analyzed" }),
+    120,
+  );
+});
