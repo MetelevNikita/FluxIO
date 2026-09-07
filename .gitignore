@@ -6,6 +6,7 @@ node_modules/
 dist/
 **/dist/
 dist-test/
+release/
 **/dist-test/
 apps/desktop/release/
 coverage/
@@ -18,6 +19,7 @@ apps/media-server/src/generated/prisma/
 # Local configuration and secrets
 .env
 .env.*
+instances.json
 !.env.example
 !.env.*.example
 *.pem
