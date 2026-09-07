@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { copyFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -142,18 +142,57 @@ exec "$ROOT/runtime/node" "$ROOT/app/setup.mjs" --bundle="$ROOT"
 `;
 }
 
+/**
+ * Пакует каталог, не показывая `tar` ни одного абсолютного пути.
+ *
+ * Путь Windows начинается с буквы диска и двоеточия, а `tar` разбирает
+ * `что-то:путь` как «удалённый узел: путь» (наследие ленточных приводов) и
+ * уходит его резолвить: `tar: Cannot connect to R: resolve failed`, код 128.
+ * `--force-local` это отключает, но его понимает GNU tar и не понимает bsdtar,
+ * который Windows 10+ несёт как системный, — то есть флаг чинил бы одну машину
+ * и ломал другую.
+ *
+ * Поэтому tar запускается **внутри** каталога-родителя и получает только
+ * относительные имена, а готовый архив переезжает к месту назначения уже
+ * средствами Node.
+ */
+async function packRelative({ args, fileName, outDirectory, run, sourceParent }) {
+  await run("tar", args, { cwd: sourceParent });
+  const built = path.join(sourceParent, fileName);
+  const target = path.join(outDirectory, fileName);
+  if (path.resolve(built) === path.resolve(target)) return target;
+  try {
+    await rename(built, target);
+  } catch {
+    // Между томами `rename` не работает, а комплект собирают и на внешний диск.
+    await copyFile(built, target);
+    await rm(built, { force: true });
+  }
+  return target;
+}
+
 /** Собирает архив каталога системным `tar`. */
 export async function packArchive({ directoryName, outDirectory, run, sourceParent }) {
-  const archivePath = path.join(outDirectory, archiveFileName(directoryName));
-  await run("tar", ["-czf", archivePath, "-C", sourceParent, directoryName]);
-  return archivePath;
+  const fileName = archiveFileName(directoryName);
+  return packRelative({
+    args: ["-czf", fileName, directoryName],
+    fileName,
+    outDirectory,
+    run,
+    sourceParent,
+  });
 }
 
 /** Собирает zip для Windows: там его открывает сам проводник. */
 export async function packZip({ directoryName, outDirectory, run, sourceParent }) {
-  const zipPath = path.join(outDirectory, `${directoryName}.zip`);
-  await run("tar", ["-a", "-c", "-f", zipPath, "-C", sourceParent, directoryName]);
-  return zipPath;
+  const fileName = `${directoryName}.zip`;
+  return packRelative({
+    args: ["-a", "-c", "-f", fileName, directoryName],
+    fileName,
+    outDirectory,
+    run,
+    sourceParent,
+  });
 }
 
 /** Склеивает заголовок с архивом в один запускаемый файл. */

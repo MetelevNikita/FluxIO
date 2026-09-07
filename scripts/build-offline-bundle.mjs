@@ -219,11 +219,10 @@ async function main() {
 async function packBundle({ bundleRoot, options, target, version }) {
   const directoryName = path.basename(bundleRoot);
   const sourceParent = path.dirname(bundleRoot);
-  const run = async (command, args) => {
-    const result = spawnSync(command, args, { stdio: "inherit" });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(`${command} завершился с кодом ${result.status ?? "unknown"}`);
+  const run = async (command, args, options = {}) => {
+    const result = spawnSync(command, args, { stdio: "inherit", ...options });
+    if (result.error || result.status !== 0) {
+      throw new Error(describeProcessFailure(command, result));
     }
   };
 

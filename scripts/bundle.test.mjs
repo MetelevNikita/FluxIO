@@ -33,6 +33,7 @@ import {
   archiveFileName,
   bundleEntryScript,
   packArchive,
+  packZip,
   packSelfExtracting,
   selfExtractingFileName,
   selfExtractingHeader,
@@ -683,8 +684,8 @@ test("a packed bundle unpacks back into the same tree, executable bits included"
     await writeFile(nodeStub, "#!/bin/sh\necho stub\n");
     await chmod(nodeStub, 0o755);
 
-    const run = async (command, args) => {
-      const result = spawnSync(command, args, { stdio: "ignore" });
+    const run = async (command, args, options = {}) => {
+      const result = spawnSync(command, args, { stdio: "ignore", ...options });
       if (result.status !== 0) throw new Error(`${command} → ${result.status}`);
     };
     const archivePath = await packArchive({
@@ -1013,4 +1014,34 @@ test("модуль запуска npm едет в комплект", async () =>
   // первом же запуске мастера, и починить это там нечем.
   const { applicationTree } = await import("./build-offline-bundle.mjs");
   assert.ok(applicationTree.includes("scripts/npm-invocation.mjs"));
+});
+
+test("tar не получает абсолютных путей: буква диска Windows читается как узел сети", async () => {
+  // `tar` разбирает `R:\\путь` как «узел R, путь» и уходит его резолвить:
+  // `tar: Cannot connect to R: resolve failed`, код 128. `--force-local` знает
+  // GNU tar и не знает bsdtar из Windows 10+, поэтому лечится не флагом, а
+  // запуском внутри каталога с относительными именами.
+  const calls = [];
+  const run = async (command, args, options = {}) => {
+    calls.push({ args, command, options });
+  };
+  const sourceParent = path.join("R:", "FluxIO-Bundle", "release");
+
+  for (const pack of [packArchive, packZip]) {
+    calls.length = 0;
+    await pack({
+      directoryName: "FluxIO-9.0.0-win-x64",
+      outDirectory: sourceParent,
+      run,
+      sourceParent,
+    }).catch(() => {});
+    const [call] = calls;
+    assert.equal(call.command, "tar");
+    assert.equal(call.options.cwd, sourceParent);
+    for (const argument of call.args) {
+      assert.equal(argument.includes(":"), false, `аргумент с двоеточием: ${argument}`);
+    }
+    // Каталог-источник тоже передаётся именем, а не путём.
+    assert.ok(call.args.includes("FluxIO-9.0.0-win-x64"));
+  }
 });
