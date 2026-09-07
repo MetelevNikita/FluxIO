@@ -31,6 +31,7 @@ import {
 import { resolveBundledExecutable } from "./bundle-install.mjs";
 import { pruneReason } from "./bundle-prune.mjs";
 import { collectRuntimeClosure } from "./bundle-runtime-closure.mjs";
+import { buildNpmInvocation, describeProcessFailure } from "./npm-invocation.mjs";
 import { listFilesRecursively } from "./bundle-manifest.mjs";
 
 /* -------------------------------------------------------------------------- *
@@ -70,7 +71,7 @@ const bundledTools = [
  * починить, и случайно попавший в него dev-инструмент там не нужен, а случайно
  * не попавший рантайм-файл ломает эфир.
  */
-const applicationTree = [
+export const applicationTree = [
   "package.json",
   "launch.mjs",
   "setup.mjs",
@@ -78,6 +79,7 @@ const applicationTree = [
   "scripts/bundle-gstreamer.mjs",
   "scripts/bundle-install.mjs",
   "scripts/instance-registry.mjs",
+  "scripts/npm-invocation.mjs",
   "scripts/bundle-manifest.mjs",
   "scripts/bundle-migrations.mjs",
   "scripts/bundle-postgres.mjs",
@@ -502,10 +504,16 @@ function parseArguments(argv) {
 }
 
 function runNpm(args) {
-  const command = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(command, args, { cwd: projectRoot, stdio: "inherit" });
-  if (result.status !== 0) {
-    throw new Error(`npm ${args.join(" ")} завершился с кодом ${result.status ?? "unknown"}`);
+  // На Windows `npm` — это `npm.cmd`, и Node не запускает его без shell: процесс
+  // не стартует, `status` остаётся null, а отказ выглядел как «с кодом unknown».
+  const npm = buildNpmInvocation();
+  const result = spawnSync(npm.command, [...npm.prefixArgs, ...args], {
+    cwd: projectRoot,
+    shell: npm.shell,
+    stdio: "inherit",
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(describeProcessFailure(`npm ${args.join(" ")}`, result));
   }
 }
 

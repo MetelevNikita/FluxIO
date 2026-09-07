@@ -46,6 +46,7 @@ import {
   updateRefusal,
 } from "./bundle-update.mjs";
 import { gstreamerEnvironment } from "./bundle-gstreamer.mjs";
+import { buildNpmInvocation, describeProcessFailure } from "./npm-invocation.mjs";
 import {
   buildPostgresSystemdUnit,
   clusterConfig,
@@ -968,4 +969,48 @@ test("установка внутри комплекта не делает ег�
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+});
+
+test("сборщик зовёт npm так же, как мастер, и называет причину отказа", () => {
+  // Node с 18.20.2 отказывается запускать `.cmd` без shell (CVE-2024-27980):
+  // процесс не стартует, `status` остаётся null. Сборщик звал `npm.cmd`
+  // напрямую и падал на первом же шаге сообщением «завершился с кодом
+  // unknown», в котором нет причины.
+  const cli = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  const viaNode = buildNpmInvocation({
+    platform: "win32",
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    fileExists: (candidate) => candidate === cli,
+  });
+  assert.equal(viaNode.command, "C:\\Program Files\\nodejs\\node.exe");
+  assert.deepEqual(viaNode.prefixArgs, [cli]);
+  assert.equal(viaNode.shell, false);
+
+  // Без `npm-cli.js` рядом остаётся `npm.cmd`, но уже через shell.
+  const viaCmd = buildNpmInvocation({
+    platform: "win32",
+    nodePath: "C:\\nodejs\\node.exe",
+    fileExists: () => false,
+  });
+  assert.equal(viaCmd.command, "npm.cmd");
+  assert.equal(viaCmd.shell, true);
+
+  assert.equal(buildNpmInvocation({ platform: "linux" }).command, "npm");
+
+  // Причина обязана доходить до оператора: «unknown» не говорит ничего.
+  assert.match(
+    describeProcessFailure("npm run build", { error: new Error("spawnSync npm.cmd EINVAL"), status: null }),
+    /не запустился: spawnSync npm\.cmd EINVAL/,
+  );
+  assert.match(
+    describeProcessFailure("npm run build", { error: null, signal: null, status: 1 }),
+    /завершился с кодом 1/,
+  );
+});
+
+test("модуль запуска npm едет в комплект", async () => {
+  // setup.mjs импортирует его на целевой машине: не уехав, комплект падает на
+  // первом же запуске мастера, и починить это там нечем.
+  const { applicationTree } = await import("./build-offline-bundle.mjs");
+  assert.ok(applicationTree.includes("scripts/npm-invocation.mjs"));
 });

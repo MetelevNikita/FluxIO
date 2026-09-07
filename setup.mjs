@@ -33,6 +33,7 @@ import {
   sharedEnvFileName,
   writeInstanceRegistry,
 } from "./scripts/instance-registry.mjs";
+import { buildNpmInvocation } from "./scripts/npm-invocation.mjs";
 import {
   buildPostgresLaunchAgentPlist,
   buildPostgresSystemdUnit,
@@ -106,6 +107,8 @@ const envBackupsToKeep = 2;
 const skipGstreamerDvbCheck = process.argv.includes("--skip-gstreamer-check") ||
   ["1", "true", "yes"].includes(String(process.env.FLUXIO_SKIP_GSTREAMER_CHECK ?? "").toLowerCase());
 const npmInvocation = buildNpmInvocation();
+
+export { buildNpmInvocation };
 const applicationVersion = JSON.parse(
   readFileSync(path.join(projectRoot, "package.json"), "utf8"),
 ).version;
@@ -1952,38 +1955,6 @@ function resolveCommandPath(command, platform = process.platform) {
   return resolved || command;
 }
 
-export function buildNpmInvocation({
-  platform = process.platform,
-  nodePath = process.execPath,
-  fileExists = existsSync,
-} = {}) {
-  if (platform !== "win32") {
-    return { command: "npm", prefixArgs: [], shell: false };
-  }
-
-  const nodeDirectory = path.win32.dirname(nodePath);
-  const npmCliPath = path.win32.join(
-    nodeDirectory,
-    "node_modules",
-    "npm",
-    "bin",
-    "npm-cli.js",
-  );
-  if (fileExists(npmCliPath)) {
-    return {
-      command: nodePath,
-      prefixArgs: [npmCliPath],
-      shell: false,
-    };
-  }
-
-  const npmCmdPath = path.win32.join(nodeDirectory, "npm.cmd");
-  return {
-    command: fileExists(npmCmdPath) ? npmCmdPath : "npm.cmd",
-    prefixArgs: [],
-    shell: true,
-  };
-}
 
 function siblingExecutable(command, executableName, platform = process.platform) {
   if (!command) return executableName;
