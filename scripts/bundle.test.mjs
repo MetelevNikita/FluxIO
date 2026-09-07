@@ -1045,3 +1045,37 @@ test("tar не получает абсолютных путей: буква ди
     assert.ok(call.args.includes("FluxIO-9.0.0-win-x64"));
   }
 });
+
+test("путь Windows в postgresql.conf пишется прямыми слэшами", () => {
+  // PostgreSQL разбирает обратный слэш внутри одинарных кавычек как
+  // escape-последовательность: `…\\release\\…` приезжает как `…elease…`
+  // (`\\r` — возврат каретки), postmaster не стартует, а в логе остаётся
+  // «could not open log file» с огрызком вместо пути.
+  const windowsPath = "R:\\FluxIO-Bundle\\FluxIO\\release\\FluxIO-8.0.1-win-x64\\data\\postgres-log";
+  const config = clusterConfig({
+    logDirectory: windowsPath,
+    port: 5544,
+    socketDirectory: null,
+  });
+  const line = config.split("\n").find((entry) => entry.startsWith("log_directory"));
+  assert.equal(
+    line,
+    "log_directory = 'R:/FluxIO-Bundle/FluxIO/release/FluxIO-8.0.1-win-x64/data/postgres-log'",
+  );
+  // Ни одного обратного слэша во всём конфиге: любой из них съест разбор.
+  assert.equal(config.includes("\\"), false);
+
+  // Сокет — тот же путь и то же правило.
+  const withSocket = clusterConfig({
+    logDirectory: windowsPath,
+    port: 5544,
+    socketDirectory: "C:\\FluxIO\\data\\postgres",
+  });
+  assert.match(withSocket, /^unix_socket_directories = 'C:\/FluxIO\/data\/postgres'$/m);
+
+  // Одинарная кавычка в пути по-прежнему экранируется удвоением.
+  assert.match(
+    clusterConfig({ logDirectory: "/opt/Nikita's log", port: 5544, socketDirectory: null }),
+    /log_directory = '\/opt\/Nikita''s log'/,
+  );
+});

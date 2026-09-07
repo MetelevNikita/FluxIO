@@ -74,14 +74,14 @@ export function clusterConfig({ logDirectory, port, socketDirectory }) {
     `port = ${port}`,
     "listen_addresses = '127.0.0.1'",
     "logging_collector = on",
-    `log_directory = '${escapeConfigValue(logDirectory)}'`,
+    `log_directory = '${configPath(logDirectory)}'`,
     "log_filename = 'postgresql-%Y-%m-%d.log'",
     "log_rotation_age = 1d",
     // Эфир держит несколько соединений: пул сервиса плюс мастер установки.
     "max_connections = 40",
   ];
   if (socketDirectory) {
-    lines.push(`unix_socket_directories = '${escapeConfigValue(socketDirectory)}'`);
+    lines.push(`unix_socket_directories = '${configPath(socketDirectory)}'`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -435,4 +435,20 @@ function quoteIdentifier(value) {
 
 function escapeConfigValue(value) {
   return value.replaceAll("'", "''");
+}
+
+/**
+ * Путь для `postgresql.conf`.
+ *
+ * Внутри одинарных кавычек PostgreSQL разбирает обратный слэш как
+ * escape-последовательность, и путь Windows приезжает искалеченным:
+ * `…\release\…` становится `…elease…` — `\r` это возврат каретки, а `\F` и
+ * `\d` теряют слэш. Postmaster тогда не стартует вовсе, и в логе остаётся
+ * «could not open log file» с этим огрызком вместо пути.
+ *
+ * Прямые слэши Windows принимает наравне с обратными, поэтому путь переводится
+ * в них — так же, как это делают все примеры `postgresql.conf` для Windows.
+ */
+function configPath(value) {
+  return escapeConfigValue(value.replaceAll("\\", "/"));
 }

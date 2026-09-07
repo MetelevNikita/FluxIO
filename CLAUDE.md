@@ -601,6 +601,19 @@ workspace `package.json` через npm-команду вместе с lockfile;
   (`value.replaceAll("\\", "/")`) — тогда в тесте остаётся читаемый POSIX-литерал.
   Проверить на своей машине можно подменой `node:path` на `path.win32` крючком
   `module.register`: тесты без файловых операций прогоняются в чужой семантике как есть.
+- **Путь Windows нельзя отдать наружу как есть — его съедают три разных разбора.** Все три
+  сломали сборку комплекта на `R:\FluxIO-Bundle\…` и все три молчаливы:
+  `tar` разбирает `R:\…` как «узел : путь» (наследие ленточных приводов) и уходит в сеть —
+  `Cannot connect to R: resolve failed`; лечится не флагом `--force-local` (его знает GNU tar
+  и не знает bsdtar из Windows 10+), а запуском `tar` в `cwd` каталога-родителя с
+  относительными именами. **PostgreSQL** внутри одинарных кавычек `postgresql.conf` разбирает
+  `\` как escape: `…\release\…` приезжает как `…elease…` (`\r` — возврат каретки), postmaster
+  не стартует, в логе «could not open log file» с огрызком вместо пути — пути в конфиг пишутся
+  прямыми слэшами (`configPath` в `bundle-postgres.mjs`). **Node** с 18.20.2 отказывается
+  запускать `.cmd` без `shell: true` (CVE-2024-27980): процесс не стартует, `status` остаётся
+  `null`, и `status ?? "unknown"` сообщает «завершился с кодом unknown» вместо причины —
+  зови npm через `buildNpmInvocation` из `scripts/npm-invocation.mjs` (общий для мастера и
+  сборщика) и показывай `result.error` через `describeProcessFailure`.
 - **Новый тест в `apps/web` регистрируется вручную в двух файлах.** `apps/web/tsconfig.test.json`
   перечисляет `include` пофайлово (нужен и сам модуль, и его `*.test.ts`), а `apps/web/package.json`
   перечисляет пути `dist-test/...` в скрипте `test`. Забудешь первое — файл не скомпилируется;
