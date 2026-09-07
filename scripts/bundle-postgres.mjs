@@ -403,12 +403,23 @@ export function buildPostgresWindowsTaskCommand({
   taskName,
 }) {
   const args = pgCtlStartArguments({ dataDirectory, logFile: startupLog }).join(" ");
+  // Задача регистрируется ровно так же, как задача media-service: при входе
+  // пользователя и с обычными правами.
+  //
+  // `-AtStartup` вместе с `-RunLevel Highest` требуют администратора, и у
+  // оператора установка обрывалась на `Register-ScheduledTask : Access is
+  // denied`. Поднять права нельзя и по существу: PostgreSQL на Windows
+  // отказывается запускаться из процесса с административными привилегиями, так
+  // что задача, зарегистрированная от администратора, всё равно не подняла бы
+  // кластер — отказ просто переехал бы с установки на первую перезагрузку.
   const commands = [
     `Unregister-ScheduledTask -TaskName '${escapePowerShell(taskName)}' -Confirm:$false -ErrorAction SilentlyContinue`,
     `$action = New-ScheduledTaskAction -Execute '${escapePowerShell(pgCtl)}' -Argument '${escapePowerShell(args)}'`,
-    "$trigger = New-ScheduledTaskTrigger -AtStartup",
+    "$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+    "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser",
+    "$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited",
     "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)",
-    `Register-ScheduledTask -TaskName '${escapePowerShell(taskName)}' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force`,
+    `Register-ScheduledTask -TaskName '${escapePowerShell(taskName)}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`,
   ];
   if (start) commands.push(`Start-ScheduledTask -TaskName '${escapePowerShell(taskName)}'`);
   return commands.join("; ");

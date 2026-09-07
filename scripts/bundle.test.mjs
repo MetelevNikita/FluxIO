@@ -48,6 +48,7 @@ import {
 } from "./bundle-update.mjs";
 import { gstreamerEnvironment } from "./bundle-gstreamer.mjs";
 import { buildNpmInvocation, describeProcessFailure } from "./npm-invocation.mjs";
+import { buildWindowsTaskCommand } from "../setup.mjs";
 import {
   buildPostgresSystemdUnit,
   clusterConfig,
@@ -618,7 +619,14 @@ test("the cluster comes back after a reboot on macOS and on Windows too", () => 
   // Здесь наоборот: задача обязана завершиться, а сервер остаться работать.
   assert.match(command, /New-ScheduledTaskAction -Execute 'C:\/FluxIO\/tools\/postgres\/bin\/pg_ctl\.exe'/);
   assert.match(command, /-w -t 60 start/);
-  assert.match(command, /New-ScheduledTaskTrigger -AtStartup/);
+  // Как у media-service: при входе пользователя и с обычными правами.
+  // `-AtStartup` с `-RunLevel Highest` требует администратора («Access is
+  // denied» на установке), а PostgreSQL на Windows и вовсе отказывается
+  // работать из процесса с административными привилегиями.
+  assert.match(command, /New-ScheduledTaskTrigger -AtLogOn -User \$currentUser/);
+  assert.match(command, /New-ScheduledTaskPrincipal -UserId \$currentUser .*-RunLevel Limited/);
+  assert.doesNotMatch(command, /-RunLevel Highest/);
+  assert.doesNotMatch(command, /-AtStartup/);
   assert.match(command, /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);
   assert.match(command, /Start-ScheduledTask/);
   assert.doesNotMatch(
@@ -1078,4 +1086,34 @@ test("путь Windows в postgresql.conf пишется прямыми слэш
     clusterConfig({ logDirectory: "/opt/Nikita's log", port: 5544, socketDirectory: null }),
     /log_directory = '\/opt\/Nikita''s log'/,
   );
+});
+
+test("обе задачи планировщика регистрируются одинаково и без прав администратора", () => {
+  // Задача кластера и задача media-service — две реализации одного, и они уже
+  // разошлись: у кластера стояли `-AtStartup` и `-RunLevel Highest`, из-за чего
+  // установка обрывалась на `Register-ScheduledTask : Access is denied`. Ни
+  // одна из них не имеет права требовать администратора: FluxIO ставят под
+  // учётной записью оператора, а PostgreSQL на Windows вдобавок отказывается
+  // работать из процесса с административными привилегиями.
+  const postgres = buildPostgresWindowsTaskCommand({
+    dataDirectory: "C:/FluxIO/data/postgres",
+    pgCtl: "C:/FluxIO/tools/postgres/bin/pg_ctl.exe",
+    start: false,
+    startupLog: "C:/FluxIO/data/postgres-log/startup.log",
+    taskName: postgresWindowsTaskName,
+  });
+  const mediaService = buildWindowsTaskCommand({
+    nodePath: "C:/FluxIO/runtime/node.exe",
+    rootPath: "C:/FluxIO/app",
+    scriptPath: "C:/FluxIO/app/apps/media-server/dist/index.js",
+    start: false,
+    taskName: "Gruber Playout Media Service program-1",
+  });
+
+  for (const [label, command] of [["кластер", postgres], ["media-service", mediaService]]) {
+    assert.doesNotMatch(command, /-RunLevel Highest/, label);
+    assert.doesNotMatch(command, /-AtStartup/, label);
+    assert.match(command, /New-ScheduledTaskTrigger -AtLogOn -User \$currentUser/, label);
+    assert.match(command, /-RunLevel Limited/, label);
+  }
 });
