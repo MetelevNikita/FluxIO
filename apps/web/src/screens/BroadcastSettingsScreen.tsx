@@ -9,7 +9,9 @@ import {
   Grid2X2,
   LockKeyhole,
   MapPin,
+  Plus,
   Radio,
+  Trash2,
   PowerCircle,
   Repeat2,
   Rows3,
@@ -21,15 +23,31 @@ import { memo, useEffect, useId, useRef, useState } from "react";
 import type {
   FfmpegCapabilities,
   NetworkInterfaceInfo,
+  PlayoutEndpoint,
   PlayoutStatus,
+  PlayoutStream,
   ScheduleStartMarker,
   WorkspaceSessionCheckpoint,
 } from "@gruber/contracts";
 import { attachHlsVideo } from "../hls-video";
 import { usePlayoutStatus } from "../playout-status";
-import { getPlayoutAudioLevel } from "../media-api";
+import {
+  getPlayoutAudioLevel,
+  startPlayoutStream,
+  stopPlayoutStream,
+} from "../media-api";
 import { mediaApiUrl } from "../runtime";
 import { useI18n } from "../i18n";
+import {
+  audioCodecOptionsFor,
+  audioCodecFromLabel,
+  audioCodecLabels,
+  outputCapabilitiesOf,
+  settingsForOutputProtocol,
+  videoCodecFromLabel,
+  videoCodecLabels,
+  videoCodecOptionsFor,
+} from "../output-capabilities";
 import { ColourBars } from "../components/ColourBars";
 import type { BroadcastSettings } from "../types";
 
@@ -101,10 +119,23 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   const active = playoutState
     ? ["starting", "running", "stopping"].includes(playoutState)
     : false;
+  // Что несёт выбранный транспорт. Матрица одна на службу и на экран: пока её
+  // не было, планировщик SCTE-35 при RTMP спокойно раскладывал метки, которых
+  // FLV не переносит, и снаружи это выглядело как «метки не дошли».
+  const outputCapabilities = outputCapabilitiesOf(
+    settings.protocol === "UDP" || settings.protocol === "SRT" ||
+      settings.outputStreams.some((stream) => stream.endpoint.protocol !== "rtmp")
+      ? "SRT"
+      : settings.protocol,
+  );
+  const programProtocol = outputCapabilities.mpegTs ? "SRT" : settings.protocol;
+  const programVideoCodecs = codecOptions(capabilities, programProtocol);
+  const programAudioCodecs = audioCodecOptionsFor(programProtocol);
+  const scte35Editable = settings.scte35PlanningEnabled && outputCapabilities.scte35;
   const incompatibleScte35Output =
-    settings.scte35PlanningEnabled && settings.protocol.startsWith("RTMP");
+    settings.scte35PlanningEnabled && !outputCapabilities.scte35;
   const incompatibleSubtitleOutput =
-    settings.subtitleOutputMode === "DVB Subtitles" && settings.protocol.startsWith("RTMP");
+    settings.subtitleOutputMode === "DVB Subtitles" && !outputCapabilities.dvbSubtitles;
 
   return (
     <main className="broadcast-screen screen-body">
@@ -160,7 +191,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 className="primary-button"
                 disabled={
                   playlistLength === 0 ||
-                  !settings.streamingEnabled ||
+                  (!settings.streamingEnabled && !settings.outputStreams.some(
+                    (stream) => stream.enabled,
+                  )) ||
                   incompatibleScte35Output ||
                   incompatibleSubtitleOutput
                 }
@@ -249,6 +282,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
 
         <SettingsCard icon={<Video size={16} />} title={tr("Видеокодек", "Video Codec")}>
           <SelectField
+            disabled={programVideoCodecs.length === 1}
             label={tr("Кодек", "Codec")}
             onChange={(value) => onSettingsChange({
               ...settings,
@@ -257,7 +291,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 ? Math.min(2, settings.bFrames)
                 : settings.bFrames,
             })}
-            options={codecOptions(capabilities)}
+            options={programVideoCodecs}
             value={settings.videoCodec}
           />
           {/* Аппаратное кодирование — не оптимизация: на 2160 программный
@@ -397,19 +431,32 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           title={tr("Выдача субтитров", "Subtitle Output")}
         >
           <SelectField
-            disabled={!settings.streamingEnabled}
+            disabled={!settings.streamingEnabled || !outputCapabilities.dvbSubtitles}
             label={tr("Режим выдачи", "Delivery mode")}
             onChange={(value) => update(
               "subtitleOutputMode",
               value as BroadcastSettings["subtitleOutputMode"],
             )}
-            options={["Burn-in", "DVB Subtitles"]}
-            value={settings.subtitleOutputMode}
+            options={outputCapabilities.dvbSubtitles
+              ? ["Burn-in", "DVB Subtitles"]
+              : ["Burn-in"]}
+            value={outputCapabilities.dvbSubtitles ? settings.subtitleOutputMode : "Burn-in"}
           />
           <p className="transport-setting-note">
             Burn-in draws enabled SRT files into the video. DVB Subtitles creates a separate,
             receiver-selectable bitmap PID for UDP/SRT MPEG-TS; the original video stays clean.
           </p>
+          {outputCapabilities.dvbSubtitles ? null : (
+            <div className="scte35-runtime-note locked">
+              <Captions size={15} />
+              <span>
+                {tr(
+                  "Выбран RTMP: FLV не несёт отдельного PID субтитров, поэтому режим заперт на вжигании. Для отдельного PID выберите UDP или SRT.",
+                  "RTMP is selected: FLV carries no separate subtitle PID, so the mode is locked to burn-in. Choose UDP or SRT for a separate PID.",
+                )}
+              </span>
+            </div>
+          )}
           {settings.subtitleOutputMode === "DVB Subtitles" ? (
             <>
               <div className="three-column-fields">
@@ -554,9 +601,10 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
         >
           <div className="two-column-fields">
             <SelectField
+              disabled={programAudioCodecs.length === 1}
               label={tr("Кодек", "Codec")}
               onChange={(value) => update("audioCodec", value)}
-              options={["AAC-LC", "MP2", "AC-3"]}
+              options={programAudioCodecs}
               value={settings.audioCodec}
             />
             <SelectField
@@ -619,7 +667,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <SelectField
             disabled={!settings.streamingEnabled}
             label={tr("Протокол", "Protocol")}
-            onChange={(value) => update("protocol", value)}
+            onChange={(value) => onSettingsChange(settingsForOutputProtocol(settings, value))}
             options={["SRT", "UDP", "RTMP", "RTMPS"]}
             value={settings.protocol}
           />
@@ -632,6 +680,9 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           ) : null}
           {settings.protocol === "SRT" ? (
             <SrtFields settings={settings} update={update} />
+          ) : null}
+          {outputCapabilities.mpegTsService ? (
+            <MpegTsServiceFields settings={settings} update={update} />
           ) : null}
           {settings.protocol === "RTMP" || settings.protocol === "RTMPS" ? (
             <>
@@ -651,11 +702,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           ) : null}
         </SettingsCard>
 
+        <AdditionalOutputs
+          active={active}
+          networkInterfaces={networkInterfaces}
+          onChange={onSettingsChange}
+          settings={settings}
+        />
+
         <SettingsCard
           headerAction={
             <ToggleField
-              checked={settings.scte35PlanningEnabled}
+              checked={settings.scte35PlanningEnabled && outputCapabilities.scte35}
               compact
+              disabled={!outputCapabilities.scte35}
               label={tr("Планировщик", "Planner")}
               onChange={(checked) => update("scte35PlanningEnabled", checked)}
             />
@@ -674,7 +733,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             </p>
           </div>
           <SelectField
-            disabled={!settings.scte35PlanningEnabled}
+            disabled={!scte35Editable}
             label={tr("Команда cue", "Cue command")}
             onChange={(value) => update("scte35Command", value)}
             options={[
@@ -685,14 +744,14 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           />
           <div className="two-column-fields">
             <SelectField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label={tr("Владелец сегментации", "Segmentation owner")}
               onChange={(value) => update("scte35Owner", value)}
               options={["Provider", "Distributor"]}
               value={settings.scte35Owner}
             />
             <NumberField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label={tr("Event ID по умолчанию", "Default Event ID")}
               onChange={(value) => update("scte35DefaultEventId", Math.min(4_294_967_295, value))}
               value={settings.scte35DefaultEventId}
@@ -700,19 +759,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           </div>
           <div className="three-column-fields">
             <NumberField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label="SCTE-35 PID"
               onChange={(value) => update("scte35Pid", Math.min(8_190, Math.max(32, value)))}
               value={settings.scte35Pid}
             />
             <NumberField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label={tr("Предварительная подача (мс)", "Pre-roll (ms)")}
               onChange={(value) => update("scte35PreRollMs", Math.min(60_000, value))}
               value={settings.scte35PreRollMs}
             />
             <NumberField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label={tr("Длительность блока по умолчанию (с)", "Default break (sec)")}
               onChange={(value) => update("scte35DefaultBreakDuration", Math.min(86_400, Math.max(1, value)))}
               value={settings.scte35DefaultBreakDuration}
@@ -720,31 +779,31 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           </div>
           <div className="two-column-fields">
             <SelectField
-              disabled={!settings.scte35PlanningEnabled}
+              disabled={!scte35Editable}
               label={tr("Тип UPID", "UPID type")}
               onChange={(value) => update("scte35UpidType", value)}
               options={["Ad-ID", "UUID", "URI", "None"]}
               value={settings.scte35UpidType}
             />
             <TextField
-              disabled={!settings.scte35PlanningEnabled || settings.scte35UpidType === "None"}
+              disabled={!scte35Editable || settings.scte35UpidType === "None"}
               label={tr("UPID по умолчанию", "Default UPID")}
               onChange={(value) => update("scte35DefaultUpid", value)}
               value={settings.scte35DefaultUpid}
             />
           </div>
           <SelectField
-            disabled={!settings.scte35PlanningEnabled || !settings.repeatSchedule}
+            disabled={!scte35Editable || !settings.repeatSchedule}
             label={tr("Event ID при повторе плейлиста", "Event IDs when playlist repeats")}
             onChange={(value) => update("scte35LoopEventStrategy", value)}
             options={["Increment each loop", "Reuse playlist Event IDs"]}
             value={settings.scte35LoopEventStrategy}
           />
-          <div className={`scte35-runtime-note ${settings.protocol.startsWith("RTMP") ? "warning" : ""}`}>
+          <div className={`scte35-runtime-note ${outputCapabilities.scte35 ? "" : "locked"}`}>
             <FlagTriangleRight size={15} />
             <span>
-              {settings.protocol.startsWith("RTMP")
-                ? tr("RTMP/FLV не передаёт PID SCTE-35 в MPEG-TS. Для доставки cue используйте UDP или SRT MPEG-TS.", "RTMP/FLV does not carry the MPEG-TS SCTE-35 PID. Use UDP or SRT MPEG-TS for cue delivery.")
+              {!outputCapabilities.scte35
+                ? tr("Выбран RTMP: FLV не несёт PID SCTE-35, поэтому планировщик заперт и выключен. Для доставки cue выберите UDP или SRT.", "RTMP is selected: FLV carries no SCTE-35 PID, so the planner is locked off. Choose UDP or SRT for cue delivery.")
                 : tr("FFmpeg передаёт CBR MPEG-TS через инжектор TSDuck. Выходная PMT объявляет PID SCTE-35, а каждая метка выдаётся дважды перед временем события.", "FFmpeg sends CBR MPEG-TS through the TSDuck injector. The output PMT announces the SCTE-35 PID and each marker is emitted twice before its event time.")}
             </span>
           </div>
@@ -766,7 +825,6 @@ function UdpFields({
   update: SettingsUpdater;
 }) {
   const disabled = !settings.streamingEnabled;
-  const autoTransportBitrate = calculateAutoTransportBitrateMbps(settings);
   return (
     <>
       <div className="two-column-fields">
@@ -810,6 +868,29 @@ function UdpFields({
         ]}
         value={settings.udpLocalAddress}
       />
+    </>
+  );
+}
+
+/**
+ * Настройки службы MPEG-TS.
+ *
+ * Живут отдельно от полей сети намеренно: их несут оба MPEG-TS транспорта, а
+ * раньше они стояли внутри полей UDP и до SRT не доходили вовсе — инженер
+ * правил имя службы и PID, а в эфир уходили умолчания. FLV полей PMT не имеет,
+ * поэтому при RTMP карточки нет.
+ */
+function MpegTsServiceFields({
+  settings,
+  update,
+}: {
+  settings: BroadcastSettings;
+  update: SettingsUpdater;
+}) {
+  const disabled = !settings.streamingEnabled;
+  const autoTransportBitrate = calculateAutoTransportBitrateMbps(settings);
+  return (
+    <>
       <div className="udp-section-label">MPEG-TS service</div>
       <div className="two-column-fields">
         <TextField
@@ -870,8 +951,9 @@ function UdpFields({
       <p className="transport-setting-note">
         Target Bitrate controls the video elementary stream. Transport bitrate is the final
         constant MPEG-TS rate including audio, PSI/SI and PID 0x1FFF stuffing. PCR interval is
-        enforced on the final UDP stream, including when SCTE-35 is disabled. The applied TS
-        payload rate is shown in Encoding Monitor; UDP/IP/Ethernet line rate can be higher.
+        enforced on the final MPEG-TS stream — over UDP and over SRT alike — including when
+        SCTE-35 is disabled. The applied TS payload rate is shown in Encoding Monitor; the
+        UDP/IP/Ethernet line rate can be higher.
       </p>
     </>
   );
@@ -942,10 +1024,419 @@ function SrtFields({
   );
 }
 
+function AdditionalOutputs({
+  active,
+  networkInterfaces,
+  onChange,
+  settings,
+}: {
+  active: boolean;
+  networkInterfaces: NetworkInterfaceInfo[];
+  onChange: (settings: BroadcastSettings) => void;
+  settings: BroadcastSettings;
+}) {
+  const { tr } = useI18n();
+  const replace = (stream: PlayoutStream) => {
+    const next = {
+      ...settings,
+      outputStreams: settings.outputStreams.map((item) => item.id === stream.id ? stream : item),
+    };
+    onChange(settingsForOutputProtocol(next, next.protocol));
+  };
+  const remove = (id: string) => {
+    const next = {
+      ...settings,
+      outputStreams: settings.outputStreams.filter((stream) => stream.id !== id),
+    };
+    onChange(settingsForOutputProtocol(next, next.protocol));
+  };
+  const add = () => {
+    const number = [2, 3].find(
+      (candidate) => !settings.outputStreams.some((stream) => stream.id === `output-${candidate}`),
+    );
+    if (!number) return;
+    onChange({
+      ...settings,
+      outputStreams: [
+        ...settings.outputStreams,
+        {
+          id: `output-${number}`,
+          name: `${tr("Поток", "Output")} ${number}`,
+          enabled: true,
+          endpoint: additionalEndpoint(settings, undefined, undefined, number - 1),
+          transcode: null,
+        },
+      ],
+    });
+  };
+
+  return (
+    <SettingsCard
+      headerAction={(
+        <button
+          className="stream-add-button"
+          disabled={active || settings.outputStreams.length >= 2}
+          onClick={add}
+          type="button"
+        >
+          <Plus size={14} /> {tr("Добавить поток", "Add output")}
+        </button>
+      )}
+      icon={<Rows3 size={16} />}
+      title={tr("Дополнительные потоки", "Additional outputs")}
+    >
+      <p className="transport-setting-note">
+        {tr(
+          "Основной поток настраивается выше. Дополнительный выход без своего профиля использует готовую программу; отдельное транскодирование создаёт ещё один FFmpeg и заметно увеличивает CPU.",
+          "The primary output is configured above. An extra output without its own profile reuses the programme; separate transcoding starts another FFmpeg process and materially increases CPU use.",
+        )}
+      </p>
+      {settings.outputStreams.length === 0 ? (
+        <span className="stream-empty-note">
+          {tr("Сейчас настроен один поток. Можно добавить ещё два.", "One output is configured. You can add two more.")}
+        </span>
+      ) : settings.outputStreams.map((stream) => (
+        <AdditionalOutputEditor
+          active={active}
+          key={stream.id}
+          networkInterfaces={networkInterfaces}
+          onChange={replace}
+          onRemove={() => remove(stream.id)}
+          settings={settings}
+          stream={stream}
+        />
+      ))}
+    </SettingsCard>
+  );
+}
+
+function AdditionalOutputEditor({
+  active,
+  networkInterfaces,
+  onChange,
+  onRemove,
+  settings,
+  stream,
+}: {
+  active: boolean;
+  networkInterfaces: NetworkInterfaceInfo[];
+  onChange: (stream: PlayoutStream) => void;
+  onRemove: () => void;
+  settings: BroadcastSettings;
+  stream: PlayoutStream;
+}) {
+  const { tr } = useI18n();
+  const updateEndpoint = (endpoint: PlayoutEndpoint) => onChange({ ...stream, endpoint });
+  const changeProtocol = (protocol: string) => {
+    const endpoint = additionalEndpoint(settings, protocol, stream.endpoint);
+    const capabilities = outputCapabilitiesOf(protocol);
+    const transcode = stream.transcode && {
+      video: {
+        ...stream.transcode.video,
+        codec: capabilities.videoCodecs.includes(stream.transcode.video.codec)
+          ? stream.transcode.video.codec
+          : capabilities.videoCodecs[0] ?? "h264",
+      },
+      audio: {
+        ...stream.transcode.audio,
+        codec: capabilities.audioCodecs.includes(stream.transcode.audio.codec)
+          ? stream.transcode.audio.codec
+          : capabilities.audioCodecs[0] ?? "aac",
+      },
+    };
+    onChange({ ...stream, endpoint, transcode });
+  };
+
+  return (
+    <section className="stream-editor">
+      <div className="stream-editor-heading">
+        <TextField
+          disabled={active}
+          label={tr("Название потока", "Output name")}
+          onChange={(name) => onChange({ ...stream, name })}
+          value={stream.name}
+        />
+        <ToggleField
+          checked={stream.enabled}
+          compact
+          disabled={active}
+          label={tr("Стартовать со всеми", "Start with all")}
+          onChange={(enabled) => onChange({ ...stream, enabled })}
+        />
+        <button
+          aria-label={tr("Удалить поток", "Remove output")}
+          className="stream-remove-button"
+          disabled={active}
+          onClick={onRemove}
+          type="button"
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+      <SelectField
+        disabled={active}
+        label={tr("Протокол", "Protocol")}
+        onChange={changeProtocol}
+        options={[
+          { label: "SRT", value: "srt" },
+          { label: "UDP", value: "udp" },
+          { label: "RTMP / RTMPS", value: "rtmp" },
+        ]}
+        value={stream.endpoint.protocol}
+      />
+      <AdditionalEndpointFields
+        disabled={active}
+        endpoint={stream.endpoint}
+        networkInterfaces={networkInterfaces}
+        onChange={updateEndpoint}
+      />
+      <ToggleField
+        checked={stream.transcode !== null}
+        disabled={active}
+        label={tr("Собственный профиль транскодирования", "Separate transcoding profile")}
+        onChange={(enabled) => onChange({
+          ...stream,
+          transcode: enabled ? additionalTranscode(settings, stream.endpoint) : null,
+        })}
+      />
+      {stream.transcode ? (
+        <AdditionalTranscodeFields
+          disabled={active}
+          onChange={(transcode) => onChange({ ...stream, transcode })}
+          protocol={stream.endpoint.protocol}
+          transcode={stream.transcode}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function AdditionalEndpointFields({
+  disabled,
+  endpoint,
+  networkInterfaces,
+  onChange,
+}: {
+  disabled: boolean;
+  endpoint: PlayoutEndpoint;
+  networkInterfaces: NetworkInterfaceInfo[];
+  onChange: (endpoint: PlayoutEndpoint) => void;
+}) {
+  if (endpoint.protocol === "rtmp") {
+    return (
+      <div className="two-column-fields">
+        <TextField disabled={disabled} label="Server URL" onChange={(serverUrl) => onChange({ ...endpoint, serverUrl })} value={endpoint.serverUrl} />
+        <SecretField disabled={disabled} label="Stream key" onChange={(streamKey) => onChange({ ...endpoint, streamKey })} value={endpoint.streamKey} />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="two-column-fields">
+        <TextField disabled={disabled} label="Host" onChange={(host) => onChange({ ...endpoint, host })} value={endpoint.host} />
+        <NumberField disabled={disabled} label="Port" max={65_535} min={1} onChange={(port) => onChange({ ...endpoint, port })} value={endpoint.port} />
+      </div>
+      {endpoint.protocol === "srt" ? (
+        <>
+          <div className="two-column-fields">
+            <SelectField disabled={disabled} label="Mode" onChange={(mode) => onChange({ ...endpoint, mode: mode as typeof endpoint.mode })} options={["caller", "listener", "rendezvous"]} value={endpoint.mode} />
+            <NumberField disabled={disabled} label="Latency (ms)" min={20} max={8_000} onChange={(latencyMs) => onChange({ ...endpoint, latencyMs })} value={endpoint.latencyMs} />
+          </div>
+          <SecretField disabled={disabled} label="Passphrase (10–79 chars)" onChange={(passphrase) => onChange({ ...endpoint, passphrase })} value={endpoint.passphrase} />
+          <TextField disabled={disabled} label="Stream ID" onChange={(streamId) => onChange({ ...endpoint, streamId })} value={endpoint.streamId} />
+        </>
+      ) : (
+        <div className="three-column-fields">
+          <NumberField disabled={disabled} label="Packet size" min={188} max={65_507} onChange={(packetSize) => onChange({ ...endpoint, packetSize })} value={endpoint.packetSize} />
+          <NumberField disabled={disabled} label="TTL" min={1} max={255} onChange={(ttl) => onChange({ ...endpoint, ttl })} value={endpoint.ttl} />
+          <SelectField
+            disabled={disabled}
+            label="Network interface"
+            onChange={(localAddress) => onChange({ ...endpoint, localAddress })}
+            options={[{ label: "Automatic", value: "" }, ...networkInterfaces.map((entry) => ({ label: `${entry.name} — ${entry.address}`, value: entry.address }))]}
+            value={endpoint.localAddress}
+          />
+        </div>
+      )}
+      <AdditionalMpegTsFields
+        disabled={disabled}
+        mpegTs={endpoint.mpegTs}
+        onChange={(mpegTs) => onChange({ ...endpoint, mpegTs })}
+      />
+    </>
+  );
+}
+
+function AdditionalMpegTsFields({
+  disabled,
+  mpegTs,
+  onChange,
+}: {
+  disabled: boolean;
+  mpegTs: Extract<PlayoutEndpoint, { protocol: "udp" }>["mpegTs"];
+  onChange: (mpegTs: Extract<PlayoutEndpoint, { protocol: "udp" }>["mpegTs"]) => void;
+}) {
+  return (
+    <>
+      <div className="udp-section-label">MPEG-TS service</div>
+      <div className="two-column-fields">
+        <TextField disabled={disabled} label="Service name" onChange={(serviceName) => onChange({ ...mpegTs, serviceName })} value={mpegTs.serviceName} />
+        <TextField disabled={disabled} label="Provider" onChange={(providerName) => onChange({ ...mpegTs, providerName })} value={mpegTs.providerName} />
+      </div>
+      <div className="three-column-fields">
+        <NumberField disabled={disabled} label="Service ID" min={1} max={65_535} onChange={(serviceId) => onChange({ ...mpegTs, serviceId })} value={mpegTs.serviceId} />
+        <NumberField disabled={disabled} label="Video PID" min={32} max={8_190} onChange={(videoPid) => onChange({ ...mpegTs, videoPid })} value={mpegTs.videoPid} />
+        <NumberField disabled={disabled} label="Audio PID" min={32} max={8_190} onChange={(audioPid) => onChange({ ...mpegTs, audioPid })} value={mpegTs.audioPid} />
+      </div>
+      <div className="three-column-fields">
+        <SelectField disabled={disabled} label="Service type" onChange={(serviceType) => onChange({ ...mpegTs, serviceType: serviceType as typeof mpegTs.serviceType })} options={mpegTsServiceTypeOptions} value={mpegTs.serviceType} />
+        <NumberField disabled={disabled} label="PCR (ms)" min={1} max={1_000} onChange={(pcrPeriodMs) => onChange({ ...mpegTs, pcrPeriodMs })} value={mpegTs.pcrPeriodMs} />
+        <NumberField disabled={disabled} label="TS bitrate (kbps, 0 = Auto)" min={0} onChange={(transportBitrateKbps) => onChange({ ...mpegTs, transportBitrateKbps })} value={mpegTs.transportBitrateKbps} />
+      </div>
+    </>
+  );
+}
+
+type StreamTranscode = NonNullable<PlayoutStream["transcode"]>;
+
+function AdditionalTranscodeFields({
+  disabled,
+  onChange,
+  protocol,
+  transcode,
+}: {
+  disabled: boolean;
+  onChange: (transcode: StreamTranscode) => void;
+  protocol: PlayoutEndpoint["protocol"];
+  transcode: StreamTranscode;
+}) {
+  const protocolLabel = protocol.toUpperCase();
+  return (
+    <div className="stream-transcode-fields">
+      <div className="three-column-fields">
+        <SelectField disabled={disabled} label="Video codec" onChange={(value) => onChange({ ...transcode, video: { ...transcode.video, codec: videoCodecFromLabel(value) } })} options={videoCodecOptionsFor(protocolLabel)} value={videoCodecLabels[transcode.video.codec]} />
+        <NumberField disabled={disabled} label="Width" min={16} max={16_384} onChange={(width) => onChange({ ...transcode, video: { ...transcode.video, width } })} value={transcode.video.width} />
+        <NumberField disabled={disabled} label="Height" min={16} max={16_384} onChange={(height) => onChange({ ...transcode, video: { ...transcode.video, height } })} value={transcode.video.height} />
+      </div>
+      <div className="three-column-fields">
+        <NumberField disabled={disabled} label="Video bitrate (kbps)" min={1} onChange={(targetBitrateKbps) => onChange({ ...transcode, video: { ...transcode.video, targetBitrateKbps, maxBitrateKbps: Math.max(targetBitrateKbps, transcode.video.maxBitrateKbps) } })} value={transcode.video.targetBitrateKbps} />
+        <NumberField disabled={disabled} label="Frame rate" min={1} max={120} step={0.001} onChange={(frameRate) => onChange({ ...transcode, video: { ...transcode.video, frameRate } })} value={transcode.video.frameRate} />
+        <SelectField disabled={disabled} label="Field order" onChange={(fieldOrder) => onChange({ ...transcode, video: { ...transcode.video, fieldOrder: fieldOrder as typeof transcode.video.fieldOrder } })} options={["progressive", "upper", "lower"]} value={transcode.video.fieldOrder} />
+      </div>
+      <div className="three-column-fields">
+        <SelectField disabled={disabled} label="Audio codec" onChange={(value) => onChange({ ...transcode, audio: { ...transcode.audio, codec: audioCodecFromLabel(value) } })} options={audioCodecOptionsFor(protocolLabel)} value={audioCodecLabels[transcode.audio.codec]} />
+        <NumberField disabled={disabled} label="Audio bitrate (kbps)" min={32} max={1_536} onChange={(bitrateKbps) => onChange({ ...transcode, audio: { ...transcode.audio, bitrateKbps } })} value={transcode.audio.bitrateKbps} />
+        <SelectField disabled={disabled} label="Channels" onChange={(channels) => onChange({ ...transcode, audio: { ...transcode.audio, channels: Number(channels) as 1 | 2 | 6 } })} options={[{ label: "Mono", value: "1" }, { label: "Stereo", value: "2" }, { label: "5.1", value: "6" }]} value={String(transcode.audio.channels)} />
+      </div>
+      <p className="transport-setting-note">Software FFmpeg · CPU and memory appear per output in Encoding Monitor.</p>
+    </div>
+  );
+}
+
+function additionalEndpoint(
+  settings: BroadcastSettings,
+  protocol = settings.protocol.toLowerCase(),
+  previous?: PlayoutEndpoint,
+  portOffset = 1,
+): PlayoutEndpoint {
+  const mpegTs = previous && previous.protocol !== "rtmp"
+    ? previous.mpegTs
+    : {
+        serviceName: settings.udpServiceName.trim() || "FluxIO",
+        serviceId: Math.min(65_535, Math.max(1, Math.trunc(settings.udpServiceId))),
+        providerName: settings.udpProviderName.trim() || "FluxIO",
+        videoPid: Math.min(8_190, Math.max(32, Math.trunc(settings.udpVideoPid))),
+        audioPid: Math.min(8_190, Math.max(32, Math.trunc(settings.udpAudioPid))),
+        serviceType: (mpegTsServiceTypeOptions.some((option) => typeof option !== "string" && option.value === settings.udpServiceType)
+          ? settings.udpServiceType
+          : "digital_tv") as Extract<PlayoutEndpoint, { protocol: "udp" }>["mpegTs"]["serviceType"],
+        pcrPeriodMs: Math.min(1_000, Math.max(1, Math.trunc(settings.udpPcrPeriodMs))),
+        transportBitrateKbps: settings.udpTransportBitrate > 0
+          ? Math.round(settings.udpTransportBitrate * 1_000)
+          : 0,
+      };
+  if (protocol === "udp") {
+    return {
+      protocol: "udp",
+      host: previous?.protocol === "udp" ? previous.host : settings.udpHost,
+      port: previous?.protocol === "udp" ? previous.port : settings.udpPort + portOffset,
+      packetSize: previous?.protocol === "udp" ? previous.packetSize : settings.udpPacketSize,
+      ttl: previous?.protocol === "udp" ? previous.ttl : settings.udpTtl,
+      localAddress: previous?.protocol === "udp" ? previous.localAddress : settings.udpLocalAddress,
+      mpegTs,
+    };
+  }
+  if (protocol.startsWith("rtmp")) {
+    return {
+      protocol: "rtmp",
+      serverUrl: previous?.protocol === "rtmp" ? previous.serverUrl : settings.rtmpServerUrl,
+      streamKey: previous?.protocol === "rtmp" ? previous.streamKey : "",
+    };
+  }
+  return {
+    protocol: "srt",
+    host: previous?.protocol === "srt" ? previous.host : settings.srtHost,
+      port: previous?.protocol === "srt" ? previous.port : settings.srtPort + portOffset,
+    mode: previous?.protocol === "srt" ? previous.mode : "caller",
+    latencyMs: previous?.protocol === "srt" ? previous.latencyMs : settings.srtLatencyMs,
+    passphrase: previous?.protocol === "srt" ? previous.passphrase : "",
+    streamId: previous?.protocol === "srt" ? previous.streamId : "",
+    mpegTs,
+  };
+}
+
+function additionalTranscode(
+  settings: BroadcastSettings,
+  endpoint: PlayoutEndpoint,
+): StreamTranscode {
+  const capabilities = outputCapabilitiesOf(endpoint.protocol.toUpperCase());
+  const videoCodec = videoCodecFromLabel(settings.videoCodec);
+  const audioCodec = audioCodecFromLabel(settings.audioCodec);
+  return {
+    video: {
+      codec: capabilities.videoCodecs.includes(videoCodec) ? videoCodec : capabilities.videoCodecs[0] ?? "h264",
+      hardware: "off",
+      vaapiDevice: "/dev/dri/renderD128",
+      width: settings.width,
+      height: settings.height,
+      frameRate: Number.parseFloat(settings.frameRate) || 25,
+      rateControl: settings.rateControl.toLowerCase() === "crf" ? "crf" : settings.rateControl.toLowerCase() === "vbr" ? "vbr" : "cbr",
+      targetBitrateKbps: Math.round(settings.targetBitrate * 1_000),
+      maxBitrateKbps: Math.round(settings.maxBitrate * 1_000),
+      bufferSizeKbps: settings.bufferSize,
+      crf: settings.crf,
+      preset: settings.preset < 12 ? "ultrafast" : settings.preset < 24 ? "veryfast" : settings.preset < 40 ? "fast" : settings.preset < 58 ? "medium" : settings.preset < 76 ? "slow" : settings.preset < 90 ? "slower" : "veryslow",
+      profile: settings.profile,
+      level: settings.level,
+      deinterlace: settings.deinterlace,
+      fieldOrder: settings.fieldOrder === "upper" || settings.fieldOrder === "lower" ? settings.fieldOrder : "progressive",
+      gopSize: Math.max(1, Math.min(600, Math.round(settings.gopSize))),
+      bFrames: Math.max(0, Math.min(16, Math.round(settings.bFrames))),
+      closedGop: settings.closedGop,
+    },
+    audio: {
+      codec: capabilities.audioCodecs.includes(audioCodec) ? audioCodec : capabilities.audioCodecs[0] ?? "aac",
+      sampleRate: Number.parseInt(settings.sampleRate, 10) || 48_000,
+      channels: settings.channels === "Mono" ? 1 : settings.channels === "5.1" ? 6 : 2,
+      bitrateKbps: settings.audioBitrate,
+      loudnessNormalization: {
+        enabled: settings.loudnessNormalizationEnabled,
+        targetLufs: settings.loudnessTargetLufs,
+        truePeakDbtp: -1,
+        loudnessRangeLufs: 7,
+      },
+    },
+  };
+}
+
 function EncodingMonitor() {
   // Единственный узел экрана, которому нужен живой статус целиком.
+  const { tr } = useI18n();
   const status = usePlayoutStatus();
   const [liveAudioLevelDbfs, setLiveAudioLevelDbfs] = useState<number | null>(null);
+  const [streamActionId, setStreamActionId] = useState<string | null>(null);
+  const [streamActionError, setStreamActionError] = useState<string | null>(null);
   const active = status
     ? ["starting", "running", "stopping"].includes(status.state)
     : false;
@@ -966,6 +1457,18 @@ function EncodingMonitor() {
   const measuredAudioLevelDbfs = liveAudioLevelDbfs ?? status?.audioLevelDbfs;
   const audioLevelDbfs = measuredAudioLevelDbfs ?? -60;
   const audioLevelPercent = Math.max(0, Math.min(100, (audioLevelDbfs + 60) / 60 * 100));
+
+  const switchStream = async (id: string, start: boolean) => {
+    setStreamActionId(id);
+    setStreamActionError(null);
+    try {
+      await (start ? startPlayoutStream(id) : stopPlayoutStream(id));
+    } catch (reason) {
+      setStreamActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setStreamActionId(null);
+    }
+  };
 
   useEffect(() => {
     if (!active) {
@@ -1148,6 +1651,51 @@ function EncodingMonitor() {
         </div>
       </MonitorCard>
 
+      <MonitorCard
+        action={<span className="muted">{status?.streams.length ?? 0} / 3</span>}
+        title={tr("Потоки и ресурсы", "Outputs and resources")}
+      >
+        <div className="stream-runtime-list">
+          {status?.streams.some((stream) => stream.mode !== "program") ? (
+            <StreamResourceRow
+              label={tr("Общая программа", "Shared programme")}
+              mode="program"
+              resources={status.programResources}
+              state={status.state}
+            />
+          ) : null}
+          {status?.streams.map((stream) => (
+            <StreamResourceRow
+              action={stream.mode === "program" ? null : (
+                <button
+                  disabled={streamActionId === stream.id || status.state !== "running" || stream.state === "stopping"}
+                  onClick={() => void switchStream(
+                    stream.id,
+                    stream.state === "idle" || stream.state === "failed",
+                  )}
+                  type="button"
+                >
+                  {stream.state === "idle" || stream.state === "failed"
+                    ? tr("Старт", "Start")
+                    : tr("Стоп", "Stop")}
+                </button>
+              )}
+              endpoint={stream.endpointLabel}
+              error={stream.error}
+              key={stream.id}
+              label={stream.name}
+              mode={stream.mode}
+              resources={stream.resources}
+              state={stream.state}
+            />
+          ))}
+          {!status?.streams.length ? (
+            <span className="stream-empty-note">{tr("Потоки появятся после старта эфира.", "Outputs appear after playout starts.")}</span>
+          ) : null}
+          {streamActionError ? <span className="scte35-monitor-error">{streamActionError}</span> : null}
+        </div>
+      </MonitorCard>
+
       {status?.scte35.enabled ? (
         <MonitorCard
           action={(
@@ -1231,6 +1779,39 @@ function EncodingMonitor() {
       </MonitorCard>
       </div>
     </aside>
+  );
+}
+
+function StreamResourceRow({
+  action,
+  endpoint,
+  error,
+  label,
+  mode,
+  resources,
+  state,
+}: {
+  action?: React.ReactNode;
+  endpoint?: string | null;
+  error?: string | null;
+  label: string;
+  mode: string;
+  resources: { cpuPercent: number; memoryMb: number; processes: number };
+  state: string;
+}) {
+  return (
+    <div className={`stream-runtime-row state-${state}`}>
+      <div>
+        <strong>{label}</strong>
+        <span>{mode} · {endpoint ?? state}</span>
+        {error ? <small>{error}</small> : null}
+      </div>
+      <span className="stream-resource-value">CPU {resources.cpuPercent.toFixed(1)}%</span>
+      <span className="stream-resource-value">RAM {resources.memoryMb.toFixed(0)} MB</span>
+      <span className="stream-resource-value">{resources.processes} proc.</span>
+      <b>{state}</b>
+      {action}
+    </div>
   );
 }
 
@@ -1542,19 +2123,22 @@ function RangeField({
 function ToggleField({
   checked,
   compact = false,
+  disabled = false,
   label,
   onChange,
 }: {
   checked: boolean;
   compact?: boolean;
+  disabled?: boolean;
   label: string;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className={`toggle-field ${compact ? "compact" : ""}`}>
+    <label className={`toggle-field ${compact ? "compact" : ""} ${disabled ? "disabled" : ""}`}>
       <span>{label}</span>
       <input
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
         type="checkbox"
       />
@@ -1603,15 +2187,20 @@ function hardwareOptions(
   return options;
 }
 
-function codecOptions(capabilities: FfmpegCapabilities | null): string[] {
-  if (!capabilities) {
-    return ["H.264", "H.265", "MPEG-2 Video"];
-  }
+/**
+ * Кодек обязан пройти оба сита: сборку FFmpeg на этой машине и контейнер
+ * выбранного выхода. FLV не несёт MPEG-2 вовсе — муксер отказывается писать
+ * заголовок, и выяснялось бы это на старте эфира.
+ */
+function codecOptions(capabilities: FfmpegCapabilities | null, protocol: string): string[] {
+  const carried = videoCodecOptionsFor(protocol);
+  if (!capabilities) return carried;
   const options: string[] = [];
   if (capabilities.supports.h264) options.push("H.264");
   if (capabilities.supports.h265) options.push("H.265");
   if (capabilities.supports.mpeg2) options.push("MPEG-2 Video");
-  return options.length ? options : ["H.264"];
+  const available = options.filter((option) => carried.includes(option));
+  return available.length ? available : [carried[0] ?? "H.264"];
 }
 
 function formatMonitorTime(seconds: number): string {

@@ -21,6 +21,17 @@ test("encoding settings profile round-trips every portable setting and omits sec
     streamKey: "legacy-secret",
     srtPassphrase: "srt-secret-value",
     rtmpStreamKey: "rtmp-secret-value",
+    outputStreams: [{
+      id: "output-2",
+      name: "Site",
+      enabled: true,
+      endpoint: {
+        protocol: "rtmp" as const,
+        serverUrl: "rtmps://example.test/live",
+        streamKey: "nested-secret-value",
+      },
+      transcode: null,
+    }],
   };
   const profile = createEncodingSettingsProfile(
     source,
@@ -29,7 +40,7 @@ test("encoding settings profile round-trips every portable setting and omits sec
   );
   const serialized = serializeEncodingSettingsProfile(profile);
 
-  assert.doesNotMatch(serialized, /legacy-secret|srt-secret-value|rtmp-secret-value/);
+  assert.doesNotMatch(serialized, /legacy-secret|srt-secret-value|rtmp-secret-value|nested-secret/);
   const restored = applyEncodingSettingsProfile(
     parseEncodingSettingsProfile(serialized),
     initialBroadcastSettings,
@@ -43,6 +54,13 @@ test("encoding settings profile round-trips every portable setting and omits sec
   assert.equal(restored.loudnessTargetLufs, -23);
   assert.equal(restored.srtPassphrase, "");
   assert.equal(restored.rtmpStreamKey, "");
+  assert.equal(restored.outputStreams[0]?.endpoint.protocol, "rtmp");
+  assert.equal(
+    restored.outputStreams[0]?.endpoint.protocol === "rtmp"
+      ? restored.outputStreams[0].endpoint.streamKey
+      : "wrong protocol",
+    "",
+  );
 });
 
 test("encoding settings profile rejects another file format", () => {

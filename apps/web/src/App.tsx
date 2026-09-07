@@ -41,6 +41,11 @@ import {
 } from "./graphics-demo-data";
 import { initialBroadcastSettings } from "./default-broadcast-settings";
 import {
+  audioCodecFromLabel,
+  outputCapabilitiesOf,
+  videoCodecFromLabel,
+} from "./output-capabilities";
+import {
   applyEncodingSettingsProfile,
   createEncodingSettingsProfile,
   parseEncodingSettingsProfile,
@@ -3354,6 +3359,7 @@ export function App() {
             subtitleLibrary={subtitleLibrary}
             onSelectSubtitleDirectory={window.gruberDesktop ? stableSelectSubtitleDirectory : undefined}
             audioTracksEnabled={settings.audioTracksEnabled}
+            audioTracksSupported={outputCapabilitiesOf(settings.protocol).multipleAudioTracks}
             audioTrackDirectory={settings.audioTrackDirectory}
             audioOriginalLanguage={settings.audioOriginalLanguage}
             audioProgramLanguages={audioProgramLanguages}
@@ -3769,10 +3775,27 @@ function buildStartRequest(
   // Пустое расписание больше не отказ: служба поднимет линию на цветных полосах,
   // и собрать расписание можно уже под живым эфиром. Превью отдельного ролика
   // это не касается — там пустой список означает, что показывать нечего.
-  if (requireStreaming && !settings.streamingEnabled) {
+  if (requireStreaming && !settings.streamingEnabled && !settings.outputStreams.some(
+    (stream) => stream.enabled,
+  )) {
     throw new Error("Streaming output is disabled");
   }
   const protocol = settings.protocol.toLowerCase();
+  // Настройки службы MPEG-TS принадлежат обоим TS-транспортам: SRT несёт тот же
+  // мультиплекс, что и UDP, и подменять их умолчаниями значит выпустить в эфир
+  // чужие имя службы и PID.
+  const mpegTs = {
+    serviceName: settings.udpServiceName.trim() || "FluxIO",
+    serviceId: integerOrDefault(settings.udpServiceId, 1, 1, 65_535),
+    providerName: settings.udpProviderName.trim() || "FluxIO",
+    videoPid: integerOrDefault(settings.udpVideoPid, 256, 32, 8_190),
+    audioPid: integerOrDefault(settings.udpAudioPid, 257, 32, 8_190),
+    serviceType: normalizeMpegTsServiceType(settings.udpServiceType),
+    pcrPeriodMs: integerOrDefault(settings.udpPcrPeriodMs, 20, 1, 1_000),
+    transportBitrateKbps: settings.udpTransportBitrate > 0
+      ? Math.round(settings.udpTransportBitrate * 1_000)
+      : 0,
+  };
   const endpoint = protocol === "udp"
     ? {
         protocol: "udp" as const,
@@ -3781,18 +3804,7 @@ function buildStartRequest(
         packetSize: settings.udpPacketSize,
         ttl: settings.udpTtl,
         localAddress: settings.udpLocalAddress,
-        mpegTs: {
-          serviceName: settings.udpServiceName.trim() || "FluxIO",
-          serviceId: integerOrDefault(settings.udpServiceId, 1, 1, 65_535),
-          providerName: settings.udpProviderName.trim() || "FluxIO",
-          videoPid: integerOrDefault(settings.udpVideoPid, 256, 32, 8_190),
-          audioPid: integerOrDefault(settings.udpAudioPid, 257, 32, 8_190),
-          serviceType: normalizeMpegTsServiceType(settings.udpServiceType),
-          pcrPeriodMs: integerOrDefault(settings.udpPcrPeriodMs, 20, 1, 1_000),
-          transportBitrateKbps: settings.udpTransportBitrate > 0
-            ? Math.round(settings.udpTransportBitrate * 1_000)
-            : 0,
-        },
+        mpegTs,
       }
     : protocol === "srt"
       ? {
@@ -3803,29 +3815,43 @@ function buildStartRequest(
           latencyMs: settings.srtLatencyMs,
           passphrase: settings.srtPassphrase,
           streamId: settings.srtStreamId,
+          mpegTs,
         }
       : {
           protocol: "rtmp" as const,
           serverUrl: settings.rtmpServerUrl,
           streamKey: settings.rtmpStreamKey,
         };
+  const streams: StartPlayoutRequest["streams"] = settings.outputStreams.length > 0
+    ? [
+        {
+          id: "primary",
+          name: "Основной",
+          enabled: settings.streamingEnabled,
+          endpoint,
+          transcode: null,
+        },
+        ...settings.outputStreams,
+      ]
+    : [];
+  const programEndpoint = streams.find(
+    (stream) => stream.endpoint.protocol !== "rtmp",
+  )?.endpoint ?? endpoint;
 
   return {
     playlist: buildPlayoutItems(playlist),
     nextPlaylist: buildPlayoutItems(nextPlaylist),
     audioProgram: buildAudioProgram([...playlist, ...nextPlaylist], {
-      basePid: settings.udpAudioPid,
+      basePid: programEndpoint.protocol === "rtmp"
+        ? settings.udpAudioPid
+        : programEndpoint.mpegTs.audioPid,
       directoryPath: settings.audioTrackDirectory || null,
       enabled: settings.audioTracksEnabled,
       originalLabel: settings.audioOriginalLabel,
       originalLanguageCode: settings.audioOriginalLanguage,
     }),
     video: {
-      codec: settings.videoCodec === "H.264"
-        ? "h264"
-        : settings.videoCodec === "MPEG-2 Video"
-          ? "mpeg2"
-          : "h265",
+      codec: videoCodecFromLabel(settings.videoCodec),
       hardware: settings.videoHardware,
       // Узел рендера VAAPI: у остальных ускорителей устройство выбирает драйвер.
       vaapiDevice: "/dev/dri/renderD128",
@@ -3851,11 +3877,7 @@ function buildStartRequest(
       closedGop: settings.closedGop,
     },
     audio: {
-      codec: settings.audioCodec === "MP2"
-        ? "mp2"
-        : settings.audioCodec === "AC-3"
-          ? "ac3"
-          : "aac",
+      codec: audioCodecFromLabel(settings.audioCodec),
       sampleRate: Number.parseInt(settings.sampleRate, 10) || 48_000,
       channels: settings.channels === "Mono"
         ? 1
@@ -3871,7 +3893,8 @@ function buildStartRequest(
       },
     },
     logo: null,
-    endpoint,
+    endpoint: programEndpoint,
+    streams,
     subtitleOutput: {
       mode: settings.subtitleOutputMode === "DVB Subtitles" ? "dvb" : "burn-in",
       pid: Math.min(8_190, Math.max(32, Math.trunc(settings.subtitlePid))),
@@ -4145,12 +4168,15 @@ function languagesFromPlaylist(items: MediaAsset[]): AudioScanLanguage[] {
 
 function primitiveSettings(
   settings: BroadcastSettings,
-): Record<string, string | number | boolean> {
-  return Object.fromEntries(
+): WorkspaceSessionSaveRequest["snapshot"]["settings"] {
+  return {
+    ...Object.fromEntries(
     Object.entries(settings).filter((entry): entry is [string, string | number | boolean] =>
       ["string", "number", "boolean"].includes(typeof entry[1])
     ),
-  );
+    ),
+    outputStreams: settings.outputStreams,
+  };
 }
 
 function formatClock(seconds: number): string {

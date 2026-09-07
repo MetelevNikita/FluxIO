@@ -3,8 +3,12 @@ import { installBrokenPipeGuard } from "./ffmpeg/pipe-errors.js";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 
+const environmentArgument = process.argv.find((argument) => argument.startsWith("--fluxio-env="));
+const environmentPath = environmentArgument?.slice("--fluxio-env=".length)
+  || fileURLToPath(new URL("../../../.env", import.meta.url));
+
 try {
-  loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
+  loadEnvFile(environmentPath);
 } catch (error) {
   if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
     throw error;

@@ -31,6 +31,12 @@ export const SAVE_ENCODING_SETTINGS_FILE_CHANNEL = "dialog:save-encoding-setting
 /** Показать файл в проводнике: оператор ищет ролик там, где он лежит. */
 export const REVEAL_IN_FOLDER_CHANNEL = "shell:reveal-in-folder";
 export const SERVICE_HEALTH_CHANNEL = "service:get-health";
+export const INSTANCES_OVERVIEW_CHANNEL = "instances:overview";
+export const OPEN_INSTANCE_CHANNEL = "instances:open";
+export const ADD_INSTANCE_CHANNEL = "instances:add";
+export const RENAME_INSTANCE_CHANNEL = "instances:rename";
+export const DELETE_INSTANCE_CHANNEL = "instances:delete";
+export const SHOW_INSTANCES_CHANNEL = "instances:show";
 
 export type DesktopChannel =
   | typeof SELECT_LOGO_CHANNEL
@@ -57,4 +63,10 @@ export type DesktopChannel =
   | typeof SELECT_ENCODING_SETTINGS_FILE_CHANNEL
   | typeof SAVE_ENCODING_SETTINGS_FILE_CHANNEL
   | typeof REVEAL_IN_FOLDER_CHANNEL
-  | typeof SERVICE_HEALTH_CHANNEL;
+  | typeof SERVICE_HEALTH_CHANNEL
+  | typeof INSTANCES_OVERVIEW_CHANNEL
+  | typeof OPEN_INSTANCE_CHANNEL
+  | typeof ADD_INSTANCE_CHANNEL
+  | typeof RENAME_INSTANCE_CHANNEL
+  | typeof DELETE_INSTANCE_CHANNEL
+  | typeof SHOW_INSTANCES_CHANNEL;

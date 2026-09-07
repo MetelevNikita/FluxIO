@@ -7,6 +7,37 @@ import {
   normalizeMediaApiUrl,
   terminateProcessTree,
 } from "./launch.mjs";
+import {
+  defaultInstance,
+  parseInstanceRegistry,
+  publicInstances,
+} from "./scripts/instance-registry.mjs";
+
+test("instance registry validates ports and hides environment file names from Electron", () => {
+  const registry = parseInstanceRegistry({
+    version: 1,
+    instances: [
+      defaultInstance("http://127.0.0.1:4310/"),
+      {
+        id: "program-2",
+        name: "Reserve",
+        apiUrl: "http://127.0.0.1:4311",
+        environmentFile: ".env.program-2",
+        enabled: false,
+      },
+    ],
+  });
+  assert.deepEqual(publicInstances(registry)[1], {
+    id: "program-2",
+    name: "Reserve",
+    apiUrl: "http://127.0.0.1:4311",
+    enabled: false,
+  });
+  assert.throws(() => parseInstanceRegistry({
+    version: 1,
+    instances: [defaultInstance(), { ...defaultInstance(), id: "program-2" }],
+  }), /API-порт/);
+});
 
 test("desktop launcher resolves relocatable production entries", () => {
   const posixPaths = launcherPaths("/srv/FluxIO Project");

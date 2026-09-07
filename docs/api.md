@@ -20,7 +20,7 @@ Base URL по умолчанию: `http://127.0.0.1:4310`. Формы body/respo
 |---|---|---|
 | GET | `/api/health` | service/version/apiVersion/status/startedAt |
 | GET | `/api/capabilities` | FFmpeg version, encoders и filters |
-| GET | `/api/system/metrics` | CPU, network Mbps, timestamp |
+| GET | `/api/system/metrics` | CPU всей системы, число логических ядер, network Mbps, timestamp |
 | GET | `/api/system/network-interfaces` | host adapters |
 
 `ready` означает configured database, `degraded` — service работает без
@@ -82,6 +82,8 @@ Parser получает path, не raw upload: файл должен быть д
 | POST | `/api/playout/start` | validate/preflight/start |
 | POST | `/api/playout/take` | managed restart with new request |
 | POST | `/api/playout/stop` | graceful stop |
+| POST | `/api/playout/streams/:id/start` | start one configured output |
+| POST | `/api/playout/streams/:id/stop` | stop one configured output |
 | PUT | `/api/playout/next-playlist` | replace queued Future |
 | PUT | `/api/playout/playlist` | HOT CHANGE current tail |
 | GET | `/api/playout/preview/:file` | programme HLS files |
@@ -92,15 +94,24 @@ Parser получает path, не raw upload: файл должен быть д
 playlist, nextPlaylist
 video, audio, audioProgram
 logo
-endpoint (udp | srt | rtmp)
+endpoint (udp | srt | rtmp), streams (до трёх выходов)
 subtitleOutput
 repeatPlaylist
 scte35
 ```
 
+`PlayoutStatus.programResources` содержит суммарные CPU/RAM/process count общей
+эфирной цепочки, а `streams[].resources` — цену дополнительных relay/transcode
+выходов. CPU считается как в `top`: 100% соответствует одному логическому ядру.
+
 Status polling также накапливает daily log statistics и синхронизирует finished
 database session. Внешний клиент не должен прекращать polling навсегда, если
 нужна полная operational статистика.
+
+`streams[].enabled` определяет выходы общей кнопки Start. Индивидуальный Start
+может включить и выход с `enabled: false`, если он был объявлен при старте
+сессии. `transcode: null` переиспользует готовый профиль программы; объект
+`{video, audio}` запускает отдельный программный транскодер.
 
 ## Workspace
 

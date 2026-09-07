@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +77,7 @@ const applicationTree = [
   ".env.example",
   "scripts/bundle-gstreamer.mjs",
   "scripts/bundle-install.mjs",
+  "scripts/instance-registry.mjs",
   "scripts/bundle-manifest.mjs",
   "scripts/bundle-migrations.mjs",
   "scripts/bundle-postgres.mjs",
@@ -87,6 +88,9 @@ const applicationTree = [
   "apps/media-server/dist",
   "apps/media-server/prisma/schema.prisma",
   "apps/media-server/prisma/migrations",
+  "apps/desktop/build/icon.icns",
+  "apps/desktop/build/icon.ico",
+  "apps/desktop/build/icon.png",
   "apps/web/package.json",
   "apps/web/dist",
 ];
@@ -322,9 +326,25 @@ async function pruneRuntimeDependencies(bundleRoot) {
 async function copyNodeRuntime(bundleRoot, target) {
   const executable = target.startsWith("win") ? "node.exe" : "node";
   const relativePath = `runtime/${executable}`;
+  if (target.startsWith("macos")) {
+    const linked = spawnSync("otool", ["-L", process.execPath], { encoding: "utf8" });
+    const dependencies = nonSystemMacDependencies(linked.stdout ?? "");
+    if (linked.status !== 0 || dependencies.length > 0) {
+      throw new Error(
+        `Node runtime не переносим: ${dependencies.join(", ") || linked.stderr}. ` +
+        "Запустите сборку официальным Node binary (например, через nvm), не Homebrew Node.",
+      );
+    }
+  }
   await mkdir(path.join(bundleRoot, "runtime"), { recursive: true });
   await cp(process.execPath, path.join(bundleRoot, relativePath), { dereference: true });
   return relativePath;
+}
+
+export function nonSystemMacDependencies(otoolOutput) {
+  return otoolOutput.split("\n").slice(1).map((line) => line.trim().split(" ")[0]).filter(
+    (dependency) => dependency && !dependency.startsWith("/System/") && !dependency.startsWith("/usr/lib/"),
+  );
 }
 
 /** Файл, по которому оператор запускает установку уже распакованного комплекта. */
@@ -390,20 +410,22 @@ async function readToolVersion(directory) {
 
 async function copyDesktopRelease(bundleRoot) {
   const releaseRoot = path.join(projectRoot, "apps/desktop/release");
-  if (!existsSync(unpackedDirectory(releaseRoot))) {
-    console.log("  Упакованного приложения нет — собираю…");
-    ensureElectronRuntime();
-    runNpm(["run", "package:desktop:dir"]);
-  }
+  // `release/` часто остаётся от прошлой версии. Переиспользовать его нельзя:
+  // offline-комплект выглядел бы новым, а внутри запускал старый app.asar.
+  ensureElectronRuntime();
+  runNpm(["run", "package:dir", "-w", "@gruber/desktop"]);
   if (!existsSync(releaseRoot)) {
     throw new Error(
       "apps/desktop/release не найден: упаковка Electron не отработала.",
     );
   }
   const entries = await readdir(releaseRoot, { withFileTypes: true });
+  const expectedDirectories = process.platform === "darwin"
+    ? [`mac-${process.arch}`, "mac"]
+    : [process.platform === "win32" ? "win-unpacked" : "linux-unpacked"];
   const unpacked = entries.find(
-    (entry) => entry.isDirectory() && entry.name.endsWith("unpacked"),
-  ) ?? entries.find((entry) => entry.isDirectory() && entry.name === "mac-arm64");
+    (entry) => entry.isDirectory() && expectedDirectories.includes(entry.name),
+  );
   if (!unpacked) {
     throw new Error(
       "В apps/desktop/release нет распакованного приложения. " +
@@ -417,17 +439,6 @@ async function copyDesktopRelease(bundleRoot) {
     recursive: true,
     verbatimSymlinks: true,
   });
-}
-
-/** Каталог распакованного приложения внутри release, если он уже есть. */
-function unpackedDirectory(releaseRoot) {
-  if (!existsSync(releaseRoot)) return releaseRoot;
-  const names = readdirSync(releaseRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
-  const match = names.find((name) => name.endsWith("unpacked")) ??
-    names.find((name) => /^(mac|linux|win)/.test(name));
-  return match ? path.join(releaseRoot, match) : path.join(releaseRoot, "нет");
 }
 
 /**
@@ -498,7 +509,9 @@ function runNpm(args) {
   }
 }
 
-await main().catch((error) => {
-  console.error(`\nОшибка сборки комплекта: ${error instanceof Error ? error.message : error}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main().catch((error) => {
+    console.error(`\nОшибка сборки комплекта: ${error instanceof Error ? error.message : error}`);
+    process.exitCode = 1;
+  });
+}

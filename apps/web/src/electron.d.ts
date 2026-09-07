@@ -6,6 +6,18 @@ declare global {
       getServiceHealth: () => Promise<unknown>;
       getMediaFilePath: (file: File) => string;
       mediaApiBaseUrl: string;
+      instanceId: string;
+      instanceName: string;
+      getInstancesOverview: () => Promise<{
+        instances: Array<{
+          id: string;
+          name: string;
+          enabled: boolean;
+          online: boolean;
+        }>;
+      }>;
+      openInstance: (id: string) => Promise<void>;
+      showInstances: () => Promise<void>;
       platform: string;
       selectLogoFile: () => Promise<string | null>;
       selectMediaDirectory: () => Promise<string | null>;

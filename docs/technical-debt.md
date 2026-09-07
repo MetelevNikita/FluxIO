@@ -1,21 +1,7 @@
 # Технический долг и слабые места
 
-Дата аудита: 2026-08-28. Приоритет отражает риск эфирного отказа и стоимость
+Дата аудита: 2026-09-06. Приоритет отражает риск эфирного отказа и стоимость
 изменения, а не эстетическое предпочтение.
-
-## Уже исправлено этим аудитом
-
-- Удалены неиспользуемые demo data, client API wrappers и лишние exports.
-- Headless log fallback теперь выбирается до создания logger; раньше сообщение
-  о переносе каталога не меняло `readonly directory`.
-- Runtime version UI/server/setup/splash берётся из root `package.json`.
-- Screens переведены на lazy chunks: initial JS уменьшился примерно с 1.19 MB
-  до 304 kB в текущей production build.
-- Health, capabilities, network discovery и telemetry polling вынесены из
-  `App.tsx` в отдельный domain hook с тестом переходов.
-- Добавлен CI workflow: repository metadata/docs, typecheck, tests и build.
-- Удалены исторические progress reports, Lottie/After Effects examples и
-  устаревшие HTML plans; документация стала evergreen.
 
 ## P0 — перед 24/7
 
@@ -45,7 +31,7 @@ protection, audit log и outbound URL policy.
 
 ## P1 — высокий
 
-### `PlayoutSupervisor`, около 2.8k lines
+### `PlayoutSupervisor`, около 3.4k lines
 
 Один class одновременно управляет preflight, FFmpeg, clip/audio producers,
 TSDuck, subtitles, preview, restarts и status. Ошибка state transition может
@@ -54,7 +40,7 @@ TSDuck, subtitles, preview, restarts и status. Ошибка state transition м
 План: выделять state machines по ownership — clip producers, transport,
 subtitles, preview — сохраняя один coordinator. Начать с characterization tests.
 
-### `App.tsx`, около 3.7k lines и десятки states
+### `App.tsx`, около 4.4k lines и десятки states
 
 Workspace hydration, effects, schedule, dialogs и playout commands ещё связаны
 в одном component. Риск stale closures и непредсказуемых renders.
@@ -85,17 +71,17 @@ redirect re-validation и response size/time limits.
 
 ### Крупные UI screens и CSS
 
-`BroadcastEffectInspector` >2k lines, `PlaylistPreviewScreen` >2k,
-`BroadcastSettingsScreen` >1.6k, CSS >100 kB. Lazy loading решило initial load,
+`BroadcastEffectInspector` >2k lines, `PlaylistPreviewScreen` >3k,
+`BroadcastSettingsScreen` >2.2k, CSS около 200 kB. Lazy loading решило initial load,
 но не maintainability.
 
 План: выделять cohesive panels и shared form primitives; добавить visual
 regression/E2E.
 
-### HLS player chunk, около 511 kB
+### HLS player chunk, около 512 kB
 
-После разделения экранов основной JS уменьшен, но vendor chunk `hls-video`
-остаётся выше порога Vite 500 kB. Он изолирован от основного bundle, однако
+После разделения экранов основной JS уменьшен, но chunk с HLS player остаётся
+чуть выше порога Vite 500 kB. Он изолирован от основного bundle, однако
 стоит проверить загрузку по требованию и возможность более узкого HLS client.
 
 ### Один огромный media-server test file

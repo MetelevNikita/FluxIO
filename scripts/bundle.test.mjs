@@ -10,6 +10,7 @@ import {
   bundleTargetId,
   bundleTargetMismatch,
   digestDirectory,
+  stationApplicationFile,
   planBundleUpdate,
   validateBundleManifest,
 } from "./bundle-manifest.mjs";
@@ -17,6 +18,7 @@ import {
   bundleToolPaths,
   detectBundleRoot,
   resolveBundledExecutable,
+  verifyBundleComponents,
 } from "./bundle-install.mjs";
 import {
   migrationChecksum,
@@ -37,10 +39,10 @@ import {
   writeChecksum,
 } from "./bundle-archive.mjs";
 import { pruneReason, pruneRules } from "./bundle-prune.mjs";
+import { nonSystemMacDependencies } from "./build-offline-bundle.mjs";
 import {
   applyBundleUpdate,
   planUpdate,
-  preservedApplicationFiles,
   updateRefusal,
 } from "./bundle-update.mjs";
 import { gstreamerEnvironment } from "./bundle-gstreamer.mjs";
@@ -157,6 +159,23 @@ test("the component digest does not depend on the order files were written", asy
   }
 });
 
+test("bundle verification ignores installed settings but still checks application code", async () => {
+  const root = await scratch("fluxio-installed-app-");
+  try {
+    await mkdir(path.join(root, "app"));
+    await writeFile(path.join(root, "app", "index.js"), "code");
+    const component = { id: "app", path: "app", ...(await digestDirectory(path.join(root, "app"))) };
+    await writeFile(path.join(root, "app", ".env"), "DATABASE_URL=local");
+    await writeFile(path.join(root, "app", ".env.program-2"), "GRUBER_PORT=4311");
+    await writeFile(path.join(root, "app", "instances.json"), "{}");
+    await verifyBundleComponents(root, { components: [component] });
+    await writeFile(path.join(root, "app", "index.js"), "changed");
+    await assert.rejects(verifyBundleComponents(root, { components: [component] }), /повреждён/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("the bundle root is found from the application tree inside it", async () => {
   const root = await scratch("fluxio-bundle-");
   try {
@@ -186,6 +205,9 @@ test("bundled executables are looked up in bin first, and .exe on Windows", asyn
     await writeFile(path.join(ffmpeg, "bin", "ffmpeg"), "");
     await writeFile(path.join(ffmpeg, "ffprobe"), "");
     await writeFile(path.join(ffmpeg, "bin", "gst-launch-1.0.exe"), "");
+    const postgres = path.join(root, "tools", "postgres");
+    await mkdir(path.join(postgres, "bin"), { recursive: true });
+    await writeFile(path.join(postgres, "bin", "pg_ctl"), "");
 
     assert.equal(
       resolveBundledExecutable(ffmpeg, "ffmpeg", "linux"),
@@ -204,6 +226,10 @@ test("bundled executables are looked up in bin first, and .exe on Windows", asyn
     const paths = bundleToolPaths(root, manifest(), "linux");
     assert.equal(paths.ffmpeg, path.join(ffmpeg, "bin", "ffmpeg"));
     assert.equal(paths.ffprobe, path.join(ffmpeg, "ffprobe"));
+    const postgresPaths = bundleToolPaths(root, manifest({
+      tools: { ffmpeg: "tools/ffmpeg", gstreamer: null, postgres: "tools/postgres", tsduck: null },
+    }), "linux");
+    assert.equal(postgresPaths.pgCtl, path.join(postgres, "bin", "pg_ctl"));
     // Комплект без медиастека — законный вариант: инструмент просто не объявлен.
     assert.equal(paths.tsduck, undefined);
     assert.equal(paths.psql, undefined);
@@ -735,6 +761,13 @@ test("the entry script inside the bundle starts the wizard with the bundled runt
   const posix = bundleEntryScript("linux");
   assert.match(posix, /^#!\/bin\/sh/);
   assert.match(posix, /exec "\$ROOT\/runtime\/node" "\$ROOT\/app\/setup\.mjs" --bundle="\$ROOT"/);
+  assert.match(posix, /Причина: комплект собран с Node\.js, зависящим от библиотек машины сборки/);
+});
+
+test("the macOS bundle refuses a split Homebrew Node runtime", () => {
+  assert.deepEqual(nonSystemMacDependencies(`node:\n\t@rpath/libnode.147.dylib (compatibility version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)`), [
+    "@rpath/libnode.147.dylib",
+  ]);
 });
 
 test("an update refuses everything it cannot safely do", () => {
@@ -767,6 +800,8 @@ test("an update keeps the database and the station settings", async () => {
     await mkdir(path.join(installation, "data", "postgres"), { recursive: true });
     await writeFile(path.join(installation, "app", "setup.mjs"), "// 9.0.0\n");
     await writeFile(path.join(installation, "app", ".env"), "DATABASE_URL=\"живая\"\n");
+    await writeFile(path.join(installation, "app", ".env.program-2"), "GRUBER_PORT=4311\n");
+    await writeFile(path.join(installation, "app", "instances.json"), "{\"version\":1}\n");
     await writeFile(path.join(installation, "assets", "title.fto"), "старый\n");
     await writeFile(path.join(installation, "data", "postgres", "PG_VERSION"), "18\n");
     await writeFile(path.join(installation, "manifest.json"), "{}\n");
@@ -814,6 +849,14 @@ test("an update keeps the database and the station settings", async () => {
       await readFile(path.join(installation, "app", ".env"), "utf8"),
       "DATABASE_URL=\"живая\"\n",
     );
+    assert.equal(
+      await readFile(path.join(installation, "app", ".env.program-2"), "utf8"),
+      "GRUBER_PORT=4311\n",
+    );
+    assert.equal(
+      await readFile(path.join(installation, "app", "instances.json"), "utf8"),
+      "{\"version\":1}\n",
+    );
     // База не входит ни в один компонент и не трогается вовсе.
     assert.equal(
       await readFile(path.join(installation, "data", "postgres", "PG_VERSION"), "utf8"),
@@ -824,7 +867,6 @@ test("an update keeps the database and the station settings", async () => {
     // Времянка после переноса не остаётся: в следующий раз она выглядела бы
     // как чужие остатки.
     assert.equal(existsSync(path.join(installation, ".fluxio-update-stash")), false);
-    assert.ok(preservedApplicationFiles.includes(".env"));
   } finally {
     await rm(workspace, { force: true, recursive: true });
   }
@@ -858,6 +900,71 @@ test("a macOS application is described by its links, not unpacked into copies", 
     await rm(path.join(versions, "Current"));
     await symlink("B", path.join(versions, "Current"));
     assert.notEqual((await digestDirectory(root)).digest, first.digest);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("файлы станции не входят в отпечаток и переживают обновление", () => {
+  // Один предикат на обе стороны: пропущенный в отпечатке файл делает
+  // установленный комплект «повреждённым», пропущенный при обновлении —
+  // стирает настройку станции. На `.env.shared` это уже случилось: он был
+  // добавлен в один список и забыт в другом, и первая же установка ломала
+  // проверку целостности («3809 файл(ов) против 3808»).
+  for (const name of [
+    ".env",
+    ".env.shared",
+    ".env.shared.backup",
+    ".env.program-1",
+    ".env.program-12",
+    ".env.backup-2026-09-07T04-56-47-947Z",
+    "instances.json",
+  ]) {
+    assert.equal(stationApplicationFile(name), true, name);
+  }
+  // Часть комплекта, а не станции: они обязаны попадать в отпечаток.
+  for (const name of [
+    ".env.example",
+    "setup.mjs",
+    "launch.mjs",
+    "package.json",
+    "apps/media-server/.env",
+    "scripts/instances.json",
+  ]) {
+    assert.equal(stationApplicationFile(name), false, name);
+  }
+});
+
+test("установка внутри комплекта не делает его повреждённым", async () => {
+  // Мастер пишет `.env.shared` и `instances.json` в `app/` — внутрь
+  // компонента, который проверяется контрольной суммой. Отпечаток обязан
+  // остаться прежним, иначе первый же запуск после установки отвечает
+  // «Комплект повреждён: app — контрольная сумма не совпала».
+  const root = await scratch("fluxio-station-");
+  try {
+    const application = path.join(root, "app");
+    await mkdir(application, { recursive: true });
+    await writeFile(path.join(application, "setup.mjs"), "// сборка\n");
+    await writeFile(path.join(application, ".env.example"), "GRUBER_PORT=4310\n");
+
+    const built = await digestDirectory(application, undefined, stationApplicationFile);
+
+    // Установка станции и создание первой программы.
+    await writeFile(path.join(application, ".env.shared"), "GRUBER_DB_USER=\"gruber\"\n");
+    await writeFile(path.join(application, "instances.json"), '{"version":1,"instances":[]}\n');
+    await writeFile(path.join(application, ".env.program-1"), "GRUBER_PORT=4310\n");
+    await writeFile(path.join(application, ".env.shared.backup"), "старое\n");
+
+    const installed = await digestDirectory(application, undefined, stationApplicationFile);
+    assert.equal(installed.digest, built.digest);
+    assert.equal(installed.files, built.files);
+
+    // А подменённый файл сборки обязан ломать проверку по-прежнему.
+    await writeFile(path.join(application, "setup.mjs"), "// подмена\n");
+    assert.notEqual(
+      (await digestDirectory(application, undefined, stationApplicationFile)).digest,
+      built.digest,
+    );
   } finally {
     await rm(root, { force: true, recursive: true });
   }

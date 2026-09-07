@@ -134,6 +134,24 @@ export function planBundleUpdate(installed, incoming) {
 }
 
 /**
+ * Файл станции внутри компонента `app`: его создаёт установка, а не сборка.
+ *
+ * Единственный источник правды для обеих сторон: отпечаток обязан их
+ * пропускать, а обновление — сохранять. Разъехавшись, эти два списка ломают
+ * комплект по-разному и одинаково молча: пропущенный в отпечатке файл делает
+ * установленный комплект «повреждённым» на следующей же проверке, а
+ * пропущенный при обновлении — стирает настройку станции. На `.env.shared`
+ * это уже случилось.
+ *
+ * Только корень компонента: `.env` внутри `apps/` — это файл сборки.
+ */
+export function stationApplicationFile(relativePath) {
+  if (relativePath.includes("/")) return false;
+  if (relativePath === ".env.example") return false;
+  return relativePath === "instances.json" || /^\.env(?:\.|$)/.test(relativePath);
+}
+
+/**
  * Отпечаток каталога: контрольная сумма по отсортированному списку
  * «путь, размер, сумма содержимого».
  *
@@ -141,8 +159,8 @@ export function planBundleUpdate(installed, incoming) {
  * тот же каталог давал бы разный отпечаток на Windows и на Linux, и проверка
  * целостности срабатывала бы вхолостую.
  */
-export async function digestDirectory(directoryPath, onProgress) {
-  const files = await listFilesRecursively(directoryPath);
+export async function digestDirectory(directoryPath, onProgress, ignore = () => false) {
+  const files = (await listFilesRecursively(directoryPath)).filter((entry) => !ignore(entry.path));
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   const digest = createHash("sha256");
   let bytes = 0;

@@ -27,6 +27,13 @@ import {
   updateRefusal,
 } from "./scripts/bundle-update.mjs";
 import {
+  publicInstances,
+  readInstanceRegistry,
+  renameInstance,
+  sharedEnvFileName,
+  writeInstanceRegistry,
+} from "./scripts/instance-registry.mjs";
+import {
   buildPostgresLaunchAgentPlist,
   buildPostgresSystemdUnit,
   buildPostgresWindowsTaskCommand,
@@ -34,6 +41,7 @@ import {
   clusterEnvironment,
   ensureRoleAndDatabase,
   pgCtlStartArguments,
+  pgCtlStopArguments,
   postgresExecutables,
   postgresLaunchAgentLabel,
   postgresServiceName,
@@ -44,7 +52,24 @@ import {
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
+// Станционный конфиг: общие для всех программ значения (пути к инструментам,
+// секрет, GRUBER_HOST, координаты PostgreSQL). Первичная установка пишет только
+// его; ни одной программы не создаётся — их добавляют из Control Center.
+const sharedEnvPath = path.join(projectRoot, sharedEnvFileName);
 const noStart = process.argv.includes("--no-start");
+const addInstanceFlag = process.argv.includes("--add-instance");
+const renameInstanceId = flagValue("--rename-instance");
+const instanceNameArgument = flagValue("--instance-name");
+const instancePortArgument = flagValue("--instance-port");
+const instanceDatabaseArgument = flagValue("--instance-database");
+const instanceAdminArgument = flagValue("--instance-admin");
+const instanceAdminPasswordArgument = flagValue("--instance-admin-password");
+const disableInstanceId = flagValue("--disable-instance");
+const enableInstanceId = flagValue("--enable-instance");
+const removeInstanceId = flagValue("--remove-instance");
+const deleteInstanceId = flagValue("--delete-instance");
+const stopAllFlag = process.argv.includes("--stop-all");
+const resetFlag = process.argv.includes("--reset");
 /**
  * Офлайн-режим спрашивается первым вопросом мастера, поэтому значение меняется
  * в рантайме. Флаг `--offline` отвечает на вопрос заранее и пропускает его.
@@ -90,6 +115,11 @@ const retiredSourceFiles = [
   "apps/media-server/src/ffmpeg/text-overlay.ts",
   "apps/web/src/lottie-properties.ts",
 ];
+
+function flagValue(name) {
+  const prefix = `${name}=`;
+  return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length) ?? null;
+}
 
 export function buildDatabaseUrl({
   database,
@@ -332,6 +362,16 @@ async function main() {
   // заканчивается: остальные шаги делает уже он.
   if (await prepareBundle()) return;
 
+  if (stopAllFlag || resetFlag) {
+    await stopOrResetStation();
+    return;
+  }
+
+  if (addInstanceFlag || renameInstanceId || disableInstanceId || enableInstanceId || removeInstanceId || deleteInstanceId) {
+    await manageInstances();
+    return;
+  }
+
   const existingEnv = await loadExistingEnv();
   const prompt = new Prompt();
 
@@ -343,6 +383,8 @@ async function main() {
     }
 
     const mode = await askProjectMode(prompt);
+    // Здесь спрашиваем только координаты сервера PostgreSQL и общую роль —
+    // саму базу заводит уже создание программы.
     const database = await askDatabase(prompt, mode, existingEnv);
     const service = await askMediaService(prompt, existingEnv);
     const actions = await askWizardActions(prompt, mode);
@@ -352,18 +394,484 @@ async function main() {
     }
 
     const tools = await resolveMediaTools(prompt, service);
-    await preparePostgres(prompt, database);
+    await ensurePostgresServer(prompt, database);
 
-    const values = buildEnvironmentValues({ database, existingEnv, mode, service, tools });
-    await saveEnv(values);
+    const values = buildSharedEnvironmentValues({ database, existingEnv, mode, service, tools });
+    await saveSharedEnv(values);
+    await ensureInstanceRegistryFile();
 
     const commandEnv = { ...process.env, ...values };
 
     await runBuildPipeline(commandEnv, mode, actions);
+    if (!noStart) await restartAdditionalInstances(`http://127.0.0.1:${values.GRUBER_PORT}`);
     await finishInstallation(commandEnv, mode, actions, values);
   } finally {
     prompt.close();
   }
+}
+
+/**
+ * `--stop-all` — остановить станцию целиком; `--reset` — снести её до
+ * состояния «до установки» и дать поставить заново.
+ *
+ * Системный PostgreSQL не трогается ни в одном режиме: на машине он обслуживает
+ * не только FluxIO, и остановить его — значит уронить чужие базы. Кластер из
+ * комплекта — наш, его останавливаем.
+ *
+ * `--reset` удаляет ровно те базы, что named в `.env` программ: искать их по
+ * маске имени нельзя — рядом стоят базы, к FluxIO отношения не имеющие.
+ */
+async function stopOrResetStation() {
+  const registry = await readInstanceRegistry(projectRoot, "http://127.0.0.1:4310");
+  if (registry.instances.length === 0) console.log("\nПрограмм в реестре нет.");
+
+  // Копия списка: удаление правит сам реестр по ходу.
+  for (const instance of [...registry.instances]) {
+    // Уже молчащую программу не останавливаем повторно: `launchctl bootout` по
+    // выгруженному агенту отвечает ошибкой, и оператор видел бы красное там,
+    // где всё в порядке. Для `--reset` идём в любом случае — там надо снести
+    // службу, базу и файлы, а не только погасить процесс.
+    if (!resetFlag && !(await tcpPortReady("127.0.0.1", Number(new URL(instance.apiUrl).port)))) {
+      console.log(`\nПрограмма ${instance.name}: уже остановлена`);
+      continue;
+    }
+    console.log(`\n${resetFlag ? "Удаляю" : "Останавливаю"} программу: ${instance.name}`);
+    try {
+      if (resetFlag) await deleteInstance(registry, instance.id);
+      else await stopInstanceService(instance);
+    } catch (error) {
+      // Одна упавшая программа не должна оставить остальные работающими:
+      // «остановить всё» обязано дойти до конца и назвать, что не вышло.
+      console.error(`  не удалось: ${errorMessage(error)}`);
+    }
+  }
+
+  await stopBundledPostgres();
+  await waitForStationRelease(registry.instances);
+
+  if (!resetFlag) {
+    console.log("\nСтанция остановлена. Данные, конфигурация и службы на месте.");
+    return;
+  }
+
+  for (const name of [sharedEnvFileName, "instances.json"]) {
+    await rm(path.join(projectRoot, name), { force: true });
+  }
+  console.log(
+    `\nСтанция сброшена: программы, их базы и службы удалены, ${sharedEnvFileName} и ` +
+      "instances.json убраны.\nСтавьте заново: npm run setup",
+  );
+}
+
+/**
+ * Ждёт, пока станция действительно отпустит машину.
+ *
+ * Команда остановки возвращает управление раньше, чем процесс успел выйти:
+ * `Stop-ScheduledTask` на Windows и `launchctl bootout` на macOS не дожидаются
+ * его. Продолжить сразу — значит наткнуться на `EPERM: unlink` у занятого
+ * `.node` при следующей установке, а на удалении каталога — на «файл
+ * используется другим процессом». Поэтому ждём по двум признакам: порт API
+ * замолчал и нативные файлы отпущены.
+ */
+async function waitForStationRelease(instances, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  const ports = instances.map((instance) => Number(new URL(instance.apiUrl).port));
+  while (Date.now() < deadline) {
+    const busy = [];
+    for (const port of ports) {
+      if (await tcpPortReady("127.0.0.1", port)) busy.push(port);
+    }
+    if (busy.length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  // Занятый `.node` переживает освободившийся порт: службу сняли, а процесс ещё
+  // выгружается. Именно он и ломает переустановку на Windows.
+  const locked = await findLockedNativeFiles(projectRoot);
+  if (locked.length === 0) return;
+  console.warn(`\n${describeLockedNativeFiles(locked)}`);
+}
+
+async function stopInstanceService(instance) {
+  const service = instanceService(instance);
+  const stop = platformServiceStopCommand(service);
+  await runCommand(stop.command, stop.args);
+}
+
+/** Останавливает кластер из комплекта, если он развёрнут в этой установке. */
+async function stopBundledPostgres() {
+  const root = bundleRoot ?? path.dirname(projectRoot);
+  const dataDirectory = clusterDataDirectory(root);
+  if (!existsSync(dataDirectory)) return;
+  const pgCtl = bundleTools.pgCtl
+    ?? postgresExecutables(path.join(root, bundleManifest?.tools?.postgres ?? "tools/postgres")).pgCtl;
+  if (!pgCtl || !existsSync(pgCtl)) return;
+  console.log("\nОстанавливаю кластер PostgreSQL из комплекта…");
+  await runCommand(pgCtl, pgCtlStopArguments({ dataDirectory }), { env: clusterEnvironment() })
+    .catch((error) => console.error(`  не удалось: ${errorMessage(error)}`));
+}
+
+async function manageInstances() {
+  const existingEnv = await loadExistingEnv();
+  if (!existingEnv.GRUBER_DB_USER && !existingEnv.DATABASE_URL) {
+    throw new Error("Сначала выполните установку станции: npm run setup");
+  }
+  const registry = await readInstanceRegistry(
+    projectRoot,
+    existingEnv.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310",
+  );
+  if (addInstanceFlag) {
+    const prompt = new Prompt();
+    try {
+      await addInstance(prompt, registry, existingEnv);
+    } finally {
+      prompt.close();
+    }
+    return;
+  }
+  if (renameInstanceId) {
+    await writeInstanceRegistry(
+      projectRoot,
+      renameInstance(registry, renameInstanceId, instanceNameArgument),
+    );
+    console.log(`Программа переименована: ${instanceNameArgument}`);
+    return;
+  }
+  if (deleteInstanceId) {
+    await deleteInstance(registry, deleteInstanceId);
+    return;
+  }
+  await setInstanceEnabled(
+    registry,
+    disableInstanceId ?? removeInstanceId ?? enableInstanceId,
+    Boolean(enableInstanceId),
+  );
+}
+
+async function deleteInstance(registry, id) {
+  const instance = registry.instances.find((entry) => entry.id === id);
+  if (!instance) throw new Error(`Программа не найдена: ${id}`);
+  if (await instanceIsOnAir(instance.apiUrl)) {
+    throw new Error(`Программа ${instance.name} находится в эфире. Сначала выполните Stop playout.`);
+  }
+
+  const environmentPath = path.join(projectRoot, instance.environmentFile);
+  const environment = parseEnv(await readFile(environmentPath, "utf8"));
+  const service = instanceService(instance);
+  if (service.kind === "systemd") {
+    await runCommand("sudo", ["systemctl", "disable", "--now", service.label]);
+    await runCommand("sudo", ["rm", "-f", `/etc/systemd/system/${service.label}`]);
+    await runCommand("sudo", ["systemctl", "daemon-reload"]);
+  } else if (service.kind === "launchd") {
+    spawnSync("launchctl", ["bootout", service.domain, service.plistPath], { stdio: "ignore" });
+    await rm(service.plistPath, { force: true });
+  } else {
+    await runCommand("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `Stop-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -Confirm:$false`,
+    ]);
+  }
+
+  await dropInstanceDatabase(environment.DATABASE_URL);
+  await rm(environmentPath, { force: true });
+  if (bundleRoot) await rm(path.join(bundleRoot, "data", "instances", id), { force: true, recursive: true });
+  registry.instances = registry.instances.filter((entry) => entry.id !== id);
+  await writeInstanceRegistry(projectRoot, registry);
+  console.log(`Программа ${instance.name} удалена вместе со службой, базой и файлами.`);
+}
+
+async function dropInstanceDatabase(databaseUrl) {
+  const database = parseExistingDatabase(databaseUrl);
+  if (!database.database) throw new Error("Не удалось определить базу удаляемой программы");
+  const { default: pg } = await import("pg");
+  // Подключаемся к `postgres`, а НЕ к удаляемой базе: `pg` игнорирует поле
+  // `database` рядом с `connectionString`, поэтому смещаем путь в самой строке.
+  // Иначе `pg_terminate_backend` обрывает собственную сессию мастера
+  // («terminating connection due to administrator command») и `DROP` не доходит.
+  const url = new URL(databaseUrl);
+  url.pathname = "/postgres";
+  const nonInteractiveAdmin = instanceNameArgument != null || deleteInstanceId != null
+    ? resolveNonInteractiveDbAdmin()
+    : null;
+  if (nonInteractiveAdmin?.username) {
+    url.username = encodeURIComponent(nonInteractiveAdmin.username);
+    url.password = nonInteractiveAdmin.password ? encodeURIComponent(nonInteractiveAdmin.password) : "";
+  }
+  const admin = new pg.Client({ connectionString: url.toString() });
+  await admin.connect();
+  try {
+    await admin.query(
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+      [database.database],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS ${quotePgIdentifier(database.database)}`);
+  } finally {
+    await admin.end();
+  }
+}
+
+function quotePgIdentifier(value) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Общая роль PostgreSQL и координаты сервера: у первой программы — из
+ * станционного конфига, у последующих — из `.env` первой программы (та же роль,
+ * своя база).
+ */
+async function resolveInstanceRole(registry, sharedEnv, firstInstance) {
+  if (firstInstance) {
+    return {
+      username: sharedEnv.GRUBER_DB_USER ?? "",
+      password: sharedEnv.GRUBER_DB_PASSWORD ?? "",
+      port: Number(sharedEnv.GRUBER_PG_PORT) || 5432,
+      database: sharedEnv.GRUBER_DB_NAME || "gruber",
+    };
+  }
+  const firstEnv = parseEnv(
+    await readFile(path.join(projectRoot, registry.instances[0].environmentFile), "utf8"),
+  );
+  const parsed = parseExistingDatabase(firstEnv.DATABASE_URL);
+  return {
+    username: parsed.username ?? "",
+    password: parsed.password ?? "",
+    port: parsed.port ?? 5432,
+    database: parsed.database ?? "gruber",
+  };
+}
+
+async function addInstance(prompt, registry, sharedEnv) {
+  // Первая программа заводит общую роль и берёт дефолтный порт/имя базы из
+  // станционного конфига; последующие наследуют роль от первой и получают
+  // следующий свободный порт и суффикс `_pN` у имени базы.
+  const firstInstance = registry.instances.length === 0;
+  const number = firstInstance ? 1 : nextInstanceNumber(registry.instances);
+  const id = `program-${number}`;
+  const nonInteractive = instanceNameArgument != null;
+  const name = instanceNameArgument == null
+    ? await prompt.text("Название новой программы", firstInstance ? "Program 1" : `Program ${number}`, validateInstanceName)
+    : validateInstanceName(instanceNameArgument);
+  // Порт по умолчанию обязан быть свободен и в реестре, и в системе. Кнопка
+  // «Добавить программу» порт не спрашивает, и отказ на занятом порту не
+  // оставлял бы оператору никакого выхода. Освобождать порт самим нельзя: его
+  // держит работающая программа, и снять её — значит оборвать эфир ради
+  // установки. Поэтому берём следующий свободный.
+  const defaultPort = await firstFreeInstancePort(
+    registry.instances,
+    firstInstance ? Number(sharedEnv.GRUBER_PORT) || 4310 : nextInstancePort(registry.instances),
+  );
+  const port = instancePortArgument == null && !nonInteractive
+    ? await prompt.text("API port", String(defaultPort), (value) => validatePort(value, "API port"))
+    : validatePort(instancePortArgument ?? defaultPort, "API port");
+  // Явно названный порт не подменяем: это выбор оператора, и тихая подмена
+  // увела бы программу не на тот порт, который он прописал головной станции.
+  if (registry.instances.some((entry) => Number(new URL(entry.apiUrl).port) === port)) {
+    throw new Error(`API port ${port} уже используется другой программой`);
+  }
+  if (await tcpPortReady("127.0.0.1", port)) {
+    throw new Error(
+      `API port ${port} уже занят другим процессом. ` +
+        `Освободите его или укажите другой: --instance-port=${defaultPort}`,
+    );
+  }
+
+  const base = await resolveInstanceRole(registry, sharedEnv, firstInstance);
+  if (!base.username) {
+    throw new Error("Не удалось определить роль PostgreSQL — перезапустите npm run setup");
+  }
+  const defaultDatabase = firstInstance
+    ? base.database
+    : instanceDatabaseName(base.database, number);
+  const database = instanceDatabaseArgument == null && !nonInteractive
+    ? await prompt.text("Имя базы PostgreSQL", defaultDatabase, validatePgName)
+    : validatePgName(instanceDatabaseArgument ?? defaultDatabase);
+  for (const instance of registry.instances) {
+    const environment = parseEnv(await readFile(path.join(projectRoot, instance.environmentFile), "utf8"));
+    if (parseExistingDatabase(environment.DATABASE_URL).database === database) {
+      throw new Error(`База ${database} уже принадлежит программе ${instance.name}`);
+    }
+  }
+  const databaseConfig = {
+    admin: null,
+    database,
+    host: sharedEnv.GRUBER_PG_HOST || "127.0.0.1",
+    password: base.password ?? "",
+    port: base.port ?? 5432,
+    ready: false,
+    username: base.username,
+  };
+
+  if (bundleRoot && bundleTools.initdb && bundleTools.pgCtl) {
+    await prepareBundledPostgres(databaseConfig);
+  } else {
+    const psqlPath = await ensureTool(prompt, "psql", "PostgreSQL client", "postgresql", "psql", false);
+    // Роль общая для всех программ. Первая программа её создаёт (если станция не
+    // сообщила, что роль и база уже есть); последующие роль не трогают — под
+    // самой ролью `ALTER ROLE` запрещён. Привилегированные шаги (`CREATE ROLE`,
+    // `CREATE DATABASE`) идут под администратором: в интерактиве спрашиваем,
+    // без него — env/флаг → суперпользователь ОС.
+    const admin = instanceNameArgument == null
+      ? await askDatabaseAdmin(prompt, false)
+      : resolveNonInteractiveDbAdmin();
+    const manageRole = firstInstance && sharedEnv.GRUBER_DB_READY !== "1";
+    const pgIsReadyPath = discoverToolPath(siblingExecutable(psqlPath, "pg_isready"), "pg_isready");
+    await ensurePostgresReady(prompt, databaseConfig.host, databaseConfig.port, pgIsReadyPath);
+    await createPostgresDatabase({ ...databaseConfig, admin, manageRole, psqlPath });
+  }
+
+  const apiHost = sharedEnv.GRUBER_HOST ?? "127.0.0.1";
+  const apiClientHost = ["0.0.0.0", "::"].includes(apiHost) ? "127.0.0.1" : apiHost;
+  const runtimeRoot = bundleRoot
+    ? path.join(bundleRoot, "data", "instances", id)
+    : path.join(tmpdir(), `gruber-playout-${id}`);
+  // Программе едут только общие значения станции: ключи выбора роли/сервера
+  // PostgreSQL в её `.env` не нужны — DATABASE_URL самодостаточен.
+  const inherited = { ...sharedEnv };
+  for (const key of [
+    "GRUBER_PG_HOST", "GRUBER_PG_PORT", "GRUBER_DB_USER",
+    "GRUBER_DB_PASSWORD", "GRUBER_DB_NAME", "GRUBER_DB_READY",
+  ]) delete inherited[key];
+  const values = {
+    ...inherited,
+    DATABASE_URL: buildDatabaseUrl(databaseConfig),
+    GRUBER_PORT: String(port),
+    GRUBER_MEDIA_API_URL: `http://${formatUrlHost(apiClientHost)}:${port}`,
+    GRUBER_PREVIEW_DIR: path.join(runtimeRoot, "preview"),
+    GRUBER_MEDIA_CACHE_DIR: path.join(runtimeRoot, "media-cache"),
+    GRUBER_EFFECT_CACHE_DIR: path.join(runtimeRoot, "effect-cache"),
+    GRUBER_LOG_DIR: path.join(runtimeRoot, "logs"),
+  };
+  const environmentFile = `.env.${id}`;
+  const environmentPath = path.join(projectRoot, environmentFile);
+  await mkdir(runtimeRoot, { recursive: true });
+  await writeFile(environmentPath, serializeEnv(values), { encoding: "utf8", mode: 0o600 });
+
+  const commandEnv = { ...process.env, ...values };
+  if (bundleRoot) await applyBundleSchema(values.DATABASE_URL);
+  else await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
+
+  const serviceKind = platformServiceKind();
+  const serviceUser = serviceKind.id === "systemd"
+    ? await prompt.text(
+      "Linux-пользователь для media-service",
+      process.env.SUDO_USER ?? process.env.USER ?? "gruber",
+      validateSystemUser,
+    )
+    : null;
+  const installed = await installPlatformService({
+    envPath: environmentPath,
+    instanceId: id,
+    kind: serviceKind.id,
+    // Кластер из комплекта уже поднят своим юнитом на установке станции.
+    managePostgres: false,
+    serviceUser,
+    start: true,
+  });
+  await waitForUrl(`${values.GRUBER_MEDIA_API_URL}/api/health`, 30_000);
+  registry.instances.push({ id, name, apiUrl: values.GRUBER_MEDIA_API_URL, environmentFile, enabled: true });
+  await writeInstanceRegistry(projectRoot, registry);
+  console.log(`\nПрограмма создана: ${name}`);
+  console.log(`API: ${values.GRUBER_MEDIA_API_URL}`);
+  console.log(`Database: ${database}`);
+  console.log(`Service: ${installed.label}`);
+}
+
+async function setInstanceEnabled(registry, id, enabled) {
+  const instance = registry.instances.find((entry) => entry.id === id);
+  if (!instance) throw new Error(`Программа не найдена: ${id}`);
+  if (!enabled && await instanceIsOnAir(instance.apiUrl)) {
+    throw new Error(`Программа ${id} находится в эфире. Сначала выполните Stop playout.`);
+  }
+  const service = instanceService(instance);
+  if (service.kind === "systemd") {
+    await runCommand("sudo", ["systemctl", enabled ? "enable" : "disable", "--now", service.label]);
+  } else if (service.kind === "launchd") {
+    if (enabled) {
+      await runCommand("launchctl", ["bootstrap", service.domain, service.plistPath]);
+      await runCommand("launchctl", ["enable", `${service.domain}/${service.label}`]);
+      await runCommand("launchctl", ["kickstart", "-k", `${service.domain}/${service.label}`]);
+    } else {
+      await runCommand("launchctl", ["bootout", service.domain, service.plistPath]);
+    }
+  } else {
+    const action = enabled
+      ? `Enable-ScheduledTask -TaskName '${escapePowerShell(service.label)}'; Start-ScheduledTask -TaskName '${escapePowerShell(service.label)}'`
+      : `Stop-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -ErrorAction SilentlyContinue; Disable-ScheduledTask -TaskName '${escapePowerShell(service.label)}'`;
+    await runCommand("powershell.exe", ["-NoProfile", "-Command", action]);
+  }
+  instance.enabled = enabled;
+  await writeInstanceRegistry(projectRoot, registry);
+  console.log(`Программа ${instance.name}: ${enabled ? "включена" : "отключена, данные сохранены"}.`);
+}
+
+async function instanceIsOnAir(apiUrl) {
+  try {
+    const response = await fetch(new URL("/api/playout/status", apiUrl), {
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) return false;
+    const status = await response.json();
+    return ["starting", "running", "stopping"].includes(status?.state);
+  } catch {
+    return false;
+  }
+}
+
+function instanceService(instance) {
+  const isDefault = instance.environmentFile === ".env";
+  const suffix = isDefault ? "" : `-${instance.id}`;
+  if (process.platform === "linux") {
+    return { kind: "systemd", label: `gruber-media${suffix}.service` };
+  }
+  if (process.platform === "darwin") {
+    const label = `live.gruber.media${isDefault ? "" : `.${instance.id}`}`;
+    const plistPath = path.join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+    return { kind: "launchd", label, domain: `gui/${process.getuid()}`, plistPath };
+  }
+  return {
+    kind: "windows-task",
+    label: `Gruber Playout Media Service${isDefault ? "" : ` ${instance.id}`}`,
+  };
+}
+
+export function nextInstanceNumber(instances) {
+  const used = new Set(instances.map((entry) => Number(entry.id.match(/^program-(\d+)$/)?.[1] ?? 0)));
+  for (let number = 1; number <= 999; number += 1) if (!used.has(number)) return number;
+  throw new Error("Достигнут предел программ");
+}
+
+export function nextInstancePort(instances, firstPort = 4310) {
+  const used = new Set(instances.map((entry) => Number(new URL(entry.apiUrl).port)));
+  for (let port = firstPort; port <= 65_535; port += 1) if (!used.has(port)) return port;
+  throw new Error("Нет свободного API-порта");
+}
+
+/**
+ * Первый порт, свободный и в реестре, и в системе.
+ *
+ * Реестра мало: на машине может стоять вторая установка FluxIO (комплект рядом
+ * с деревом разработки) или чужая служба — её порта в нашем реестре нет, а порт
+ * занят. Проверка живая, поэтому идёт отдельной асинхронной функцией.
+ */
+export async function firstFreeInstancePort(instances, firstPort = 4310, isBusy = tcpPortReady) {
+  const used = new Set(instances.map((entry) => Number(new URL(entry.apiUrl).port)));
+  for (let port = firstPort; port <= 65_535; port += 1) {
+    if (used.has(port)) continue;
+    if (await isBusy("127.0.0.1", port)) continue;
+    return port;
+  }
+  throw new Error("Нет свободного API-порта");
+}
+
+export function instanceDatabaseName(baseName, number) {
+  return `${baseName.slice(0, 52)}_p${number}`;
+}
+
+function validateInstanceName(value) {
+  const name = value.trim();
+  if (!name || name.length > 80) throw new Error("Название должно содержать от 1 до 80 символов");
+  return name;
 }
 
 //
@@ -421,9 +929,12 @@ async function askDatabase(prompt, mode, existingEnv) {
     : await prompt.confirm("Пользователь и база уже существуют?", mode === "production");
 
   console.log("  PostgreSQL: 127.0.0.1 (локально, SSL отключён)");
+  // Кластер из комплекта — приватный для FluxIO, к нему больше никто не ходит,
+  // поэтому по умолчанию он берёт нестандартный порт: 5432 на машине обычно уже
+  // занят системным PostgreSQL, и установка молча уводила бы подключение на него.
   const port = await prompt.text(
-    "PostgreSQL port",
-    String(existing.port ?? 5432),
+    bundled ? "Порт кластера PostgreSQL из комплекта" : "PostgreSQL port",
+    String(existing.port ?? (bundled ? 5544 : 5432)),
     (value) => validatePort(value, "PostgreSQL port"),
   );
   const database = await prompt.text(
@@ -449,6 +960,26 @@ async function askDatabasePassword(prompt, databaseReady, existingPassword) {
 
   console.log("  Пароль сгенерирован автоматически и будет сохранён только в .env.");
   return randomBytes(24).toString("base64url");
+}
+
+/**
+ * Администратор БД для неинтерактивного создания программы (кнопка «добавить»
+ * в desktop). Порядок такой же, как у первичной установки: явный флаг →
+ * переменные окружения → суперпользователь ОС (`postgres` на Linux). Пустой
+ * пароль — это нормально: локальный кластер обычно на trust/peer.
+ */
+function resolveNonInteractiveDbAdmin() {
+  const username = instanceAdminArgument
+    ?? process.env.GRUBER_DB_ADMIN_USER
+    ?? process.env.PGUSER
+    ?? (process.platform === "darwin"
+      ? process.env.USER ?? path.basename(homedir())
+      : "postgres");
+  const password = instanceAdminPasswordArgument
+    ?? process.env.GRUBER_DB_ADMIN_PASSWORD
+    ?? process.env.PGPASSWORD
+    ?? "";
+  return { username, password };
 }
 
 async function askDatabaseAdmin(prompt, databaseReady) {
@@ -542,19 +1073,15 @@ async function askWizardActions(prompt, mode) {
     : await prompt.confirm("Запустить typecheck и tests?", true);
   const buildInstaller = await askBuildInstaller(prompt, mode);
   const createShortcut = await askDesktopShortcut(prompt, mode);
-  const serviceKind = platformServiceKind();
-  const installBackgroundService = await askBackgroundService(prompt, mode, serviceKind);
-  const serviceUser = await askServiceUser(prompt, installBackgroundService, serviceKind);
-  const startNow = await askStartNow(prompt, installBackgroundService);
+  // Фоновая служба ставится у каждой программы отдельно — при её создании из
+  // Control Center; на установке станции спрашивать про неё нечего.
+  const startNow = await askStartNow(prompt);
 
   return {
     buildInstaller,
     createShortcut,
-    installBackgroundService,
     installDependencies,
     runChecks,
-    serviceKind,
-    serviceUser,
     startNow,
   };
 }
@@ -592,35 +1119,10 @@ async function askDesktopShortcut(prompt, mode) {
   return prompt.confirm("Создать ярлык FluxIO на рабочем столе?", true);
 }
 
-async function askBackgroundService(prompt, mode, serviceKind) {
-  if (mode !== "production") return false;
-
-  return prompt.confirm(
-    `Установить и запустить media-service через ${serviceKind.label}?`,
-    true,
-  );
-}
-
-async function askServiceUser(prompt, installBackgroundService, serviceKind) {
-  if (!installBackgroundService) return null;
-  if (serviceKind.id !== "systemd") return null;
-
-  return prompt.text(
-    "Linux-пользователь для media-service",
-    process.env.SUDO_USER ?? process.env.USER ?? "gruber",
-    validateSystemUser,
-  );
-}
-
-async function askStartNow(prompt, installBackgroundService) {
+async function askStartNow(prompt) {
   if (noStart) return false;
 
-  return prompt.confirm(
-    installBackgroundService
-      ? "Запустить Electron-интерфейс после старта media-service?"
-      : "Запустить приложение после установки?",
-    true,
-  );
+  return prompt.confirm("Запустить приложение после установки?", true);
 }
 
 //
@@ -704,9 +1206,18 @@ function verifyGstreamerDvbPlugin(gstreamerLaunchPath) {
   );
 }
 
-async function preparePostgres(prompt, database) {
+/**
+ * Проверяет, что сервер PostgreSQL отвечает (и разворачивает кластер из
+ * комплекта). Базу и роль здесь НЕ создаёт — это делает добавление программы:
+ * у станции своих программ нет.
+ */
+async function ensurePostgresServer(prompt, database) {
   if (bundleRoot && bundleTools.initdb && bundleTools.pgCtl) {
     await prepareBundledPostgres(database);
+    // Юнит кластера ставится сразу на установке станции — до него кластер
+    // держался бы ручным `pg_ctl` и не пережил бы перезагрузку до первой
+    // программы.
+    await installBundledPostgresService(prompt);
     return;
   }
   if (database.ready) return;
@@ -725,35 +1236,48 @@ async function preparePostgres(prompt, database) {
   );
 
   await ensurePostgresReady(prompt, database.host, database.port, pgIsReadyPath);
-  await createPostgresDatabase({
-    admin: database.admin,
-    database: database.database,
-    host: database.host,
-    password: database.password,
-    port: database.port,
-    psqlPath,
-    username: database.username,
-  });
 }
 
-function buildEnvironmentValues({ database, existingEnv, mode, service, tools }) {
-  const apiClientHost = ["0.0.0.0", "::"].includes(service.apiHost)
-    ? "127.0.0.1"
-    : service.apiHost;
+/** Ставит фоновый юнит кластера PostgreSQL из комплекта (systemd/launchd/задача). */
+async function installBundledPostgresService(prompt) {
+  if (!bundlePostgres) return;
+  const kind = platformServiceKind().id;
+  if (kind === "systemd") {
+    const serviceUser = await prompt.text(
+      "Linux-пользователь для кластера PostgreSQL",
+      process.env.SUDO_USER ?? process.env.USER ?? "gruber",
+      validateSystemUser,
+    );
+    await installBundledPostgresUnit({ serviceUser, start: !noStart });
+  } else if (kind === "launchd") {
+    await installBundledPostgresAgent({ start: !noStart });
+  } else {
+    await installBundledPostgresTask({ start: !noStart });
+  }
+}
 
+async function ensureInstanceRegistryFile() {
+  const filePath = path.join(projectRoot, "instances.json");
+  if (existsSync(filePath)) return;
+  await writeInstanceRegistry(projectRoot, { version: 1, instances: [] });
+  console.log("Реестр программ создан пустым — добавьте первую программу в окне FluxIO.");
+}
+
+function buildSharedEnvironmentValues({ database, existingEnv, mode, service, tools }) {
   return {
     NODE_ENV: mode === "production" ? "production" : "development",
-    DATABASE_URL: buildDatabaseUrl({
-      database: database.database,
-      password: database.password,
-      port: database.port,
-      username: database.username,
-    }),
     GRUBER_SECRET_KEY:
       existingEnv.GRUBER_SECRET_KEY || randomBytes(32).toString("base64"),
     GRUBER_HOST: service.apiHost,
+    // Порт API первой программы; последующие берут следующий свободный.
     GRUBER_PORT: String(service.apiPort),
-    GRUBER_MEDIA_API_URL: `http://${formatUrlHost(apiClientHost)}:${service.apiPort}`,
+    // Координаты сервера PostgreSQL и общая роль для всех программ.
+    GRUBER_PG_HOST: database.host,
+    GRUBER_PG_PORT: String(database.port),
+    GRUBER_DB_USER: database.username,
+    GRUBER_DB_PASSWORD: database.password,
+    GRUBER_DB_NAME: database.database,
+    GRUBER_DB_READY: database.ready ? "1" : "",
     FFMPEG_PATH: tools.ffmpeg,
     FFPROBE_PATH: tools.ffprobe,
     TSDUCK_PATH: tools.tsduck,
@@ -863,12 +1387,19 @@ async function prepareBundledPostgres(database) {
     superuserPassword,
   });
 
-  // Мастер запускают повторно, и второй `pg_ctl start` по работающему кластеру
-  // — ошибка. Спрашиваем готовность, а не глушим отказ: глушёный отказ скрыл бы
-  // и настоящую поломку старта.
-  if (bundledClusterRunning(executables.pgIsReady, database.port)) {
+  // «Уже работает» — это НАШ кластер по каталогу данных, а не любой сервер,
+  // ответивший на порт. Мастер запускают повторно, и второй `pg_ctl start` по
+  // своему же работающему кластеру — ошибка; но система с чужим PostgreSQL на
+  // том же порту уводила бы подключение туда, где роли `fluxio_admin` нет.
+  if (bundledClusterRunning(executables.pgCtl, cluster.dataDirectory)) {
     console.log("  Кластер уже работает.");
   } else {
+    if (bundledPortAnswered(executables.pgIsReady, database.port)) {
+      throw new Error(
+        `Порт ${database.port} занят другим сервером PostgreSQL (не кластером комплекта).\n` +
+          "  Остановите его либо переустановите, указав для кластера FluxIO свободный порт.",
+      );
+    }
     console.log("  Запускаю кластер…");
     await runCommand(
       executables.pgCtl,
@@ -931,7 +1462,19 @@ function bundleGstreamerEnvironment() {
   });
 }
 
-function bundledClusterRunning(pgIsReady, port) {
+/** Наш кластер комплекта запущен — по каталогу данных, а не по порту. */
+function bundledClusterRunning(pgCtl, dataDirectory) {
+  const result = spawnSync(pgCtl, ["status", "-D", dataDirectory], {
+    env: clusterEnvironment(),
+    stdio: "ignore",
+    timeout: 10_000,
+  });
+  // 0 — сервер запущен; 3 — остановлен; 4 — нет/битый каталог данных.
+  return result.status === 0;
+}
+
+/** На порт кто-то отвечает — не обязательно наш кластер. */
+function bundledPortAnswered(pgIsReady, port) {
   if (!pgIsReady) return false;
   const result = spawnSync(pgIsReady, ["-h", "127.0.0.1", "-p", String(port), "-q"], {
     env: clusterEnvironment(),
@@ -973,7 +1516,7 @@ async function updateInstallation(sourceRoot, incoming) {
   console.log(
     `  перенесено компонентов: ${result.moved}, оставлено на месте: ${result.kept}`,
   );
-  console.log("  База и .env не тронуты.");
+  console.log("  Базы, instances.json и .env-файлы не тронуты.");
 
   const node = path.join(installationRoot, incoming.node.path);
   const wizard = path.join(installationRoot, "app", "setup.mjs");
@@ -1022,8 +1565,10 @@ async function applyBundleSchema(databaseUrl) {
 async function runBuildPipeline(commandEnv, mode, actions) {
   if (bundleRoot) {
     // Дерево собрано на сборочной машине, Prisma CLI в комплект не едет:
-    // остаётся применить схему и отдать управление службе.
-    await applyBundleSchema(commandEnv.DATABASE_URL);
+    // остаётся применить схему уже созданным программам (у станции своих баз
+    // нет — первую заводит добавление программы).
+    if (commandEnv.DATABASE_URL) await applyBundleSchema(commandEnv.DATABASE_URL);
+    await migrateAdditionalInstances((environment) => applyBundleSchema(environment.DATABASE_URL));
     return;
   }
 
@@ -1037,8 +1582,14 @@ async function runBuildPipeline(commandEnv, mode, actions) {
   }
 
   await ensureElectronRuntime({ env: commandEnv, offlineMode: offline });
+  // Генерация клиента Prisma базы не требует; миграции применяем только уже
+  // созданным программам — у станции своей базы нет.
   await runNpmCommand(["run", "db:generate"], { env: commandEnv });
-  await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
+  if (commandEnv.DATABASE_URL) await runNpmCommand(["run", "db:migrate"], { env: commandEnv });
+  await migrateAdditionalInstances((environment) => runNpmCommand(
+    ["run", "db:migrate"],
+    { env: { ...process.env, ...environment } },
+  ));
 
   if (actions.runChecks) {
     await runNpmCommand(["run", "typecheck"], { env: commandEnv });
@@ -1058,6 +1609,39 @@ async function runBuildPipeline(commandEnv, mode, actions) {
   );
 }
 
+async function migrateAdditionalInstances(migrate) {
+  const registry = await readInstanceRegistry(projectRoot, "http://127.0.0.1:4310");
+  for (const instance of registry.instances) {
+    const environment = parseEnv(await readFile(path.join(projectRoot, instance.environmentFile), "utf8"));
+    if (!environment.DATABASE_URL) {
+      throw new Error(`В ${instance.environmentFile} нет DATABASE_URL`);
+    }
+    console.log(`\nМиграции базы: ${instance.name}`);
+    await migrate(environment);
+  }
+}
+
+async function restartAdditionalInstances(fallbackApiUrl) {
+  const registry = await readInstanceRegistry(projectRoot, fallbackApiUrl);
+  for (const instance of registry.instances) {
+    if (!instance.enabled) continue;
+    const service = instanceService(instance);
+    console.log(`\nПерезапуск программы: ${instance.name}`);
+    if (service.kind === "systemd") {
+      await runCommand("sudo", ["systemctl", "restart", service.label]);
+    } else if (service.kind === "launchd") {
+      await runCommand("launchctl", ["kickstart", "-k", `${service.domain}/${service.label}`]);
+    } else {
+      await runCommand("powershell.exe", [
+        "-NoProfile",
+        "-Command",
+        `Stop-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName '${escapePowerShell(service.label)}'`,
+      ]);
+    }
+    await waitForUrl(`${instance.apiUrl}/api/health`, 30_000);
+  }
+}
+
 /** Убирает файлы, которые архив обновления не мог удалить из старой папки. */
 export async function pruneRetiredSourceFiles(root = projectRoot) {
   const removed = [];
@@ -1071,16 +1655,13 @@ export async function pruneRetiredSourceFiles(root = projectRoot) {
 }
 
 async function finishInstallation(commandEnv, mode, actions, values) {
-  const installedService = await setupBackgroundService(actions, values);
   const desktopShortcut = actions.createShortcut ? await createDesktopShortcut() : null;
   // Папка титров нужна независимо от ярлыка: в неё складываются готовые
   // плашки, и без неё каталог в редакторе открывается пустым.
   const titleLibrary = await createTitleLibraryFolder().catch(() => null);
 
   printSummary({
-    databaseUrl: values.DATABASE_URL,
     desktopShortcut,
-    installedService,
     titleLibrary,
     mode,
     startNow: actions.startNow,
@@ -1089,29 +1670,9 @@ async function finishInstallation(commandEnv, mode, actions, values) {
 
   if (!actions.startNow) return;
 
-  if (installedService) {
-    await launchDesktop(commandEnv, installedService);
-    return;
-  }
-
-  await launchApplication(mode, commandEnv, values.GRUBER_MEDIA_API_URL);
-}
-
-async function setupBackgroundService(actions, values) {
-  if (!actions.installBackgroundService) return null;
-
-  const installedService = await installPlatformService({
-    envPath,
-    kind: actions.serviceKind.id,
-    serviceUser: actions.serviceUser,
-    start: !noStart,
-  });
-
-  if (!noStart) {
-    await waitForUrl(`${values.GRUBER_MEDIA_API_URL}/api/health`, 30_000);
-  }
-
-  return installedService;
+  // Фоновая служба ставится у каждой программы отдельно (её ставит добавление
+  // программы). Здесь только открываем Control Center: программ ещё нет.
+  await launchApplication(mode, commandEnv, `http://127.0.0.1:${values.GRUBER_PORT}`);
 }
 
 async function ensurePostgresReady(prompt, host, port, pgIsReadyPath) {
@@ -1254,8 +1815,12 @@ async function ensureElectronRuntime({ env, offlineMode }) {
 }
 
 async function loadExistingEnv() {
-  if (!existsSync(envPath)) return {};
-  return parseEnv(await readFile(envPath, "utf8"));
+  // Станционный конфиг — источник общих значений. Цельный `.env` от установок до
+  // раздельных программ читается запасным, чтобы обновление не потеряло пути к
+  // инструментам и секрет.
+  const legacy = existsSync(envPath) ? parseEnv(await readFile(envPath, "utf8")) : {};
+  const shared = existsSync(sharedEnvPath) ? parseEnv(await readFile(sharedEnvPath, "utf8")) : {};
+  return { ...legacy, ...shared };
 }
 
 function parseExistingDatabase(value) {
@@ -1289,27 +1854,13 @@ export function selectEnvBackupsToRemove(fileNames, keep = envBackupsToKeep) {
     .slice(keep);
 }
 
-async function pruneEnvBackups() {
-  const stale = selectEnvBackupsToRemove(readdirSync(projectRoot));
-  for (const name of stale) {
-    await rm(path.join(projectRoot, name), { force: true });
+async function saveSharedEnv(values) {
+  if (existsSync(sharedEnvPath)) {
+    await copyFile(sharedEnvPath, `${sharedEnvPath}.backup`);
+    console.log(`\nСуществующий ${sharedEnvFileName} сохранён: ${sharedEnvFileName}.backup`);
   }
-  return stale.length;
-}
-
-async function saveEnv(values) {
-  if (existsSync(envPath)) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupPath = `${envPath}.backup-${timestamp}`;
-    await copyFile(envPath, backupPath);
-    console.log(`\nСуществующий .env сохранён: ${path.basename(backupPath)}`);
-    const removed = await pruneEnvBackups();
-    if (removed > 0) {
-      console.log(`Устаревших копий удалено: ${removed} (храним последние ${envBackupsToKeep}).`);
-    }
-  }
-  await writeFile(envPath, serializeEnv(values), { encoding: "utf8", mode: 0o600 });
-  console.log("Конфигурация записана в .env (mode 0600).");
+  await writeFile(sharedEnvPath, serializeEnv(values), { encoding: "utf8", mode: 0o600 });
+  console.log(`Станционный конфиг записан: ${sharedEnvFileName} (mode 0600).`);
 }
 
 async function ensureTool(
@@ -1786,12 +2337,17 @@ async function createPostgresDatabase({
   admin,
   database,
   host,
+  manageRole = true,
   password,
   port,
   psqlPath,
   username,
 }) {
-  console.log("\nСоздаю/обновляю роль и базу PostgreSQL…");
+  console.log(
+    manageRole
+      ? "\nСоздаю/обновляю роль и базу PostgreSQL…"
+      : "\nСоздаю базу PostgreSQL…",
+  );
   const useLocalPeer =
     process.platform === "linux" &&
     isLocalHost(host) &&
@@ -1815,9 +2371,16 @@ async function createPostgresDatabase({
   const alterRoleFormat = password
     ? "format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app_user', :'app_password')"
     : "format('ALTER ROLE %I WITH LOGIN PASSWORD NULL', :'app_user')";
+  // Дополнительной программе роль не создаётся и не меняется — она делит роль с
+  // основной установкой, а `ALTER ROLE` под самой ролью приложения запрещён.
+  const roleStatements = manageRole
+    ? [
+        `SELECT ${createRoleFormat} WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') \\gexec`,
+        `SELECT ${alterRoleFormat} \\gexec`,
+      ]
+    : [];
   const sql = [
-    `SELECT ${createRoleFormat} WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') \\gexec`,
-    `SELECT ${alterRoleFormat} \\gexec`,
+    ...roleStatements,
     "SELECT format('CREATE DATABASE %I OWNER %I', :'app_database', :'app_user') WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'app_database') \\gexec",
     "SELECT format('ALTER DATABASE %I OWNER TO %I', :'app_database', :'app_user') \\gexec",
   ].join("\n");
@@ -1827,20 +2390,27 @@ async function createPostgresDatabase({
   });
 }
 
-async function installPlatformService({ envPath: environmentPath, kind, serviceUser, start }) {
+async function installPlatformService({
+  envPath: environmentPath,
+  instanceId = null,
+  kind,
+  managePostgres = true,
+  serviceUser,
+  start,
+}) {
   if (kind === "systemd") {
-    return installSystemdService({ environmentPath, serviceUser, start });
+    return installSystemdService({ environmentPath, instanceId, managePostgres, serviceUser, start });
   }
   if (kind === "launchd") {
-    return installLaunchAgent({ start });
+    return installLaunchAgent({ environmentPath, instanceId, managePostgres, start });
   }
   if (kind === "windows-task") {
-    return installWindowsTask({ start });
+    return installWindowsTask({ environmentPath, instanceId, managePostgres, start });
   }
   throw new Error(`Фоновый service не поддерживается на platform=${process.platform}`);
 }
 
-async function installSystemdService({ environmentPath, serviceUser, start }) {
+async function installSystemdService({ environmentPath, instanceId, managePostgres, serviceUser, start }) {
   if (!commandAvailable("systemctl")) {
     throw new Error("systemctl не найден: автоматическая production-установка доступна только с systemd");
   }
@@ -1851,16 +2421,20 @@ async function installSystemdService({ environmentPath, serviceUser, start }) {
   // Кластер из комплекта поднимается своим unit-ом и до media-service:
   // после перезагрузки эфир обязан вернуться сам, а без базы автоподъём не
   // восстановит ни расписание, ни точку прерывания.
-  if (bundlePostgres) {
+  if (bundlePostgres && managePostgres) {
     await installBundledPostgresUnit({ serviceUser, start });
   }
 
-  const unitPath = path.join(tmpdir(), `gruber-media-${process.pid}.service`);
+  const suffix = instanceId ? `-${instanceId}` : "";
+  const serviceName = `gruber-media${suffix}.service`;
+  const runtimeName = `gruber-playout${suffix}`;
+  const unitPath = path.join(tmpdir(), `${serviceName}.${process.pid}`);
   const unit = buildSystemdUnit({
     environmentPath,
     nodePath: process.execPath,
     requiresUnit: bundlePostgres ? postgresServiceName : null,
     rootPath: projectRoot,
+    runtimeName,
     serviceUser,
     // `ProtectSystem=strict` делает каталог установки read-only, а реестр
     // плагинов GStreamer службе писать надо — иначе он пересобирается на
@@ -1878,21 +2452,21 @@ async function installSystemdService({ environmentPath, serviceUser, start }) {
       "-m",
       "0644",
       unitPath,
-      "/etc/systemd/system/gruber-media.service",
+      `/etc/systemd/system/${serviceName}`,
     ]);
     await runCommand("sudo", ["systemctl", "daemon-reload"]);
-    await runCommand("sudo", ["systemctl", "enable", "gruber-media.service"]);
+    await runCommand("sudo", ["systemctl", "enable", serviceName]);
     if (start) {
-      await runCommand("sudo", ["systemctl", "restart", "gruber-media.service"]);
-      await runCommand("sudo", ["systemctl", "--no-pager", "--full", "status", "gruber-media.service"]);
+      await runCommand("sudo", ["systemctl", "restart", serviceName]);
+      await runCommand("sudo", ["systemctl", "--no-pager", "--full", "status", serviceName]);
     }
   } finally {
     await rm(unitPath, { force: true });
   }
   return {
     kind: "systemd",
-    label: "gruber-media.service",
-    logs: "journalctl -u gruber-media.service -f",
+    label: serviceName,
+    logs: `journalctl -u ${serviceName} -f`,
   };
 }
 
@@ -1931,6 +2505,7 @@ export function buildSystemdUnit({
   nodePath,
   requiresUnit = null,
   rootPath,
+  runtimeName = "gruber-playout",
   serviceUser,
   writablePaths = [],
 }) {
@@ -1944,11 +2519,11 @@ Type=simple
 User=${serviceUser}
 WorkingDirectory=${quoteSystemd(rootPath)}
 Environment=NODE_ENV=production
-Environment=GRUBER_PREVIEW_DIR=/run/gruber-playout/preview
+Environment=GRUBER_PREVIEW_DIR=/run/${runtimeName}/preview
 EnvironmentFile=${quoteSystemd(environmentPath)}
-RuntimeDirectory=gruber-playout
+RuntimeDirectory=${runtimeName}
 RuntimeDirectoryMode=0750
-ExecStart=${quoteSystemd(nodePath)} ${quoteSystemd(path.posix.join(rootPath, "apps/media-server/dist/index.js"))}
+ExecStart=${quoteSystemd(nodePath)} ${quoteSystemd(path.posix.join(rootPath, "apps/media-server/dist/index.js"))} ${quoteSystemd(`--fluxio-env=${environmentPath}`)}
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
@@ -1958,7 +2533,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=${["/run/gruber-playout", ...writablePaths].map(quoteSystemd).join(" ")}
+ReadWritePaths=${[`/run/${runtimeName}`, ...writablePaths].map(quoteSystemd).join(" ")}
 
 [Install]
 WantedBy=multi-user.target
@@ -1969,20 +2544,22 @@ function quoteSystemd(value) {
   return `"${value.replace(/([\\"])/g, "\\$1")}"`;
 }
 
-async function installLaunchAgent({ start }) {
-  if (bundlePostgres) await installBundledPostgresAgent({ start });
-  const label = "live.gruber.media";
+async function installLaunchAgent({ environmentPath, instanceId, managePostgres, start }) {
+  if (bundlePostgres && managePostgres) await installBundledPostgresAgent({ start });
+  const suffix = instanceId ? `.${instanceId}` : "";
+  const label = `live.gruber.media${suffix}`;
   const agentsDirectory = path.join(homedir(), "Library", "LaunchAgents");
   const logsDirectory = path.join(homedir(), "Library", "Logs", "GruberPlayout");
   const plistPath = path.join(agentsDirectory, `${label}.plist`);
   await mkdir(agentsDirectory, { recursive: true });
   await mkdir(logsDirectory, { recursive: true });
   const plist = buildLaunchAgentPlist({
+    environmentPath,
     label,
     nodePath: process.execPath,
     rootPath: projectRoot,
-    stderrPath: path.join(logsDirectory, "media-service-error.log"),
-    stdoutPath: path.join(logsDirectory, "media-service.log"),
+    stderrPath: path.join(logsDirectory, `media-service${suffix}-error.log`),
+    stdoutPath: path.join(logsDirectory, `media-service${suffix}.log`),
   });
   await writeFile(plistPath, plist, { encoding: "utf8", mode: 0o644 });
   const domain = `gui/${process.getuid()}`;
@@ -1997,7 +2574,7 @@ async function installLaunchAgent({ start }) {
     domain,
     kind: "launchd",
     label,
-    logs: `tail -f "${path.join(logsDirectory, "media-service.log")}"`,
+    logs: `tail -f "${path.join(logsDirectory, `media-service${suffix}.log`)}"`,
     plistPath,
   };
 }
@@ -2050,6 +2627,7 @@ async function installBundledPostgresTask({ start }) {
 }
 
 export function buildLaunchAgentPlist({
+  environmentPath = null,
   label,
   nodePath,
   rootPath,
@@ -2065,6 +2643,7 @@ export function buildLaunchAgentPlist({
   <array>
     <string>${escapeXml(nodePath)}</string>
     <string>${escapeXml(path.posix.join(rootPath, "apps/media-server/dist/index.js"))}</string>
+    ${environmentPath ? `<string>${escapeXml(`--fluxio-env=${environmentPath}`)}</string>` : ""}
   </array>
   <key>WorkingDirectory</key><string>${escapeXml(rootPath)}</string>
   <key>RunAtLoad</key><true/>
@@ -2076,11 +2655,12 @@ export function buildLaunchAgentPlist({
 `;
 }
 
-async function installWindowsTask({ start }) {
-  if (bundlePostgres) await installBundledPostgresTask({ start });
-  const taskName = "Gruber Playout Media Service";
+async function installWindowsTask({ environmentPath, instanceId, managePostgres, start }) {
+  if (bundlePostgres && managePostgres) await installBundledPostgresTask({ start });
+  const taskName = `Gruber Playout Media Service${instanceId ? ` ${instanceId}` : ""}`;
   const scriptPath = path.join(projectRoot, "apps/media-server/dist/index.js");
   const command = buildWindowsTaskCommand({
+    environmentPath,
     nodePath: process.execPath,
     rootPath: projectRoot,
     scriptPath,
@@ -2098,12 +2678,12 @@ async function installWindowsTask({ start }) {
   return {
     kind: "windows-task",
     label: taskName,
-    logs: "Get-ScheduledTask -TaskName 'Gruber Playout Media Service'",
+    logs: `Get-ScheduledTask -TaskName '${taskName}'`,
   };
 }
 
-export function buildWindowsTaskCommand({ nodePath, rootPath, scriptPath, start, taskName }) {
-  const actionArguments = `\"${scriptPath}\"`;
+export function buildWindowsTaskCommand({ environmentPath = null, nodePath, rootPath, scriptPath, start, taskName }) {
+  const actionArguments = `\"${scriptPath}\"${environmentPath ? ` \"--fluxio-env=${environmentPath}\"` : ""}`;
   return [
     `Stop-ScheduledTask -TaskName '${escapePowerShell(taskName)}' -ErrorAction SilentlyContinue`,
     "Start-Sleep -Milliseconds 500",
@@ -2390,16 +2970,16 @@ function renderCommand(command, args) {
 
 async function launchApplication(mode, env, mediaApiUrl) {
   console.log("\nЗапускаю FluxIO. Для остановки нажмите Ctrl+C.\n");
+  env = await withDesktopInstances(env);
   const processes = [];
-  const mediaScript = mode === "production" ? "start:server" : "dev:server";
-  processes.push(spawnManagedNpm(["run", mediaScript], env));
-  await waitForUrl(`${mediaApiUrl}/api/health`, 30_000);
-  if (mode === "test") {
+  if (mode === "production") {
+    processes.push(spawnManaged(process.execPath, [path.join(projectRoot, "launch.mjs")], env));
+  } else {
+    processes.push(spawnManagedNpm(["run", "dev:server"], env));
+    await waitForUrl(`${mediaApiUrl}/api/health`, 30_000);
     processes.push(spawnManagedNpm(["run", "dev:web"], env));
     await waitForUrl("http://127.0.0.1:5173", 30_000);
     processes.push(spawnManagedNpm(["run", "dev:desktop"], env));
-  } else {
-    processes.push(spawnManagedNpm(["run", "start:desktop"], env));
   }
 
   await new Promise((resolve) => {
@@ -2411,44 +2991,14 @@ async function launchApplication(mode, env, mediaApiUrl) {
   await stopProcesses(processes);
 }
 
-async function launchDesktop(env, installedService) {
-  console.log("\nMedia-service уже работает в фоне. Запускаю Electron…\n");
-  const child = spawnManagedNpm(["run", "start:desktop"], env);
-  const outcome = await waitForProcessOrSignal(child);
-  if (outcome.kind === "signal") {
-    console.log(`\nПолучен ${outcome.signal}. Останавливаю Electron и media-service…`);
-    await stopProcesses([child]);
-    await stopInstalledService(installedService);
-    console.log("Electron и media-service остановлены.");
-    return;
-  }
-  if (outcome.error) throw outcome.error;
-  if (outcome.code !== 0 && outcome.signal == null) {
-    throw new Error(`Electron завершился с code=${outcome.code}`);
-  }
-  console.log("Electron закрыт; media-service продолжает работать в фоне.");
-}
-
-function waitForProcessOrSignal(child) {
-  return new Promise((resolve) => {
-    const onSigint = () => finish({ kind: "signal", signal: "SIGINT" });
-    const onSigterm = () => finish({ kind: "signal", signal: "SIGTERM" });
-    const onError = (error) => finish({ kind: "exit", error });
-    const onExit = (code, signal) => finish({ kind: "exit", code, signal });
-
-    function finish(outcome) {
-      process.off("SIGINT", onSigint);
-      process.off("SIGTERM", onSigterm);
-      child.off("error", onError);
-      child.off("exit", onExit);
-      resolve(outcome);
-    }
-
-    process.once("SIGINT", onSigint);
-    process.once("SIGTERM", onSigterm);
-    child.once("error", onError);
-    child.once("exit", onExit);
-  });
+async function withDesktopInstances(env) {
+  const mediaApiUrl = env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310";
+  const registry = await readInstanceRegistry(projectRoot, mediaApiUrl);
+  return {
+    ...env,
+    GRUBER_INSTANCES_JSON: JSON.stringify(publicInstances(registry)),
+    GRUBER_INSTANCES_FILE: path.join(projectRoot, "instances.json"),
+  };
 }
 
 /**
@@ -2466,12 +3016,6 @@ async function ensureNodeModulesAreFree() {
   const locked = await findLockedNativeFiles(projectRoot);
   if (locked.length === 0) return;
   throw new Error(describeLockedNativeFiles(locked));
-}
-
-async function stopInstalledService(service) {
-  if (!service) return;
-  const stop = platformServiceStopCommand(service);
-  await runCommand(stop.command, stop.args);
 }
 
 export function platformServiceStopCommand(service) {
@@ -2553,27 +3097,21 @@ async function waitForUrl(url, timeoutMs) {
 }
 
 function printSummary({
-  databaseUrl,
   desktopShortcut,
-  installedService,
   mode,
   startNow,
   titleLibrary,
   values,
 }) {
-  console.log("\nУстановка завершена");
-  console.log("===================");
+  console.log("\nУстановка станции завершена");
+  console.log("==========================");
   console.log(`Режим: ${mode === "production" ? "production" : "test / development"}`);
-  console.log(`PostgreSQL: ${redactDatabaseUrl(databaseUrl)}`);
-  console.log(`Media API: ${values.GRUBER_MEDIA_API_URL}`);
+  console.log(`PostgreSQL сервер: ${values.GRUBER_PG_HOST}:${values.GRUBER_PG_PORT} (роль ${values.GRUBER_DB_USER})`);
   console.log(`FFmpeg: ${values.FFMPEG_PATH}`);
   console.log(`TSDuck: ${values.TSDUCK_PATH}`);
   console.log(`GStreamer: ${values.GSTREAMER_LAUNCH_PATH}`);
-  console.log(`Конфигурация: ${envPath}`);
-  if (installedService) {
-    console.log(`Background service: ${installedService.label}`);
-    console.log(`Логи/статус: ${installedService.logs}`);
-  }
+  console.log(`Станционный конфиг: ${sharedEnvPath}`);
+  console.log("Программы: создайте первую в окне FluxIO (Control Center → «Добавить программу»).");
   if (desktopShortcut) console.log(`Ярлык: ${desktopShortcut}`);
   if (titleLibrary) {
     console.log(
@@ -2583,16 +3121,6 @@ function printSummary({
     );
   }
   if (!startNow) console.log("Запуск пропущен. Повторите npm run setup или используйте команды из документации.");
-}
-
-function redactDatabaseUrl(value) {
-  try {
-    const url = new URL(value);
-    if (url.password) url.password = "***";
-    return url.toString();
-  } catch {
-    return "configured";
-  }
 }
 
 function formatUrlHost(host) {

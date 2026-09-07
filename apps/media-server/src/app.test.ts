@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
+import { createServer } from "node:net";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +10,12 @@ import test from "node:test";
 import {
   defaultMpegTsOutputSettings,
   defaultSubtitleOutput,
+  endpointMpegTsSettings,
+  nearestAudioCodec,
+  nearestVideoCodec,
+  outputProtocolCapabilities,
+  unsupportedOutputFeatures,
+  withSupportedOutputFeatures,
   playoutStatusSchema,
   serviceHealthSchema,
   sceneFormatSchema,
@@ -18,16 +25,26 @@ import {
   startPlayoutRequestSchema,
   systemMetricsSchema,
   workspaceSessionSnapshotSchema,
+  type PlayoutStream,
   type StartPlayoutRequest,
-
-  videoEncodingSchema,} from "@gruber/contracts";
+  videoEncodingSchema,
+} from "@gruber/contracts";
 import { buildApp } from "./app.js";
 import { describeTsdDuckExit } from "./ffmpeg/playout-supervisor.js";
+import { parseWindowsProcessList } from "./process-metrics.js";
 
 // Мастер установки запускает `npm test` с окружением станции: `setup.mjs`
 // передаёт значения `.env` в дочерний процесс, чтобы сборка видела базу.
 // Каталог интерфейса оттуда включил бы раздачу статики поверх маршрутов службы.
 delete process.env.GRUBER_WEB_DIR;
+
+test("Windows process metrics accept a decimal comma without shifting RSS", () => {
+  assert.deepEqual(parseWindowsProcessList("42;1,5;1048576\n"), [{
+    pid: 42,
+    cpuSeconds: 1.5,
+    rssBytes: 1_048_576,
+  }]);
+});
 import {
   buildDailyReport,
   emptyDailyStats,
@@ -66,6 +83,10 @@ import {
 } from "./ffmpeg/transport-preview.js";
 import { FfmpegCapabilitiesService } from "./ffmpeg/capabilities.js";
 import { MediaPreviewService } from "./ffmpeg/media-preview.js";
+import {
+  buildStreamMpegTsRemuxCommand,
+  resolveBranchProfile,
+} from "./ffmpeg/stream-branch.js";
 import {
   alignHotChangePlaylist,
   clipAudioSilenceBytes,
@@ -262,6 +283,17 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
       srtPassphrase: "session-secret",
       rtmpStreamKey: "rtmp-secret",
       udpPort: 5000,
+      outputStreams: [{
+        id: "output-2",
+        name: "Site",
+        enabled: true,
+        endpoint: {
+          protocol: "rtmp",
+          serverUrl: "rtmp://127.0.0.1/live",
+          streamKey: "nested-rtmp-secret",
+        },
+        transcode: null,
+      }],
     },
   });
   const protectedSnapshot = sanitizeWorkspaceSnapshot(snapshot);
@@ -269,6 +301,7 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
   assert.equal(protectedSnapshot.sanitized.startMarker?.assetId, asset.id);
   assert.equal(protectedSnapshot.sanitized.settings.srtPassphrase, "");
   assert.equal(protectedSnapshot.secrets.srtPassphrase, "session-secret");
+  assert.equal(protectedSnapshot.secrets["output:output-2"], "nested-rtmp-secret");
   assert.doesNotMatch(JSON.stringify(protectedSnapshot.sanitized), /session-secret|rtmp-secret/);
 
   const runningStatus = playoutStatusSchema.parse({
@@ -754,6 +787,25 @@ test("a dead transport stage says why it died, not just its exit code", () => {
   assert.match(srt, /203\.0\.113\.9:9000/);
   assert.match(srt, /did not answer/);
   assert.match(srt, /passphrase/);
+
+  // Локальный адрес лечится не firewall и не головной станцией: приёмника нет
+  // на этой же машине, и совет «проверьте порт на приёмнике» отправляет
+  // оператора искать то, чего не существует.
+  const local = describeTsdDuckExit(
+    "SRT relay",
+    1,
+    "* Error: srt: error during srt_connect: Connection setup failure: connection timed out",
+    { protocol: "srt", host: "127.0.0.1", port: 9000, mode: "caller" },
+  );
+  assert.match(local, /Nothing is listening on 127\.0\.0\.1:9000/);
+  assert.match(local, /ffplay/);
+  assert.doesNotMatch(local, /firewall/);
+  assert.match(
+    describeTsdDuckExit("SRT relay", 1, "srt_connect failed", {
+      protocol: "srt", host: "localhost", port: 9000, mode: "caller",
+    }),
+    /on this machine/,
+  );
 
   // Приёмник, который ждёт звонящего, требует другой проверки.
   const listener = describeTsdDuckExit(
@@ -1882,6 +1934,7 @@ test("FFmpeg command creates SRT MPEG-TS endpoint with transport settings", () =
     latencyMs: 180,
     passphrase: "valid-test-passphrase",
     streamId: "#!::r=channel-1,m=publish",
+    mpegTs: { ...defaultMpegTsOutputSettings },
   };
   const command = buildFfmpegCommand(request, preparedItems(), "/tmp/preview");
   const rendered = command.args.join(" ");
@@ -2089,6 +2142,7 @@ test("TSDuck command sends the injected MPEG-TS through SRT caller settings", ()
     latencyMs: 180,
     passphrase: "valid-test-passphrase",
     streamId: "#!::r=channel-1,m=publish",
+    mpegTs: { ...defaultMpegTsOutputSettings },
   };
   const command = buildTsdDuckCommand({
     cueCount: 1,
@@ -2113,6 +2167,7 @@ test("plain UDP and SRT use TSDuck relay without adding SCTE-35 signaling", () =
     latencyMs: 160,
     passphrase: "",
     streamId: "",
+    mpegTs: { ...defaultMpegTsOutputSettings },
   };
   const command = buildTsdDuckCommand({
     cueCount: 0,
@@ -2142,6 +2197,146 @@ test("plain UDP and SRT use TSDuck relay without adding SCTE-35 signaling", () =
   assert.doesNotMatch(renderedUdp, /\bpmt\b|spliceinject|splicemonitor/);
   assert.equal(pcrInsertionThresholdMs(40), 38);
   assert.equal(pcrInsertionThresholdMs(2), 1);
+});
+
+test("SRT carries the operator's own MPEG-TS service, PID and PCR settings", () => {
+  // SRT — тот же MPEG-TS, только другой транспорт. Пока настройки службы читал
+  // один UDP, инженер правил имя, номер и PID, сохранял профиль и получал в
+  // эфир умолчания: поля молча подменялись, и заметно это было только на
+  // головной станции.
+  const request = baseRequest();
+  request.endpoint = {
+    protocol: "srt",
+    host: "192.0.2.30",
+    port: 9_002,
+    mode: "caller",
+    latencyMs: 140,
+    passphrase: "",
+    streamId: "",
+    mpegTs: {
+      ...defaultMpegTsOutputSettings,
+      serviceName: "Первый",
+      serviceId: 7,
+      providerName: "Станция",
+      videoPid: 512,
+      audioPid: 513,
+      pcrPeriodMs: 30,
+      transportBitrateKbps: 9_000,
+    },
+  };
+  assert.deepEqual(endpointMpegTsSettings(request.endpoint).serviceId, 7);
+
+  const tsduck = buildTsdDuckCommand({
+    cueCount: 0,
+    cueFilePath: null,
+    inputPort: 19_010,
+    request,
+  }).args.join(" ");
+  assert.match(tsduck, /pcradjust --bitrate 9000000 --pid 512 --min-ms-interval 28/);
+  assert.match(tsduck, /continuity --fix --pid 512 --pid 513/);
+
+  // Тот же набор уходит и в муксер FFmpeg, иначе PID разъехались бы между
+  // кодировщиком и транспортной стадией.
+  const command = buildFfmpegCommand(request, preparedItems(), "/tmp/preview").args.join(" ");
+  assert.match(command, /-streamid 0:512 -streamid 1:513/);
+  assert.match(command, /service_name=Первый/);
+  assert.match(command, /-mpegts_service_id 7/);
+  assert.match(command, /-pcr_period 30/);
+
+  // У RTMP полей PMT нет вовсе: помощник отдаёт умолчания, дальше муксера они
+  // не уходят.
+  const rtmp = baseRequest();
+  rtmp.endpoint = { protocol: "rtmp", serverUrl: "rtmp://127.0.0.1/live", streamKey: "k" };
+  assert.equal(endpointMpegTsSettings(rtmp.endpoint).serviceId, 1);
+});
+
+test("an output drops what its transport cannot carry instead of refusing to start", () => {
+  // Молчаливый пропуск читается снаружи как «метки не дошли до головной
+  // станции», а отказ в старте из-за забытого переключателя оставил бы канал
+  // без эфира на весь эфирный день.
+  const request = baseRequest();
+  request.scte35.enabled = true;
+  request.endpoint = { protocol: "rtmp", serverUrl: "rtmp://127.0.0.1/live", streamKey: "k" };
+
+  const { request: supported, dropped } = withSupportedOutputFeatures(request);
+  assert.deepEqual(dropped, ["scte35"]);
+  assert.equal(supported.scte35.enabled, false);
+  // Остальное не трогается: гасится ровно то, чего контейнер не несёт.
+  assert.equal(supported.playlist.length, request.playlist.length);
+  assert.equal(supported.video.codec, request.video.codec);
+
+  // MPEG-TS несёт всё, поэтому у UDP и SRT снимать нечего.
+  assert.deepEqual(withSupportedOutputFeatures(baseRequest()).dropped, []);
+
+  const capabilities = outputProtocolCapabilities("rtmp");
+  assert.equal(capabilities.mpegTs, false);
+  assert.deepEqual([...capabilities.videoCodecs], ["h264"]);
+  assert.deepEqual([...capabilities.audioCodecs], ["aac"]);
+  assert.deepEqual(unsupportedOutputFeatures("rtmp"), [
+    "scte35",
+    "dvbSubtitles",
+    "multipleAudioTracks",
+    "mpegTsService",
+    "transportBitrate",
+  ]);
+  assert.deepEqual(unsupportedOutputFeatures("srt"), []);
+  assert.deepEqual(unsupportedOutputFeatures("udp"), []);
+
+  // Кодек, которого контейнер не несёт, подменяется ближайшим, а не отвергается.
+  assert.equal(nearestVideoCodec("rtmp", "mpeg2"), "h264");
+  assert.equal(nearestVideoCodec("udp", "mpeg2"), "mpeg2");
+  assert.equal(nearestAudioCodec("rtmp", "mp2"), "aac");
+
+  const mixed = baseRequest();
+  mixed.endpoint = { protocol: "rtmp", serverUrl: "rtmp://127.0.0.1/live", streamKey: "k" };
+  mixed.scte35.enabled = true;
+  mixed.streams = [{
+    id: "head-end",
+    name: "Head-end",
+    enabled: true,
+    endpoint: baseRequest().endpoint,
+    transcode: null,
+  }];
+  const supportedMixed = withSupportedOutputFeatures(mixed);
+  assert.deepEqual(supportedMixed.dropped, []);
+  assert.equal(supportedMixed.request.endpoint.protocol, "udp");
+});
+
+test("an additional MPEG-TS output can remux its own service without re-encoding", () => {
+  const request = baseRequest();
+  assert.equal(request.endpoint.protocol, "udp");
+  if (request.endpoint.protocol !== "udp") throw new Error("Expected UDP test endpoint");
+  const stream: PlayoutStream = {
+    id: "backup",
+    name: "Backup",
+    enabled: true,
+    endpoint: {
+      ...request.endpoint,
+      protocol: "udp" as const,
+      mpegTs: { ...defaultMpegTsOutputSettings, serviceId: 42, videoPid: 512, audioPid: 513 },
+    },
+    transcode: {
+      video: { ...request.video, hardware: "auto" as const },
+      audio: request.audio,
+    },
+  };
+  const profile = resolveBranchProfile(stream, request);
+  assert.equal(profile.video.hardware, "off");
+  const command = buildStreamMpegTsRemuxCommand(stream, 19_100, 19_101).join(" ");
+  assert.match(command, /-map 0 -c copy/);
+  assert.match(command, /-streamid 0:512 -streamid 1:513/);
+  assert.match(command, /-mpegts_service_id 42/);
+});
+
+test("two UDP outputs cannot target the same receiver socket", () => {
+  const request = baseRequest();
+  request.streams = [
+    { id: "main", name: "Main", enabled: true, endpoint: request.endpoint, transcode: null },
+    { id: "backup", name: "Backup", enabled: true, endpoint: request.endpoint, transcode: null },
+  ];
+  const parsed = startPlayoutRequestSchema.safeParse(request);
+  assert.equal(parsed.success, false);
+  if (!parsed.success) assert.match(parsed.error.issues[0]?.message ?? "", /UDP target .* duplicated/);
 });
 
 test("FFmpeg SCTE-35 handoff uses CBR local MPEG-TS and forced cue keyframes", () => {
@@ -2367,6 +2562,7 @@ test("FFmpeg command creates RTMPS FLV endpoint and contract rejects short SRT s
     latencyMs: 120,
     passphrase: "short",
     streamId: "",
+    mpegTs: { ...defaultMpegTsOutputSettings },
   };
   assert.equal(startPlayoutRequestSchema.safeParse(invalid).success, false);
   const invalidDvbRtmp = {
@@ -2439,6 +2635,7 @@ test("SCTE-35 preflight rejects an elementary-stream PID collision", async () =>
     latencyMs: 120,
     passphrase: "",
     streamId: "",
+    mpegTs: { ...defaultMpegTsOutputSettings },
   };
   request.scte35.enabled = true;
   request.scte35.pid = defaultMpegTsOutputSettings.videoPid;
@@ -2981,6 +3178,7 @@ test(
         latencyMs: 120,
         passphrase: "",
         streamId: "",
+        mpegTs: { ...defaultMpegTsOutputSettings },
       };
 
       await supervisor.start(request);
@@ -3006,6 +3204,268 @@ test(
       assert.match(streams.stdout, /"codec_name": "aac"/, receiverLogs);
     } finally {
       receiver?.kill("SIGTERM");
+      await supervisor.close();
+      await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "real RTMP playout publishes an FLV stream to a listening server",
+  { skip: process.env.GRUBER_RUN_RTMP_TESTS !== "1", timeout: 40_000 },
+  async () => {
+    // RTMP идёт мимо TSDuck: encoder отдаёт FLV сам. Проверяется именно это —
+    // что прямой выход поднимается, подключается к серверу и отдаёт h264+aac.
+    const directory = await mkdtemp(path.join(tmpdir(), "gruber-rtmp-test-"));
+    const clip = path.join(directory, "program.mp4");
+    const capture = path.join(directory, "capture.flv");
+    const previewDirectory = path.join(directory, "preview");
+    const rtmpPort = await testTcpPort();
+    const capabilities = new FfmpegCapabilitiesService();
+    const supervisor = new PlayoutSupervisor(capabilities, previewDirectory);
+    let receiver: ReturnType<typeof spawn> | null = null;
+    let receiverLogs = "";
+    try {
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000",
+        "-t", "2", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip,
+      ]);
+      // Сервер обязан слушать раньше, чем encoder позвонит: RTMP-caller
+      // звонит один раз и второй попытки не делает.
+      receiver = spawn(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-listen", "1", "-f", "flv", "-i", `rtmp://127.0.0.1:${rtmpPort}/live/fluxio`,
+        "-c", "copy", "-f", "flv", capture,
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      receiver.stderr?.on("data", (chunk: Buffer) => {
+        receiverLogs += chunk.toString("utf8");
+      });
+      await new Promise<void>((resolve, reject) => {
+        receiver?.once("spawn", resolve);
+        receiver?.once("error", reject);
+      });
+
+      const request = baseRequest();
+      request.playlist = [{
+        id: "program",
+        name: "program.mp4",
+        filePath: clip,
+        trimInSeconds: 0,
+        trimOutSeconds: null,
+        scte35Markers: [],
+      }];
+      request.video.width = 640;
+      request.video.height = 360;
+      request.video.targetBitrateKbps = 1_200;
+      request.video.maxBitrateKbps = 1_200;
+      request.video.bufferSizeKbps = 2_400;
+      request.endpoint = {
+        protocol: "rtmp",
+        serverUrl: `rtmp://127.0.0.1:${rtmpPort}/live`,
+        streamKey: "fluxio",
+      };
+
+      await supervisor.start(request);
+      const deadline = Date.now() + 30_000;
+      while (["starting", "running"].includes(supervisor.getStatus().state)) {
+        if (Date.now() > deadline) throw new Error("Timed out waiting for RTMP playout");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      const status = supervisor.getStatus();
+      assert.equal(status.state, "completed", status.logs.slice(-20).join("\n"));
+      // Ключ потока в метке не появляется: она уходит в журнал и в интерфейс.
+      assert.match(status.endpointLabel ?? "", /^RTMP rtmp:\/\/127\.0\.0\.1:\d+\/live\/\*\*\*$/);
+      assert.equal(status.scte35.state, "disabled");
+      assert.equal(status.subtitles.state, "disabled");
+
+      if (receiver.exitCode == null) {
+        receiver.kill("SIGTERM");
+        await new Promise<void>((resolve) => receiver?.once("close", () => resolve()));
+      }
+      const streams = await runCommand(capabilities.ffprobePath, [
+        "-v", "error", "-show_entries", "stream=codec_name", "-of", "json", capture,
+      ]);
+      assert.match(streams.stdout, /"codec_name": "h264"/, receiverLogs);
+      assert.match(streams.stdout, /"codec_name": "aac"/, receiverLogs);
+    } finally {
+      receiver?.kill("SIGTERM");
+      await supervisor.close();
+      await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "one programme feeds three outputs that start and stop on their own",
+  { skip: process.env.GRUBER_RUN_MULTISTREAM_TESTS !== "1", timeout: 60_000 },
+  async () => {
+    // Проверяется главное обещание нескольких выходов: программа собирается
+    // один раз, выходы ответвляются от готового мультиплекса, и погашенный
+    // выход не трогает остальные.
+    const directory = await mkdtemp(path.join(tmpdir(), "gruber-multistream-"));
+    const clip = path.join(directory, "program.mp4");
+    const srtCapture = path.join(directory, "srt.ts");
+    const udpCapture = path.join(directory, "udp.ts");
+    const udpBackupCapture = path.join(directory, "udp-backup.ts");
+    const previewDirectory = path.join(directory, "preview");
+    const srtPort = await testUdpPort();
+    const udpPort = await testUdpPort();
+    const udpBackupPort = await testUdpPort();
+    const capabilities = new FfmpegCapabilitiesService();
+    const supervisor = new PlayoutSupervisor(capabilities, previewDirectory);
+    const tspPath = process.env.TSDUCK_PATH ?? "tsp";
+    const receivers: ReturnType<typeof spawn>[] = [];
+    try {
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000",
+        "-t", "6", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip,
+      ]);
+
+      const spawnReceiver = (command: string, args: string[]) => {
+        const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+        receivers.push(child);
+        return new Promise<void>((resolve, reject) => {
+          child.once("spawn", () => resolve());
+          child.once("error", reject);
+        });
+      };
+      await spawnReceiver(tspPath, [
+        "-I", "srt", "--listener", `127.0.0.1:${srtPort}`, "-O", "file", srtCapture,
+      ]);
+      await spawnReceiver(tspPath, [
+        "-I", "ip", "--local-address", "127.0.0.1", String(udpPort),
+        "-O", "file", udpCapture,
+      ]);
+      await spawnReceiver(tspPath, [
+        "-I", "ip", "--local-address", "127.0.0.1", String(udpBackupPort),
+        "-O", "file", udpBackupCapture,
+      ]);
+
+      const request = baseRequest();
+      request.playlist = [{
+        id: "program",
+        name: "program.mp4",
+        filePath: clip,
+        trimInSeconds: 0,
+        trimOutSeconds: null,
+        scte35Markers: [],
+      }];
+      request.video.width = 640;
+      request.video.height = 360;
+      request.video.targetBitrateKbps = 1_200;
+      request.video.maxBitrateKbps = 1_200;
+      request.video.bufferSizeKbps = 2_400;
+      const srtEndpoint = {
+        protocol: "srt" as const,
+        host: "127.0.0.1",
+        port: srtPort,
+        mode: "caller" as const,
+        latencyMs: 120,
+        passphrase: "",
+        streamId: "",
+        mpegTs: { ...defaultMpegTsOutputSettings },
+      };
+      request.endpoint = srtEndpoint;
+      request.streams = [
+        { id: "head-end", name: "Head-end", enabled: true, endpoint: srtEndpoint, transcode: null },
+        {
+          id: "backup",
+          name: "Backup",
+          enabled: true,
+          endpoint: {
+            protocol: "udp",
+            host: "127.0.0.1",
+            port: udpPort,
+            packetSize: 1_316,
+            ttl: 1,
+            localAddress: "127.0.0.1",
+            mpegTs: { ...defaultMpegTsOutputSettings },
+          },
+          transcode: null,
+        },
+        {
+          id: "udp-backup",
+          name: "UDP backup",
+          enabled: true,
+          endpoint: {
+            protocol: "udp",
+            host: "127.0.0.1",
+            port: udpBackupPort,
+            packetSize: 1_316,
+            ttl: 1,
+            localAddress: "127.0.0.1",
+            mpegTs: { ...defaultMpegTsOutputSettings },
+          },
+          transcode: null,
+        },
+      ];
+
+      const started = await supervisor.start(request);
+      assert.equal(started.streams.length, 3);
+      // Ветка отдаёт готовый мультиплекс программы: своей ступени кодирования
+      // здесь нет ни у одной: все выходы несут готовый программный MPEG-TS.
+      assert.deepEqual(started.streams.map((stream) => stream.mode), [
+        "relay",
+        "relay",
+        "relay",
+      ]);
+      assert.deepEqual(started.streams.map((stream) => stream.state), [
+        "running",
+        "running",
+        "running",
+      ]);
+
+      // Погашенный выход не трогает соседей: программа и остальные идут дальше.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const afterStop = supervisor.stopStream("backup");
+      assert.equal(afterStop.streams.find((s) => s.id === "backup")?.state, "stopping");
+      assert.equal(afterStop.streams.find((s) => s.id === "head-end")?.state, "running");
+      assert.equal(afterStop.state, "running");
+
+      // И включается обратно, тоже под живым эфиром.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const afterStart = await supervisor.startStream("backup");
+      assert.equal(afterStart.streams.find((s) => s.id === "backup")?.state, "running");
+
+      // Ни один выход не должен был отвалиться по дороге: молча упавшая ветка
+      // выглядит снаружи как «поток идёт», пока кто-нибудь не посмотрит эфир.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const live = supervisor.getStatus();
+      assert.deepEqual(
+        live.streams.map((stream) => `${stream.id}:${stream.state}`),
+        ["head-end:running", "backup:running", "udp-backup:running"],
+        live.logs.slice(-40).join("\n"),
+      );
+      assert.deepEqual(live.streams.map((stream) => stream.error), [null, null, null]);
+
+      const deadline = Date.now() + 40_000;
+      while (["starting", "running"].includes(supervisor.getStatus().state)) {
+        if (Date.now() > deadline) throw new Error("Timed out waiting for multi-output playout");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      const status = supervisor.getStatus();
+      assert.equal(status.state, "completed", status.logs.slice(-30).join("\n"));
+
+      for (const receiver of receivers) {
+        if (receiver.exitCode == null) receiver.kill("SIGTERM");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      for (const capture of [srtCapture, udpCapture, udpBackupCapture]) {
+        const streams = await runCommand(capabilities.ffprobePath, [
+          "-v", "error", "-show_entries", "stream=codec_name", "-of", "json", capture,
+        ]);
+        assert.match(streams.stdout, /"codec_name": "h264"/, `no video in ${path.basename(capture)}`);
+        assert.match(streams.stdout, /"codec_name": "aac"/, `no audio in ${path.basename(capture)}`);
+      }
+    } finally {
+      for (const receiver of receivers) receiver.kill("SIGTERM");
       await supervisor.close();
       await rm(directory, { force: true, recursive: true });
     }
@@ -3699,6 +4159,7 @@ function baseRequest(): StartPlayoutRequest {
       itemLogo: null,
     }],
     nextPlaylist: [],
+    streams: [],
     video: {
       codec: "h264",
       hardware: "off" as const,
@@ -3768,6 +4229,20 @@ function preparedItems() {
     durationSeconds: 2,
     hasAudio: true,
   }];
+}
+
+/** Свободный TCP-порт под RTMP-сервер теста. */
+async function testTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.notEqual(typeof address, 'string');
+  const port = typeof address === 'string' || address === null ? 0 : address.port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
 }
 
 async function testUdpPort(): Promise<number> {

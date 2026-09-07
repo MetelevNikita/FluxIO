@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FluxIO — программы</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+        color: #f8fafc;
+        background: #0a0b0d;
+        --background: #0a0b0d;
+        --surface: #111316;
+        --surface-strong: #181b1f;
+        --surface-hover: #15181d;
+        --border: #262b32;
+        --border-strong: #343b46;
+        --text: #f8fafc;
+        --muted: #94a3b8;
+        --muted-dark: #64748b;
+        --accent: #f5d565;
+        --accent-soft: rgba(245, 213, 101, .08);
+        --danger: #ef4444;
+        --warning: #f59e0b;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: var(--background); }
+      .console-bar { height: 64px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 0 24px; background: var(--surface); }
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .fluxio-mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; color: var(--background); background: var(--accent); }
+      .fluxio-mark svg { width: 21px; height: 21px; }
+      .wordmark { font-size: 18px; font-weight: 760; letter-spacing: -.6px; }
+      .wordmark span { color: var(--accent); }
+      .console-badge { margin-left: 8px; border: 1px solid rgba(245, 213, 101, .45); border-radius: 4px; padding: 3px 7px; color: var(--accent); background: var(--accent-soft); font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+      .bar-copy { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-transform: uppercase; }
+      main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 24px; }
+      .page-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 20px; }
+      h1 { margin: 0; font-size: 26px; letter-spacing: -.035em; }
+      .page-heading p, small { color: var(--muted); }
+      header p { margin: 8px 0 0; }
+      button { min-height: 36px; border: 1px solid var(--border-strong); border-radius: 5px; padding: 0 14px; color: var(--text); background: var(--surface-strong); cursor: pointer; font-weight: 700; }
+      button:hover:not(:disabled) { border-color: rgba(245, 213, 101, .55); background: var(--accent-soft); }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      button:disabled { cursor: not-allowed; opacity: .45; }
+      .heading-actions, .instance-actions, .dialog-actions { display: flex; gap: 8px; }
+      .totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+      .total, .instance-card { border: 1px solid var(--border); background: var(--surface); box-shadow: 0 12px 32px rgba(0, 0, 0, .16); }
+      .total { border-radius: 6px; padding: 14px 16px; }
+      .total span { display: block; color: var(--muted-dark); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
+      .total strong { display: block; margin-top: 7px; color: var(--text); font-size: 18px; }
+      .total:first-child strong { color: var(--accent); }
+      #instances { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; }
+      .instance-card { position: relative; overflow: hidden; border-radius: 6px; padding: 18px; }
+      .instance-card::before { position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--muted-dark); content: ""; }
+      .instance-card.running::before { background: #4ade80; }
+      .instance-card.idle::before { background: var(--accent); }
+      .instance-card.offline::before { background: var(--danger); }
+      .instance-card.disabled::before { background: var(--muted-dark); }
+      .instance-heading { display: flex; justify-content: space-between; gap: 14px; }
+      h2 { margin: 0 0 4px; font-size: 18px; }
+      .state-badge { height: fit-content; border: 1px solid var(--border-strong); border-radius: 4px; padding: 4px 7px; color: var(--muted); background: var(--surface-deep, #0d0f12); font: 800 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
+      .running .state-badge { border-color: rgba(74, 222, 128, .5); color: #86efac; background: rgba(34, 197, 94, .1); }
+      .idle .state-badge { border-color: rgba(245, 213, 101, .45); color: var(--accent); background: var(--accent-soft); }
+      .offline .state-badge { border-color: rgba(239, 68, 68, .5); color: #fca5a5; background: rgba(239, 68, 68, .08); }
+      .current-item { min-height: 42px; margin: 20px 0 12px; color: var(--text); }
+      dl { display: grid; grid-template-columns: 1fr auto; gap: 8px 18px; margin: 0 0 18px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; }
+      dt { color: var(--muted); }
+      dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 650; }
+      .instance-card button { flex: 1; border-color: rgba(245, 213, 101, .55); color: #0a0b0d; background: var(--accent); }
+      .instance-card button:hover:not(:disabled) { border-color: #fff1a8; background: #ffe17a; }
+      .instance-card button.secondary { color: var(--text); border-color: var(--border-strong); background: var(--surface-strong); }
+      .instance-card.empty-state { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+      .instance-card.empty-state::before { background: var(--accent); }
+      .instance-card.empty-state .current-item { min-height: 0; margin: 0; max-width: 52ch; color: var(--muted); }
+      .instance-card.empty-state button { flex: 0 0 auto; }
+      dialog { width: min(420px, calc(100% - 32px)); border: 1px solid var(--border-strong); border-radius: 8px; padding: 22px; color: var(--text); background: var(--surface); }
+      dialog::backdrop { background: rgba(0, 0, 0, .72); }
+      dialog h2 { margin-bottom: 18px; }
+      dialog label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; }
+      dialog input { width: 100%; height: 40px; border: 1px solid var(--border-strong); border-radius: 5px; padding: 0 11px; color: var(--text); background: var(--background); font: inherit; }
+      .dialog-actions { justify-content: flex-end; margin-top: 20px; }
+      footer { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; color: var(--muted-dark); font-size: 12px; }
+      @media (max-width: 760px) { .totals { grid-template-columns: repeat(2, 1fr); } .page-heading { align-items: start; flex-direction: column; } .bar-copy { display: none; } }
+    </style>
+  </head>
+  <body>
+    <div class="console-bar">
+      <div class="brand">
+        <span class="fluxio-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><g stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12 7 2"/><path d="m7 12 5-10"/><path d="m12 12 5-10"/><path d="m17 12 5-10"/><path d="M4.5 7h15"/><path d="M12 16v6"/></g></svg>
+        </span>
+        <span class="wordmark">Flux<span>IO</span></span>
+        <span class="console-badge">Control center</span>
+      </div>
+      <span class="bar-copy">Live playout services</span>
+    </div>
+    <main>
+      <header class="page-heading">
+        <div><h1>Программы FluxIO</h1><p>Состояние эфирных служб и общая нагрузка сервера</p></div>
+        <div class="heading-actions"><button id="refresh" type="button">Обновить</button><button id="add-instance" type="button">Добавить программу</button></div>
+      </header>
+      <section class="totals" aria-label="Общая нагрузка">
+        <div class="total"><span>CPU системы</span><strong id="system-cpu">—</strong></div>
+        <div class="total"><span>CPU эфирных цепочек</span><strong id="fluxio-cpu">—</strong></div>
+        <div class="total"><span>Память эфирных цепочек</span><strong id="fluxio-memory">—</strong></div>
+        <div class="total"><span>Процессы эфира</span><strong id="fluxio-processes">—</strong></div>
+      </section>
+      <section id="instances" aria-live="polite"></section>
+      <footer><span id="updated-at">Подключение…</span><span>Закрытие окна не останавливает эфир</span></footer>
+    </main>
+    <dialog id="instance-dialog">
+      <form id="instance-form">
+        <h2 id="dialog-title">Новая программа</h2>
+        <label>Название<input id="instance-name" maxlength="80" required autocomplete="off"></label>
+        <div class="dialog-actions"><button id="cancel-instance" type="button">Отмена</button><button id="save-instance" type="submit">Сохранить</button></div>
+      </form>
+    </dialog>
+    <script src="./launcher-renderer.js"></script>
+  </body>
+</html>

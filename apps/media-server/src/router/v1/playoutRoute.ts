@@ -73,6 +73,36 @@ export async function playoutRoute(app: FastifyInstance, context: RouteContext) 
 
   app.post("/api/playout/stop", async () => context.playout.stop());
 
+  /*
+   * Отдельный пуск и останов выхода.
+   *
+   * Программа при этом не трогается: зеркало объявлено на старте сессии и
+   * отдаёт мультиплекс независимо от того, читает ли его кто-нибудь. Поэтому
+   * резервный канал можно погасить на время работ, а площадку включить к
+   * началу передачи, не трогая головную станцию.
+   */
+  app.post<{ Params: { id: string } }>(
+    "/api/playout/streams/:id/start",
+    async (request, reply) => {
+      try {
+        return context.playout.startStream(request.params.id);
+      } catch (error) {
+        return playoutErrorReply(reply, error);
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/playout/streams/:id/stop",
+    async (request, reply) => {
+      try {
+        return context.playout.stopStream(request.params.id);
+      } catch (error) {
+        return playoutErrorReply(reply, error);
+      }
+    },
+  );
+
   app.put(
     "/api/playout/next-playlist",
     { bodyLimit: largePlaylistBodyLimitBytes },

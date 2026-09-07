@@ -34,6 +34,8 @@ tests в `app.test.ts`; web перечисляет test files в script и
 | `GRUBER_RUN_FFMPEG_TESTS=1` | real FFmpeg sessions/filter inputs |
 | `GRUBER_RUN_SCTE35_TESTS=1` | real FFmpeg + TSDuck SCTE capture |
 | `GRUBER_RUN_SRT_TESTS=1` | real SRT relay |
+| `GRUBER_RUN_RTMP_TESTS=1` | real RTMP publish в локальный FLV receiver |
+| `GRUBER_RUN_MULTISTREAM_TESTS=1` | SRT + UDP + RTMP и независимый stop/start выхода |
 | `GRUBER_RUN_DATABASE_TESTS=1` | Prisma/PostgreSQL persistence |
 
 Запускайте на изолированных ports и test database. Tests не должны отправлять
@@ -73,6 +75,57 @@ Automated browser E2E отсутствует, поэтому перед release 
 - soak.
 
 Измеряйте final endpoint независимым analyzer.
+
+Реальные локальные проверки протоколов и трёх выходов (нужны FFmpeg и TSDuck):
+
+```bash
+GRUBER_RUN_SRT_TESTS=1 npm test -w @gruber/media-server
+GRUBER_RUN_RTMP_TESTS=1 npm test -w @gruber/media-server
+GRUBER_RUN_MULTISTREAM_TESTS=1 npm test -w @gruber/media-server
+```
+
+Тесты поднимают локальных приёмников, передают синтетический H.264/AAC и
+проверяют результат через ffprobe; внешняя сеть и публичный сервер не нужны.
+
+## Кроссплатформенный offline smoke
+
+Нативные части не кросс-компилируются: этот прогон выполняется отдельно на
+Windows, macOS и Linux той же архитектуры, что у эфирной машины.
+
+На каждой машине-сборщике с интернетом:
+
+```bash
+npm ci --include=dev
+npm run check:repo
+npm run typecheck
+npm test
+npm run build
+npm run bundle:offline -- --tools-from ./tools --with-desktop --pack
+```
+
+Затем отключите сеть, перенесите файл комплекта на чистую тестовую машину,
+проверьте checksum и установите его командами из
+[installation.md](installation.md). После `node setup.mjs` проверьте реальный
+production-контур:
+
+```bash
+curl --fail http://127.0.0.1:4310/api/health
+curl --fail http://127.0.0.1:4310/api/system/metrics
+curl --fail http://127.0.0.1:4310/api/playout/status
+/opt/fluxio/runtime/node /opt/fluxio/app/launch.mjs       # Linux/macOS
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4310/api/health
+Invoke-RestMethod http://127.0.0.1:4310/api/system/metrics
+Invoke-RestMethod http://127.0.0.1:4310/api/playout/status
+C:\FluxIO\runtime\node.exe C:\FluxIO\app\launch.mjs
+```
+
+Один успешный прогон на macOS не заменяет нативный smoke Windows/Linux: release
+блокируется, пока комплект каждой поддерживаемой ОС не был запущен на ней.
 
 ## Release procedure
 

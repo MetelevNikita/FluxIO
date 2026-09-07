@@ -249,8 +249,14 @@ function registerEncodingSettingsHandlers(): void {
 //
 
 function registerServiceHandlers(): void {
-  ipcMain.handle(SERVICE_HEALTH_CHANNEL, async () => {
-    const baseUrl = process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310";
+  ipcMain.handle(SERVICE_HEALTH_CHANNEL, async (_event, requestedBaseUrl: unknown) => {
+    const baseUrl = typeof requestedBaseUrl === "string"
+      ? requestedBaseUrl
+      : process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310";
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error(`Unsupported media API protocol: ${parsed.protocol}`);
+    }
     const response = await fetch(new URL("/api/health", baseUrl), {
       signal: AbortSignal.timeout(1_500),
     });

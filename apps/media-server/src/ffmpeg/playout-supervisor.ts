@@ -8,6 +8,9 @@ import { PassThrough, type Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type {
   ClipAudioOverlay,
+  OutputProtocolFeature,
+  PlayoutEndpoint,
+  PlayoutStreamStatus,
   FfmpegCapabilities,
   GraphicEffectLayer,
   PlayoutStatus,
@@ -18,6 +21,11 @@ import {
   barsPlayoutItem,
   barsSegmentSeconds,
   defaultMpegTsOutputSettings,
+  emptyResourceUsage,
+  endpointMpegTsSettings,
+  outputProtocolCapabilities,
+  requestPlayoutStreams,
+  withSupportedOutputFeatures,
   isBarsSource,
   playoutStatusSchema,
   sceneFormatSchema,
@@ -38,6 +46,22 @@ import {
   type PreparedPlayoutItem,
 } from "./command-builder.js";
 import { FfmpegCapabilitiesService } from "./capabilities.js";
+import {
+  buildStreamRemuxCommand,
+  buildStreamMpegTsRemuxCommand,
+  buildStreamTranscoderCommand,
+  resolveBranchProfile,
+  streamBranchMode,
+  streamEndpointLabel,
+  type StreamBranchPlan,
+} from "./stream-branch.js";
+import { StreamOutputSupervisor } from "./stream-outputs.js";
+import {
+  computeResourceUsage,
+  emptySnapshot,
+  sampleProcesses,
+  type ProcessSnapshot,
+} from "../process-metrics.js";
 import { endPipeQuietly, guardPipeErrors, isExpectedPipeError } from "./pipe-errors.js";
 import { probeMedia } from "./probe.js";
 import {
@@ -54,6 +78,7 @@ import {
 } from "../tsduck/cue-builder.js";
 import {
   buildTsdDuckCommand,
+  buildTsdDuckRelayCommand,
   buildDvbSubtitlePmtPatch,
   calculateMinimumTransportMuxRate,
   calculateTransportMuxRate,
@@ -89,6 +114,14 @@ const playlistPreparationConcurrency = 8;
 const clipProducerStartupTimeoutMs = 30_000;
 const maximumSubtitleRestartAttempts = 3;
 const minimumClipPipeBufferBytes = 1_048_576;
+/**
+ * Как часто снимается нагрузка эфирных процессов.
+ *
+ * Две секунды — компромисс: короче интервал, и разность накопленного
+ * процессорного времени начинает шуметь на округлении, длиннее — оператор не
+ * видит, как выход подхватывает нагрузку при включении.
+ */
+const resourceSampleIntervalMs = 2_000;
 const clipAudioSilenceChunkBytes = 262_144;
 const silenceChunk = Buffer.alloc(clipAudioSilenceChunkBytes);
 
@@ -148,8 +181,19 @@ type PreparationProgress = (
   total: number,
 ) => void;
 
+/**
+ * Нужна ли сессии транспортная стадия TSDuck.
+ *
+ * Кроме MPEG-TS выходов её требует и разветвление: с двух выходов и больше
+ * стадия перестаёт быть выходом и становится зеркалом, с которого выходы
+ * берут готовый мультиплекс. Поэтому даже сессия из трёх RTMP-площадок идёт
+ * через неё — иначе общую обработку пришлось бы повторять на каждой.
+ */
 export function usesTsdDuckTransport(request: StartPlayoutRequest): boolean {
-  return request.endpoint.protocol === "udp" || request.endpoint.protocol === "srt";
+  const streams = requestPlayoutStreams(request);
+  if (streams.length > 1) return true;
+  const protocol = streams[0]?.endpoint.protocol ?? request.endpoint.protocol;
+  return protocol === "udp" || protocol === "srt";
 }
 
 export class PlayoutSupervisor {
@@ -220,6 +264,16 @@ export class PlayoutSupervisor {
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
   #takeInProgress = false;
+  /** Что сняли с запроса из-за транспорта: называется в журнале после старта. */
+  #droppedOutputFeatures: OutputProtocolFeature[] = [];
+  /** Выходы, ответвлённые от мультиплекса программы. Живут своей жизнью. */
+  readonly #outputs: StreamOutputSupervisor;
+  /** План выходов сессии: состав фиксируется на старте, зеркала — вместе с ним. */
+  #branchPlans: StreamBranchPlan[] = [];
+  #metricsPrevious: ProcessSnapshot = emptySnapshot();
+  #metricsCurrent: ProcessSnapshot = emptySnapshot();
+  #metricsTimer: NodeJS.Timeout | null = null;
+  #metricsInFlight = false;
   #eventSink: PlayoutEventSink | null;
 
   constructor(
@@ -234,6 +288,11 @@ export class PlayoutSupervisor {
     this.#eventSink = eventSink;
     this.tsduckCapabilities = tsduckCapabilities;
     this.gstreamerCapabilities = gstreamerCapabilities;
+    this.#outputs = new StreamOutputSupervisor(
+      capabilities.ffmpegPath,
+      tsduckCapabilities.tspPath,
+      (message) => this.#appendEvent(message),
+    );
   }
 
   getStatus(): PlayoutStatus {
@@ -242,25 +301,299 @@ export class PlayoutSupervisor {
       ...this.#status,
       scte35: { ...this.#status.scte35 },
       subtitles: { ...this.#status.subtitles },
+      streams: this.#streamStatuses(),
+      programResources: { ...this.#status.programResources },
       logs: [...this.#status.logs],
     });
+  }
+
+  /**
+   * Включает один выход под живым эфиром.
+   *
+   * Программа при этом не трогается: зеркало объявлено на старте сессии и
+   * отдаёт мультиплекс независимо от того, читает ли его кто-нибудь.
+   */
+  async startStream(id: string): Promise<PlayoutStatus> {
+    this.#requireLiveSession(id);
+    await this.#outputs.start(id);
+    return this.getStatus();
+  }
+
+  stopStream(id: string): PlayoutStatus {
+    this.#requireLiveSession(id);
+    this.#outputs.stop(id);
+    return this.getStatus();
+  }
+
+  #requireLiveSession(id: string): void {
+    if (!["starting", "running"].includes(this.#status.state)) {
+      throw new PlayoutConflictError("Outputs can only be switched while the programme is on air");
+    }
+    if (!this.#outputs.has(id)) {
+      throw new PlayoutPreflightError(`Output "${id}" is not part of this session`);
+    }
   }
 
   getAudioLevelDbfs(): number | null {
     return this.#status.audioLevelDbfs;
   }
 
+  /**
+   * Гасит настройки, которых выбранный транспорт не несёт.
+   *
+   * Молчаливый пропуск здесь читается снаружи как «метки не дошли до головной
+   * станции», а отказ в старте из-за забытого переключателя оставил бы канал
+   * без эфира. Поэтому настройка гасится, а её имя уходит в журнал сессии —
+   * список копится до инициализации статуса, иначе события затёрло бы им же.
+   */
+  #withSupportedFeatures(request: StartPlayoutRequest): StartPlayoutRequest {
+    const { request: supported, dropped } = withSupportedOutputFeatures(request);
+    this.#droppedOutputFeatures = dropped;
+    return supported;
+  }
+
+
+  /**
+   * Раскладывает выходы сессии по веткам.
+   *
+   * Порты зеркал раздаются здесь и держатся до конца сессии, включая выходы,
+   * которые оператор пока не включил: транспортная стадия объявляет зеркала
+   * один раз, и добавить их потом можно только её пересборкой — то есть
+   * обрывом того, что уже идёт в эфир.
+   */
+  async #planStreamBranches(reservedPorts: readonly number[]): Promise<void> {
+    const request = this.#request;
+    if (!request) throw new Error("Playout request is not prepared");
+    // Круг плейлиста и переход на будущее расписание пересобирают транспортную
+    // стадию, но не выходы: они всё это время идут в эфир, и новые порты
+    // зеркал увели бы поток от живых веток.
+    if (this.#branchPlans.length > 0) return;
+
+    const streams = requestPlayoutStreams(request);
+    const taken = [...reservedPorts];
+    const plans: StreamBranchPlan[] = [];
+
+    for (const stream of streams) {
+      const mode = streamBranchMode(stream, request, streams.length === 1);
+      const endpointLabel = streamEndpointLabel(stream.endpoint);
+      if (mode === "program") {
+        plans.push({
+          stream,
+          mode,
+          mirrorPort: 0,
+          handoffPort: null,
+          encoderArgs: [],
+          transportArgs: [],
+          endpointLabel,
+        });
+        continue;
+      }
+
+      const mirrorPort = await reserveUnusedUdpPort(taken);
+      taken.push(mirrorPort);
+      let handoffPort: number | null = null;
+      let encoderArgs: string[] = [];
+      let transportArgs: string[] = [];
+
+      if (stream.endpoint.protocol === "rtmp") {
+        // FLV собирается всегда FFmpeg: без перекодирования — перекладыванием
+        // пакетов, с ним — своей ступенью кодирования.
+        encoderArgs = mode === "relay"
+          ? buildStreamRemuxCommand(stream, mirrorPort)
+          : buildStreamTranscoderCommand({
+            handoffPort: null,
+            mirrorPort,
+            profile: resolveBranchProfile(stream, request),
+            program: request,
+            stream,
+          });
+      } else if (mode === "relay") {
+        const ownMpegTsSettings = JSON.stringify(endpointMpegTsSettings(stream.endpoint)) !==
+          JSON.stringify(endpointMpegTsSettings(request.endpoint));
+        if (ownMpegTsSettings) {
+          handoffPort = await reserveUnusedUdpPort(taken);
+          taken.push(handoffPort);
+          encoderArgs = buildStreamMpegTsRemuxCommand(stream, mirrorPort, handoffPort);
+        }
+        transportArgs = buildTsdDuckRelayCommand({
+          bitrateBps: branchTransportBitrateBps(request, stream.endpoint),
+          endpoint: stream.endpoint,
+          inputPort: handoffPort ?? mirrorPort,
+        }).args;
+      } else {
+        handoffPort = await reserveUnusedUdpPort(taken);
+        taken.push(handoffPort);
+        encoderArgs = buildStreamTranscoderCommand({
+          handoffPort,
+          mirrorPort,
+          profile: resolveBranchProfile(stream, request),
+          program: request,
+          stream,
+        });
+        transportArgs = buildTsdDuckRelayCommand({
+          bitrateBps: branchTransportBitrateBps(
+            resolveBranchProfile(stream, request),
+            stream.endpoint,
+          ),
+          endpoint: stream.endpoint,
+          inputPort: handoffPort,
+        }).args;
+      }
+
+      plans.push({
+        stream,
+        mode,
+        mirrorPort,
+        handoffPort,
+        encoderArgs,
+        transportArgs,
+        endpointLabel,
+      });
+    }
+
+    this.#branchPlans = plans;
+    this.#outputs.configure(plans.filter((plan) => plan.mode !== "program"));
+    const extra = plans.filter((plan) => plan.mode !== "program");
+    if (extra.length > 0) {
+      this.#appendEvent(
+        `Programme multiplex mirrored to ${extra.length} output(s): ` +
+          extra.map((plan) => `${plan.stream.name} (${plan.mode})`).join(", "),
+      );
+    }
+  }
+
+  /**
+   * Состояния выходов.
+   *
+   * Единственный выход в списке всё равно есть: интерфейс показывает его тем
+   * же плиточным списком, что и три, и пустой список означал бы «выходов нет»,
+   * а не «выход один».
+   */
+  #streamStatuses(): PlayoutStreamStatus[] {
+    const live = ["starting", "running"].includes(this.#status.state);
+    return this.#branchPlans.map((plan) => {
+      if (plan.mode !== "program") {
+        return this.#outputs.statuses().find((status) => status.id === plan.stream.id) ?? {
+          id: plan.stream.id,
+          name: plan.stream.name,
+          state: "idle" as const,
+          mode: plan.mode,
+          endpointLabel: plan.endpointLabel,
+          startedAt: null,
+          resources: { ...emptyResourceUsage },
+          error: null,
+        };
+      }
+      // Единственный выход живёт жизнью программы: отдельно его не гасят —
+      // гасить нечего, кроме самого эфира.
+      return {
+        id: plan.stream.id,
+        name: plan.stream.name,
+        state: live ? ("running" as const) : ("idle" as const),
+        mode: plan.mode,
+        endpointLabel: this.#status.endpointLabel ?? plan.endpointLabel,
+        startedAt: this.#status.startedAt,
+        resources: { ...this.#status.programResources },
+        error: this.#status.error,
+      };
+    });
+  }
+
+  /** Процессы общей части: рендерер, графика, кодировщик программы, зеркало. */
+  #programPids(): number[] {
+    return [
+      this.#child?.pid,
+      this.#tsduckChild?.pid,
+      this.#subtitleChild?.pid,
+      this.#producerChild?.pid,
+      this.#prefetchedProducerChild?.pid,
+      ...[...this.#sceneProducers].map((producer) => producer.pid),
+    ].filter((pid): pid is number => typeof pid === "number");
+  }
+
+  /**
+   * Замер нагрузки идёт по таймеру, а не на опрос статуса.
+   *
+   * Опрос приходит раз в секунду и от нескольких клиентов сразу, а замер на
+   * Windows — это запуск PowerShell: считать по запросу значило бы держать на
+   * эфирной машине постоянный поток лишних процессов. Разность накопленного
+   * процессорного времени между двумя снимками к тому же требует ровного
+   * интервала, а не того, когда кто-то заглянул.
+   */
+  #startResourceSampling(): void {
+    if (this.#metricsTimer) return;
+    this.#metricsPrevious = emptySnapshot();
+    this.#metricsCurrent = emptySnapshot();
+    void this.#sampleResources();
+    this.#metricsTimer = setInterval(() => void this.#sampleResources(), resourceSampleIntervalMs);
+    this.#metricsTimer.unref();
+  }
+
+  #stopResourceSampling(): void {
+    if (this.#metricsTimer) clearInterval(this.#metricsTimer);
+    this.#metricsTimer = null;
+    this.#metricsInFlight = false;
+    this.#status.programResources = { ...emptyResourceUsage };
+    for (const plan of this.#branchPlans) {
+      if (plan.mode !== "program") {
+        this.#outputs.applyResources(plan.stream.id, { ...emptyResourceUsage });
+      }
+    }
+  }
+
+  async #sampleResources(): Promise<void> {
+    if (this.#metricsInFlight) return;
+    this.#metricsInFlight = true;
+    try {
+      const programPids = this.#programPids();
+      const snapshot = await sampleProcesses([...programPids, ...this.#outputs.allPids()]);
+      this.#metricsPrevious = this.#metricsCurrent;
+      this.#metricsCurrent = snapshot;
+      this.#status.programResources = computeResourceUsage(
+        this.#metricsPrevious,
+        this.#metricsCurrent,
+        programPids,
+      );
+      for (const plan of this.#branchPlans) {
+        if (plan.mode === "program") continue;
+        this.#outputs.applyResources(
+          plan.stream.id,
+          computeResourceUsage(
+            this.#metricsPrevious,
+            this.#metricsCurrent,
+            this.#outputs.pids(plan.stream.id),
+          ),
+        );
+      }
+    } catch {
+      // Измерение не имеет права уронить эфир: не вышло — покажем прочерк.
+    } finally {
+      this.#metricsInFlight = false;
+    }
+  }
+
+  #reportDroppedOutputFeatures(protocol: PlayoutEndpoint["protocol"]): void {
+    for (const feature of this.#droppedOutputFeatures) {
+      this.#appendEvent(
+        `${protocol.toUpperCase()} output does not carry ${outputFeatureLabel(feature)}; ` +
+          "the setting is switched off for this session",
+      );
+    }
+    this.#droppedOutputFeatures = [];
+  }
+
   async start(request: StartPlayoutRequest): Promise<PlayoutStatus> {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
     }
-    return this.#startPrepared(withBarsFallback(request));
+    return this.#startPrepared(withBarsFallback(this.#withSupportedFeatures(request)));
   }
 
   async take(request: StartPlayoutRequest): Promise<PlayoutStatus> {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
     }
+    request = this.#withSupportedFeatures(request);
     const active = Boolean(
       this.#child || this.#tsduckChild || this.#subtitleChild || this.#transportPreviewChild,
     ) ||
@@ -308,11 +641,11 @@ export class PlayoutSupervisor {
       totalItems: request.playlist.length,
       currentItemId: request.playlist[0]?.id ?? null,
       currentItemName: request.playlist[0]?.name ?? null,
-      transportBitrateBps: request.endpoint.protocol === "udp"
+      transportBitrateBps: usesTsdDuckTransport(request)
         ? calculateTransportMuxRate(request)
         : null,
-      transportBitrateMode: request.endpoint.protocol === "udp"
-        ? request.endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "auto"
+      transportBitrateMode: usesTsdDuckTransport(request)
+        ? endpointMpegTsSettings(request.endpoint).transportBitrateKbps > 0 ? "manual" : "auto"
         : null,
       repeatPlaylist: request.repeatPlaylist,
       queuedFutureItems: request.nextPlaylist.length,
@@ -330,6 +663,7 @@ export class PlayoutSupervisor {
         language: request.subtitleOutput.mode === "dvb" ? request.subtitleOutput.language : null,
       },
     };
+    this.#reportDroppedOutputFeatures(request.endpoint.protocol);
     const declaredDurationSeconds = request.playlist.reduce(
       (total, item) => total + (item.declaredDurationSeconds ?? item.sourceDurationSeconds ?? 0),
       0,
@@ -349,6 +683,7 @@ export class PlayoutSupervisor {
       this.#items = next.items;
       await rm(this.previewDirectory, { force: true, recursive: true });
       await mkdir(this.previewDirectory, { recursive: true });
+      this.#branchPlans = [];
       await this.#prepareLoopCommands();
       this.#appendEvent(`Starting ${request.playlist.length} clip playout`);
       if (resolvedRequest.audio.loudnessNormalization.enabled) {
@@ -358,18 +693,23 @@ export class PlayoutSupervisor {
             `${loudness.truePeakDbtp.toFixed(1)} dBTP, LRA ${loudness.loudnessRangeLufs.toFixed(1)} LU`,
         );
       }
-      if (resolvedRequest.endpoint.protocol === "udp") {
+      if (usesTsdDuckTransport(resolvedRequest)) {
         const transportRate = calculateTransportMuxRate(resolvedRequest);
+        const mpegTs = endpointMpegTsSettings(resolvedRequest.endpoint);
         this.#appendEvent(
-          `UDP CBR transport ${formatMbps(transportRate)} Mbps with null PID 0x1FFF stuffing; ` +
-            `packet ${resolvedRequest.endpoint.packetSize} bytes, ` +
-            `${resolvedRequest.endpoint.mpegTs.transportBitrateKbps > 0 ? "manual" : "Auto"} muxrate`,
+          `${resolvedRequest.endpoint.protocol.toUpperCase()} CBR transport ` +
+            `${formatMbps(transportRate)} Mbps with null PID 0x1FFF stuffing; ` +
+            `service ${mpegTs.serviceId}, video PID ${mpegTs.videoPid}, ` +
+            `audio PID ${mpegTs.audioPid}, PCR every ${mpegTs.pcrPeriodMs} ms, ` +
+            `${mpegTs.transportBitrateKbps > 0 ? "manual" : "Auto"} muxrate`,
         );
       }
       if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
         await this.#spawnTransportPreview();
       }
+      await this.#outputs.startEnabled();
+      this.#startResourceSampling();
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
       }
@@ -377,6 +717,8 @@ export class PlayoutSupervisor {
       await waitForSpawn(child);
       return this.getStatus();
     } catch (error) {
+      void this.#outputs.stopAll();
+      this.#stopResourceSampling();
       this.#terminateTsdDuck();
       this.#terminateDvbSubtitles();
       this.#terminateTransportPreview();
@@ -406,7 +748,7 @@ export class PlayoutSupervisor {
     this.#videoEncoder = resolveVideoEncoder(request.video, capabilities.videoEncoders);
     if (usesTsdDuckTransport(request)) {
       await this.tsduckCapabilities.getVersion();
-      if (request.endpoint.protocol === "srt") {
+      if (requestPlayoutStreams(request).some((stream) => stream.endpoint.protocol === "srt")) {
         await this.tsduckCapabilities.assertSrtSupport();
       }
     }
@@ -443,11 +785,15 @@ export class PlayoutSupervisor {
   async stop(): Promise<PlayoutStatus> {
     const child = this.#child;
     if (!child && !this.#tsduckChild && !this.#subtitleChild && !this.#transportPreviewChild) {
+      void this.#outputs.stopAll();
+      this.#stopResourceSampling();
       return this.getStatus();
     }
     if (this.#status.state !== "stopping") {
       this.#status.state = "stopping";
       this.#appendEvent("Graceful stop requested");
+      void this.#outputs.stopAll();
+      this.#stopResourceSampling();
       this.#terminateTsdDuck();
       this.#terminateDvbSubtitles();
       this.#terminateTransportPreview();
@@ -597,6 +943,10 @@ export class PlayoutSupervisor {
 
     const inputPort = await reserveUdpPort();
     const transportPreviewPort = await reserveDistinctUdpPort(inputPort);
+    // Зеркала объявляются на все выходы сессии сразу, включая выключенные:
+    // добавить их потом значило бы пересобрать транспортную стадию, то есть
+    // оборвать выход, который уже идёт в эфир.
+    await this.#planStreamBranches([inputPort, transportPreviewPort]);
     const cueFilePath = await this.#writeScte35CueFile(request);
     const subtitleTransport = await this.#prepareDvbSubtitleTransport(request);
 
@@ -607,9 +957,7 @@ export class PlayoutSupervisor {
       packetSize: 1_316,
       ttl: 1,
       localAddress: "",
-      mpegTs: request.endpoint.protocol === "udp"
-        ? { ...request.endpoint.mpegTs }
-        : { ...defaultMpegTsOutputSettings },
+      mpegTs: { ...endpointMpegTsSettings(request.endpoint) },
     };
     const command = this.#buildRollingEncoderCommand(request, {
       forceKeyFramesSeconds: request.scte35.enabled
@@ -618,13 +966,18 @@ export class PlayoutSupervisor {
       programEndpoint: internalEndpoint,
       transportMuxRateBps: calculateTransportMuxRate(request),
     });
+    const mirrorPorts = this.#branchPlans
+      .filter((plan) => plan.mode !== "program")
+      .map((plan) => plan.mirrorPort);
     const tsduck = buildTsdDuckCommand({
       cueCount: this.#cues.length,
       cueFilePath,
       inputPort,
+      mirrorPorts,
       monitorPrefix: tsduckMonitorPrefix,
       previewPort: transportPreviewPort,
       request,
+      silentOutput: mirrorPorts.length > 0,
       subtitles: subtitleTransport,
     });
     this.#commandArgs = command.args;
@@ -942,8 +1295,8 @@ export class PlayoutSupervisor {
 
   #handleDvbClockPtsLog(line: string): boolean {
     const subtitlePid = this.#status.subtitles.pid;
-    const videoPid = this.#request?.endpoint.protocol === "udp"
-      ? this.#request.endpoint.mpegTs.videoPid
+    const videoPid = this.#request
+      ? endpointMpegTsSettings(this.#request.endpoint).videoPid
       : defaultMpegTsOutputSettings.videoPid;
     if (
       !this.#status.subtitles.enabled ||
@@ -1088,6 +1441,11 @@ export class PlayoutSupervisor {
     }
 
     this.#status.stoppedAt = new Date().toISOString();
+    // Выходы живут, пока идёт программа. Без неё зеркало пусто, и оставленная
+    // ветка до конца сессии службы читает тишину — процессом, который никто
+    // уже не погасит.
+    void this.#outputs.stopAll();
+    this.#stopResourceSampling();
     if (wasStopping) {
       this.#status.state = "idle";
       if (this.#status.scte35.enabled) this.#status.scte35.state = "completed";
@@ -2512,26 +2870,67 @@ function validateCapabilities(
       `FFmpeg does not support ${request.video.codec.toUpperCase()} encoding`,
     );
   }
+  for (const stream of requestPlayoutStreams(request)) {
+    if (stream.endpoint.protocol === "rtmp" && !capabilities.supports.rtmp) {
+      throw new PlayoutPreflightError("FFmpeg does not support RTMP output");
+    }
+    const mode = streamBranchMode(stream, request, requestPlayoutStreams(request).length === 1);
+    if (mode !== "transcode") continue;
+    const profile = resolveBranchProfile(stream, request);
+    const output = outputProtocolCapabilities(stream.endpoint.protocol);
+    if (!output.videoCodecs.includes(profile.video.codec)) {
+      throw new PlayoutPreflightError(
+        `${stream.name}: ${stream.endpoint.protocol.toUpperCase()} does not carry ` +
+          `${profile.video.codec.toUpperCase()} video`,
+      );
+    }
+    if (!output.audioCodecs.includes(profile.audio.codec)) {
+      throw new PlayoutPreflightError(
+        `${stream.name}: ${stream.endpoint.protocol.toUpperCase()} does not carry ` +
+          `${profile.audio.codec.toUpperCase()} audio`,
+      );
+    }
+    if (!capabilities.supports[profile.video.codec]) {
+      throw new PlayoutPreflightError(`${stream.name}: FFmpeg lacks the selected video codec`);
+    }
+    const configured = endpointMpegTsSettings(stream.endpoint).transportBitrateKbps;
+    const minimum = branchTransportBitrateBps(profile) / 1_000;
+    if (stream.endpoint.protocol !== "rtmp" && configured > 0 && configured < minimum) {
+      throw new PlayoutPreflightError(
+        `${stream.name}: transport bitrate ${configured} kbps is below ${minimum} kbps`,
+      );
+    }
+  }
   if (!capabilities.supports.aac) {
     throw new PlayoutPreflightError("FFmpeg AAC encoder is required for live preview");
   }
   if (!capabilities.videoEncoders.includes("libx264")) {
     throw new PlayoutPreflightError("FFmpeg libx264 encoder is required for live preview");
   }
-  if (
-    request.endpoint.protocol === "rtmp" &&
-    (request.video.codec !== "h264" || request.audio.codec !== "aac")
-  ) {
-    throw new PlayoutPreflightError("RTMP output requires H.264 video and AAC audio");
+  // Кодеки программы проверяются по контейнеру, в котором она собирается, а не
+  // по адресу первого выхода: с двумя выходами и больше программа всегда
+  // MPEG-TS, а FLV собирает уже ветка — своей ступенью кодирования.
+  const protocolCapabilities = outputProtocolCapabilities(ffmpegProtocol);
+  if (!protocolCapabilities.videoCodecs.includes(request.video.codec)) {
+    throw new PlayoutPreflightError(
+      `${ffmpegProtocol.toUpperCase()} output does not carry ` +
+        `${request.video.codec.toUpperCase()} video; supported: ` +
+        `${protocolCapabilities.videoCodecs.join(", ").toUpperCase()}`,
+    );
+  }
+  if (!protocolCapabilities.audioCodecs.includes(request.audio.codec)) {
+    throw new PlayoutPreflightError(
+      `${ffmpegProtocol.toUpperCase()} output does not carry ` +
+        `${request.audio.codec.toUpperCase()} audio; supported: ` +
+        `${protocolCapabilities.audioCodecs.join(", ").toUpperCase()}`,
+    );
   }
   if (request.audio.codec === "mp2" && request.audio.channels === 6) {
     throw new PlayoutPreflightError("MP2 output supports mono or stereo audio only");
   }
-  if (
-    request.endpoint.protocol === "udp" &&
-    request.endpoint.mpegTs.transportBitrateKbps > 0
-  ) {
-    const configuredRate = request.endpoint.mpegTs.transportBitrateKbps * 1_000;
+  const configuredTransportKbps = endpointMpegTsSettings(request.endpoint).transportBitrateKbps;
+  if (usesTsdDuckTransport(request) && configuredTransportKbps > 0) {
+    const configuredRate = configuredTransportKbps * 1_000;
     const minimumRate = calculateMinimumTransportMuxRate(request);
     if (configuredRate < minimumRate) {
       throw new PlayoutPreflightError(
@@ -2541,9 +2940,7 @@ function validateCapabilities(
     }
   }
   if (request.scte35.enabled && request.endpoint.protocol !== "rtmp") {
-    const { audioPid, videoPid } = request.endpoint.protocol === "udp"
-      ? request.endpoint.mpegTs
-      : defaultMpegTsOutputSettings;
+    const { audioPid, videoPid } = endpointMpegTsSettings(request.endpoint);
     if (request.scte35.pid === videoPid || request.scte35.pid === audioPid) {
       throw new PlayoutPreflightError(
         `SCTE-35 PID ${request.scte35.pid} conflicts with ` +
@@ -2552,9 +2949,7 @@ function validateCapabilities(
     }
   }
   if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol !== "rtmp") {
-    const { audioPid, videoPid } = request.endpoint.protocol === "udp"
-      ? request.endpoint.mpegTs
-      : defaultMpegTsOutputSettings;
+    const { audioPid, videoPid } = endpointMpegTsSettings(request.endpoint);
     const conflictsWith = request.subtitleOutput.pid === videoPid
       ? "video"
       : request.subtitleOutput.pid === audioPid
@@ -2598,6 +2993,8 @@ function redactSecrets(line: string, request: StartPlayoutRequest | null): strin
 
 function idleStatus(): PlayoutStatus {
   return {
+    streams: [],
+    programResources: { ...emptyResourceUsage },
     state: "idle",
     sessionId: null,
     startedAt: null,
@@ -2707,11 +3104,27 @@ export function describeTsdDuckExit(
   const address = endpoint?.host && endpoint.port
     ? `${endpoint.host}:${endpoint.port}`
     : "the configured endpoint";
-  return endpoint?.mode === "listener"
-    ? `${withCause}. No SRT caller connected to ${address}.`
-    : `${withCause}. The SRT receiver at ${address} did not answer: check that it is ` +
-      "listening, that the port is open through the firewall, and that the passphrase " +
-      "and stream id match.";
+  if (endpoint?.mode === "listener") {
+    return `${withCause}. No SRT caller connected to ${address}.`;
+  }
+  // Локальный адрес — отдельный случай: firewall и головная станция здесь ни
+  // при чём, приёмника просто нет на этой же машине. Совет «проверьте порт на
+  // приёмнике» отправляет оператора искать то, чего не существует.
+  if (isLoopbackHost(endpoint?.host)) {
+    return `${withCause}. Nothing is listening on ${address} on this machine: start a ` +
+      "local SRT receiver first (for example `ffplay \"srt://127.0.0.1:9000?mode=listener\"`), " +
+      "or switch the output to listener mode and let the player connect to FluxIO.";
+  }
+  return `${withCause}. The SRT receiver at ${address} did not answer: check that it is ` +
+    "listening, that the port is open through the firewall, and that the passphrase " +
+    "and stream id match.";
+}
+
+/** Свой же компьютер: у такого адреса нет ни сети между машинами, ни firewall. */
+function isLoopbackHost(host?: string): boolean {
+  if (!host) return false;
+  const value = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return value === "localhost" || value === "::1" || /^127\./.test(value);
 }
 
 export function alignHotChangePlaylist<T extends { id: string }>(
@@ -2878,6 +3291,37 @@ async function reserveUdpPort(): Promise<number> {
   }
 }
 
+/** Свободный порт, не совпадающий ни с одним уже занятым в этой сессии. */
+async function reserveUnusedUdpPort(taken: readonly number[]): Promise<number> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await reserveUdpPort();
+    if (!taken.includes(port)) return port;
+  }
+  throw new Error("Failed to reserve a distinct local UDP port for a programme output");
+}
+
+/**
+ * Транспортная скорость ветки со своим профилем.
+ *
+ * Считается по её собственному видео и звуку: ветка 720p 4 Mbps, отрегулированная
+ * по скорости программного мультиплекса 20 Mbps, ушла бы в эфир на три четверти
+ * забитой стаффингом.
+ */
+function branchTransportBitrateBps(profile: {
+  video: StartPlayoutRequest["video"];
+  audio: StartPlayoutRequest["audio"];
+}, endpoint?: PlayoutEndpoint): number {
+  const configured = endpoint && endpointMpegTsSettings(endpoint).transportBitrateKbps;
+  if (configured && configured > 0) return configured * 1_000;
+  const videoKbps = profile.video.rateControl === "cbr"
+    ? profile.video.targetBitrateKbps
+    : profile.video.rateControl === "vbr"
+      ? profile.video.maxBitrateKbps
+      : profile.video.targetBitrateKbps * 2;
+  const payloadKbps = videoKbps + profile.audio.bitrateKbps;
+  return Math.ceil(Math.max(1_000, payloadKbps * 1.18 + 256) / 100) * 100_000;
+}
+
 async function reserveDistinctUdpPort(excludedPort: number): Promise<number> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const port = await reserveUdpPort();
@@ -2903,4 +3347,13 @@ function formatSeconds(value: number): string {
 export function withBarsFallback(request: StartPlayoutRequest): StartPlayoutRequest {
   if (request.playlist.length > 0) return request;
   return { ...request, playlist: [barsPlayoutItem()], repeatPlaylist: true };
+}
+
+/** Имя возможности выдачи для журнала. */
+function outputFeatureLabel(feature: OutputProtocolFeature): string {
+  if (feature === "scte35") return "SCTE-35 ad markers";
+  if (feature === "dvbSubtitles") return "a separate DVB subtitle PID";
+  if (feature === "multipleAudioTracks") return "multiple audio tracks";
+  if (feature === "mpegTsService") return "MPEG-TS service settings";
+  return "a constant transport bitrate";
 }

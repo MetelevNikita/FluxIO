@@ -40,6 +40,8 @@
     "src/use-media-service.ts",
     "src/media-service-state.test.ts",
     "src/electron.d.ts",
+    "src/output-capabilities.ts",
+    "src/output-capabilities.test.ts",
     "src/schedule-ids.ts",
     "src/schedule-ids.test.ts",
     "src/schedule-timeline.ts",

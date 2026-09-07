@@ -36,6 +36,22 @@ export function sanitizeWorkspaceSnapshot(
     settings[key] = "";
   }
 
+  if (Array.isArray(settings.outputStreams)) {
+    settings.outputStreams = settings.outputStreams.map((stream) => {
+      if (stream.endpoint.protocol === "srt") {
+        if (stream.endpoint.passphrase) {
+          secrets[`output:${stream.id}`] = stream.endpoint.passphrase;
+        }
+        return { ...stream, endpoint: { ...stream.endpoint, passphrase: "" } };
+      }
+      if (stream.endpoint.protocol === "rtmp") {
+        if (stream.endpoint.streamKey) secrets[`output:${stream.id}`] = stream.endpoint.streamKey;
+        return { ...stream, endpoint: { ...stream.endpoint, streamKey: "" } };
+      }
+      return stream;
+    });
+  }
+
   return { sanitized: { ...snapshot, settings }, secrets };
 }
 
@@ -79,7 +95,27 @@ export function restoreWorkspaceSession(
   };
 
   if (session.encryptedSecrets) {
-    Object.assign(settings, decodeSecrets(session.encryptedSecrets, secrets));
+    const restoredSecrets = decodeSecrets(session.encryptedSecrets, secrets);
+    for (const key of secretKeys) settings[key] = restoredSecrets[key] ?? settings[key];
+    if (Array.isArray(settings.outputStreams)) {
+      settings.outputStreams = settings.outputStreams.map((stream) => {
+        if (!stream || typeof stream !== "object" || !("id" in stream) || !("endpoint" in stream)) {
+          return stream;
+        }
+        const endpoint = stream.endpoint;
+        const value = restoredSecrets[`output:${String(stream.id)}`];
+        if (!value || !endpoint || typeof endpoint !== "object" || !("protocol" in endpoint)) {
+          return stream;
+        }
+        if (endpoint.protocol === "srt") {
+          return { ...stream, endpoint: { ...endpoint, passphrase: value } };
+        }
+        if (endpoint.protocol === "rtmp") {
+          return { ...stream, endpoint: { ...endpoint, streamKey: value } };
+        }
+        return stream;
+      });
+    }
   }
 
   const checkpoint = session.checkpoint

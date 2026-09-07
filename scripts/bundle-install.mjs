@@ -8,6 +8,7 @@ import {
   bundleTargetMismatch,
   digestDirectory,
   formatBytes,
+  stationApplicationFile,
   validateBundleManifest,
 } from "./bundle-manifest.mjs";
 
@@ -32,6 +33,7 @@ const toolExecutables = {
   gstreamer: { id: "gstreamer", names: ["gst-launch-1.0"] },
   gstreamerInspect: { id: "gstreamer", names: ["gst-inspect-1.0"] },
   initdb: { id: "postgres", names: ["initdb"] },
+  pgCtl: { id: "postgres", names: ["pg_ctl"] },
   pgIsReady: { id: "postgres", names: ["pg_isready"] },
   postgres: { id: "postgres", names: ["postgres"] },
   psql: { id: "postgres", names: ["psql"] },
@@ -100,7 +102,11 @@ export async function verifyBundleComponents(bundleRoot, manifest, onComponent) 
       onComponent?.({ component, ok: false });
       continue;
     }
-    const actual = await digestDirectory(directory);
+    const actual = await digestDirectory(
+      directory,
+      undefined,
+      component.id === "app" ? stationApplicationFile : undefined,
+    );
     const ok = actual.digest === component.digest;
     if (!ok) {
       problems.push(

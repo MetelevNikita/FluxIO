@@ -5,9 +5,15 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  publicInstances,
+  readInstanceRegistry,
+  sharedEnvFileName,
+} from "./scripts/instance-registry.mjs";
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.join(projectRoot, ".env");
+const sharedEnvPath = path.join(projectRoot, sharedEnvFileName);
 
 export function launcherPaths(rootPath = projectRoot) {
   const rootPathApi = pathApiForRoot(rootPath);
@@ -103,26 +109,19 @@ async function main() {
   const paths = launcherPaths();
   assertLauncherFiles(paths);
   const mediaApiUrl = normalizeMediaApiUrl(process.env.GRUBER_MEDIA_API_URL);
+  const registry = await readInstanceRegistry(projectRoot, mediaApiUrl);
   const environment = {
     ...process.env,
     GRUBER_MEDIA_API_URL: mediaApiUrl,
+    GRUBER_INSTANCES_JSON: JSON.stringify(publicInstances(registry)),
+    GRUBER_INSTANCES_FILE: path.join(projectRoot, "instances.json"),
   };
-  let ownedMediaProcess = null;
   let electronProcess = null;
 
   try {
-    if (!(await mediaServerIsActive(mediaApiUrl))) {
-      console.log(`[FluxIO] Media server ${mediaApiUrl} is not active; starting it.`);
-      ownedMediaProcess = spawnManaged(
-        process.execPath,
-        [paths.mediaEntry],
-        environment,
-      );
-      await waitForMediaServer(mediaApiUrl, ownedMediaProcess, 30_000);
-    }
-
-    // Комплект несёт упакованное приложение; в дереве разработки его нет, и
-    // интерфейс поднимает Electron из node_modules.
+    // Программы в production подняты своими фоновыми службами (их ставит
+    // добавление программы из Control Center). launch.mjs здесь только
+    // открывает Control Center — своим media-server он больше не владеет.
     const packaged = packagedDesktopExecutable(paths.packagedDesktopDirectory);
     electronProcess = packaged
       ? spawnManaged(packaged, ["--gruber-production"], environment)
@@ -133,29 +132,32 @@ async function main() {
         );
     const outcome = await waitForElectronOrSignal(electronProcess);
     if (outcome.kind === "signal") {
-      console.log(
-        ownedMediaProcess
-          ? `\n[FluxIO] ${outcome.signal}: stopping Electron and owned media server.`
-          : `\n[FluxIO] ${outcome.signal}: stopping Electron; background media server remains active.`,
-      );
+      console.log(`\n[FluxIO] ${outcome.signal}: stopping Electron; background media services remain active.`);
       await terminateProcessTree(electronProcess);
     } else if (outcome.code !== 0 && outcome.signal == null) {
       throw new Error(`Electron exited with code=${outcome.code ?? "unknown"}`);
     }
   } finally {
     if (electronProcess) await terminateProcessTree(electronProcess);
-    if (ownedMediaProcess) await terminateProcessTree(ownedMediaProcess);
   }
 }
 
 function loadProjectEnvironment() {
-  try {
-    loadEnvFile(envPath);
-  } catch (error) {
-    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
-      throw error;
+  // Общие значения станции читаются из `.env.shared`; цельный `.env` от прежних
+  // версий — запасной вариант. `.env.shared` пишет `npm run setup`.
+  let loaded = false;
+  for (const candidate of [envPath, sharedEnvPath]) {
+    try {
+      loadEnvFile(candidate);
+      loaded = true;
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+        throw error;
+      }
     }
-    throw new Error(`FluxIO configuration is missing: ${envPath}. Run node setup.mjs.`);
+  }
+  if (!loaded) {
+    throw new Error(`FluxIO configuration is missing: ${sharedEnvPath}. Run node setup.mjs.`);
   }
 }
 
@@ -183,20 +185,6 @@ function spawnManaged(command, args, environment) {
     shell: false,
     stdio: "inherit",
   });
-}
-
-async function waitForMediaServer(baseUrl, child, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode != null || child.signalCode != null) {
-      throw new Error(
-        `Media server exited before startup (${child.signalCode ?? child.exitCode})`,
-      );
-    }
-    if (await mediaServerIsActive(baseUrl)) return;
-    await new Promise((resolve) => setTimeout(resolve, 350));
-  }
-  throw new Error(`Media server did not become active in ${timeoutMs / 1_000} seconds`);
 }
 
 function waitForElectronOrSignal(child) {

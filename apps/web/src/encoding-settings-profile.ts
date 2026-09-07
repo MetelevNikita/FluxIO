@@ -3,6 +3,7 @@ import {
   portableEncodingSettingsSchema,
   type EncodingSettingsFile,
   type PortableEncodingSettings,
+  type PlayoutStream,
 } from "@gruber/contracts";
 import type { BroadcastSettings } from "./types.js";
 
@@ -56,5 +57,16 @@ function portableEncodingSettings(settings: BroadcastSettings): PortableEncoding
   // Автостарт — настройка станции, а не кодирования: возить её между машинами
   // значит поднять чужой эфир на чужой машине после первой же перезагрузки.
   delete candidate.autoResumeOnLaunch;
+  candidate.outputStreams = settings.outputStreams.map(withoutStreamSecret);
   return portableEncodingSettingsSchema.parse(candidate);
+}
+
+function withoutStreamSecret(stream: PlayoutStream): PlayoutStream {
+  if (stream.endpoint.protocol === "srt") {
+    return { ...stream, endpoint: { ...stream.endpoint, passphrase: "" } };
+  }
+  if (stream.endpoint.protocol === "rtmp") {
+    return { ...stream, endpoint: { ...stream.endpoint, streamKey: "" } };
+  }
+  return stream;
 }

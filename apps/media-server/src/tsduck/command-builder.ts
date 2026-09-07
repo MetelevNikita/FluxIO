@@ -1,5 +1,5 @@
 import type { PlayoutEndpoint, StartPlayoutRequest } from "@gruber/contracts";
-import { defaultMpegTsOutputSettings } from "@gruber/contracts";
+import { endpointMpegTsSettings } from "@gruber/contracts";
 
 export interface SubtitleTransport {
   inputPort: number;
@@ -15,6 +15,16 @@ export interface TsdDuckCommandOptions {
   monitorPrefix?: string;
   request: StartPlayoutRequest;
   subtitles?: SubtitleTransport | null;
+  /**
+   * Локальные порты зеркал. С них выходы берут готовый мультиплекс программы:
+   * общая обработка — PSI, метки, субтитры, PCR — делается один раз здесь.
+   * Зеркала объявляются на всю сессию, даже если выход сейчас не в эфире, —
+   * иначе включение второго выхода требовало бы пересборки этой стадии, то
+   * есть обрыва первого.
+   */
+  mirrorPorts?: readonly number[];
+  /** Стадия программы сама в эфир не отдаёт: этим заняты выходы. */
+  silentOutput?: boolean;
 }
 
 export interface TsdDuckCommand {
@@ -30,15 +40,18 @@ export function buildTsdDuckCommand({
   cueCount,
   inputPort,
   monitorPrefix = "GRUBER_SCTE35:",
+  mirrorPorts = [],
   previewPort = null,
   request,
+  silentOutput = false,
   subtitles = null,
 }: TsdDuckCommandOptions): TsdDuckCommand {
   const pid = request.scte35.pid;
   const transportMuxRate = calculateTransportMuxRate(request);
-  const serviceId = request.endpoint.protocol === "udp"
-    ? request.endpoint.mpegTs.serviceId
-    : 1;
+  // SRT несёт тот же MPEG-TS, что и UDP: служба, PID и интервал PCR берутся
+  // из настроек выхода, а не подменяются умолчаниями.
+  const mpegTs = endpointMpegTsSettings(request.endpoint);
+  const serviceId = mpegTs.serviceId;
   const args = [
     "--bitrate",
     String(transportMuxRate),
@@ -67,9 +80,7 @@ export function buildTsdDuckCommand({
   }
 
   if (request.subtitleOutput.mode === "dvb" && subtitles) {
-    const videoPid = request.endpoint.protocol === "udp"
-      ? request.endpoint.mpegTs.videoPid
-      : defaultMpegTsOutputSettings.videoPid;
+    const videoPid = mpegTs.videoPid;
     // merge обязан идти ДО обеих стадий pmt: TSDuck считает PID, уже объявленный
     // в PMT основного потока, конфликтующим и молча выбрасывает его из merged TS
     // (--ignore-conflicts на этот случай не действует). Объявляем subtitle PID
@@ -146,19 +157,18 @@ export function buildTsdDuckCommand({
     );
   }
 
-  if (request.endpoint.protocol === "udp") {
-    const requestedPcrPeriodMs = request.endpoint.mpegTs.pcrPeriodMs;
-    args.push(
-      "-P",
-      "pcradjust",
-      "--bitrate",
-      String(transportMuxRate),
-      "--pid",
-      String(request.endpoint.mpegTs.videoPid),
-      "--min-ms-interval",
-      String(pcrInsertionThresholdMs(requestedPcrPeriodMs)),
-    );
-  }
+  // Стадия транспорта поднимается только для MPEG-TS выходов, поэтому
+  // интервал PCR выравнивается и на UDP, и на SRT.
+  args.push(
+    "-P",
+    "pcradjust",
+    "--bitrate",
+    String(transportMuxRate),
+    "--pid",
+    String(mpegTs.videoPid),
+    "--min-ms-interval",
+    String(pcrInsertionThresholdMs(mpegTs.pcrPeriodMs)),
+  );
 
   if (request.scte35.enabled) {
     args.push(
@@ -170,9 +180,7 @@ export function buildTsdDuckCommand({
       `--json-line=${monitorPrefix}`,
     );
   }
-  const monitoredPids = request.endpoint.protocol === "udp"
-    ? [request.endpoint.mpegTs.videoPid, request.endpoint.mpegTs.audioPid]
-    : [];
+  const monitoredPids = [mpegTs.videoPid, mpegTs.audioPid];
   if (request.subtitleOutput.mode === "dvb" && subtitles) {
     monitoredPids.push(request.subtitleOutput.pid);
   }
@@ -202,12 +210,70 @@ export function buildTsdDuckCommand({
       `127.0.0.1:${previewPort}`,
     );
   }
-  args.push(...buildOutput(request.endpoint, request));
+  for (const port of mirrorPorts) {
+    args.push(
+      "-P",
+      "ip",
+      "--buffer-size",
+      String(udpSocketBufferSizeBytes),
+      "--packet-burst",
+      "7",
+      `127.0.0.1:${port}`,
+    );
+  }
+  if (silentOutput) {
+    args.push("-O", "drop");
+  } else {
+    args.push(...buildOutput(request.endpoint, transportMuxRate));
+  }
 
   return {
     args,
-    endpointLabel: endpointLabel(request.endpoint),
+    endpointLabel: silentOutput
+      ? `Programme multiplex mirrored to ${mirrorPorts.length} output(s)`
+      : endpointLabel(request.endpoint),
   };
+}
+
+/**
+ * Транспортная стадия одного выхода.
+ *
+ * Берёт готовый мультиплекс с зеркала программы и только отдаёт его на свой
+ * адрес. Общая обработка — PSI, метки SCTE-35, субтитры, выравнивание PCR —
+ * уже сделана стадией программы: повторять её на каждом выходе значит и
+ * платить трижды, и получить три разных мультиплекса из одной программы.
+ *
+ * Выравнивание скорости (`regulate`) остаётся у выхода: у SRT и UDP свои
+ * всплески, и общий регулятор на зеркале их бы не сгладил.
+ */
+export function buildTsdDuckRelayCommand({
+  bitrateBps,
+  endpoint,
+  inputPort,
+}: {
+  bitrateBps: number;
+  endpoint: PlayoutEndpoint;
+  inputPort: number;
+}): TsdDuckCommand {
+  const args = [
+    "--bitrate",
+    String(bitrateBps),
+    "-I",
+    "ip",
+    "--buffer-size",
+    String(udpSocketBufferSizeBytes),
+    "--local-address",
+    "127.0.0.1",
+    String(inputPort),
+    "-P",
+    "regulate",
+    "--bitrate",
+    String(bitrateBps),
+    "--packet-burst",
+    String(transportPacketBurst(endpoint)),
+    ...buildOutput(endpoint, bitrateBps),
+  ];
+  return { args, endpointLabel: endpointLabel(endpoint) };
 }
 
 export function pcrInsertionThresholdMs(requestedPeriodMs: number): number {
@@ -219,7 +285,7 @@ export function pcrInsertionThresholdMs(requestedPeriodMs: number): number {
 
 function buildOutput(
   endpoint: PlayoutEndpoint,
-  request: StartPlayoutRequest,
+  transportMuxRateBps: number,
 ): string[] {
   if (endpoint.protocol === "udp") {
     const packetBurst = transportPacketBurst(endpoint);
@@ -268,7 +334,7 @@ function buildOutput(
       "--max-bw",
       "0",
       "--input-bw",
-      String(calculateTransportMuxRate(request)),
+      String(transportMuxRateBps),
     );
     return args;
   }
@@ -277,11 +343,11 @@ function buildOutput(
 }
 
 export function calculateTransportMuxRate(request: StartPlayoutRequest): number {
-  if (
-    request.endpoint.protocol === "udp" &&
-    request.endpoint.mpegTs.transportBitrateKbps > 0
-  ) {
-    return request.endpoint.mpegTs.transportBitrateKbps * 1_000;
+  // У RTMP помощник отдаёт умолчания с нулём, поэтому ручная скорость
+  // транспорта здесь недостижима — FLV мультиплекса и не имеет.
+  const transportBitrateKbps = endpointMpegTsSettings(request.endpoint).transportBitrateKbps;
+  if (transportBitrateKbps > 0) {
+    return transportBitrateKbps * 1_000;
   }
   const videoRate = videoPeakBitrateKbps(request);
   const payloadKbps = videoRate + request.audio.bitrateKbps + subtitlePayloadKbps(request);

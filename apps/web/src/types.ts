@@ -2,6 +2,7 @@ import type {
   ClipAudioOverlay,
   PlayoutSceneShow,
   GraphicEffectLayer,
+  PlayoutStream,
   VideoHardware,
   WorkspaceAudioTrackLibrary,
 } from "@gruber/contracts";
@@ -173,6 +174,8 @@ export interface BroadcastSettings {
   srtStreamId: string;
   rtmpServerUrl: string;
   rtmpStreamKey: string;
+  /** Второй и третий выходы; первый остаётся в полях выше для совместимости. */
+  outputStreams: PlayoutStream[];
   subtitleOutputMode: "Burn-in" | "DVB Subtitles";
   subtitlePid: number;
   subtitleLanguage: string;

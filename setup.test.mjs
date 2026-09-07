@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { defaultInstance, renameInstance } from "./scripts/instance-registry.mjs";
 import {
   buildLaunchAgentPlist,
   buildLinuxDesktopEntry,
@@ -20,6 +21,9 @@ import {
   findLockedNativeFiles,
   electronRuntimePath,
   mergeWindowsPathValues,
+  nextInstanceNumber,
+  firstFreeInstancePort,
+  nextInstancePort,
   npmCiArguments,
   parseEnv,
   platformServiceStopCommand,
@@ -27,9 +31,27 @@ import {
   probeGstreamerDvbPlugin,
   selectEnvBackupsToRemove,
   serializeEnv,
+  instanceDatabaseName,
   validatePort,
   windowsToolCandidates,
 } from "./setup.mjs";
+
+test("setup allocates a separate id, API port and database for a new program", () => {
+  const instances = [
+    { id: "program-1", apiUrl: "http://127.0.0.1:4310" },
+    { id: "program-3", apiUrl: "http://127.0.0.1:4312" },
+  ];
+  assert.equal(nextInstanceNumber(instances), 2);
+  assert.equal(nextInstancePort(instances), 4311);
+  assert.equal(instanceDatabaseName("fluxio", 2), "fluxio_p2");
+});
+
+test("instance registry keeps a custom initial name and renames a program", () => {
+  const first = defaultInstance(undefined, "Main channel");
+  assert.equal(first.name, "Main channel");
+  assert.equal(renameInstance({ version: 1, instances: [first] }, first.id, "News").instances[0].name, "News");
+  assert.throws(() => renameInstance({ version: 1, instances: [first] }, first.id, " "));
+});
 
 test("setup removes retired sources left by an archive copied over an old version", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "fluxio-retired-sources-"));
@@ -349,6 +371,7 @@ test("setup generates a relocatable systemd unit for the cloned repository", () 
   assert.match(unit, /User=gruber/);
   assert.match(unit, /WorkingDirectory="\/srv\/Gruber Project"/);
   assert.match(unit, /EnvironmentFile="\/srv\/Gruber Project\/\.env"/);
+  assert.match(unit, /--fluxio-env=\/srv\/Gruber Project\/\.env/);
   assert.match(unit, /ExecStart="\/usr\/local\/bin\/node" "\/srv\/Gruber Project\/apps\/media-server\/dist\/index\.js"/);
   // Без комплекта unit ссылается на системный PostgreSQL, как и раньше.
   assert.match(unit, /After=network-online\.target postgresql\.service/);
@@ -372,6 +395,7 @@ test("with a bundled cluster the service requires it, not just starts after it",
 
 test("setup generates macOS and Windows background launch definitions", () => {
   const plist = buildLaunchAgentPlist({
+    environmentPath: "/Users/operator/Gruber & Playout/.env.program-2",
     label: "live.gruber.media",
     nodePath: "/opt/Node & Tools/node",
     rootPath: "/Users/operator/Gruber & Playout",
@@ -381,6 +405,7 @@ test("setup generates macOS and Windows background launch definitions", () => {
   assert.match(plist, /live\.gruber\.media/);
   assert.match(plist, /Node &amp; Tools/);
   assert.match(plist, /Gruber &amp; Playout/);
+  assert.match(plist, /--fluxio-env=\/Users\/operator\/Gruber &amp; Playout\/\.env\.program-2/);
   assert.match(
     plist,
     /\/Users\/operator\/Gruber &amp; Playout\/apps\/media-server\/dist\/index\.js/,
@@ -388,12 +413,14 @@ test("setup generates macOS and Windows background launch definitions", () => {
   assert.doesNotMatch(plist, /\\apps\\media-server/);
 
   const windows = buildWindowsTaskCommand({
+    environmentPath: "C:\\FluxIO\\.env.program-2",
     nodePath: "C:\\Program Files\\nodejs\\node.exe",
     rootPath: "C:\\Gruber Project",
     scriptPath: "C:\\Gruber Project\\apps\\media-server\\dist\\index.js",
     start: true,
     taskName: "Gruber Playout Media Service",
   });
+  assert.match(windows, /--fluxio-env=C:\\FluxIO\\\.env\.program-2/);
   assert.match(windows, /New-ScheduledTaskAction/);
   assert.match(windows, /LogonType Interactive/);
   assert.match(windows, /Start-ScheduledTask/);
@@ -466,4 +493,20 @@ test("Ctrl+C stop commands cover each production service manager", () => {
   });
   assert.equal(windows.command, "powershell.exe");
   assert.match(windows.args.at(-1), /Stop-ScheduledTask/);
+});
+
+test("новая программа обходит порт, занятый чужим процессом, а не падает", async () => {
+  // Реестра мало: 4310 может держать вторая установка FluxIO (комплект рядом с
+  // деревом) или чужая служба — в нашем реестре её нет. Кнопка «Добавить
+  // программу» порт не спрашивает, поэтому отказ на занятом порту не оставлял
+  // бы оператору выхода. Освобождать порт самим нельзя: его держит работающая
+  // программа, и снять её — оборвать эфир ради установки.
+  const busy = new Set([4310, 4311]);
+  const port = await firstFreeInstancePort([], 4310, async (_host, value) => busy.has(value));
+  assert.equal(port, 4312);
+
+  // Порт, занятый в реестре, пропускается даже когда в системе он свободен:
+  // программа ещё не поднялась, но порт уже её.
+  const registered = [{ id: "program-1", apiUrl: "http://127.0.0.1:4310" }];
+  assert.equal(await firstFreeInstancePort(registered, 4310, async () => false), 4311);
 });

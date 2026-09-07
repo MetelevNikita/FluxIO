@@ -12,7 +12,7 @@ import type {
   StartPlayoutRequest,
   VideoEncoding,
 } from "@gruber/contracts";
-import { defaultMpegTsOutputSettings, isBarsSource } from "@gruber/contracts";
+import { isBarsSource } from "@gruber/contracts";
 import {
   ffmpegMpegTsMuxDelaySeconds,
   ffmpegMpegTsMuxPreloadSeconds,
@@ -1031,7 +1031,7 @@ function escapeFilterPath(value: string): string {
     .replaceAll("]", "\\]");
 }
 
-function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEncoder): string[] {
+export function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEncoder): string[] {
   const gop = video.gopSize;
   // Ускоритель выбирается заранее: сборщик команд не умеет спрашивать FFmpeg,
   // что есть на машине, и не должен уметь. Без переданного выбора собираем
@@ -1174,7 +1174,7 @@ function rateControlArgs(video: VideoEncoding): string[] {
   return args;
 }
 
-function audioEncoderArgs(codec: "aac" | "mp2" | "ac3", bitrateKbps: number) {
+export function audioEncoderArgs(codec: "aac" | "mp2" | "ac3", bitrateKbps: number) {
   return ["-c:a", codec, "-b:a", `${bitrateKbps}k`];
 }
 
@@ -1228,7 +1228,7 @@ function buildEndpoint(
     return {
       outputArgs: mpegTsOutputArgs(
         target,
-        defaultMpegTsOutputSettings,
+        endpoint.mpegTs,
         transportMuxRateBps,
         audioTracks,
       ),
@@ -1301,7 +1301,7 @@ function ffmpegFieldOrder(fieldOrder: VideoEncoding["fieldOrder"]): string {
   return "progressive";
 }
 
-function formatHost(host: string): string {
+export function formatHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 

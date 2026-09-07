@@ -100,6 +100,8 @@ interface PlaylistPreviewScreenProps {
     "logoPosition" | "logoWidthPercent" | "logoMargin" | "logoOpacity" | "logoLoop"
   >;
   audioTracksEnabled: boolean;
+  /** FLV несёт одну дорожку: при RTMP переключатель заперт, а не молча бесполезен. */
+  audioTracksSupported: boolean;
   audioTrackDirectory: string;
   audioOriginalLanguage: string;
   audioProgramLanguages: string[];
@@ -207,6 +209,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   scheduleLogoPath,
   logoSettings,
   audioTracksEnabled,
+  audioTracksSupported,
   audioTrackDirectory,
   audioOriginalLanguage,
   audioProgramLanguages,
@@ -1084,14 +1087,19 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             </button>
           </div>
           <div className="audio-track-appearance">
-            <label className="audio-track-toggle">
+            <label className={`audio-track-toggle ${audioTracksSupported ? "" : "disabled"}`}>
               <input
-                checked={audioTracksEnabled}
+                checked={audioTracksEnabled && audioTracksSupported}
+                disabled={!audioTracksSupported}
                 onChange={(event) =>
                   onAudioTrackSettingsChange({ audioTracksEnabled: event.target.checked })}
                 type="checkbox"
               />
-              <span>Separate PID per language</span>
+              <span>
+                {audioTracksSupported
+                  ? "Separate PID per language"
+                  : "Separate PID per language — RTMP carries one track"}
+              </span>
             </label>
             <label>
               <span>Original language</span>

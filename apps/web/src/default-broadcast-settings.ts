@@ -57,6 +57,7 @@ export const initialBroadcastSettings: BroadcastSettings = {
   srtStreamId: "",
   rtmpServerUrl: "rtmp://127.0.0.1/live",
   rtmpStreamKey: "gruber-live",
+  outputStreams: [],
   subtitleOutputMode: "Burn-in",
   subtitlePid: 288,
   subtitleLanguage: "rus",

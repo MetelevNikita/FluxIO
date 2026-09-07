@@ -1,6 +1,13 @@
 import { z } from "zod";
+import {
+  audioCodecs,
+  outputProtocolCapabilities,
+  videoCodecs,
+  type OutputProtocolFeature,
+} from "./output-protocol.js";
 import { sceneTemplateSchema } from "./scene.js";
 
+export * from "./output-protocol.js";
 export * from "./scene.js";
 export * from "./scene-timing.js";
 export * from "./title-file.js";
@@ -20,6 +27,8 @@ export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 
 export const systemMetricsSchema = z.object({
   cpuPercent: z.number().min(0).max(100),
+  /** Логических ядер на машине: без них проценты ядра не с чем сравнить. */
+  cpuCores: z.number().int().positive().default(1),
   networkMbps: z.number().nonnegative(),
   collectedAt: z.iso.datetime(),
 });
@@ -60,6 +69,14 @@ export const videoHardwareSchema = z.enum([
   "videotoolbox",
   "amf",
 ]);
+
+const portablePlayoutStreamSchema = z.lazy(() => playoutStreamSchema.extend({
+  endpoint: z.discriminatedUnion("protocol", [
+    udpEndpointSchema,
+    srtEndpointSchema,
+    rtmpEndpointSchema.extend({ streamKey: z.string().max(4_096) }),
+  ]),
+}));
 
 export const portableEncodingSettingsSchema = z.object({
   videoCodec: z.enum(["H.264", "H.265", "MPEG-2 Video"]),
@@ -127,6 +144,8 @@ export const portableEncodingSettingsSchema = z.object({
   srtLatencyMs: z.number().int().min(20).max(60_000),
   srtStreamId: profileTextSchema,
   rtmpServerUrl: profileTextSchema,
+  /** Дополнительные выходы; их секреты при экспорте заменяются пустой строкой. */
+  outputStreams: z.array(portablePlayoutStreamSchema).max(2).default([]),
   subtitleOutputMode: z.enum(["Burn-in", "DVB Subtitles"]).default("Burn-in"),
   subtitlePid: z.number().int().min(32).max(8_190).default(288),
   subtitleLanguage: z.string().regex(/^[A-Za-z]{3}$/).default("rus"),
@@ -1056,7 +1075,7 @@ export const serializedScheduleSchema = z.object({
 
 
 export const videoEncodingSchema = z.object({
-  codec: z.enum(["h264", "h265", "mpeg2"]),
+  codec: z.enum(videoCodecs),
   hardware: videoHardwareSchema.default("off"),
   /**
    * Узел рендера для VAAPI. У остальных ускорителей устройство выбирается
@@ -1114,7 +1133,7 @@ export const videoEncodingSchema = z.object({
 });
 
 export const audioEncodingSchema = z.object({
-  codec: z.enum(["aac", "mp2", "ac3"]),
+  codec: z.enum(audioCodecs),
   sampleRate: z.number().int().min(8_000).max(192_000),
   channels: z.union([z.literal(1), z.literal(2), z.literal(6)]),
   bitrateKbps: z.number().int().min(32).max(640),
@@ -1213,6 +1232,13 @@ export const srtEndpointSchema = z.object({
     )
     .default(""),
   streamId: z.string().max(512).default(""),
+  /**
+   * SRT — тот же MPEG-TS, только другой транспорт, поэтому имя службы, её
+   * номер, PID и интервал PCR принадлежат и ему. Раньше их читал один UDP, а
+   * у SRT они молча подменялись умолчаниями: инженер правил поля, сохранял
+   * профиль и получал в эфир «FluxIO» с PID 256/257 вместо своих.
+   */
+  mpegTs: mpegTsOutputSettingsSchema.default(defaultMpegTsOutputSettings),
 });
 
 export const rtmpEndpointSchema = z.object({
@@ -1226,6 +1252,71 @@ export const playoutEndpointSchema = z.discriminatedUnion("protocol", [
   srtEndpointSchema,
   rtmpEndpointSchema,
 ]);
+
+/**
+ * Настройки службы MPEG-TS выбранного выхода.
+ *
+ * Ветвление «udp — свои, остальное — умолчания» стояло в дюжине мест, и с
+ * появлением второго MPEG-TS транспорта каждое из них стало ошибкой по
+ * отдельности. FLV полей PMT не имеет вовсе: для RTMP помощник отдаёт
+ * умолчания, и дальше муксера они не уходят.
+ */
+export function endpointMpegTsSettings(endpoint: PlayoutEndpoint): MpegTsOutputSettings {
+  return endpoint.protocol === "rtmp" ? defaultMpegTsOutputSettings : endpoint.mpegTs;
+}
+
+/**
+ * Сколько выходов одной программы FluxIO ведёт одновременно.
+ *
+ * Потолок не технический, а станционный: каждый выход сверх первого — это либо
+ * почти бесплатная транспортная копия, либо целая ступень кодирования, и
+ * четвёртая колонка в интерфейсе перестала бы помещаться рядом с монитором.
+ */
+export const maximumPlayoutStreams = 3;
+
+/**
+ * Один выход программы.
+ *
+ * Программа в FluxIO одна: одно расписание, одна графика, один мультиплекс.
+ * Выходов у неё может быть несколько — головная станция, резерв и площадка, —
+ * и каждый запускается и останавливается сам по себе.
+ *
+ * `transcode: null` значит «тот же поток, другой адрес»: выход берёт готовый
+ * мультиплекс программы и только отдаёт его. Это стоит долей процента ядра.
+ * Своя ступень кодирования — это ещё один кодировщик на машине, и оператор
+ * обязан видеть её цену в интерфейсе, а не узнавать о ней по срывам эфира.
+ */
+export const playoutStreamSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,15}$/),
+  name: z.string().trim().min(1).max(32),
+  /** Уходит ли выход в эфир по общей кнопке. Отдельный пуск это не ограничивает. */
+  enabled: z.boolean().default(true),
+  endpoint: playoutEndpointSchema,
+  transcode: z.object({
+    video: videoEncodingSchema,
+    audio: audioEncodingSchema,
+  }).nullable().default(null),
+});
+
+export type PlayoutStream = z.infer<typeof playoutStreamSchema>;
+
+/**
+ * Выходы сессии по запросу.
+ *
+ * Пустой список — сессия прежнего вида: один выход, описанный `endpoint`.
+ * Так открываются сохранённые профили и снимки сессий, собранные до появления
+ * нескольких выходов, и так же приходит запрос от службы предыдущей версии.
+ */
+export function requestPlayoutStreams(request: StartPlayoutRequest): PlayoutStream[] {
+  if (request.streams.length > 0) return request.streams;
+  return [{
+    id: "program",
+    name: "Program",
+    enabled: true,
+    endpoint: request.endpoint,
+    transcode: null,
+  }];
+}
 
 export const scte35PlanningSchema = z.object({
   enabled: z.boolean().default(false),
@@ -1279,7 +1370,14 @@ export const startPlayoutRequestSchema = z.object({
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
   logo: logoOverlaySchema.nullable().default(null),
+  /**
+   * Первый выход. Остаётся здесь ради совместимости: профили, снимки сессий
+   * и служба предыдущей версии знают только его, и терять из-за перехода на
+   * несколько выходов настроенную станцию нельзя.
+   */
   endpoint: playoutEndpointSchema,
+  /** Все выходы программы. Пустой список читается как один выход `endpoint`. */
+  streams: z.array(playoutStreamSchema).max(maximumPlayoutStreams).default([]),
   subtitleOutput: subtitleOutputSchema.default(defaultSubtitleOutput),
   audioProgram: audioProgramSchema.optional(),
   repeatPlaylist: z.boolean().default(false),
@@ -1296,7 +1394,33 @@ export const startPlayoutRequestSchema = z.object({
     loopEventStrategy: "increment",
   }),
 }).superRefine((request, context) => {
-  if (request.subtitleOutput.mode === "dvb" && request.endpoint.protocol === "rtmp") {
+  const ids = new Set<string>();
+  const udpTargets = new Set<string>();
+  request.streams.forEach((stream, index) => {
+    if (ids.has(stream.id)) {
+      context.addIssue({
+        code: "custom",
+        message: `Output ID ${stream.id} is duplicated`,
+        path: ["streams", index, "id"],
+      });
+    }
+    ids.add(stream.id);
+    if (stream.endpoint.protocol === "udp") {
+      const target = `${stream.endpoint.host.toLowerCase()}:${stream.endpoint.port}`;
+      if (udpTargets.has(target)) {
+        context.addIssue({
+          code: "custom",
+          message: `UDP target ${target} is duplicated; two programmes would be mixed at the receiver`,
+          path: ["streams", index, "endpoint", "port"],
+        });
+      }
+      udpTargets.add(target);
+    }
+  });
+  const featureEndpoint = request.streams.find(
+    (stream) => stream.endpoint.protocol !== "rtmp",
+  )?.endpoint ?? request.endpoint;
+  if (request.subtitleOutput.mode === "dvb" && featureEndpoint.protocol === "rtmp") {
     context.addIssue({
       code: "custom",
       message: "DVB subtitles require an MPEG-TS UDP or SRT output",
@@ -1305,9 +1429,7 @@ export const startPlayoutRequestSchema = z.object({
   }
 
   if (request.subtitleOutput.mode !== "dvb") return;
-  const mpegTs = request.endpoint.protocol === "udp"
-    ? request.endpoint.mpegTs
-    : defaultMpegTsOutputSettings;
+  const mpegTs = endpointMpegTsSettings(featureEndpoint);
   const reservedPids = [mpegTs.videoPid, mpegTs.audioPid];
   if (request.scte35.enabled) reservedPids.push(request.scte35.pid);
   if (reservedPids.includes(request.subtitleOutput.pid)) {
@@ -1320,7 +1442,10 @@ export const startPlayoutRequestSchema = z.object({
 }).superRefine((request, context) => {
   if (!request.audioProgram?.enabled) return;
 
-  if (request.endpoint.protocol === "rtmp") {
+  const featureEndpoint = request.streams.find(
+    (stream) => stream.endpoint.protocol !== "rtmp",
+  )?.endpoint ?? request.endpoint;
+  if (featureEndpoint.protocol === "rtmp") {
     context.addIssue({
       code: "custom",
       message: "Multiple audio tracks require an MPEG-TS UDP or SRT output; FLV carries one track",
@@ -1329,9 +1454,7 @@ export const startPlayoutRequestSchema = z.object({
     return;
   }
 
-  const mpegTs = request.endpoint.protocol === "udp"
-    ? request.endpoint.mpegTs
-    : defaultMpegTsOutputSettings;
+  const mpegTs = endpointMpegTsSettings(featureEndpoint);
   const reserved = new Map<number, string>([
     [mpegTs.videoPid, "video"],
     [mpegTs.audioPid, "primary audio"],
@@ -1358,6 +1481,47 @@ export const startPlayoutRequestSchema = z.object({
     reserved.set(track.pid, `audio ${track.label}`);
   });
 });
+
+/**
+ * Снимает с запроса то, чего выбранный транспорт не несёт.
+ *
+ * Молчаливый отказ здесь хуже отказа на старте: планировщик SCTE-35 при RTMP
+ * спокойно раскладывал метки, FLV их не переносит, и снаружи это выглядело как
+ * «метки не дошли до головной станции». Но и вставать из-за забытого
+ * переключателя канал не имеет права — поэтому настройка гасится, а причина
+ * уходит в журнал эфира и в статус.
+ */
+export function withSupportedOutputFeatures(request: StartPlayoutRequest): {
+  request: StartPlayoutRequest;
+  dropped: OutputProtocolFeature[];
+} {
+  const featureEndpoint = request.streams.find(
+    (stream) => stream.endpoint.protocol !== "rtmp",
+  )?.endpoint ?? request.endpoint;
+  const featureProtocol = featureEndpoint.protocol;
+  const capabilities = outputProtocolCapabilities(featureProtocol);
+  const dropped: OutputProtocolFeature[] = [];
+  // В смешанной сессии MPEG-TS является программным мультиплексом, даже если
+  // первым в форме стоит RTMP: иначе глобальные PID/SCTE/DVB брались бы у FLV.
+  let next = featureEndpoint === request.endpoint
+    ? request
+    : { ...request, endpoint: featureEndpoint };
+
+  if (request.scte35.enabled && !capabilities.scte35) {
+    dropped.push("scte35");
+    next = { ...next, scte35: { ...next.scte35, enabled: false } };
+  }
+  if (request.subtitleOutput.mode === "dvb" && !capabilities.dvbSubtitles) {
+    dropped.push("dvbSubtitles");
+    next = { ...next, subtitleOutput: { ...next.subtitleOutput, mode: "burn-in" } };
+  }
+  if (request.audioProgram?.enabled && !capabilities.multipleAudioTracks) {
+    dropped.push("multipleAudioTracks");
+    next = { ...next, audioProgram: { ...request.audioProgram, enabled: false } };
+  }
+
+  return { request: next, dropped };
+}
 
 export const startCompositeClipPreviewRequestSchema = z.object({
   request: startPlayoutRequestSchema,
@@ -1411,6 +1575,49 @@ export const dvbSubtitleStatusSchema = z.object({
   videoPtsOriginMs: z.number().int().nonnegative().nullable().default(null),
   clockErrorMs: z.number().int().nullable().default(null),
   clockSynchronized: z.boolean().nullable().default(null),
+  error: z.string().nullable().default(null),
+});
+
+/**
+ * Что стоит машине один процесс эфирной цепочки или их группа.
+ *
+ * `cpuPercent` — доля **одного** ядра, как в top: кодировщик 1080i50 берёт
+ * 300–500 % и на восьмиядерной машине это половина запаса, а на четырёхъядерной
+ * уже потолок. Приводить к проценту машины здесь нельзя: число ядер знает
+ * интерфейс, а сравнивать выходы между собой оператору надо по одной и той же
+ * мерке.
+ */
+export const playoutResourceUsageSchema = z.object({
+  cpuPercent: z.number().nonnegative().default(0),
+  memoryMb: z.number().nonnegative().default(0),
+  processes: z.number().int().nonnegative().default(0),
+});
+
+export const emptyResourceUsage = { cpuPercent: 0, memoryMb: 0, processes: 0 };
+
+export const playoutStreamStateSchema = z.enum([
+  "idle",
+  "starting",
+  "running",
+  "stopping",
+  "failed",
+]);
+
+/**
+ * Состояние одного выхода.
+ *
+ * `mode` объясняет цену выхода, и это главное, ради чего он здесь: `relay`
+ * берёт готовый мультиплекс программы и только отдаёт его — доли процента ядра;
+ * `transcode` — это ещё одна ступень кодирования на той же машине.
+ */
+export const playoutStreamStatusSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  state: playoutStreamStateSchema.default("idle"),
+  mode: z.enum(["program", "relay", "transcode"]).default("relay"),
+  endpointLabel: z.string().nullable().default(null),
+  startedAt: z.iso.datetime().nullable().default(null),
+  resources: playoutResourceUsageSchema.default(emptyResourceUsage),
   error: z.string().nullable().default(null),
 });
 
@@ -1469,6 +1676,14 @@ export const playoutStatusSchema = z.object({
     clockSynchronized: null,
     error: null,
   }),
+  /**
+   * Выходы сессии. Пустой список — сессия прежнего вида с одним выходом:
+   * ломать на этом интерфейс нельзя, поэтому список именно пустой, а не
+   * собранный из `endpointLabel`.
+   */
+  streams: z.array(playoutStreamStatusSchema).max(maximumPlayoutStreams).default([]),
+  /** Цена общей части: рендерер ролика, графика, кодировщик программы, hub. */
+  programResources: playoutResourceUsageSchema.default(emptyResourceUsage),
   error: z.string().nullable(),
   logs: z.array(z.string()),
 });
@@ -1577,6 +1792,7 @@ const workspaceSettingValueSchema = z.union([
   z.string(),
   z.number(),
   z.boolean(),
+  z.array(playoutStreamSchema).max(2),
 ]);
 
 export const workspaceSessionSnapshotSchema = z.object({
@@ -1714,6 +1930,9 @@ export type SubtitleOutput = z.infer<typeof subtitleOutputSchema>;
 export type DvbSubtitleStatus = z.infer<typeof dvbSubtitleStatusSchema>;
 export type StartPlayoutRequest = z.infer<typeof startPlayoutRequestSchema>;
 export type PlayoutStatus = z.infer<typeof playoutStatusSchema>;
+export type PlayoutStreamStatus = z.infer<typeof playoutStreamStatusSchema>;
+export type PlayoutStreamState = z.infer<typeof playoutStreamStateSchema>;
+export type PlayoutResourceUsage = z.infer<typeof playoutResourceUsageSchema>;
 export type WorkspaceAudioTrackLibrary = z.infer<typeof workspaceAudioTrackLibrarySchema>;
 export type WorkspaceSessionAsset = z.infer<typeof workspaceSessionAssetSchema>;
 export type WorkspaceSessionSnapshot = z.infer<typeof workspaceSessionSnapshotSchema>;

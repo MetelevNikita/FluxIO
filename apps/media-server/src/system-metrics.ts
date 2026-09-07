@@ -16,6 +16,10 @@ export class SystemMetricsSampler {
 
     return {
       cpuPercent,
+      // Проценты ядра, которые служба считает по эфирным процессам, не с чем
+      // сравнить без числа ядер: 400 % — это половина запаса на восьми ядрах и
+      // потолок на четырёх.
+      cpuCores: Math.max(1, cpus().length),
       networkMbps: Number.isFinite(networkMbps) ? Math.max(0, networkMbps) : 0,
       collectedAt: new Date().toISOString(),
     };

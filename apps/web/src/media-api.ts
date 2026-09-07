@@ -271,6 +271,18 @@ export async function stopPlayout(): Promise<PlayoutStatus> {
   );
 }
 
+export async function startPlayoutStream(id: string): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(
+    await request(`/api/playout/streams/${encodeURIComponent(id)}/start`, { method: "POST" }),
+  );
+}
+
+export async function stopPlayoutStream(id: string): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(
+    await request(`/api/playout/streams/${encodeURIComponent(id)}/stop`, { method: "POST" }),
+  );
+}
+
 export async function updateNextPlayoutPlaylist(
   nextPlaylist: StartPlayoutRequest["nextPlaylist"],
 ): Promise<PlayoutStatus> {

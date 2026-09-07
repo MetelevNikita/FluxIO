@@ -33,12 +33,23 @@ export function AppHeader({
     { id: "broadcast", label: tr("Настройки эфира", "Broadcast Settings"), icon: SlidersHorizontal },
   ] as const;
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()));
+  const [programmes, setProgrammes] = useState(() => currentProgramme());
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       setLocalTime(formatLocalTime(new Date()));
     }, 1_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const bridge = window.gruberDesktop;
+    if (!bridge) return;
+    let active = true;
+    void bridge.getInstancesOverview().then((overview) => {
+      if (active) setProgrammes(overview.instances);
+    }).catch(() => undefined);
+    return () => { active = false; };
   }, []);
 
   const badgeState = connection.kind === "ready"
@@ -64,12 +75,44 @@ export function AppHeader({
     <header className="console-header">
       <div className="brand-area">
         <FluxIoLogo />
-        <span
-          className={`live-console-badge ${badgeState}`}
-          title={connectionTitle}
-        >
-          {badgeLabel}
-        </span>
+        {window.gruberDesktop ? (
+          <select
+            aria-label={tr("Выбор программы", "Select programme")}
+            className={`programme-selector ${badgeState}`}
+            onChange={(event) => {
+              const id = event.currentTarget.value;
+              if (id === "__overview") void window.gruberDesktop?.showInstances();
+              else if (id !== window.gruberDesktop?.instanceId) {
+                void window.gruberDesktop?.openInstance(id);
+              }
+            }}
+            title={connectionTitle}
+            value={window.gruberDesktop.instanceId}
+          >
+            {programmes.map((programme) => (
+              <option
+                disabled={!programme.enabled || !programme.online}
+                key={programme.id}
+                value={programme.id}
+              >
+                {programme.name}{!programme.enabled
+                  ? ` — ${tr("отключена", "disabled")}`
+                  : !programme.online
+                    ? ` — ${tr("нет связи", "offline")}`
+                    : ""}
+              </option>
+            ))}
+            <option disabled>──────────</option>
+            <option value="__overview">{tr("Все программы…", "All programmes…")}</option>
+          </select>
+        ) : (
+          <span
+            className={`live-console-badge ${badgeState}`}
+            title={connectionTitle}
+          >
+            {badgeLabel}
+          </span>
+        )}
       </div>
 
       <nav className="console-navigation" aria-label={tr("Основная навигация", "Primary navigation")}>
@@ -103,6 +146,16 @@ export function AppHeader({
       <div className="header-language"><LanguageSelector /></div>
     </header>
   );
+}
+
+function currentProgramme() {
+  const bridge = window.gruberDesktop;
+  return bridge ? [{
+    id: bridge.instanceId,
+    name: bridge.instanceName,
+    enabled: true,
+    online: true,
+  }] : [];
 }
 
 function Metric({

@@ -8,6 +8,16 @@ const TELEGRAM_PROFILE_URL = "https://t.me/MetelevNikita";
 const loadProductionBuild =
   app.isPackaged || process.argv.includes("--gruber-production");
 
+export interface FluxioInstance {
+  id: string;
+  name: string;
+  apiUrl: string;
+  enabled: boolean;
+}
+
+let launcherWindow: BrowserWindow | null = null;
+const programWindows = new Map<string, BrowserWindow>();
+
 export function desktopIconPath(): string {
   const iconName = process.platform === "darwin" ? "icon-mac.png" : "icon.png";
 
@@ -16,38 +26,95 @@ export function desktopIconPath(): string {
     : path.resolve(__dirname, `../build/${iconName}`);
 }
 
-export function openMainWindow(showStartupSplash = false): void {
+export function openLauncherWindow(showStartupSplash = false): BrowserWindow {
+  if (launcherWindow && !launcherWindow.isDestroyed()) {
+    launcherWindow.show();
+    launcherWindow.focus();
+    return launcherWindow;
+  }
   const splashWindow = showStartupSplash ? createSplashWindow() : null;
-  const window = createMainWindow();
+  const window = createLauncherWindow();
+  launcherWindow = window;
   const startup = new StartupReveal(window, splashWindow);
 
   window.once("ready-to-show", () => startup.markMainWindowReady());
   window.webContents.once("did-fail-load", () => startup.markMainWindowReady());
-  window.once("closed", () => startup.dispose());
+  window.once("closed", () => {
+    startup.dispose();
+    launcherWindow = null;
+  });
 
   if (splashWindow) {
     showSplash(splashWindow, startup);
   }
 
+  void window.loadFile(path.join(__dirname, "launcher.html"));
+  return window;
+}
+
+export function openProgramWindow(instance: FluxioInstance): BrowserWindow {
+  const existing = programWindows.get(instance.id);
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    existing.focus();
+    return existing;
+  }
+
+  const window = createMainWindow(instance);
+  programWindows.set(instance.id, window);
+  window.once("closed", () => programWindows.delete(instance.id));
+  window.once("ready-to-show", () => {
+    window.show();
+    window.focus();
+  });
+  window.on("page-title-updated", (event) => {
+    event.preventDefault();
+    window.setTitle(`FluxIO — ${instance.name}`);
+  });
   loadApplicationContent(window);
+  return window;
 }
 
 //
 // Окна
 //
 
-function createMainWindow(): BrowserWindow {
+function createLauncherWindow(): BrowserWindow {
+  return new BrowserWindow({
+    width: 1180,
+    height: 760,
+    minWidth: 760,
+    minHeight: 560,
+    show: false,
+    title: "FluxIO — программы",
+    backgroundColor: "#080d12",
+    icon: desktopIconPath(),
+    webPreferences: {
+      preload: path.join(__dirname, "launcher-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+}
+
+function createMainWindow(instance: FluxioInstance): BrowserWindow {
   return new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 960,
     minHeight: 640,
     show: false,
-    title: "FluxIO",
+    title: `FluxIO — ${instance.name}`,
     backgroundColor: "#0a1015",
     icon: desktopIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
+      additionalArguments: [
+        `--fluxio-api=${instance.apiUrl}`,
+        `--fluxio-instance-id=${instance.id}`,
+        `--fluxio-instance-name=${instance.name}`,
+      ],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

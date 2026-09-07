@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   bundleManifestFileName,
   planBundleUpdate,
+  stationApplicationFile,
 } from "./bundle-manifest.mjs";
 
 /* -------------------------------------------------------------------------- *
@@ -19,13 +20,17 @@ import {
  *
  * - `data/` — кластер PostgreSQL и реестр плагинов GStreamer. Компонентом он не
  *   является и в манифесте не описан, поэтому под замену не попадает вовсе;
- * - `app/.env` — вся настройка станции. Он лежит **внутри** компонента `app`,
- *   который заменяется целиком, поэтому его приходится уносить и возвращать
- *   руками.
+ * - `app/.env*` и `app/instances.json` — настройки программ. Они лежат
+ *   **внутри** компонента `app`, который заменяется целиком, поэтому их
+ *   приходится уносить и возвращать руками.
  * ------------------------------------------------------------------------- */
 
-/** Файлы установки, которые переживают замену компонента `app`. */
-export const preservedApplicationFiles = [".env", ".env.backup", ".env.backup.1"];
+/*
+ * Какие именно файлы переживают замену, решает `stationApplicationFile` из
+ * `bundle-manifest.mjs` — тот же предикат, которым проверка целостности их
+ * пропускает. Отдельный список здесь уже расходился с ним и стоил комплекту
+ * ложного «повреждён».
+ */
 
 /**
  * Почему обновить эту установку нельзя, или `null`.
@@ -96,9 +101,11 @@ async function stashApplicationFiles(installationRoot) {
   const stash = path.join(installationRoot, ".fluxio-update-stash");
   await rm(stash, { force: true, recursive: true });
   await mkdir(stash, { recursive: true });
+  const applicationDirectory = path.join(installationRoot, "app");
   const saved = [];
-  for (const name of preservedApplicationFiles) {
-    const source = path.join(installationRoot, "app", name);
+  for (const name of await readdir(applicationDirectory)) {
+    if (!stationApplicationFile(name)) continue;
+    const source = path.join(applicationDirectory, name);
     if (!existsSync(source)) continue;
     await rename(source, path.join(stash, name));
     saved.push(name);

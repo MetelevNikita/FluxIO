@@ -66,6 +66,19 @@ if [ ! -x "$NODE" ]; then
   echo "В комплекте нет runtime/node: файл повреждён при копировании." >&2
   exit 1
 fi
+if ! NODE_CHECK=$("$NODE" --version 2>&1); then
+  echo "Ошибка установки: встроенный Node.js не запускается." >&2
+  case "$NODE_CHECK" in
+    *"Library not loaded"*|*"error while loading shared libraries"*|*"libnode."*)
+      echo "Причина: комплект собран с Node.js, зависящим от библиотек машины сборки." >&2
+      echo "Решение: пересоберите комплект официальным Node.js из nvm, не Homebrew Node." >&2 ;;
+    *"bad CPU type"*|*"Exec format error"*)
+      echo "Причина: комплект собран для другой архитектуры процессора." >&2 ;;
+    *) echo "Причина: runtime/node повреждён или несовместим с этой системой." >&2 ;;
+  esac
+  echo "Техническая ошибка: $NODE_CHECK" >&2
+  exit 1
+fi
 
 echo "FluxIO ${version}: запуск мастера установки"
 exec "$NODE" "$DESTINATION/app/setup.mjs" --bundle="$DESTINATION"
@@ -103,6 +116,19 @@ set -eu
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 if [ ! -x "$ROOT/runtime/node" ]; then
   echo "В комплекте нет runtime/node: архив распакован не полностью." >&2
+  exit 1
+fi
+if ! NODE_CHECK=$("$ROOT/runtime/node" --version 2>&1); then
+  echo "Ошибка установки: встроенный Node.js не запускается." >&2
+  case "$NODE_CHECK" in
+    *"Library not loaded"*|*"error while loading shared libraries"*|*"libnode."*)
+      echo "Причина: комплект собран с Node.js, зависящим от библиотек машины сборки." >&2
+      echo "Решение: пересоберите комплект официальным Node.js из nvm, не Homebrew Node." >&2 ;;
+    *"bad CPU type"*|*"Exec format error"*)
+      echo "Причина: комплект собран для другой архитектуры процессора." >&2 ;;
+    *) echo "Причина: runtime/node повреждён или несовместим с этой системой." >&2 ;;
+  esac
+  echo "Техническая ошибка: $NODE_CHECK" >&2
   exit 1
 fi
 if [ "\${1:-}" = "--update" ]; then

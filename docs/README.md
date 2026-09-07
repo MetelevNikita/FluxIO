@@ -18,11 +18,13 @@
 
 1. [Установка и конфигурация](installation.md) — зависимости, setup, `.env` и
    platform services.
-2. [Эфир, кодирование и выходы](playout.md) — UDP/SRT/RTMP, PID, PCR, SCTE-35,
+2. [Несколько программ на одном сервере](multiple-programs.md) — отдельные БД,
+   службы, окна, команды и общий монитор нагрузки.
+3. [Эфир, кодирование и выходы](playout.md) — UDP/SRT/RTMP, PID, PCR, SCTE-35,
    DVB subtitles и hardware encoders.
-3. [Эксплуатация и восстановление](operations-and-recovery.md) — журналы,
+4. [Эксплуатация и восстановление](operations-and-recovery.md) — журналы,
    backup, recovery, обновление и pre-air checklist.
-4. [Форматы данных](data-formats.md) — переносимые и внутренние файлы.
+5. [Форматы данных](data-formats.md) — переносимые и внутренние файлы.
 
 ## Разработчик
 

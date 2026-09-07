@@ -30,15 +30,34 @@ const SELECT_ENCODING_SETTINGS_FILE_CHANNEL: DesktopChannel = "dialog:select-enc
 const SAVE_ENCODING_SETTINGS_FILE_CHANNEL: DesktopChannel = "dialog:save-encoding-settings-file";
 const REVEAL_IN_FOLDER_CHANNEL: DesktopChannel = "shell:reveal-in-folder";
 const SERVICE_HEALTH_CHANNEL: DesktopChannel = "service:get-health";
+const INSTANCES_OVERVIEW_CHANNEL: DesktopChannel = "instances:overview";
+const OPEN_INSTANCE_CHANNEL: DesktopChannel = "instances:open";
+const SHOW_INSTANCES_CHANNEL: DesktopChannel = "instances:show";
+const apiArgument = "--fluxio-api=";
+const instanceIdArgument = "--fluxio-instance-id=";
+const instanceNameArgument = "--fluxio-instance-name=";
+const mediaApiBaseUrl = process.argv.find((value) => value.startsWith(apiArgument))
+  ?.slice(apiArgument.length) ?? process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310";
+const instanceId = process.argv.find((value) => value.startsWith(instanceIdArgument))
+  ?.slice(instanceIdArgument.length) ?? "program-1";
+const instanceName = process.argv.find((value) => value.startsWith(instanceNameArgument))
+  ?.slice(instanceNameArgument.length) ?? "FluxIO";
 
 contextBridge.exposeInMainWorld("gruberDesktop", {
   getServiceHealth: (): Promise<unknown> =>
-    ipcRenderer.invoke(SERVICE_HEALTH_CHANNEL) as Promise<unknown>,
+    ipcRenderer.invoke(SERVICE_HEALTH_CHANNEL, mediaApiBaseUrl) as Promise<unknown>,
   getMediaFilePath: (file: File): string => webUtils.getPathForFile(file),
   revealInFolder: (filePath: string): Promise<boolean> =>
     ipcRenderer.invoke(REVEAL_IN_FOLDER_CHANNEL, filePath) as Promise<boolean>,
-  mediaApiBaseUrl:
-    process.env.GRUBER_MEDIA_API_URL ?? "http://127.0.0.1:4310",
+  mediaApiBaseUrl,
+  instanceId,
+  instanceName,
+  getInstancesOverview: (): Promise<unknown> =>
+    ipcRenderer.invoke(INSTANCES_OVERVIEW_CHANNEL) as Promise<unknown>,
+  openInstance: (id: string): Promise<void> =>
+    ipcRenderer.invoke(OPEN_INSTANCE_CHANNEL, id) as Promise<void>,
+  showInstances: (): Promise<void> =>
+    ipcRenderer.invoke(SHOW_INSTANCES_CHANNEL) as Promise<void>,
   platform: process.platform,
   selectLogoFile: (): Promise<string | null> =>
     ipcRenderer.invoke(SELECT_LOGO_CHANNEL) as Promise<string | null>,
