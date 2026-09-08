@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FluxIO — программы</title>
+    <title>FluxIO — Programs</title>
     <style>
       :root {
         color-scheme: dark;
@@ -97,23 +97,23 @@
     </div>
     <main>
       <header class="page-heading">
-        <div><h1>Программы FluxIO</h1><p>Состояние эфирных служб и общая нагрузка сервера</p></div>
-        <div class="heading-actions"><button id="refresh" type="button">Обновить</button><button id="add-instance" type="button">Добавить программу</button></div>
+        <div><h1>FluxIO Programs</h1><p>Playout service status and total server load</p></div>
+        <div class="heading-actions"><button id="refresh" type="button">Refresh</button><button id="add-instance" type="button">Add program</button></div>
       </header>
-      <section class="totals" aria-label="Общая нагрузка">
-        <div class="total"><span>CPU системы</span><strong id="system-cpu">—</strong></div>
-        <div class="total"><span>CPU эфирных цепочек</span><strong id="fluxio-cpu">—</strong></div>
-        <div class="total"><span>Память эфирных цепочек</span><strong id="fluxio-memory">—</strong></div>
-        <div class="total"><span>Процессы эфира</span><strong id="fluxio-processes">—</strong></div>
+      <section class="totals" aria-label="Total load">
+        <div class="total"><span>System CPU</span><strong id="system-cpu">—</strong></div>
+        <div class="total"><span>Playout CPU</span><strong id="fluxio-cpu">—</strong></div>
+        <div class="total"><span>Playout memory</span><strong id="fluxio-memory">—</strong></div>
+        <div class="total"><span>Playout processes</span><strong id="fluxio-processes">—</strong></div>
       </section>
       <section id="instances" aria-live="polite"></section>
-      <footer><span id="updated-at">Подключение…</span><span>Закрытие окна не останавливает эфир</span></footer>
+      <footer><span id="updated-at">Connecting…</span><span>Closing this window does not stop playout</span></footer>
     </main>
     <dialog id="instance-dialog">
       <form id="instance-form">
-        <h2 id="dialog-title">Новая программа</h2>
-        <label>Название<input id="instance-name" maxlength="80" required autocomplete="off"></label>
-        <div class="dialog-actions"><button id="cancel-instance" type="button">Отмена</button><button id="save-instance" type="submit">Сохранить</button></div>
+        <h2 id="dialog-title">New program</h2>
+        <label>Name<input id="instance-name" maxlength="80" required autocomplete="off"></label>
+        <div class="dialog-actions"><button id="cancel-instance" type="button">Cancel</button><button id="save-instance" type="submit">Save</button></div>
       </form>
     </dialog>
     <script src="./launcher-renderer.js"></script>

@@ -99,24 +99,24 @@ function registerInstanceHandlers(loadConfigured: () => FluxioInstance[]): void 
   ipcMain.handle(ADD_INSTANCE_CHANNEL, (_event, name: unknown) =>
     runSetup(["--add-instance", `--instance-name=${instanceName(name)}`]));
   ipcMain.handle(RENAME_INSTANCE_CHANNEL, (_event, id: unknown, name: unknown) => {
-    if (typeof id !== "string") throw new Error("Некорректный ID программы");
+    if (typeof id !== "string") throw new Error("Invalid program ID");
     return runSetup([`--rename-instance=${id}`, `--instance-name=${instanceName(name)}`]);
   });
   ipcMain.handle(DELETE_INSTANCE_CHANNEL, (_event, id: unknown) => {
-    if (typeof id !== "string") throw new Error("Некорректный ID программы");
+    if (typeof id !== "string") throw new Error("Invalid program ID");
     return runSetup([`--delete-instance=${id}`]);
   });
 }
 
 function instanceName(value: unknown): string {
   const name = typeof value === "string" ? value.trim() : "";
-  if (!name || name.length > 80) throw new Error("Название должно содержать от 1 до 80 символов");
+  if (!name || name.length > 80) throw new Error("Name must contain 1 to 80 characters");
   return name;
 }
 
 async function runSetup(args: string[]): Promise<void> {
   const registryPath = process.env.GRUBER_INSTANCES_FILE;
-  if (!registryPath) throw new Error("Не найден путь к реестру программ");
+  if (!registryPath) throw new Error("Program registry path was not found");
   const root = path.dirname(registryPath);
   const setup = path.join(root, "setup.mjs");
   const bundleRoot = path.dirname(root);
@@ -129,7 +129,7 @@ async function runSetup(args: string[]): Promise<void> {
     child.stdout.on("data", (chunk) => { output += String(chunk); });
     child.stderr.on("data", (chunk) => { output += String(chunk); });
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(output.trim() || `setup завершился с кодом ${code}`)));
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(output.trim() || `Setup exited with code ${code}`)));
   });
 }
 
@@ -166,7 +166,7 @@ async function loadInstanceOverview(instance: FluxioInstance) {
     systemCpuPercent: -1,
     memoryMb: 0,
     processes: 0,
-    error: instance.enabled ? null : "Программа отключена",
+    error: instance.enabled ? null : "Program disabled",
   };
   if (!instance.enabled) return empty;
   try {

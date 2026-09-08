@@ -86,7 +86,7 @@ function createLauncherWindow(): BrowserWindow {
     minWidth: 760,
     minHeight: 560,
     show: false,
-    title: "FluxIO — программы",
+    title: "FluxIO — Programs",
     backgroundColor: "#080d12",
     icon: desktopIconPath(),
     webPreferences: {

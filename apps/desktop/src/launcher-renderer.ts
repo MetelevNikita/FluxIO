@@ -57,7 +57,7 @@ async function refresh(): Promise<void> {
   loading = true;
   try {
     render(await launcherBridge.overview());
-    updatedAt.textContent = `Обновлено ${new Date().toLocaleTimeString("ru-RU")}`;
+    updatedAt.textContent = `Updated ${new Date().toLocaleTimeString("en-US")}`;
   } catch (error) {
     updatedAt.textContent = error instanceof Error ? error.message : String(error);
   } finally {
@@ -69,7 +69,7 @@ function render(overview: Overview): void {
   setText("system-cpu", `${overview.totals.systemCpuPercent.toFixed(1)}%`);
   setText(
     "fluxio-cpu",
-    `${overview.totals.fluxioCpuPercent.toFixed(1)}% ядер · ${overview.totals.fluxioMachinePercent.toFixed(1)}% машины`,
+    `${overview.totals.fluxioCpuPercent.toFixed(1)}% cores · ${overview.totals.fluxioMachinePercent.toFixed(1)}% system`,
   );
   setText("fluxio-memory", formatMemory(overview.totals.memoryMb));
   setText("fluxio-processes", String(overview.totals.processes));
@@ -84,14 +84,14 @@ function emptyState(): HTMLElement {
   const article = document.createElement("article");
   article.className = "instance-card empty-state";
   const title = document.createElement("h2");
-  title.textContent = "Программ пока нет";
+  title.textContent = "No programs yet";
   const hint = document.createElement("p");
   hint.className = "current-item";
   hint.textContent =
-    "Нажмите «Добавить программу», чтобы создать первый эфирный контур: базу, службу и порт API.";
+    "Select Add program to create the first playout chain: database, service, and API port.";
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = "Добавить программу";
+  button.textContent = "Add program";
   button.addEventListener("click", () => openDialog(null));
   article.append(title, hint, button);
   return article;
@@ -111,21 +111,21 @@ function instanceCard(instance: InstanceOverview): HTMLElement {
   title.append(name, address);
   const badge = document.createElement("span");
   badge.className = "state-badge";
-  badge.textContent = instance.enabled ? stateLabel(instance) : "ОТКЛЮЧЕНА";
+  badge.textContent = instance.enabled ? stateLabel(instance) : "DISABLED";
   heading.append(title, badge);
 
   const current = document.createElement("p");
   current.className = "current-item";
-  current.textContent = instance.error ?? instance.currentItemName ?? "Нет активного ролика";
+  current.textContent = instance.error ?? instance.currentItemName ?? "No active clip";
 
   const metrics = document.createElement("dl");
   const metricRows: Array<[string, string]> = [
-    ["CPU цепочки", `${instance.cpuPercent.toFixed(1)}%`],
-    ["Память", formatMemory(instance.memoryMb)],
-    ["Процессы", String(instance.processes)],
+    ["Playout CPU", `${instance.cpuPercent.toFixed(1)}%`],
+    ["Memory", formatMemory(instance.memoryMb)],
+    ["Processes", String(instance.processes)],
     ["FPS", instance.fps > 0 ? instance.fps.toFixed(1) : "—"],
-    ["Скорость", instance.speed > 0 ? `${instance.speed.toFixed(2)}×` : "—"],
-    ["Поток", instance.bitrateKbps > 0 ? `${(instance.bitrateKbps / 1_000).toFixed(2)} Mbps` : "—"],
+    ["Speed", instance.speed > 0 ? `${instance.speed.toFixed(2)}×` : "—"],
+    ["Bitrate", instance.bitrateKbps > 0 ? `${(instance.bitrateKbps / 1_000).toFixed(2)} Mbps` : "—"],
   ];
   for (const [label, value] of metricRows) {
     const dt = document.createElement("dt");
@@ -137,13 +137,13 @@ function instanceCard(instance: InstanceOverview): HTMLElement {
 
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = instance.online ? "Открыть программу" : "Сервис недоступен";
+  button.textContent = instance.online ? "Open program" : "Service unavailable";
   button.disabled = !instance.online || !instance.enabled;
   button.addEventListener("click", () => void launcherBridge.open(instance.id));
   const rename = document.createElement("button");
   rename.type = "button";
   rename.className = "secondary";
-  rename.textContent = "Переименовать";
+  rename.textContent = "Rename";
   rename.addEventListener("click", () => openDialog(instance.id, instance.name));
   const actions = document.createElement("div");
   actions.className = "instance-actions";
@@ -151,10 +151,10 @@ function instanceCard(instance: InstanceOverview): HTMLElement {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "secondary";
-  remove.textContent = "Удалить";
+  remove.textContent = "Delete";
   remove.addEventListener("click", async () => {
-    if (!window.confirm(`Удалить программу «${instance.name}», её службу, базу и настройки? Это действие нельзя отменить.`)) return;
-    updatedAt.textContent = `Удаление ${instance.name}…`;
+    if (!window.confirm(`Delete “${instance.name}”, its service, database, and settings? This cannot be undone.`)) return;
+    updatedAt.textContent = `Deleting ${instance.name}…`;
     try {
       await launcherBridge.delete(instance.id);
       await refresh();
@@ -169,7 +169,7 @@ function instanceCard(instance: InstanceOverview): HTMLElement {
 
 function openDialog(id: string | null, name = ""): void {
   editingId = id;
-  dialogTitle.textContent = id ? "Переименовать программу" : "Новая программа";
+  dialogTitle.textContent = id ? "Rename program" : "New program";
   nameInput.value = name;
   dialog.showModal();
   nameInput.focus();
@@ -184,7 +184,7 @@ form.addEventListener("submit", async (event) => {
   if (!name) return;
   const submit = requiredElement("save-instance") as HTMLButtonElement;
   submit.disabled = true;
-  updatedAt.textContent = editingId ? "Переименование…" : "Создание программы…";
+  updatedAt.textContent = editingId ? "Renaming…" : "Creating program…";
   try {
     if (editingId) await launcherBridge.rename(editingId, name);
     else await launcherBridge.add(name);
@@ -202,9 +202,9 @@ function stateClass(state: string | null): string {
 }
 
 function stateLabel(instance: InstanceOverview): string {
-  if (!instance.online) return "НЕТ СВЯЗИ";
-  if (instance.healthStatus === "degraded") return "ОГРАНИЧЕННО";
-  return stateClass(instance.playoutState) === "running" ? "В ЭФИРЕ" : "ГОТОВА";
+  if (!instance.online) return "OFFLINE";
+  if (instance.healthStatus === "degraded") return "DEGRADED";
+  return stateClass(instance.playoutState) === "running" ? "ON AIR" : "READY";
 }
 
 function setText(id: string, value: string): void {
