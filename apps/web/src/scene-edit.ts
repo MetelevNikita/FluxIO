@@ -164,6 +164,8 @@ export function descendantIds(
 export interface SceneNodeClipboard {
   rootId: SceneNodeId;
   nodes: SceneNode[];
+  /** Нарисованный левый верх для вставки точно под указатель. */
+  origin?: { x: number; y: number };
 }
 
 export function copyNode(template: SceneTemplate, nodeId: SceneNodeId): SceneNodeClipboard | null {
@@ -179,6 +181,7 @@ export function pasteNode(
   template: SceneTemplate,
   clipboard: SceneNodeClipboard,
   copyLabel = "копия",
+  at?: { x: number; y: number },
 ): { template: SceneTemplate; nodeId: SceneNodeId | null } {
   const members = clipboard.nodes;
   if (!members.some((node) => node.id === clipboard.rootId)) {
@@ -208,8 +211,8 @@ export function pasteNode(
     transform: node.id === clipboard.rootId
       ? {
           ...node.transform,
-          x: shiftTrack(node.transform.x, 0.02),
-          y: shiftTrack(node.transform.y, 0.02),
+          x: shiftTrack(node.transform.x, at ? at.x - (clipboard.origin?.x ?? node.transform.x.value) : 0.02),
+          y: shiftTrack(node.transform.y, at ? at.y - (clipboard.origin?.y ?? node.transform.y.value) : 0.02),
         }
       : node.transform,
     // Привязка наружу ведёт на исходный узел: копировать её вслепую значит
@@ -247,6 +250,7 @@ function shiftTrack(track: SceneTrack, delta: number): SceneTrack {
     ...track,
     value: track.value + delta,
     inKeyframes: track.inKeyframes.map((key) => ({ ...key, value: key.value + delta })),
+    holdKeyframes: track.holdKeyframes?.map((key) => ({ ...key, value: key.value + delta })),
     outKeyframes: track.outKeyframes.map((key) => ({ ...key, value: key.value + delta })),
   };
 }
@@ -598,7 +602,7 @@ export function snapKeyframeTime(
 /* -------------------------------- ключи ---------------------------------- */
 
 /** Какой половине режиссёра принадлежит ключ. */
-export type SceneSegmentSide = "in" | "out";
+export type SceneSegmentSide = "in" | "hold" | "out";
 
 /** Положение локального ключа на общей шкале показа. */
 export function absoluteKeyframeTime(
@@ -606,7 +610,21 @@ export function absoluteKeyframeTime(
   localSeconds: number,
   timing: SceneTiming,
 ): number {
-  return side === "in" ? localSeconds : timing.inSeconds + timing.holdSeconds + localSeconds;
+  if (side === "in") return localSeconds;
+  if (side === "hold") return timing.inSeconds + localSeconds;
+  return timing.inSeconds + timing.holdSeconds + localSeconds;
+}
+
+function frames(track: SceneTrack, side: SceneSegmentSide): SceneKeyframe[] {
+  if (side === "in") return track.inKeyframes;
+  if (side === "hold") return track.holdKeyframes ?? [];
+  return track.outKeyframes;
+}
+
+function withFrames(track: SceneTrack, side: SceneSegmentSide, value: SceneKeyframe[]): SceneTrack {
+  if (side === "in") return { ...track, inKeyframes: value };
+  if (side === "hold") return { ...track, holdKeyframes: value };
+  return { ...track, outKeyframes: value };
 }
 
 /**
@@ -629,12 +647,10 @@ export function setKeyframe(
     atSeconds: round(atSeconds), value, easing,
     ...(easing === "bezier" ? { bezier: bezier ?? { x1: 0.4, y1: 0, x2: 0.2, y2: 1 } } : {}),
   };
-  const list = side === "in" ? track.inKeyframes : track.outKeyframes;
+  const list = frames(track, side);
   const without = list.filter((existing) => existing.atSeconds !== key.atSeconds);
   const next = [...without, key].sort((a, b) => a.atSeconds - b.atSeconds);
-  return side === "in"
-    ? { ...track, inKeyframes: next }
-    : { ...track, outKeyframes: next };
+  return withFrames(track, side, next);
 }
 
 /** У анимированной дорожки правка значения становится ключом в текущем времени. */
@@ -655,9 +671,7 @@ export function removeKeyframe(
   atSeconds: number,
 ): SceneTrack {
   const at = round(atSeconds);
-  return side === "in"
-    ? { ...track, inKeyframes: track.inKeyframes.filter((k) => k.atSeconds !== at) }
-    : { ...track, outKeyframes: track.outKeyframes.filter((k) => k.atSeconds !== at) };
+  return withFrames(track, side, frames(track, side).filter((k) => k.atSeconds !== at));
 }
 
 /** Двигает ключ по времени, сохраняя значение. */
@@ -668,7 +682,7 @@ export function moveKeyframe(
   toSeconds: number,
 ): SceneTrack {
   const from = round(fromSeconds);
-  const list = side === "in" ? track.inKeyframes : track.outKeyframes;
+  const list = frames(track, side);
   const key = list.find((existing) => existing.atSeconds === from);
   if (!key) return track;
   return setKeyframe(
@@ -682,7 +696,7 @@ export function moveKeyframes(
   side: SceneSegmentSide,
   moves: readonly { fromSeconds: number; toSeconds: number }[],
 ): SceneTrack {
-  const list = side === "in" ? track.inKeyframes : track.outKeyframes;
+  const list = frames(track, side);
   const selected = moves.map((move) => ({
     key: list.find((key) => key.atSeconds === round(move.fromSeconds)),
     toSeconds: move.toSeconds,
@@ -728,9 +742,7 @@ export function setKeyframeEasing(
           : {}),
       }
     : key);
-  return side === "in"
-    ? { ...track, inKeyframes: track.inKeyframes.map(patch) }
-    : { ...track, outKeyframes: track.outKeyframes.map(patch) };
+  return withFrames(track, side, frames(track, side).map(patch));
 }
 
 /**
@@ -785,7 +797,7 @@ export const bezierPresets: { name: string; curve: SceneBezier }[] = [
 
 /** Есть ли у дорожки хоть какая-то анимация. */
 export function trackIsAnimated(track: SceneTrack): boolean {
-  return track.inKeyframes.length > 0 || track.outKeyframes.length > 0;
+  return track.inKeyframes.length > 0 || (track.holdKeyframes?.length ?? 0) > 0 || track.outKeyframes.length > 0;
 }
 
 /** Готовые входы: то, что дизайнер ставит первым делом. */
@@ -852,7 +864,7 @@ export function applyPreset(
 }
 
 function clear(track: SceneTrack): SceneTrack {
-  return { ...track, inKeyframes: [], outKeyframes: [] };
+  return { ...track, inKeyframes: [], holdKeyframes: [], outKeyframes: [] };
 }
 
 /* -------------------------------- поля ----------------------------------- */

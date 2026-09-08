@@ -77,11 +77,6 @@ export function useSceneHistory(
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
-      // В поле ввода отмена принадлежит самому полю: перехватить её значит
-      // отменить чужую правку вместо своей буквы.
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
       event.preventDefault();
       if (event.shiftKey) redo(); else undo();
     };

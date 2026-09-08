@@ -95,20 +95,26 @@ test("two keyframes at one instant are a jump, not a division by zero", () => {
   assert.ok(Number.isFinite(keyframeValueAt(0, keys, 0.4)));
 });
 
-test("hold keeps whatever the entrance ended on", () => {
+test("hold interpolates its own keys and hands the last value to the exit", () => {
   const track = {
     value: 0,
     inKeyframes: [
       { atSeconds: 0, value: 0, easing: "linear" as const },
       { atSeconds: 0.5, value: 1, easing: "linear" as const },
     ],
-    outKeyframes: [],
+    holdKeyframes: [
+      { atSeconds: 1, value: 1, easing: "linear" as const },
+      { atSeconds: 3, value: 5, easing: "linear" as const },
+    ],
+    outKeyframes: [
+      { atSeconds: 0, value: 5, easing: "linear" as const },
+      { atSeconds: 1, value: 9, easing: "linear" as const },
+    ],
   };
   const timing = sceneTiming({ inSeconds: 1, outSeconds: 1 }, 6);
-  // Растянутое удержание нечем заполнять: иначе длительность показа начала бы
-  // менять картинку, а она не должна.
-  assert.equal(trackValueAt(track, timing, 3), 1);
-  assert.equal(trackValueAt(track, timing, 4.9), 1);
+  assert.equal(trackValueAt(track, timing, 3), 3);
+  assert.equal(trackValueAt(track, timing, 5), 5);
+  assert.equal(trackValueAt(track, timing, 5.5), 7);
 });
 
 test("the exit starts from the value the entrance left behind", () => {

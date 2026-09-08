@@ -131,6 +131,25 @@ test("copying one layer keeps it in its group", () => {
   assert.equal(pasted.template.nodes.find((node) => node.id === pasted.nodeId)?.parentId, grouped.groupId);
 });
 
+test("paste places the copied root at the canvas pointer", () => {
+  let template = blank();
+  const node = createSceneNode(template, "rect"); template = addNode(template, node);
+  const pasted = pasteNode(template, copyNode(template, node.id)!, "copy", { x: 0.72, y: 0.31 });
+  const copy = pasted.template.nodes.find((entry) => entry.id === pasted.nodeId)!;
+  assert.equal(copy.transform.x.value, 0.72);
+  assert.equal(copy.transform.y.value, 0.31);
+});
+
+test("paste uses the drawn group origin instead of its zero-based transform", () => {
+  let template = blank();
+  const node = createSceneNode(template, "rect"); template = addNode(template, node);
+  const clipboard = { ...copyNode(template, node.id)!, origin: { x: 0.2, y: 0.1 } };
+  const pasted = pasteNode(template, clipboard, "copy", { x: 0.6, y: 0.4 });
+  const copy = pasted.template.nodes.find((entry) => entry.id === pasted.nodeId)!;
+  assert.equal(copy.transform.x.value, node.transform.x.value + 0.4);
+  assert.equal(copy.transform.y.value, node.transform.y.value + 0.3);
+});
+
 test("reordering moves a node in the stack without touching the rest", () => {
   let template = blank();
   const a = createSceneNode(template, "rect"); template = addNode(template, a);
@@ -555,7 +574,16 @@ test("a keyframe at the same instant replaces instead of piling up", () => {
 test("an exit key reports its position on the whole-show timeline", () => {
   const timing = sceneTiming({ inSeconds: 1, outSeconds: 2 }, 10);
   assert.equal(absoluteKeyframeTime("in", 0.5, timing), 0.5);
+  assert.equal(absoluteKeyframeTime("hold", 2, timing), 3);
   assert.equal(absoluteKeyframeTime("out", 0.5, timing), 8.5);
+});
+
+test("hold keyframes can be created, moved and removed like entrance keys", () => {
+  let track = setKeyframe(sceneTrack(0), "hold", 2, 4);
+  assert.equal(track.holdKeyframes?.[0]?.value, 4);
+  track = moveKeyframe(track, "hold", 2, 3);
+  assert.equal(track.holdKeyframes?.[0]?.atSeconds, 3);
+  assert.equal(removeKeyframe(track, "hold", 3).holdKeyframes?.length, 0);
 });
 
 test("editing an animated property at another time creates the next keyframe", () => {

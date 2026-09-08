@@ -108,7 +108,13 @@ export interface SceneCanvasProps {
   /** Кадр из плейлиста под сценой; пусто — шахматка. */
   backdropUrl: string | null;
   showSafeAreas: boolean;
+  safeArea: "both" | "action" | "title";
+  snapEnabled: boolean;
   onSelect: (nodeId: string | null, additive?: boolean) => void;
+  onSelectMany: (nodeIds: readonly string[]) => void;
+  onPointerPosition: (point: { x: number; y: number }) => void;
+  zoom: number;
+  onZoom: (zoom: number) => void;
   /** Куда идут правки: `null` — в общую сцену, иначе поправкой раскладки. */
   editTarget: SceneLayoutTarget | null;
   /** Готовый узел: холст считает его от снимка на момент захвата. */
@@ -133,7 +139,8 @@ export interface SceneCanvasProps {
 
 export function SceneCanvas({
   template, format, durationSeconds, timeSeconds, fields,
-  selectedId, selectedIds, lockedIds, backdropUrl, showSafeAreas, editTarget, onSelect, onTransform, onSelectedBox,
+  selectedId, selectedIds, lockedIds, backdropUrl, showSafeAreas, safeArea, snapEnabled, editTarget, onSelect, onSelectMany,
+  onPointerPosition, zoom, onZoom, onTransform, onSelectedBox,
   onEditText,
 }: SceneCanvasProps) {
   const { tr } = useI18n();
@@ -142,11 +149,17 @@ export function SceneCanvas({
   /** Крошечное полотно только для промера строк. */
   const rulerRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const panRef = useRef<{ pointerId: number; x: number; y: number; left: number; top: number } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const hitCycle = useRef<{ x: number; y: number; index: number }>({ x: -1, y: -1, index: -1 });
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [guides, setGuides] = useState<SceneGuide[]>([]);
   const [images, setImages] = useState<Record<string, SceneImageSource>>({});
   /** Узел, который правят прямо в кадре, и черновик его строки. */
   const [editing, setEditing] = useState<{ nodeId: string; value: string } | null>(null);
+  const [marquee, setMarquee] = useState<{
+    pointerId: number; startX: number; startY: number; endX: number; endY: number;
+  } | null>(null);
 
   // Холст занимает всю доступную ширину и держит соотношение сторон кадра.
   // Соотношение берём из формата, а не из окна: у SD пиксель не квадратный,
@@ -159,14 +172,14 @@ export function SceneCanvas({
     const measure = () => {
       const available = element.clientWidth;
       const byHeight = element.clientHeight * displayAspect;
-      const width = Math.max(1, Math.min(available, byHeight));
+      const width = Math.max(1, Math.min(available, byHeight)) * zoom / 100;
       setSize({ width: Math.round(width), height: Math.round(width / displayAspect) });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [displayAspect]);
+  }, [displayAspect, zoom]);
 
   const timing = sceneTiming(template.director, durationSeconds);
 
@@ -250,8 +263,8 @@ export function SceneCanvas({
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     return {
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
     };
   }
 
@@ -261,8 +274,8 @@ export function SceneCanvas({
    * Считается тем же промером, что и рисунок: иначе привязанная плашка
    * захватывается мышью не там, где её видно.
    */
-  function boxOf(node: SceneNode) {
-    const box = resolveNodeBox(node, template, previewFormat, timing, timeSeconds, widths);
+  function boxOf(node: SceneNode, atSeconds = timeSeconds) {
+    const box = resolveNodeBox(node, template, previewFormat, timing, atSeconds, widths);
     // Поворот и масштаб рамка обязана показывать: без них рамка выделения
     // стоит там, где узел был бы без них, а картинка — где она есть. Мышь
     // ловится тем же прямоугольником, что рисует рамку, иначе «элемент не
@@ -272,13 +285,13 @@ export function SceneCanvas({
       pivotY: box.y + box.height * node.transform.anchorY,
       // Общий масштаб у обычного узла уже в размере коробки; у группы её
       // размер даёт содержимое, поэтому масштаб остаётся преобразованием.
-      scaleX: node.kind === "group" ? trackValueAt(node.transform.scale, timing, timeSeconds) : 1,
-      scaleY: (node.kind === "group" ? trackValueAt(node.transform.scale, timing, timeSeconds) : 1) *
-        trackValueAt(node.transform.scaleY, timing, timeSeconds),
-      rotationDegrees: trackValueAt(node.transform.rotationDegrees, timing, timeSeconds),
+      scaleX: node.kind === "group" ? trackValueAt(node.transform.scale, timing, atSeconds) : 1,
+      scaleY: (node.kind === "group" ? trackValueAt(node.transform.scale, timing, atSeconds) : 1) *
+        trackValueAt(node.transform.scaleY, timing, atSeconds),
+      rotationDegrees: trackValueAt(node.transform.rotationDegrees, timing, atSeconds),
     };
     const drawn = transformedBounds(box, [
-      ...ancestorTransforms(node, template, previewFormat, timing, timeSeconds, widths),
+      ...ancestorTransforms(node, template, previewFormat, timing, atSeconds, widths),
       own,
     ]);
     return {
@@ -310,13 +323,27 @@ export function SceneCanvas({
     return null;
   }
 
+  function cycledLeafAt(point: { x: number; y: number }): SceneNode | null {
+    const hits = [...template.nodes].reverse().filter((candidate) => {
+      if (candidate.kind === "group") return false;
+      const box = boxOf(candidate);
+      return !box.hidden && point.x >= box.x && point.x <= box.x + box.width &&
+        point.y >= box.y && point.y <= box.y + box.height;
+    });
+    if (hits.length === 0) return null;
+    const samePoint = Math.abs(hitCycle.current.x - point.x) < 0.01 && Math.abs(hitCycle.current.y - point.y) < 0.01;
+    const index = samePoint ? (hitCycle.current.index + 1) % hits.length : 0;
+    hitCycle.current = { ...point, index };
+    return hits[index] ?? null;
+  }
+
   function handlePointerDown(event: ReactPointerEvent, grip: Grip, target: SceneNode) {
     event.stopPropagation();
     const point = pointToFraction(event);
     // Alt проваливается сквозь группу к её содержимому: без этого выбранная
     // группа закрывает собой детей, и взять один узел мышью нечем.
-    const node = grip === "move" && target.kind === "group" && event.altKey
-      ? leafAt(point) ?? target
+    const node = grip === "move" && event.altKey
+      ? cycledLeafAt(point) ?? leafAt(point) ?? target
       : target;
     onSelect(node.id, event.ctrlKey || event.metaKey);
     if (lockedIds.has(node.id)) return;
@@ -358,6 +385,12 @@ export function SceneCanvas({
   }
 
   function handlePointerMove(event: ReactPointerEvent) {
+    onPointerPosition(pointToFraction(event));
+    if (marquee?.pointerId === event.pointerId) {
+      try { (event.currentTarget as Element).releasePointerCapture(event.pointerId); } catch { /* already released */ }
+      setMarquee({ ...marquee, endX: event.clientX, endY: event.clientY });
+      return;
+    }
     const drag = dragRef.current;
     if (!drag) return;
     const point = pointToFraction(event);
@@ -367,7 +400,7 @@ export function SceneCanvas({
     // кадра меньше пикселя, и прилипание перестало бы срабатывать.
     const thresholdX = snapThreshold(7, size.width);
     const thresholdY = snapThreshold(7, size.height);
-    const all = sceneGuides(template, drag.nodeId);
+    const all = snapEnabled ? sceneGuides(template, drag.nodeId) : [];
     const hit: SceneGuide[] = [];
 
     if (drag.grip === "move") {
@@ -434,6 +467,29 @@ export function SceneCanvas({
   }
 
   function endDrag(event: ReactPointerEvent) {
+    if (marquee?.pointerId === event.pointerId) {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) {
+        const left = (Math.min(marquee.startX, marquee.endX) - rect.left) / rect.width;
+        const right = (Math.max(marquee.startX, marquee.endX) - rect.left) / rect.width;
+        const top = (Math.min(marquee.startY, marquee.endY) - rect.top) / rect.height;
+        const bottom = (Math.max(marquee.startY, marquee.endY) - rect.top) / rect.height;
+        const hits = template.nodes.filter((node) => {
+          const box = boxOf(node);
+          return !box.hidden && box.x <= right && box.x + box.width >= left && box.y <= bottom && box.y + box.height >= top;
+        });
+        const fullGroups = hits.filter((node) => {
+          if (node.kind !== "group") return false;
+          const box = boxOf(node);
+          return box.x >= left && box.x + box.width <= right && box.y >= top && box.y + box.height <= bottom;
+        });
+        const grouped = new Set(fullGroups.flatMap((group) => template.nodes
+          .filter((node) => node.parentId === group.id).map((node) => node.id)));
+        onSelectMany(hits.filter((node) => !grouped.has(node.id) && (node.kind !== "group" || fullGroups.includes(node))).map((node) => node.id));
+      }
+      setMarquee(null);
+      return;
+    }
     if (!dragRef.current) return;
     try { (event.target as Element).releasePointerCapture(dragRef.current.pointerId); } catch { /* уже отпущен */ }
     dragRef.current = null;
@@ -446,6 +502,17 @@ export function SceneCanvas({
   const editingBox = editingNode ? boxOf(editingNode) : null;
 
   const selectedBox = selected ? boxOf(selected) : null;
+  const motionPoints = selected ? [...new Set([
+    ...selected.transform.x.inKeyframes.map((key) => key.atSeconds),
+    ...selected.transform.y.inKeyframes.map((key) => key.atSeconds),
+    ...(selected.transform.x.holdKeyframes ?? []).map((key) => timing.inSeconds + key.atSeconds),
+    ...(selected.transform.y.holdKeyframes ?? []).map((key) => timing.inSeconds + key.atSeconds),
+    ...selected.transform.x.outKeyframes.map((key) => timing.inSeconds + timing.holdSeconds + key.atSeconds),
+    ...selected.transform.y.outKeyframes.map((key) => timing.inSeconds + timing.holdSeconds + key.atSeconds),
+  ])].sort((a, b) => a - b).map((at) => {
+    const box = boxOf(selected, at);
+    return `${box.x + box.width / 2},${box.y + box.height / 2}`;
+  }) : [];
   const reportedBox = selectedBox
     ? { x: selectedBox.x, y: selectedBox.y, width: selectedBox.width, height: selectedBox.height }
     : null;
@@ -458,11 +525,46 @@ export function SceneCanvas({
   const pct = (value: number) => `${value * 100}%`;
 
   return (
-    <div className="scene-canvas-box" ref={boxRef}>
+    <div
+      className={`scene-canvas-box ${zoom > 100 ? "zoomed" : ""} ${panning ? "panning" : ""}`}
+      ref={boxRef}
+      onPointerDown={(event) => {
+        if ((event.button !== 1 && !(event.button === 0 && zoom > 100)) || !boxRef.current) return;
+        event.preventDefault();
+        panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+          left: boxRef.current.scrollLeft, top: boxRef.current.scrollTop };
+        setPanning(true);
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const pan = panRef.current;
+        if (!pan || pan.pointerId !== event.pointerId || !boxRef.current) return;
+        boxRef.current.scrollLeft = pan.left - (event.clientX - pan.x);
+        boxRef.current.scrollTop = pan.top - (event.clientY - pan.y);
+      }}
+      onPointerUp={(event) => {
+        if (panRef.current?.pointerId !== event.pointerId) return;
+        panRef.current = null; setPanning(false);
+      }}
+      onPointerCancel={() => { panRef.current = null; setPanning(false); }}
+      onWheel={(event) => {
+      event.preventDefault();
+      onZoom(Math.min(400, Math.max(25, zoom + (event.deltaY < 0 ? 25 : -25))));
+    }}>
       <div
         className="scene-canvas-stage"
         style={{ width: size.width, height: size.height }}
-        onPointerDown={() => onSelect(null)}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          // При увеличении пустое место становится «ладонью»: слой по-прежнему
+          // тащится за себя, а фон двигает рабочую область, как в After Effects.
+          if (zoom > 100) return;
+          const point = pointToFraction(event);
+          onPointerPosition(point);
+          onSelect(null);
+          setMarquee({ pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, endX: event.clientX, endY: event.clientY });
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
+        }}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
@@ -473,19 +575,35 @@ export function SceneCanvas({
         <canvas className="scene-canvas-paint" ref={canvasRef} />
 
         <div className="scene-canvas-overlay">
+          {marquee ? (() => {
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return null;
+            return <i className="scene-canvas-marquee" style={{
+              left: Math.min(marquee.startX, marquee.endX) - rect.left,
+              top: Math.min(marquee.startY, marquee.endY) - rect.top,
+              width: Math.abs(marquee.endX - marquee.startX),
+              height: Math.abs(marquee.endY - marquee.startY),
+            }} />;
+          })() : null}
           {showSafeAreas ? (
             <>
-              <div
+              {safeArea !== "title" ? <div
                 className="scene-safe scene-safe-action"
                 style={{ inset: `${actionSafeInset * 100}%` }}
                 data-label={tr("безопасная зона действия", "action safe")}
-              />
-              <div
+              /> : null}
+              {safeArea !== "action" ? <div
                 className="scene-safe scene-safe-title"
                 style={{ inset: `${titleSafeInset * 100}%` }}
                 data-label={tr("безопасная зона титров", "title safe")}
-              />
+              /> : null}
             </>
+          ) : null}
+
+          {motionPoints.length > 1 ? (
+            <svg className="scene-motion-path" preserveAspectRatio="none" viewBox="0 0 1 1">
+              <polyline points={motionPoints.join(" ")} />
+            </svg>
           ) : null}
 
           {/* Узлы: прозрачные прямоугольники, которые ловят мышь. Порядок тот
@@ -521,8 +639,8 @@ export function SceneCanvas({
                 }}
                 title={group
                   ? tr(
-                    `${node.name} — тащите за любое место группы, Alt выбирает узел внутри`,
-                    `${node.name} — drag anywhere inside the group, Alt picks a node inside`,
+                    `${node.name} — тащите за любое место группы, Alt-щелчок перебирает слои под курсором`,
+                    `${node.name} — drag anywhere inside the group, Alt-click cycles layers under the pointer`,
                   )
                   : node.name}
               />

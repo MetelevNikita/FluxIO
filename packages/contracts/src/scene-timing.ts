@@ -177,27 +177,23 @@ export function keyframeValueAt(
 /**
  * Значение свойства в момент показа.
  *
- * На удержании дорожки молчат: держится то, чем закончился вход. Иначе
- * растянутое удержание пришлось бы чем-то заполнять, и длительность показа
- * начала бы менять картинку.
+ * Все три отрезка интерполируются одинаково. Старые сцены без ключей HOLD
+ * по-прежнему держат последнее значение входа.
  */
 export function trackValueAt(
   track: SceneTrack,
   timing: SceneTiming,
   timeSeconds: number,
 ): number {
-  const { segment, localSeconds } = sceneSegmentAt(timing, timeSeconds);
-  if (segment === "in") return keyframeValueAt(track.value, track.inKeyframes, localSeconds);
-  if (segment === "out") {
-    return keyframeValueAt(endOfIn(track), track.outKeyframes, localSeconds);
-  }
-  return endOfIn(track);
-}
-
-/** Чем закончился вход — оно же значение на удержании. */
-function endOfIn(track: SceneTrack): number {
-  const last = track.inKeyframes[track.inKeyframes.length - 1];
-  return last ? last.value : track.value;
+  const keyframes = [
+    ...track.inKeyframes,
+    ...(track.holdKeyframes ?? []).map((key) => ({ ...key, atSeconds: timing.inSeconds + key.atSeconds })),
+    ...track.outKeyframes.map((key) => ({
+      ...key,
+      atSeconds: timing.inSeconds + timing.holdSeconds + key.atSeconds,
+    })),
+  ];
+  return keyframeValueAt(track.value, keyframes, timeSeconds);
 }
 
 /* ------------------------------ раскладка -------------------------------- */

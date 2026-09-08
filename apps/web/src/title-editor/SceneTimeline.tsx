@@ -61,7 +61,7 @@ interface SceneTimelineProps {
   onMoveKeyframes: (moves: readonly (Omit<SelectedKey, "atSeconds"> & {
     fromSeconds: number; toSeconds: number;
   })[]) => void;
-  onRemoveKeyframe: (nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) => void;
+  onRemoveKeyframes: (keys: readonly SelectedKey[]) => void;
   /** Выбор слоя прямо с дорожки: список слоёв и время — одно и то же дерево. */
   onSelectNode: (nodeId: string) => void;
   onKeyframeEasing: (
@@ -72,7 +72,7 @@ interface SceneTimelineProps {
 
 export function SceneTimeline({
   template, node, durationSeconds, frameRate, timeSeconds, playing,
-  onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframes, onRemoveKeyframe, onKeyframeEasing,
+  onTime, onTogglePlay, onDirector, onDuration, onMoveKeyframes, onRemoveKeyframes, onKeyframeEasing,
   onSelectNode,
 }: SceneTimelineProps) {
   const { tr } = useI18n();
@@ -86,6 +86,8 @@ export function SceneTimeline({
   } | null>(null);
   /** Слои, у которых раскрыты свойства. Выбранный раскрыт всегда. */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  /** U, как в After Effects: показать и ещё не анимированные свойства слоя. */
+  const [showAll, setShowAll] = useState<ReadonlySet<string>>(new Set());
   /** Ключ, который тащат мышью по дорожке. */
   const dragging = useRef<
     {
@@ -105,6 +107,38 @@ export function SceneTimeline({
   const timing = sceneTiming(template.director, durationSeconds);
   const total = Math.max(0.04, durationSeconds);
   const pct = (seconds: number) => `${(seconds / total) * 100}%`;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key.toLowerCase() !== "u" || event.ctrlKey || event.metaKey || event.altKey ||
+        target?.matches("input, textarea, select") || target?.isContentEditable || !node) return;
+      event.preventDefault();
+      setExpanded((current) => new Set(current).add(node.id));
+      setShowAll((current) => {
+        const next = new Set(current);
+        if (!next.delete(node.id)) next.add(node.id);
+        return next;
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [node]);
+
+  useEffect(() => {
+    const onDelete = (event: KeyboardEvent) => {
+      if ((event.key !== "Delete" && event.key !== "Backspace") || selectedKeys.length === 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select") || target?.isContentEditable) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onRemoveKeyframes(selectedKeys);
+      setSelectedKeys([]);
+      setEditing(null);
+    };
+    window.addEventListener("keydown", onDelete);
+    return () => window.removeEventListener("keydown", onDelete);
+  }, [selectedKeys, onRemoveKeyframes]);
 
   // Проигрывание идёт по часам браузера, но это **предпросмотр**, а не эфир:
   // в эфире время кадра считается из его номера, потому что рендерер
@@ -133,6 +167,7 @@ export function SceneTimeline({
     const ratio = Math.min(1, Math.max(0, (clientX - lane.laneLeft) / lane.laneWidth));
     const absolute = ratio * total;
     if (side === "in") return Math.min(timing.inSeconds, Math.max(0, absolute));
+    if (side === "hold") return Math.min(timing.holdSeconds, Math.max(0, absolute - timing.inSeconds));
     const exitStart = timing.inSeconds + timing.holdSeconds;
     return Math.min(timing.outSeconds, Math.max(0, absolute - exitStart));
   }
@@ -145,9 +180,9 @@ export function SceneTimeline({
     for (const entry of template.nodes) {
       for (const trackKey of trackKeys) {
         if (entry.id === drag.primary.nodeId && trackKey === drag.primary.key) continue;
-        const frames = drag.primary.side === "in"
-          ? entry.transform[trackKey].inKeyframes
-          : entry.transform[trackKey].outKeyframes;
+        const track = entry.transform[trackKey];
+        const frames = drag.primary.side === "in" ? track.inKeyframes
+          : drag.primary.side === "hold" ? track.holdKeyframes ?? [] : track.outKeyframes;
         for (const frame of frames) {
           if (!drag.keys.some((selected) => selected.nodeId === entry.id && selected.key === trackKey &&
             selected.side === drag.primary.side && selected.atSeconds === frame.atSeconds)) {
@@ -159,7 +194,7 @@ export function SceneTimeline({
     const snapped = snapKeyframeTime(raw, candidates, (8 / Math.max(1, drag.laneWidth)) * total);
     const minimumDelta = Math.max(...drag.keys.map((key) => -key.atSeconds));
     const maximumDelta = Math.min(...drag.keys.map((key) =>
-      (key.side === "in" ? timing.inSeconds : timing.outSeconds) - key.atSeconds));
+      (key.side === "in" ? timing.inSeconds : key.side === "hold" ? timing.holdSeconds : timing.outSeconds) - key.atSeconds));
     const delta = Math.round(Math.min(maximumDelta, Math.max(
       minimumDelta, snapped.value - drag.primary.atSeconds,
     )) * 1_000) / 1_000;
@@ -167,7 +202,7 @@ export function SceneTimeline({
     setSnapGuide(snapped.snapped ? {
       nodeId: drag.primary.nodeId,
       key: drag.primary.key,
-      atRail: drag.primary.side === "in" ? next : timing.inSeconds + timing.holdSeconds + next,
+      atRail: absoluteKeyframeTime(drag.primary.side, next, timing),
     } : null);
     if (Math.abs(delta) < 0.001) return;
     const moved = drag.keys.map((key) => ({
@@ -207,7 +242,7 @@ export function SceneTimeline({
         const key = button.dataset.track as TrackKey;
         const side = button.dataset.side as SceneSegmentSide;
         const atSeconds = Number(button.dataset.atSeconds);
-        return button.dataset.nodeId && trackKeys.includes(key) && (side === "in" || side === "out") &&
+        return button.dataset.nodeId && trackKeys.includes(key) && (side === "in" || side === "hold" || side === "out") &&
           Number.isFinite(atSeconds)
           ? [{ nodeId: button.dataset.nodeId, key, side, atSeconds }]
           : [];
@@ -263,15 +298,7 @@ export function SceneTimeline({
             frame.easing === "bezier" ? "in-out" : "bezier",
           );
         }}
-        onDoubleClick={() => onRemoveKeyframe(nodeId, key, side, frame.atSeconds)}
-        onKeyDown={(event) => {
-          if (event.key !== "Delete" && event.key !== "Backspace") return;
-          event.preventDefault();
-          event.stopPropagation();
-          onRemoveKeyframe(nodeId, key, side, frame.atSeconds);
-          setEditing(null);
-          setSelectedKeys((current) => current.filter((entry) => !sameKey(entry, currentKey)));
-        }}
+        onDoubleClick={() => onRemoveKeyframes([currentKey])}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
@@ -296,7 +323,7 @@ export function SceneTimeline({
         }}
         style={{ left: pct(atRail) }}
         title={tr(
-          `${position} общей шкалы · ${side === "in" ? "вход" : "выход"} ${frame.atSeconds} с · ${frame.easing}\nТащите — сдвинуть, правая кнопка — кривая, двойной щелчок — убрать`,
+          `${position} общей шкалы · ${side === "in" ? "вход" : side === "hold" ? "удержание" : "выход"} ${frame.atSeconds} с · ${frame.easing}\nТащите — сдвинуть, правая кнопка — кривая, двойной щелчок — убрать`,
           `${position} on the main timeline · ${side} ${frame.atSeconds}s · ${frame.easing}\nDrag to move, right-click for a curve, double-click to remove`,
         )}
         type="button"
@@ -446,7 +473,8 @@ export function SceneTimeline({
         })() : null}
         {[...template.nodes].reverse().map((entry) => {
           const animated = trackKeys.filter((key) => trackIsAnimated(entry.transform[key]));
-          const open = expanded.has(entry.id) || entry.id === node?.id;
+          const open = expanded.has(entry.id);
+          const visibleTracks = showAll.has(entry.id) ? trackKeys : animated;
           // Тот же сдвиг, что и в списке слоёв: две колонки об одном и том же
           // читаются как одна только пока вложенность в них выглядит одинаково.
           const depth = layerDepth(entry, template);
@@ -471,12 +499,16 @@ export function SceneTimeline({
                 <button className="scene-layer-name" onClick={() => onSelectNode(entry.id)} type="button">
                   {entry.name}
                 </button>
-                {animated.length > 0 ? <em>{animated.length}</em> : null}
+                {animated.length > 0 ? <em>{animated.map((key) => tr(...trackTitles[key])).join(" · ")}</em> : null}
                 {/* Сводная полоса: у свёрнутого слоя по ней видно, где ключи. */}
                 <div className="scene-layer-strip">
                   {!open ? animated.flatMap((key) => [
                     ...entry.transform[key].inKeyframes.map((frame) => (
                       <i className="seg-in" key={`${key}-i-${frame.atSeconds}`} style={{ left: pct(frame.atSeconds) }} />
+                    )),
+                    ...(entry.transform[key].holdKeyframes ?? []).map((frame) => (
+                      <i className="seg-hold" key={`${key}-h-${frame.atSeconds}`}
+                        style={{ left: pct(timing.inSeconds + frame.atSeconds) }} />
                     )),
                     ...entry.transform[key].outKeyframes.map((frame) => (
                       <i className="seg-out" key={`${key}-o-${frame.atSeconds}`}
@@ -486,7 +518,7 @@ export function SceneTimeline({
                 </div>
               </div>
 
-              {open ? animated.map((key) => {
+              {open ? visibleTracks.map((key) => {
                 const track = entry.transform[key];
                 return (
                   <div className={`scene-track animated ${selectedKeys.some((selected) =>
@@ -499,6 +531,9 @@ export function SceneTimeline({
                         <i className="scene-key-snap-guide" style={{ left: pct(snapGuide.atRail) }} />
                       ) : null}
                       {track.inKeyframes.map((frame) => keyButton(entry.id, key, "in", frame, frame.atSeconds))}
+                      {(track.holdKeyframes ?? []).map((frame) => keyButton(
+                        entry.id, key, "hold", frame, timing.inSeconds + frame.atSeconds,
+                      ))}
                       {track.outKeyframes.map((frame) => keyButton(
                         entry.id, key, "out", frame,
                         timing.inSeconds + timing.holdSeconds + frame.atSeconds,
@@ -507,8 +542,11 @@ export function SceneTimeline({
                     <button
                       className="scene-track-clear"
                       onClick={() => {
-                        for (const frame of track.inKeyframes) onRemoveKeyframe(entry.id, key, "in", frame.atSeconds);
-                        for (const frame of track.outKeyframes) onRemoveKeyframe(entry.id, key, "out", frame.atSeconds);
+                        onRemoveKeyframes([
+                          ...track.inKeyframes.map((frame) => ({ nodeId: entry.id, key, side: "in" as const, atSeconds: frame.atSeconds })),
+                          ...(track.holdKeyframes ?? []).map((frame) => ({ nodeId: entry.id, key, side: "hold" as const, atSeconds: frame.atSeconds })),
+                          ...track.outKeyframes.map((frame) => ({ nodeId: entry.id, key, side: "out" as const, atSeconds: frame.atSeconds })),
+                        ]);
                       }}
                       title={tr("Снять всю анимацию дорожки", "Clear the track")}
                       type="button"
@@ -532,7 +570,8 @@ export function SceneTimeline({
         const owner = template.nodes.find((entry) => entry.id === editing.nodeId);
         if (!owner) return null;
         const track = owner.transform[editing.key];
-        const list = editing.side === "in" ? track.inKeyframes : track.outKeyframes;
+        const list = editing.side === "in" ? track.inKeyframes
+          : editing.side === "hold" ? track.holdKeyframes ?? [] : track.outKeyframes;
         const frame = list.find((entry) => entry.atSeconds === editing.atSeconds);
         if (!frame) return null;
         return (

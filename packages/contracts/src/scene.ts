@@ -89,6 +89,7 @@ export const sceneKeyframeSchema = z.object({
 export const sceneTrackSchema = z.object({
   value: z.number().finite(),
   inKeyframes: z.array(sceneKeyframeSchema).max(32).default([]),
+  holdKeyframes: z.array(sceneKeyframeSchema).max(128).optional(),
   outKeyframes: z.array(sceneKeyframeSchema).max(32).default([]),
 });
 
@@ -459,5 +460,5 @@ export type SceneTemplate = z.infer<typeof sceneTemplateSchema>;
 
 /** Постоянное значение без анимации — самый частый случай. */
 export function sceneTrack(value: number): SceneTrack {
-  return { value, inKeyframes: [], outKeyframes: [] };
+  return { value, inKeyframes: [], holdKeyframes: [], outKeyframes: [] };
 }

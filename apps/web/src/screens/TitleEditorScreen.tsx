@@ -12,9 +12,9 @@ import {
   type SystemFont,
 } from "@gruber/contracts";
 import {
-  AlertTriangle, Check, Circle, FileDown, FileUp, Film, FolderOpen, Image as ImageIcon,
+  AlertTriangle, Check, ChevronDown, Circle, FileDown, FileUp, Film, FolderOpen, Image as ImageIcon,
   Group, Redo2, Undo2, Ungroup,
-  KeyRound, Ruler, Save, Sparkles, Square, Type, X,
+  KeyRound, Magnet, Ruler, Save, Sparkles, Square, Type, X,
 } from "lucide-react";
 import {
   memo, useEffect, useMemo, useRef, useState,
@@ -106,6 +106,9 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     others: [],
   });
   const clipboard = useRef<SceneNodeClipboard | null>(null);
+  const pointerPosition = useRef({ x: 0.5, y: 0.5 });
+  const [zoom, setZoom] = useState(100);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const selectedId = selection.activeId;
   const selectedIds = useMemo(
     () => (selection.activeId ? [...selection.others, selection.activeId] : selection.others),
@@ -133,6 +136,8 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   >(null);
   const [playing, setPlaying] = useState(false);
   const [showSafe, setShowSafe] = useState(true);
+  const [safeArea, setSafeArea] = useState<"both" | "action" | "title">("both");
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
   const [lockedIds, setLockedIds] = useState<ReadonlySet<string>>(new Set());
   const [paneSizes, setPaneSizes] = useState(() => {
@@ -198,7 +203,21 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
   /** Холст присылает готовый узел — считать его от текущего шаблона нельзя. */
   function transform(nodeId: string, node: SceneNode) {
     if (protectedIds.has(nodeId)) return;
-    patch(updateNode(template, nodeId, () => node));
+    patch(updateNode(template, nodeId, (origin) => {
+      const next = structuredClone(node);
+      const positionAnimated = trackIsAnimated(origin.transform.x) || trackIsAnimated(origin.transform.y);
+      const sizeAnimated = trackIsAnimated(origin.transform.width) || trackIsAnimated(origin.transform.height);
+      for (const track of ["x", "y", "width", "height", "scale", "scaleY"] as const) {
+        if (!trackIsAnimated(origin.transform[track]) &&
+          !(positionAnimated && (track === "x" || track === "y")) &&
+          !(sizeAnimated && (track === "width" || track === "height"))) continue;
+        next.transform[track] = setKeyframe(
+          origin.transform[track], keySide, keyAt,
+          trackValueAt(node.transform[track], timing, timeSeconds),
+        );
+      }
+      return next;
+    }));
   }
 
   function keyframeEasing(
@@ -236,22 +255,23 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     patch(next);
   }
 
-  function dropKeyframe(nodeId: string, key: TrackKey, side: SceneSegmentSide, atSeconds: number) {
-    patch(updateNode(template, nodeId, (node) => ({
+  function dropKeyframes(removals: readonly { nodeId: string; key: TrackKey; side: SceneSegmentSide; atSeconds: number }[]) {
+    let next = template;
+    for (const removal of removals) next = updateNode(next, removal.nodeId, (node) => ({
       ...node,
-      transform: { ...node.transform, [key]: removeKeyframe(node.transform[key], side, atSeconds) },
-    })));
+      transform: { ...node.transform, [removal.key]: removeKeyframe(node.transform[removal.key], removal.side, removal.atSeconds) },
+    }));
+    patch(next, true);
   }
 
-  // Где сейчас стоит головка: ключ ставится в свой отрезок, а в удержании их
-  // не бывает — оно растягивается под длительность показа.
+  // Где стоит головка — тому отрезку и принадлежит ключ.
   const timing = sceneTiming(template.director, duration);
   const segment = sceneSegmentAt(timing, timeSeconds);
-  const keySide: SceneSegmentSide = segment.segment === "out" ? "out" : "in";
-  const keyAt = segment.segment === "hold" ? timing.inSeconds : segment.localSeconds;
+  const keySide: SceneSegmentSide = segment.segment;
+  const keyAt = segment.localSeconds;
 
   const keyframes = {
-    enabled: segment.segment !== "hold" && selected !== null,
+    enabled: selected !== null,
     value: (track: KeyableTrack): number => selected
       ? trackValueAt(selected.transform[track], timing, timeSeconds)
       : 0,
@@ -272,16 +292,16 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     },
     at: (track: KeyableTrack): "here" | "animated" | "none" => {
       if (!selected) return "none";
-      const list = keySide === "in"
-        ? selected.transform[track].inKeyframes
+      const list = keySide === "in" ? selected.transform[track].inKeyframes
+        : keySide === "hold" ? selected.transform[track].holdKeyframes ?? []
         : selected.transform[track].outKeyframes;
       if (list.some((frame) => Math.abs(frame.atSeconds - keyAt) < 0.02)) return "here";
       return trackIsAnimated(selected.transform[track]) ? "animated" : "none";
     },
     toggle: (track: KeyableTrack) => {
       if (!selected) return;
-      const list = keySide === "in"
-        ? selected.transform[track].inKeyframes
+      const list = keySide === "in" ? selected.transform[track].inKeyframes
+        : keySide === "hold" ? selected.transform[track].holdKeyframes ?? []
         : selected.transform[track].outKeyframes;
       const existing = list.find((frame) => Math.abs(frame.atSeconds - keyAt) < 0.02);
       patch(updateNode(template, selected.id, (node) => ({
@@ -318,12 +338,15 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
       const key = event.key.toLowerCase();
 
       if (command && key === "c" && selectedId) {
-        clipboard.current = copyNode(template, selectedId);
+        const copied = copyNode(template, selectedId);
+        clipboard.current = copied && drawnBox
+          ? { ...copied, origin: { x: drawnBox.x, y: drawnBox.y } }
+          : copied;
         event.preventDefault();
         return;
       }
       if (command && key === "v" && clipboard.current) {
-        const pasted = pasteNode(template, clipboard.current, tr("копия", "copy"));
+        const pasted = pasteNode(template, clipboard.current, tr("копия", "copy"), pointerPosition.current);
         if (pasted.nodeId) {
           patch(pasted.template, true);
           selectNode(pasted.nodeId);
@@ -347,11 +370,16 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedId, selectedIds, template, tr]);
+  }, [selectedId, selectedIds, template, tr, drawnBox]);
 
   return (
     <div
       className="title-editor"
+      onClick={() => setContextMenu(null)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setContextMenu({ x: event.clientX, y: event.clientY });
+      }}
       style={{
         "--title-left-width": `${paneSizes.left}px`,
         "--title-right-width": `${paneSizes.right}px`,
@@ -398,6 +426,25 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             type="button"
           >
             <Ruler size={12} />
+          </button>
+          <select
+            className="title-editor-tool-select"
+            disabled={!showSafe}
+            onChange={(event) => setSafeArea(event.target.value as typeof safeArea)}
+            title={tr("Тип безопасной зоны", "Safe-area type")}
+            value={safeArea}
+          >
+            <option value="both">Action + Title Safe</option>
+            <option value="action">Action Safe 3.5%</option>
+            <option value="title">Title Safe 5%</option>
+          </select>
+          <button
+            className={snapEnabled ? "active" : ""}
+            onClick={() => setSnapEnabled((value) => !value)}
+            title={tr("Прилипание к направляющим", "Snap to guides")}
+            type="button"
+          >
+            <Magnet size={12} />
           </button>
           <button
             disabled={!history.canUndo}
@@ -560,6 +607,10 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             format={format}
             lockedIds={protectedIds}
             onSelect={selectNode}
+            onSelectMany={(ids) => setSelection({ activeId: ids.at(-1) ?? null, others: ids.slice(0, -1) })}
+            onPointerPosition={(point) => { pointerPosition.current = point; }}
+            zoom={zoom}
+            onZoom={setZoom}
             onEditText={(node, value) => {
               // Статичная строка живёт в самом узле, привязанная — в образце
               // поля: править надо то, что рисуется, иначе правка не видна.
@@ -586,6 +637,8 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
             selectedId={selectedId}
             selectedIds={selectedIds}
             showSafeAreas={showSafe}
+            safeArea={safeArea}
+            snapEnabled={snapEnabled}
             template={visible}
             timeSeconds={timeSeconds}
           />
@@ -624,12 +677,12 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
                     </dl>
                     <dl>
                       <dt>{tr("Размер", "Size")}</dt>
-                      <dd>
-                        {Math.round(drawnBox.width * format.width)} ×{" "}
-                        {Math.round(drawnBox.height * format.height)}
-                      </dd>
+                      <dt>W</dt>
+                      <dd>{Math.round(drawnBox.width * format.width)} px ({Math.round(drawnBox.width * 100)}%)</dd>
+                      <dt>H</dt>
+                      <dd>{Math.round(drawnBox.height * format.height)} px ({Math.round(drawnBox.height * 100)}%)</dd>
                     </dl>
-                    <small>{tr("пикселей от центра кадра", "pixels from the frame centre")}</small>
+                    <small>{tr("X/Y — от центра кадра", "X/Y — from frame centre")}</small>
                   </>
                 ) : null}
               </>
@@ -641,36 +694,54 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
                 )}
               </span>
             )}
+            <span className="scene-readout-spacer" />
+            <label className="scene-zoom">
+              <span>{tr("Масштаб", "Zoom")}</span>
+              <select value={zoom} onChange={(event) => setZoom(Number(event.target.value))}>
+                {[25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350, 375, 400].map((value) => (
+                  <option key={value} value={value}>{value}%</option>
+                ))}
+              </select>
+            </label>
           </div>
 
-          {selected ? (
-            <div className="scene-preset-row">
+          <div className="scene-preset-row">
               <span>{tr("Готовый вход", "Entrance")}</span>
               {presets.map(({ preset, ru, en }) => (
                 <button
                   key={preset}
-                  onClick={() => patch(updateNode(template, selected.id, (node) =>
+                  disabled={!selected}
+                  onClick={() => selected && patch(updateNode(template, selected.id, (node) =>
                     applyPreset(node, preset, template.director.inSeconds, template.director.outSeconds)))}
                   type="button"
                 >
                   {tr(ru, en)}
                 </button>
               ))}
-            </div>
-          ) : null}
+          </div>
 
-          {issues.length > 0 ? (
-            <ul className="scene-issues">
-              {issues.map((issue, index) => (
-                <li className={issue.severity} key={index}>
-                  <AlertTriangle size={11} />
-                  <span>{issue.message}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="scene-issues-clean"><Check size={11} /> {tr("Шаблон собран без замечаний", "The template is clean")}</p>
-          )}
+          <details className={`scene-issues-panel ${issues.length === 0 ? "clean" : ""}`}>
+            <summary>
+              <span>
+                {issues.length > 0 ? <AlertTriangle size={12} /> : <Check size={12} />}
+                {issues.length > 0
+                  ? tr("Предупреждения", "Warnings")
+                  : tr("Шаблон собран без замечаний", "The template is clean")}
+              </span>
+              <i>{issues.length}</i>
+              <ChevronDown size={13} />
+            </summary>
+            {issues.length > 0 ? (
+              <ul className="scene-issues">
+                {issues.map((issue, index) => (
+                  <li className={issue.severity} key={`${issue.message}-${index}`}>
+                    <AlertTriangle size={11} />
+                    <span>{issue.message}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </details>
         </div>
 
 
@@ -723,13 +794,19 @@ export const TitleEditorScreen = memo(function TitleEditorScreen({
         onKeyframeEasing={keyframeEasing}
         onSelectNode={(id) => selectNode(id)}
         onMoveKeyframes={shiftKeyframes}
-        onRemoveKeyframe={dropKeyframe}
+        onRemoveKeyframes={dropKeyframes}
         onTime={setTimeSeconds}
         onTogglePlay={() => setPlaying((value) => !value)}
         playing={playing}
         template={template}
         timeSeconds={timeSeconds}
       />
+      {contextMenu ? (
+        <div className="scene-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+          <button disabled={!history.canUndo} onClick={() => history.undo()} type="button"><Undo2 size={12} /> {tr("Отменить", "Undo")}</button>
+          <button disabled={!history.canRedo} onClick={() => history.redo()} type="button"><Redo2 size={12} /> {tr("Вернуть", "Redo")}</button>
+        </div>
+      ) : null}
     </div>
   );
 });

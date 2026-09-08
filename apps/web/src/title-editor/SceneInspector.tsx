@@ -58,7 +58,7 @@ interface SceneInspectorProps {
 /** Дорожки, у которых имеет смысл ставить ключи из инспектора. */
 export type KeyableTrack =
   | "x" | "y" | "width" | "height"
-  | "opacity" | "rotationDegrees" | "scale" | "reveal";
+  | "opacity" | "rotationDegrees" | "scale" | "scaleY" | "skewDegrees" | "blur" | "reveal";
 
 export function SceneInspector({
   template, node, target, fonts, onChange, onChangeTemplate, onDeclareField, onRemoveField, onFieldChange, onPickMedia, drawnBox, keyframes,
@@ -120,16 +120,25 @@ export function SceneInspector({
 
       {/* Ключ ставится там же, где правится значение: держать в голове, какая
           строка дорожки какому полю соответствует, — лишняя работа. */}
+      <Section title={tr("Размер", "Size")}>
+        <Grid>
+          <Num keyed={keyed("width")} label={tr("Ширина", "Width")} value={override?.width ?? keyframes.value("width")} unit="%"
+            onCommit={(v) => keyframes.commit("width", v)} />
+          <Num keyed={keyed("height")} label={tr("Высота", "Height")} value={override?.height ?? keyframes.value("height")} unit="%"
+            onCommit={(v) => keyframes.commit("height", v)} />
+        </Grid>
+        <p className="scene-hint">{tr(
+          "На холсте Shift сохраняет пропорции; без Shift каждая сторона меняется отдельно.",
+          "On canvas, Shift preserves proportions; without Shift each side changes independently.",
+        )}</p>
+      </Section>
+
       <Section title={tr("Положение", "Position")}>
         <Grid>
           <Num keyed={keyed("x")} label="X" value={override?.x ?? keyframes.value("x")} unit="%"
             onCommit={(v) => keyframes.commit("x", v)} />
           <Num keyed={keyed("y")} label="Y" value={override?.y ?? keyframes.value("y")} unit="%"
             onCommit={(v) => keyframes.commit("y", v)} />
-          <Num keyed={keyed("width")} label={tr("Ширина", "Width")} value={override?.width ?? keyframes.value("width")} unit="%"
-            onCommit={(v) => keyframes.commit("width", v)} />
-          <Num keyed={keyed("height")} label={tr("Высота", "Height")} value={override?.height ?? keyframes.value("height")} unit="%"
-            onCommit={(v) => keyframes.commit("height", v)} />
         </Grid>
         <p className="scene-hint">
           {tr(
@@ -142,7 +151,7 @@ export function SceneInspector({
       <Section title={tr("Точка привязки", "Anchor point")}>
         {/* От неё считаются поворот, масштаб и положение. Перенос привязки
             не двигает узел: дизайнер выбирает точку отсчёта, а не элемент. */}
-        <div className="anchor-grid">
+        <div className="scene-point-layout"><div className="anchor-grid">
           {[0, 0.5, 1].map((ay) => [0, 0.5, 1].map((ax) => {
             const active = Math.abs(node.transform.anchorX - ax) < 0.01 &&
               Math.abs(node.transform.anchorY - ay) < 0.01;
@@ -161,8 +170,7 @@ export function SceneInspector({
               </button>
             );
           }))}
-        </div>
-        <Grid>
+        </div><Grid>
           <Num label="X" value={node.transform.anchorX} unit="%"
             onCommit={(v) => onChange(setNodeAnchor(
               node, clamp(v, 0, 1), node.transform.anchorY,
@@ -179,7 +187,7 @@ export function SceneInspector({
             "От неё считаются поворот и масштаб. Перенос привязки не двигает узел: положение правится ровно настолько, чтобы картинка не изменилась.",
             "Rotation and scale are measured from it. Moving the anchor does not move the node.",
           )}
-        </p>
+        </p></div>
       </Section>
 
       <Section title={tr("Вид", "Appearance")}>
@@ -190,6 +198,12 @@ export function SceneInspector({
             onCommit={(v) => keyframes.commit("rotationDegrees", v)} />
           <Num keyed={keyed("scale")} label={tr("Масштаб", "Scale")} value={keyframes.value("scale")} unit="%"
             onCommit={(v) => keyframes.commit("scale", Math.max(0, v))} />
+          <Num keyed={keyed("scaleY")} label={tr("Масштаб Y", "Scale Y")} value={keyframes.value("scaleY")} unit="%"
+            onCommit={(v) => keyframes.commit("scaleY", v)} />
+          <Num keyed={keyed("skewDegrees")} label={tr("Наклон", "Skew")} value={keyframes.value("skewDegrees")} unit="°" raw
+            onCommit={(v) => keyframes.commit("skewDegrees", v)} />
+          <Num keyed={keyed("blur")} label={tr("Размытие", "Blur")} value={keyframes.value("blur")} unit="%"
+            onCommit={(v) => keyframes.commit("blur", Math.max(0, v))} />
         </Grid>
       </Section>
 
@@ -484,7 +498,7 @@ export function SceneInspector({
           </select>
         </label>
         <span className="scene-row-label">{tr("Откуда раскрывается", "Reveal origin")}</span>
-        <div className="anchor-grid">
+        <div className="scene-point-layout"><div className="anchor-grid">
           {[0, 0.5, 1].map((oy) => [0, 0.5, 1].map((ox) => {
             const active = Math.abs(node.transform.revealOriginX - ox) < 0.01 &&
               Math.abs(node.transform.revealOriginY - oy) < 0.01;
@@ -511,7 +525,7 @@ export function SceneInspector({
               "Шторка открывает неподвижную картинку: окно растёт от точки среза. Точка едет за привязкой — увести её отдельно можно сеткой ниже, уже после переноса привязки. Ставится ключами: 0 % в начале входа, 100 % в конце.",
               "A wipe opens a still picture: the window grows from the cut point, which follows the anchor.",
             )}
-        </p>
+        </p></div>
       </Section>
 
       <Section title={tr("Ширина по тексту", "Width from text")}>
@@ -839,10 +853,7 @@ function KeyButton({
       disabled={disabled}
       onClick={onToggle}
       title={disabled
-        ? tr(
-          "Ключей в удержании не бывает: оно растягивается под длительность показа. Встаньте на вход или выход.",
-          "Hold takes no keyframes: it stretches with the duration. Move to the entrance or the exit.",
-        )
+        ? tr("Выберите слой", "Select a layer")
         : state === "here"
           ? tr("Убрать ключ в этой точке", "Remove the keyframe here")
           : tr(

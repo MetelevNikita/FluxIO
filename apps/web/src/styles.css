@@ -139,7 +139,7 @@ p {
   width: 28px;
   height: 28px;
   display: grid;
-  place-items: center;
+  place-items: safe center;
   border-radius: 7px;
   color: #0a0b0d;
   background: var(--accent);
@@ -5902,6 +5902,7 @@ input[type="range"] {
 .title-editor-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .title-editor-actions button.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .title-editor-actions button:disabled { opacity: 0.4; }
+.title-editor-tool-select { height: 28px; max-width: 150px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-deep); color: var(--muted); font-size: 10px; }
 .title-editor-save { color: var(--tier2) !important; border-color: var(--tier2-border) !important; }
 
 .title-editor-body {
@@ -6211,8 +6212,10 @@ input[type="range"] {
   height: 100%;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  overflow: auto;
 }
+.scene-canvas-box.zoomed { cursor: grab; }
+.scene-canvas-box.panning { cursor: grabbing; user-select: none; }
 
 /* Рамку и фон несёт сам кадр, а не колонка вокруг него. Кадр держит
    соотношение сторон выбранной раскладки, поэтому поля по бокам неизбежны —
@@ -6246,6 +6249,17 @@ input[type="range"] {
 
 .scene-canvas-paint { position: absolute; inset: 0; width: 100%; height: 100%; }
 .scene-canvas-overlay { position: absolute; inset: 0; }
+.scene-canvas-marquee {
+  position: absolute;
+  z-index: 8;
+  border: 1px dashed var(--tier2);
+  background: rgba(77, 141, 253, 0.12);
+  pointer-events: none;
+}
+.scene-motion-path { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: visible; }
+.scene-motion-path polyline { fill: none; stroke: var(--tier2); stroke-width: 1.5px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.scene-zoom { display: flex; align-items: center; gap: 5px; color: var(--muted-dark); }
+.scene-zoom select { height: 22px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
 
 /* Безопасные зоны вещания: текст за границей обрежет приёмник зрителя,
    а на мониторе дизайнера всё было в кадре. */
@@ -6329,8 +6343,46 @@ input[type="range"] {
 }
 
 .scene-preset-row button:hover { color: var(--tier2); border-color: var(--tier2-border); }
+.scene-preset-row button:disabled { opacity: 0.35; }
 
-.scene-issues { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.scene-context-menu {
+  position: fixed;
+  z-index: 100;
+  width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+.scene-context-menu button { width: 100%; height: 28px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); }
+.scene-context-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+.scene-context-menu button:disabled { opacity: 0.35; }
+
+.scene-issues-panel { position: relative; min-height: 28px; }
+.scene-issues-panel > summary {
+  height: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  border-radius: 5px;
+  background: rgba(245, 158, 11, 0.08);
+  color: #fcd34d;
+  cursor: pointer;
+  list-style: none;
+  font-size: 10.5px;
+}
+.scene-issues-panel > summary::-webkit-details-marker { display: none; }
+.scene-issues-panel > summary span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.scene-issues-panel > summary i { min-width: 19px; padding: 1px 6px; border-radius: 10px; background: rgba(245, 158, 11, 0.18); font-style: normal; text-align: center; font-weight: 700; }
+.scene-issues-panel > summary > svg { transition: transform 120ms ease; }
+.scene-issues-panel[open] > summary > svg { transform: rotate(180deg); }
+.scene-issues-panel.clean > summary { border-color: rgba(110, 231, 183, 0.3); background: rgba(110, 231, 183, 0.06); color: #6ee7b7; cursor: default; }
+.scene-issues-panel.clean > summary > svg { visibility: hidden; }
+.scene-issues { position: absolute; z-index: 20; left: 0; right: 0; top: 32px; max-height: 210px; overflow-y: auto; list-style: none; margin: 0; padding: 4px; display: grid; gap: 4px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-deep); box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42); }
 
 .scene-issues li {
   display: grid;
@@ -6405,7 +6457,7 @@ input[type="range"] {
   white-space: nowrap;
 }
 
-.scene-section { padding: 12px 14px 0; }
+.scene-section { padding: 8px 12px 0; }
 
 .scene-section > summary {
   display: flex;
@@ -6424,9 +6476,9 @@ input[type="range"] {
 .scene-section > summary::-webkit-details-marker { display: none; }
 .scene-section > summary svg { transition: transform 120ms ease; }
 .scene-section[open] > summary svg { transform: rotate(90deg); }
-.scene-section-body { padding-top: 8px; }
+.scene-section-body { padding-top: 5px; }
 
-.scene-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.scene-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 
 .scene-row { display: grid; gap: 3px; min-width: 0; }
 .scene-row > span { font-size: 9.5px; color: var(--muted-dark); }
@@ -6454,7 +6506,11 @@ input[type="range"] {
 .scene-row-check input { height: auto; }
 .scene-row-check span { font-size: 11px; color: var(--text); }
 
-.scene-hint { margin: 7px 0 0; font-size: 9.5px; line-height: 1.5; color: var(--muted-dark); }
+.scene-hint { margin: 5px 0 0; font-size: 9.5px; line-height: 1.4; color: var(--muted-dark); }
+.scene-point-layout { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: start; }
+.scene-point-layout .anchor-grid { width: 92px; height: 92px; }
+.scene-point-layout > .scene-grid, .scene-point-layout > .scene-hint { grid-column: 2; }
+.scene-point-layout .scene-hint { margin: 0; align-self: center; }
 .scene-hint-warn { color: var(--warning); }
 
 .scene-declare {
@@ -6656,6 +6712,7 @@ input[type="range"] {
 .scene-key:active { cursor: grabbing; }
 
 .scene-key.seg-in { color: #6ee7b7; }
+.scene-key.seg-hold { color: #60a5fa; }
 .scene-key.seg-out { color: #f472b6; }
 .scene-key:hover { color: var(--danger); }
 .scene-key.selected {
@@ -7526,6 +7583,7 @@ button.scene-tree-twist:hover { color: var(--text); }
 }
 
 .scene-layer-strip i.seg-in { background: #6ee7b7; }
+.scene-layer-strip i.seg-hold { background: #60a5fa; }
 .scene-layer-strip i.seg-out { background: #f472b6; }
 
 .scene-layer .scene-track { grid-template-columns: 20px 92px minmax(0, 1fr) 22px; padding-left: 0; }
