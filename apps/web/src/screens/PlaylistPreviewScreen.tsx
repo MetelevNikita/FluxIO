@@ -52,6 +52,7 @@ import {
 import {
   broadcastEffectSpans,
   removeBroadcastEffectSpan,
+  removeBroadcastEffect,
   retimeBroadcastEffectSpan,
   type BroadcastEffectSpan,
 } from "../broadcast-effects";
@@ -909,16 +910,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     onUpdateItem(selectedAsset.id, removeBroadcastEffectSpan(selectedAsset, span));
   }
 
-  /**
-   * Эффект второго уровня лежит на ролике двумя сущностями — плашкой-файлом и
-   * живой надписью, — поэтому снимается целиком по своему id. Снять что-то одно
-   * значило бы оставить на ролике половину эффекта.
-   */
+  /** Снимает графику, сцену и звук эффекта вместе. */
   function removeBroadcastFromItem(assetId: string, effectId: string): void {
-    onUpdateItems([assetId], (asset) => ({
-      effects: (asset.effects ?? []).filter((layer) => layer.effectId !== effectId),
-      scenes: (asset.scenes ?? []).filter((show) => show.effectId !== effectId),
-    }));
+    onUpdateItems([assetId], (asset) => removeBroadcastEffect([asset], effectId)[0]!);
   }
 
   function toggleMute() {

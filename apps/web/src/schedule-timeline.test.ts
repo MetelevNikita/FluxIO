@@ -59,6 +59,35 @@ test("catch-up point counts the schedule delay before the first clip", () => {
   assert.equal(Math.round(point?.itemOffsetSeconds ?? -1), 60);
 });
 
+test("catch-up preserves fractional start time and delay", () => {
+  const schedule = metadata("2026-08-03", "12:00:00.500", 0.25);
+  const playlist = [asset("one", 60)];
+  assert.equal(scheduleCatchUpPoint(
+    playlist, schedule, "current", new Date(2026, 7, 3, 12, 0, 0, 600),
+  ), null);
+  assert.equal(scheduleCatchUpPoint(
+    playlist, schedule, "current", new Date(2026, 7, 3, 12, 0, 1),
+  )?.itemOffsetSeconds, 0.25);
+});
+
+test("timeline and catch-up agree across a daylight-saving transition", () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  try {
+    const playlist = [asset("one", 3_600), asset("two", 3_600), asset("three", 3_600)];
+    const schedule = metadata("2026-03-08", "01:30:00.00", 0);
+    assert.deepEqual(buildScheduleTimeline(playlist, schedule, "current").map((entry) => entry.startTime), [
+      "01:30:00", "03:30:00", "04:30:00",
+    ]);
+    assert.equal(scheduleCatchUpPoint(
+      playlist, schedule, "current", new Date(2026, 2, 8, 4, 30),
+    )?.assetId, "three");
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
 test("catch-up point is empty before the start and after the end of the schedule", () => {
   const playlist = [asset("one", 600)];
   const early = scheduleCatchUpPoint(

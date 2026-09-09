@@ -46,11 +46,7 @@ export async function getFfmpegCapabilities(): Promise<FfmpegCapabilities> {
 
 export async function probeMediaPaths(paths: string[]): Promise<MediaProbe[]> {
   return parseProbeResponse(
-    await request("/api/media/probe", {
-      body: JSON.stringify({ paths }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/media/probe", "POST", { paths }),
   );
 }
 
@@ -58,11 +54,7 @@ export async function scanMediaDirectory(
   directoryPath: string,
 ): Promise<MediaProbe[]> {
   return parseProbeResponse(
-    await request("/api/media/scan", {
-      body: JSON.stringify({ directoryPath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/media/scan", "POST", { directoryPath }),
   );
 }
 
@@ -70,11 +62,7 @@ export async function analyzeGraphicEffectPaths(
   paths: string[],
 ): Promise<GraphicEffectImportResult> {
   return graphicEffectImportResultSchema.parse(
-    await request("/api/effects/analyze", {
-      body: JSON.stringify({ paths }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/analyze", "POST", { paths }),
   );
 }
 
@@ -84,22 +72,14 @@ export async function analyzeGraphicEffectPaths(
  */
 export async function readImageSequence(framePath: string): Promise<ImageSequence> {
   return imageSequenceSchema.parse(
-    await request("/api/effects/sequence", {
-      body: JSON.stringify({ framePath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/sequence", "POST", { framePath }),
   );
 }
 
 export async function verifyGraphicEffectPaths(paths: string[]): Promise<string[]> {
   if (paths.length === 0) return [];
   return graphicEffectVerificationSchema.parse(
-    await request("/api/effects/verify", {
-      body: JSON.stringify({ paths }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/verify", "POST", { paths }),
   ).missing;
 }
 
@@ -108,11 +88,7 @@ export async function scanAudioTracks(
   mediaPaths: string[],
 ): Promise<AudioTrackScan> {
   return audioTrackScanSchema.parse(
-    await request("/api/audio-tracks/scan", {
-      body: JSON.stringify({ directoryPath, mediaPaths }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/audio-tracks/scan", "POST", { directoryPath, mediaPaths }),
   );
 }
 
@@ -123,11 +99,7 @@ export async function listSystemFonts(): Promise<SystemFont[]> {
 
 export async function importVectorLayers(filePath: string): Promise<VectorLayerImport> {
   return vectorLayerImportSchema.parse(
-    await request("/api/effects/vector-layers", {
-      body: JSON.stringify({ filePath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/vector-layers", "POST", { filePath }),
   );
 }
 
@@ -141,42 +113,26 @@ export async function readTickerFeed(
   limit = 30,
 ): Promise<TickerSourceContent> {
   return tickerSourceContentSchema.parse(
-    await request("/api/effects/broadcast/ticker-feed", {
-      body: JSON.stringify({ limit, url }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/broadcast/ticker-feed", "POST", { limit, url }),
   );
 }
 
 /** Файл задания эффекта второго уровня: читает и проверяет его media-service. */
 export async function readBroadcastTaskFile(filePath: string): Promise<BroadcastTaskFileContent> {
   return broadcastTaskFileContentSchema.parse(
-    await request("/api/effects/broadcast/task", {
-      body: JSON.stringify({ filePath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/broadcast/task", "POST", { filePath }),
   );
 }
 
 export async function readTickerSourceFile(filePath: string): Promise<TickerSourceContent> {
   return tickerSourceContentSchema.parse(
-    await request("/api/effects/broadcast/ticker-source", {
-      body: JSON.stringify({ filePath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/effects/broadcast/ticker-source", "POST", { filePath }),
   );
 }
 
 export async function parseScheduleFile(filePath: string): Promise<ParsedSchedule> {
   return parsedScheduleSchema.parse(
-    await request("/api/schedule/parse", {
-      body: JSON.stringify({ filePath }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/schedule/parse", "POST", { filePath }),
   );
 }
 
@@ -184,11 +140,7 @@ export async function serializeScheduleFile(
   schedule: SerializeScheduleRequest,
 ): Promise<SerializedSchedule> {
   return serializedScheduleSchema.parse(
-    await request("/api/schedule/serialize", {
-      body: JSON.stringify(schedule),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/schedule/serialize", "POST", schedule),
   );
 }
 
@@ -229,27 +181,19 @@ export async function startCompositeClipPreview(
   startSeconds: number,
 ): Promise<ClipPreviewSession> {
   return clipPreviewSessionSchema.parse(
-    await request("/api/media/clip-preview/composite", {
-      body: JSON.stringify({ request: requestBody, startSeconds }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/media/clip-preview/composite", "POST", { request: requestBody, startSeconds }),
   );
 }
 
 export async function stopClipPreview(): Promise<void> {
-  await request("/api/media/clip-preview/stop", { method: "POST" });
+  await request("/api/media/clip-preview/stop", "POST");
 }
 
 export async function startPlayout(
   requestBody: StartPlayoutRequest,
 ): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request("/api/playout/start", {
-      body: JSON.stringify(requestBody),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/playout/start", "POST", requestBody),
   );
 }
 
@@ -257,29 +201,25 @@ export async function takePlayout(
   requestBody: StartPlayoutRequest,
 ): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request("/api/playout/take", {
-      body: JSON.stringify(requestBody),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
+    await request("/api/playout/take", "POST", requestBody),
   );
 }
 
 export async function stopPlayout(): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request("/api/playout/stop", { method: "POST" }),
+    await request("/api/playout/stop", "POST"),
   );
 }
 
 export async function startPlayoutStream(id: string): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request(`/api/playout/streams/${encodeURIComponent(id)}/start`, { method: "POST" }),
+    await request(`/api/playout/streams/${encodeURIComponent(id)}/start`, "POST"),
   );
 }
 
 export async function stopPlayoutStream(id: string): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request(`/api/playout/streams/${encodeURIComponent(id)}/stop`, { method: "POST" }),
+    await request(`/api/playout/streams/${encodeURIComponent(id)}/stop`, "POST"),
   );
 }
 
@@ -287,11 +227,7 @@ export async function updateNextPlayoutPlaylist(
   nextPlaylist: StartPlayoutRequest["nextPlaylist"],
 ): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request("/api/playout/next-playlist", {
-      body: JSON.stringify({ nextPlaylist }),
-      headers: { "content-type": "application/json" },
-      method: "PUT",
-    }),
+    await request("/api/playout/next-playlist", "PUT", { nextPlaylist }),
   );
 }
 
@@ -299,11 +235,7 @@ export async function updateCurrentPlayoutPlaylist(
   playlist: StartPlayoutRequest["playlist"],
 ): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
-    await request("/api/playout/playlist", {
-      body: JSON.stringify({ playlist }),
-      headers: { "content-type": "application/json" },
-      method: "PUT",
-    }),
+    await request("/api/playout/playlist", "PUT", { playlist }),
   );
 }
 
@@ -317,22 +249,22 @@ export async function saveWorkspaceSession(
   session: WorkspaceSessionSaveRequest,
 ): Promise<SavedWorkspaceSession> {
   return savedWorkspaceSessionSchema.parse(
-    await request("/api/workspace-session", {
-      body: JSON.stringify(session),
-      headers: { "content-type": "application/json" },
-      method: "PUT",
-    }),
+    await request("/api/workspace-session", "PUT", session),
   );
 }
 
 export async function deleteWorkspaceSession(): Promise<void> {
-  await request("/api/workspace-session", { method: "DELETE" });
+  await request("/api/workspace-session", "DELETE");
 }
 
-async function request(path: string, init?: RequestInit): Promise<unknown> {
+async function request(path: string, method = "GET", body?: unknown): Promise<unknown> {
   const response = await fetch(mediaApiUrl(path), {
-    ...init,
-    signal: init?.signal ?? AbortSignal.timeout(mediaRequestTimeoutMs(path)),
+    method,
+    ...(body === undefined ? {} : {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    }),
+    signal: AbortSignal.timeout(mediaRequestTimeoutMs(path)),
   });
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {

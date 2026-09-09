@@ -39,11 +39,8 @@ export function shortHash(value: string): string {
 export function sceneShowId(...parts: readonly string[]): string {
   const joined = parts.filter(Boolean).join("-");
   if (joined.length <= maximumSceneShowIdLength) return joined;
-  const prefix = parts[0] ?? "scene";
-  const short = `${prefix}-${shortHash(joined)}`;
-  return short.length <= maximumSceneShowIdLength
-    ? short
-    : short.slice(0, maximumSceneShowIdLength);
+  const prefix = (parts[0] ?? "scene").slice(0, maximumSceneShowIdLength - 9);
+  return `${prefix}-${shortHash(joined)}`;
 }
 
 /**

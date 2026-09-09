@@ -22,6 +22,9 @@ test("different shows keep different ids after shortening", () => {
   const second = sceneShowId("schedule-scene", "2", effectId);
   assert.notEqual(first, second);
   assert.notEqual(shortHash("a"), shortHash("b"));
+  const prefix = "scene".repeat(20);
+  assert.notEqual(sceneShowId(prefix, "a"), sceneShowId(prefix, "b"));
+  assert.equal(sceneShowId(prefix, "a").length, maximumSceneShowIdLength);
 });
 
 test("an asset saved by an older version is repaired, not rejected", () => {

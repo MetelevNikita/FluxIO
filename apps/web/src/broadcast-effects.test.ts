@@ -251,6 +251,23 @@ test("start offset counts from the end even when the clip came from a schedule",
   assert.equal(result.scenes[0]!.show.durationSeconds, 7);
 });
 
+test("promos skip non-movies, look beyond selection and preserve schedule order", () => {
+  const result = plan({
+    clips: [
+      { ...clips[0]!, id: "first", name: "Первый", scheduleType: "movie" },
+      { ...clips[0]!, id: "break", name: "Отбивка", scheduleType: "chop" },
+      { ...clips[0]!, id: "next", name: "Следующий.mp4", scheduleType: "movie" },
+      { ...clips[0]!, id: "last", name: "Последний", scheduleType: "clip" },
+    ],
+    effect: sceneEffect("next-program", {}),
+    targetIds: new Set(["break", "first", "last"]),
+  });
+  assert.deepEqual(result.scenes.map(({ assetId, show }) => [assetId, show.fields.title]), [
+    ["first", "Следующий"], ["break", "Следующий"],
+  ]);
+  assert.equal(result.warnings.length, 1);
+});
+
 test("the announced title lands in the scene field the operator chose", () => {
   const scene = defaultSceneTemplate("next-program")!;
   const custom: SceneTemplate = {
@@ -655,9 +672,18 @@ test("applying a plan puts the show on the clip and removing the effect takes it
   const assets = [{ effects: [], id: "a", name: "Ролик" }] as unknown as MediaAsset[];
   const applied = applyBroadcastPlan(assets, result);
   assert.equal(applied.items[0]!.scenes?.length, 1);
+  applied.items[0]!.effects = [fxLayer("own", effect.id, 2), fxLayer("other", "other", 3)];
+  const audio = {
+    id: "sound", effectId: effect.id, filePath: "/fx/sound.wav",
+    durationSeconds: 4, startSeconds: 0, sourceInSeconds: 0, gainDb: 0,
+  };
+  applied.items[0]!.audioOverlays = [audio, { ...audio, id: "other", effectId: "other" }];
 
   const cleaned = removeBroadcastEffect(applied.items, effect.id);
   assert.deepEqual(cleaned[0]!.scenes, []);
+  assert.deepEqual(cleaned[0]!.effects?.map((layer) => layer.id), ["other"]);
+  assert.deepEqual(cleaned[0]!.audioOverlays?.map((overlay) => overlay.id), ["other"]);
+  assert.equal(applied.items[0]!.audioOverlays.length, 2, "source playlist stays intact");
 });
 
 test("removing a track takes the whole effect off the clip", () => {

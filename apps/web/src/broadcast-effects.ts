@@ -26,8 +26,8 @@ import type { MediaAsset } from "./types.js";
  * оверлеев, которые эфирный контур уже умеет отдавать. Функции чистые, поэтому
  * поведение каждого эффекта проверяется тестом без запуска FFmpeg.
  *
- * Работа идёт в два шага: `planBroadcastEffect` считает, что и куда положить и
- * что и куда положить, а `applyBroadcastPlan` возвращает новый плейлист.
+ * `planBroadcastEffect` считает, что и куда положить,
+ * а `applyBroadcastPlan` возвращает новый плейлист.
  */
 
 export interface BroadcastTargetClip {
@@ -367,7 +367,7 @@ export function graphicFileRejection(kind: BroadcastEffectKind, filePath: string
   const policy = effectGraphicPolicies[kind];
   const extension = fileExtension(filePath);
   if (policy.extensions.includes(extension)) return null;
-  return `${broadcastEffectTitleFor(kind)} принимает ${policy.accepts}` +
+  return `${effectTitles[kind]} принимает ${policy.accepts}` +
     ` (${policy.extensions.join(", ")}), а выбран «${extension || "файл без расширения"}»`;
 }
 
@@ -379,10 +379,6 @@ const effectTitles: Record<BroadcastEffectKind, string> = {
   "clock-countdown": "Часы / отсчёт",
   "stinger-transition": "Стингер-переход",
 };
-
-function broadcastEffectTitleFor(kind: BroadcastEffectKind): string {
-  return effectTitles[kind];
-}
 
 /**
  * Ключ, по которому запись задания находит свой ролик.
@@ -477,6 +473,7 @@ export function planBroadcastEffect(input: PlanBroadcastEffectInput): BroadcastE
     createId: input.createId ?? (() => globalThis.crypto.randomUUID()),
     definition,
     plan,
+    entriesByTitle: groupTaskEntriesByTitle(input.taskEntries),
     targets: input.clips.filter((clip) => !input.targetIds || input.targetIds.has(clip.id)),
   };
   if (context.targets.length === 0) {
@@ -492,6 +489,7 @@ interface PlanContext extends PlanBroadcastEffectInput {
   definition: NonNullable<GraphicEffectAsset["broadcast"]>;
   plan: BroadcastEffectPlan;
   targets: BroadcastTargetClip[];
+  entriesByTitle: Map<string, BroadcastTaskEntry[]>;
 }
 
 const planners: Record<BroadcastEffectKind, (context: PlanContext) => void> = {
@@ -568,7 +566,7 @@ function resolveSceneFieldValues(
   }
 
   const clipKey = normalizeTaskTitle(clip.name);
-  const matches = context.taskEntries.filter((entry) => normalizeTaskTitle(entry.name) === clipKey);
+  const matches = context.entriesByTitle.get(clipKey) ?? [];
   if (matches.length > 1) {
     context.plan.warnings.push(
       `"${clip.name}": в файле задания несколько записей с этим именем — ролик пропущен`,
@@ -652,14 +650,8 @@ function planAnimationInOut(context: PlanContext): void {
 function groupTaskEntriesByTitle(
   entries: readonly BroadcastTaskEntry[],
 ): Map<string, BroadcastTaskEntry[]> {
-  const grouped = new Map<string, BroadcastTaskEntry[]>();
-  for (const entry of entries) {
-    const key = normalizeTaskTitle(entry.name);
-    if (!key) continue;
-    const current = grouped.get(key) ?? [];
-    current.push(entry);
-    grouped.set(key, current);
-  }
+  const grouped = groupBy(entries, (entry) => normalizeTaskTitle(entry.name));
+  grouped.delete("");
   return grouped;
 }
 
@@ -686,14 +678,20 @@ function planNextProgram(context: PlanContext): void {
     context.plan.errors.push("У эффекта нет оформления: сцена не задана");
     return;
   }
-  const entriesByName = groupTaskEntriesByTitle(context.taskEntries);
+  const typed = context.clips.some((clip) => clip.scheduleType);
+  const nextByClip = new Map<string, BroadcastTargetClip>();
+  let nextMovie: BroadcastTargetClip | undefined;
+  for (let index = context.clips.length - 1; index >= 0; index -= 1) {
+    const clip = context.clips[index]!;
+    if (nextMovie) nextByClip.set(clip.id, nextMovie);
+    if (!typed || clip.scheduleType === "movie") nextMovie = clip;
+  }
 
   for (const clip of context.targets) {
-    const position = context.clips.findIndex((candidate) => candidate.id === clip.id);
     // Анонсируем следующий фильм, а не следующую строку расписания: между
     // фильмами стоят отбивки и ролики, объявлять их незачем.
-    const next = position >= 0 ? nextMovieAfter(context.clips, position) : undefined;
-    const nextEntries = next ? entriesByName.get(normalizeTaskTitle(next.name)) ?? [] : [];
+    const next = nextByClip.get(clip.id);
+    const nextEntries = next ? context.entriesByTitle.get(normalizeTaskTitle(next.name)) ?? [] : [];
     if (settings.source === "task-file" && nextEntries.length > 1 && next) {
       context.plan.warnings.push(
         `"${next.name}": в файле задания несколько записей с таким идентификатором — ` +
@@ -774,19 +772,6 @@ const mediaExtensions = new Set([
   "mp4", "mov", "mxf", "mkv", "avi", "m4v", "webm", "ts", "m2ts", "mts",
   "mpg", "mpeg", "wmv", "flv", "vob", "m2v", "dv", "gxf", "lxf",
 ]);
-
-function nextMovieAfter(
-  clips: readonly BroadcastTargetClip[],
-  position: number,
-): BroadcastTargetClip | undefined {
-  const typed = clips.some((clip) => clip.scheduleType);
-  for (let index = position + 1; index < clips.length; index += 1) {
-    const candidate = clips[index];
-    if (!candidate) continue;
-    if (!typed || candidate.scheduleType === "movie") return candidate;
-  }
-  return undefined;
-}
 
 /* -------------------------------------------------------------------------- *
  * Ticker crawl
@@ -1289,7 +1274,12 @@ export function removeBroadcastEffect(
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
   const groups = new Map<string, T[]>();
-  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  for (const item of items) {
+    const groupKey = key(item);
+    const group = groups.get(groupKey);
+    if (group) group.push(item);
+    else groups.set(groupKey, [item]);
+  }
   return groups;
 }
 

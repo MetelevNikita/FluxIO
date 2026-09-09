@@ -26,14 +26,11 @@ export function buildScheduleTimeline(
   slot: ScheduleSlot,
   now = new Date(),
 ): ScheduleTimelineEntry[] {
-  const anchor = parseLocalDate(metadata?.anchorDate) ?? scheduleAnchor(slot, now);
-  const startSeconds = parseScheduleClock(metadata?.startTime ?? "12:00:00.00");
-  let cursorSeconds = startSeconds + (metadata?.delaySeconds ?? 0);
+  let cursorMs = scheduleStartsAt(metadata, slot, now);
   let previousDayKey: string | null = null;
 
   return playlist.map((asset) => {
-    const startsAt = new Date(anchor);
-    startsAt.setSeconds(cursorSeconds);
+    const startsAt = new Date(cursorMs);
     const dayKey = localDateKey(startsAt);
     const entry: ScheduleTimelineEntry = {
       asset,
@@ -44,9 +41,18 @@ export function buildScheduleTimeline(
       startsNewDay: dayKey !== previousDayKey,
     };
     previousDayKey = dayKey;
-    cursorSeconds += itemDurationSeconds(asset);
+    cursorMs += airDurationSeconds(asset) * 1_000;
     return entry;
   });
+}
+
+function scheduleStartsAt(metadata: ScheduleMetadata | null, slot: ScheduleSlot, now: Date): number {
+  const anchor = parseLocalDate(metadata?.anchorDate) ?? scheduleAnchor(slot, now);
+  // Местное время старта; дальнейшие длительности идут по реальным миллисекундам,
+  // чтобы дробные секунды и перевод часов не сдвигали позицию эфира.
+  return anchor.setMilliseconds(
+    (parseScheduleClock(metadata?.startTime ?? "12:00:00.00") + (metadata?.delaySeconds ?? 0)) * 1_000,
+  );
 }
 
 function scheduleAnchor(slot: ScheduleSlot, now: Date): Date {
@@ -126,17 +132,12 @@ export function scheduleCatchUpPoint(
   now = new Date(),
 ): ScheduleCatchUpPoint | null {
   if (playlist.length === 0) return null;
-  const anchor = parseLocalDate(metadata?.anchorDate) ?? scheduleAnchor(slot, now);
-  const startsAt = new Date(anchor);
-  startsAt.setSeconds(
-    parseScheduleClock(metadata?.startTime ?? "12:00:00.00") + (metadata?.delaySeconds ?? 0),
-  );
-  const elapsedSeconds = (now.getTime() - startsAt.getTime()) / 1_000;
+  const elapsedSeconds = (now.getTime() - scheduleStartsAt(metadata, slot, now)) / 1_000;
   if (elapsedSeconds < 0) return null;
 
   let cursorSeconds = 0;
   for (const [itemIndex, asset] of playlist.entries()) {
-    const duration = itemDurationSeconds(asset);
+    const duration = airDurationSeconds(asset);
     if (elapsedSeconds < cursorSeconds + duration) {
       return {
         assetId: asset.id,
@@ -153,15 +154,4 @@ export function scheduleCatchUpPoint(
     cursorSeconds += duration;
   }
   return null;
-}
-
-/**
- * Длительность строки расписания — одна на список, на догон и на сводку.
- *
- * Ролик без файла считается нулевым: в эфире его не будет, и всё, что стоит
- * ниже, выйдет раньше. Показывать сетку так, будто пропавший ролик отыграет
- * свои минуты, — значит врать о времени выхода каждой следующей передачи.
- */
-function itemDurationSeconds(asset: MediaAsset): number {
-  return airDurationSeconds(asset);
 }
