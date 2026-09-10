@@ -26,6 +26,7 @@ import {
   nextInstancePort,
   npmCiArguments,
   parseEnv,
+  platformServiceRemoveCommand,
   platformServiceStopCommand,
   pruneRetiredSourceFiles,
   probeGstreamerDvbPlugin,
@@ -493,6 +494,32 @@ test("Ctrl+C stop commands cover each production service manager", () => {
   });
   assert.equal(windows.command, "powershell.exe");
   assert.match(windows.args.at(-1), /Stop-ScheduledTask/);
+});
+
+test("удаление программы переживает уже снятую службу Windows", () => {
+  // `Unregister-ScheduledTask` на несуществующей задаче отвечает `ObjectNotFound`,
+  // и мастер падал до удаления базы, файла окружения и записи в реестре:
+  // программа оставалась в списке навсегда — второй заход упирался в то же
+  // место. Снаружи это выглядело как «переходит в offline, но не удаляется».
+  const { command, args } = platformServiceRemoveCommand({
+    kind: "windows-task",
+    label: "Gruber Playout Media Service program-1",
+  });
+  assert.equal(command, "powershell.exe");
+  const script = args.at(-1);
+  // Снятие идёт только когда задача есть, а её отсутствие ошибкой не считается.
+  assert.match(script, /Get-ScheduledTask -TaskName '[^']+' -ErrorAction SilentlyContinue/);
+  assert.ok(
+    script.indexOf("Get-ScheduledTask") < script.indexOf("Unregister-ScheduledTask"),
+    "снятие идёт раньше проверки существования",
+  );
+  assert.match(script, /Unregister-ScheduledTask -TaskName '[^']+' -Confirm:\$false \}/);
+  // Кавычка в имени программы не должна разрывать строку PowerShell.
+  const quoted = platformServiceRemoveCommand({
+    kind: "windows-task",
+    label: "Gruber Playout O'Brien",
+  }).args.at(-1);
+  assert.match(quoted, /'Gruber Playout O''Brien'/);
 });
 
 test("новая программа обходит порт, занятый чужим процессом, а не падает", async () => {

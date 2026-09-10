@@ -558,30 +558,47 @@ async function deleteInstance(registry, id) {
     throw new Error(`Программа ${instance.name} находится в эфире. Сначала выполните Stop playout.`);
   }
 
+  // Файла окружения может не быть — прошлое удаление оборвалось после него, или
+  // его убрали руками. Базу тогда не найти, но это не повод оставлять программу
+  // в списке навсегда.
   const environmentPath = path.join(projectRoot, instance.environmentFile);
-  const environment = parseEnv(await readFile(environmentPath, "utf8"));
+  const environment = existsSync(environmentPath)
+    ? parseEnv(await readFile(environmentPath, "utf8"))
+    : {};
   const service = instanceService(instance);
   if (service.kind === "systemd") {
-    await runCommand("sudo", ["systemctl", "disable", "--now", service.label]);
-    await runCommand("sudo", ["rm", "-f", `/etc/systemd/system/${service.label}`]);
-    await runCommand("sudo", ["systemctl", "daemon-reload"]);
+    // Юнита может не быть — тогда `disable` отвечает ошибкой, а снимать нечего.
+    if (existsSync(`/etc/systemd/system/${service.label}`)) {
+      await runCommand("sudo", ["systemctl", "disable", "--now", service.label]);
+      await runCommand("sudo", ["rm", "-f", `/etc/systemd/system/${service.label}`]);
+      await runCommand("sudo", ["systemctl", "daemon-reload"]);
+    }
   } else if (service.kind === "launchd") {
     spawnSync("launchctl", ["bootout", service.domain, service.plistPath], { stdio: "ignore" });
     await rm(service.plistPath, { force: true });
   } else {
-    await runCommand("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      `Stop-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '${escapePowerShell(service.label)}' -Confirm:$false`,
-    ]);
+    const remove = platformServiceRemoveCommand(service);
+    await runCommand(remove.command, remove.args);
   }
 
-  await dropInstanceDatabase(environment.DATABASE_URL);
+  // База — единственный шаг, который вправе не удаться, не отменяя удаления:
+  // PostgreSQL может быть выключен, а запись в реестре держать программу в
+  // списке до конца времён. Молчать об этом нельзя — база останется на диске,
+  // поэтому оператор получает и причину, и имя.
+  let databaseWarning = null;
+  try {
+    await dropInstanceDatabase(environment.DATABASE_URL);
+  } catch (error) {
+    databaseWarning = errorMessage(error);
+  }
   await rm(environmentPath, { force: true });
   if (bundleRoot) await rm(path.join(bundleRoot, "data", "instances", id), { force: true, recursive: true });
   registry.instances = registry.instances.filter((entry) => entry.id !== id);
   await writeInstanceRegistry(projectRoot, registry);
   console.log(`Программа ${instance.name} удалена вместе со службой, базой и файлами.`);
+  if (databaseWarning) {
+    console.log(`Внимание: базу данных удалить не удалось — ${databaseWarning}. Уберите её вручную.`);
+  }
 }
 
 async function dropInstanceDatabase(databaseUrl) {
@@ -2987,6 +3004,37 @@ async function ensureNodeModulesAreFree() {
   const locked = await findLockedNativeFiles(projectRoot);
   if (locked.length === 0) return;
   throw new Error(describeLockedNativeFiles(locked));
+}
+
+/**
+ * Как снять фоновую службу программы при её удалении.
+ *
+ * Службы может не быть вовсе: её сняли руками, программа ставилась прежней
+ * версией, или прошлое удаление оборвалось на полпути. Для мастера это значит
+ * «уже снята», а не отказ: `Unregister-ScheduledTask` на несуществующей задаче
+ * возвращает `ObjectNotFound`, мастер падал **до** удаления базы, файла
+ * окружения и записи в реестре — и программа оставалась в списке навсегда,
+ * потому что второй заход упирался в то же место. Снаружи это выглядело как
+ * «переходит в offline, но не удаляется»: остановить службу мастер успевал.
+ *
+ * Настоящий отказ снятия (нет прав) по-прежнему роняет команду — задача
+ * осталась бы работать, и молчать об этом нельзя.
+ */
+export function platformServiceRemoveCommand(service) {
+  if (service.kind === "windows-task") {
+    const name = `'${escapePowerShell(service.label)}'`;
+    return {
+      command: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-Command",
+        `if (Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue) { ` +
+          `Stop-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue; ` +
+          `Unregister-ScheduledTask -TaskName ${name} -Confirm:$false }`,
+      ],
+    };
+  }
+  throw new Error(`Неизвестный background service: ${service.kind}`);
 }
 
 export function platformServiceStopCommand(service) {

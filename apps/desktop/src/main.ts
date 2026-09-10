@@ -58,6 +58,20 @@ app.on("window-all-closed", () => {
   }
 });
 
+/**
+ * Причина отказа мастера — то, что он сам назвал ошибкой.
+ *
+ * Мастер завершает работу строкой «Ошибка установки: …»; она и нужна. Не нашлось
+ * её — берём хвост вывода, но не больше нескольких строк: строка под карточками
+ * программ читается целиком, а не прокручивается.
+ */
+function setupFailureReason(output: string): string {
+  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const named = lines.findLast((line) => line.startsWith("Ошибка установки:"));
+  if (named) return named.replace(/^Ошибка установки:\s*/, "");
+  return lines.slice(-3).join(" · ").slice(0, 400);
+}
+
 function configuredInstances(): FluxioInstance[] {
   // Программ может не быть вовсе — первичная установка их не создаёт. Пустой
   // список ведёт Control Center к экрану «создайте первую программу».
@@ -136,7 +150,15 @@ async function runSetup(args: string[]): Promise<void> {
     child.stdout.on("data", (chunk) => { output += String(chunk); });
     child.stderr.on("data", (chunk) => { output += String(chunk); });
     child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(output.trim() || `Setup exited with code ${code}`)));
+    child.once("exit", (code) => {
+      if (code === 0) return resolve();
+      // Целиком вывод мастера в интерфейс не уходит: он печатает шапку с
+      // разбором установки на два экрана, и причина тонула в ней — оператор
+      // видел простыню вместо строки «задача не найдена». Полный вывод
+      // остаётся в консоли службы, там его и читают.
+      console.error(output);
+      reject(new Error(setupFailureReason(output) || `Setup exited with code ${code}`));
+    });
   });
 }
 
