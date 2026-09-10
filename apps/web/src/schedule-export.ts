@@ -1,3 +1,4 @@
+import { scheduleItemTypeFor } from "@gruber/contracts";
 import type { AudioScanLanguage, SerializeScheduleRequest, GraphicEffectAsset } from "@gruber/contracts";
 import type { MediaAsset, ScheduleMetadata, AudioTrackLibrary } from "./types.js";
 import { encodeScheduleBlob } from "./schedule-blob.js";
@@ -25,7 +26,7 @@ export function scheduleExportRequest(items: MediaAsset[], metadata: ScheduleMet
             data: encodeScheduleBlob(effect.broadcast),
           })),
         items: items.map((asset) => ({
-          type: asset.scheduleType ?? inferScheduleType(
+          type: asset.scheduleType ?? scheduleItemTypeFor(
             asset.declaredDurationSeconds ?? asset.durationSeconds,
           ),
           declaredDurationSeconds: asset.declaredDurationSeconds ?? asset.durationSeconds,
@@ -80,11 +81,7 @@ function languagesFromPlaylist(items: MediaAsset[]): AudioScanLanguage[] {
     .sort((left, right) => left.languageCode.localeCompare(right.languageCode));
 }
 
-function inferScheduleType(seconds: number): "movie" | "chop" | "clip" {
-  if (seconds < 30) return "chop";
-  if (seconds > 300) return "movie";
-  return "clip";
-}
+
 
 function clampAgeDuration(value: number): number {
   return Math.round(Number.isFinite(value) ? Math.min(60, Math.max(10, value)) : 10);

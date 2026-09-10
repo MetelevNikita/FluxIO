@@ -669,11 +669,18 @@ test("schedule parser reads rundown metadata, overlays and 168-hour variance", (
 });
 
 test("schedule parser warns about type timing and rejects missing header", () => {
+  // Пороги общие с экспортом: минута — это clip, и своё же расписание не должно
+  // возвращаться из файла с предупреждением на каждой второй строке.
   const parsed = parseScheduleText([
     "start on 00:00:00.00 - delay 0",
     "movie 00:01:00.00 /media/too-short.mp4",
+    "chop 00:00:59.00 /media/bumper.mp4",
+    "clip 00:02:59.00 /media/trailer.mp4",
+    "movie 00:03:00.00 /media/programme.mp4",
   ].join("\n"));
-  assert.match(parsed.warnings[0] ?? "", /movie duration should be longer/);
+  // Ругается ровно на первую строку: остальные три сидят в своих порогах.
+  assert.equal(parsed.warnings.length, 1);
+  assert.match(parsed.warnings[0] ?? "", /movie duration 1:00 matches clip/);
   assert.throws(
     () => parseScheduleText("clip 00:01:00.00 /media/clip.mp4"),
     ScheduleParseError,

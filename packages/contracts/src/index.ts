@@ -278,6 +278,23 @@ export const scte35MarkerSchema = z.object({
 
 export const scheduleItemTypeSchema = z.enum(["movie", "chop", "clip"]);
 
+/**
+ * Тип строки расписания по её длительности.
+ *
+ * Короче минуты — отбивка (`chop`), короче трёх минут — ролик (`clip`),
+ * остальное — передача (`movie`). Пороги живут здесь одни на всех: разбор
+ * файла проверяет ими чужой тип, экспорт — подставляет свой, и разойдись они,
+ * собственное расписание FluxIO возвращалось бы из файла с предупреждениями
+ * на каждой второй строке.
+ */
+export const scheduleChopSeconds = 60;
+export const scheduleClipSeconds = 180;
+
+export function scheduleItemTypeFor(seconds: number): ScheduleItemType {
+  if (seconds < scheduleChopSeconds) return "chop";
+  return seconds < scheduleClipSeconds ? "clip" : "movie";
+}
+
 export const logoOverlaySchema = z.object({
   filePath: z.string().min(1),
   position: z.enum([

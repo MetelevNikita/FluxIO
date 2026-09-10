@@ -10,6 +10,7 @@ import {
   type ScheduleBroadcastEffect,
   type ScheduleBroadcastShow,
   type Scte35Marker,
+  scheduleItemTypeFor,
 } from "@gruber/contracts";
 import { languageLabel, resolveLanguageCode } from "../audio/languages.js";
 
@@ -456,14 +457,15 @@ function validateTypeDuration(
   seconds: number,
   lineNumber: number,
 ): string[] {
-  if (type === "movie" && seconds <= 300) {
-    return [`Line ${lineNumber}: movie duration should be longer than 5 minutes`];
-  }
-  if (type === "chop" && seconds >= 30) {
-    return [`Line ${lineNumber}: chop duration should be shorter than 30 seconds`];
-  }
-  if (type === "clip" && seconds >= 300) {
-    return [`Line ${lineNumber}: clip duration should be shorter than 5 minutes`];
-  }
-  return [];
+  // Пороги общие с экспортом: своё же расписание не должно возвращаться из
+  // файла с предупреждением на каждой второй строке.
+  const expected = scheduleItemTypeFor(seconds);
+  if (type === expected) return [];
+  return [`Line ${lineNumber}: ${type} duration ${formatDuration(seconds)} matches ${expected}`];
+}
+
+/** Длительность строкой — предупреждение о типе обязано называть её. */
+function formatDuration(seconds: number): string {
+  const whole = Math.round(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
