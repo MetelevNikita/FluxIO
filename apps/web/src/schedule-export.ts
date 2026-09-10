@@ -36,6 +36,7 @@ export function scheduleExportRequest(items: MediaAsset[], metadata: ScheduleMet
                 durationSeconds: clampAgeDuration(asset.ageTitle.durationSeconds),
                 enabled: asset.ageTitle.enabled,
                 text: asset.ageTitle.text,
+                filePath: asset.ageTitle.filePath,
               }
             : null,
           logoPath: asset.itemLogo?.enabled ? asset.itemLogo.filePath : null,

@@ -1012,6 +1012,8 @@ export const parsedScheduleItemSchema = z.object({
   filePath: z.string().min(1),
   ageTitle: z.string().nullable(),
   ageTitleDurationSeconds: z.number().int().min(10).max(60).nullable(),
+  /** Путь картинки маркировки; `null` — расписание прежней версии. */
+  ageTitlePath: z.string().nullable().default(null),
   logoPath: z.string().nullable(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
   broadcastShows: z.array(scheduleBroadcastShowSchema).max(64).default([]),
@@ -1061,6 +1063,17 @@ export const scheduleExportItemSchema = z.object({
       message: "AGE title must not contain braces or line breaks",
     }),
     durationSeconds: z.number().int().min(10).max(60).default(10),
+    /**
+     * Картинка маркировки.
+     *
+     * Без неё расписание несёт только текст «16+», и папку AGE оператор
+     * выбирает заново на каждой машине — а до тех пор рейтинг рисуется
+     * шрифтом, для чего нужен FFmpeg с libfreetype. Поле необязательное:
+     * расписания прежних версий пути не несут.
+     */
+    filePath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
+      message: "AGE image path must not contain braces or line breaks",
+    }).nullable().optional(),
   }).nullable().optional(),
   logoPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "Logo path must not contain braces or line breaks",

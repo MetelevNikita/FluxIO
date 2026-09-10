@@ -34,8 +34,12 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
 
   for (const item of schedule.items) {
     if (item.ageTitle?.enabled) {
+      // Путь картинки пишется рядом с текстом: по одному «16+» папку AGE на
+      // другой машине не найти, и маркировка ушла бы в эфир нарисованной
+      // шрифтом вместо готового кадра.
       lines.push(
-        `insertAgeTitle {${item.ageTitle.text}} duration {${item.ageTitle.durationSeconds}}`,
+        `insertAgeTitle {${item.ageTitle.text}} duration {${item.ageTitle.durationSeconds}}` +
+          (item.ageTitle.filePath ? ` path {${item.ageTitle.filePath}}` : ""),
       );
     }
     if (item.logoPath) {

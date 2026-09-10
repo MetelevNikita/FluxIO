@@ -979,6 +979,51 @@ function sessionAsset(id: string, filePath: string) {
   };
 }
 
+test("the AGE image path survives the round trip, and its absence is not invented", () => {
+  // По одному «16+» папку AGE на другой машине не найти: маркировка ушла бы в
+  // эфир нарисованной шрифтом вместо готового кадра — а для этого нужен ещё и
+  // FFmpeg с libfreetype.
+  const serialized = serializeSchedule({
+    extension: "txt",
+    broadcastEffects: [],
+    startTime: "12:00:00.00",
+    delaySeconds: 0,
+    audioLanguages: [],
+    items: [
+      {
+        type: "clip",
+        declaredDurationSeconds: 60,
+        filePath: "/media/one.mp4",
+        ageTitle: { enabled: true, text: "16+", durationSeconds: 10, filePath: "D:/AGE/16.png" },
+        logoPath: null,
+        broadcastShows: [],
+        graphicElements: [],
+        srtPath: null,
+      },
+      {
+        type: "clip",
+        declaredDurationSeconds: 60,
+        filePath: "/media/two.mp4",
+        ageTitle: { enabled: true, text: "12+", durationSeconds: 10 },
+        logoPath: null,
+        broadcastShows: [],
+        graphicElements: [],
+        srtPath: null,
+      },
+    ],
+  });
+
+  assert.match(serialized.content, /insertAgeTitle \{16\+\} duration \{10\} path \{D:\/AGE\/16\.png\}/);
+  // Ролику без картинки пустая пара скобок не пишется: её пришлось бы отличать
+  // от настоящего пути при разборе.
+  assert.match(serialized.content, /insertAgeTitle \{12\+\} duration \{10\}\r\n/);
+
+  const parsed = parseScheduleText(serialized.content, "/tmp/schedule.txt");
+  assert.equal(parsed.items[0]?.ageTitlePath, "D:/AGE/16.png");
+  assert.equal(parsed.items[1]?.ageTitlePath, null);
+  assert.equal(parsed.warnings.length, 0);
+});
+
 test("a cue point survives the round trip through the schedule file", () => {
   // Метку ставит оператор по хронометражу, и без неё перенесённое на другую
   // машину расписание выходит в эфир без врезок — молча.

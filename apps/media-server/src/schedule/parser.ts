@@ -18,7 +18,8 @@ const targetDurationSeconds = 7 * 24 * 60 * 60;
 const maximumScheduleBytes = 5 * 1024 * 1024;
 const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*delay\s+(\d+(?:\.\d+)?)\s*$/i;
 const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
-const agePattern = /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?\s*$/i;
+const agePattern =
+  /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?(?:\s+path\s*\{([^}]*)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
 // Определение эфирного эффекта: заголовок файла. `data` — base64, поэтому
 // фигурных скобок внутри быть не может и разбор по ним безопасен.
@@ -106,6 +107,7 @@ export function parseScheduleText(
   let delaySeconds = 0;
   let pendingAgeTitle: string | null = null;
   let pendingAgeTitleDurationSeconds: number | null = null;
+  let pendingAgeTitlePath: string | null = null;
   let pendingLogoPath: string | null = null;
   let pendingGraphicElements: ScheduleGraphicElement[] = [];
   // Определения эфирных эффектов и их показы. Определения общие для файла,
@@ -140,6 +142,7 @@ export function parseScheduleText(
     if (age) {
       pendingAgeTitle = requiredDirectiveValue(age[1], "insertAgeTitle", entry.lineNumber);
       pendingAgeTitleDurationSeconds = parseAgeDuration(age[2], entry.lineNumber);
+      pendingAgeTitlePath = optionalDirectiveValue(age[3]) ?? null;
       continue;
     }
     const logo = line.match(logoPattern);
@@ -325,6 +328,7 @@ export function parseScheduleText(
         ageTitleDurationSeconds: pendingAgeTitle
           ? pendingAgeTitleDurationSeconds ?? 10
           : null,
+        ageTitlePath: pendingAgeTitle ? pendingAgeTitlePath : null,
         declaredDuration,
         declaredDurationSeconds,
         filePath,
@@ -342,6 +346,7 @@ export function parseScheduleText(
       warnings.push(...itemWarnings);
       pendingAgeTitle = null;
       pendingAgeTitleDurationSeconds = null;
+      pendingAgeTitlePath = null;
       pendingLogoPath = null;
       pendingGraphicElements = [];
       pendingBroadcastShows = [];

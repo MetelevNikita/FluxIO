@@ -56,6 +56,11 @@ import {
 import { SceneFormatDialog } from "./title-editor/SceneFormatDialog";
 import { TitleLibraryDialog } from "./title-editor/TitleLibraryDialog";
 import { decodeScheduleBlob } from "./schedule-blob";
+import {
+  countSubtitleMatches,
+  librariesFromSchedule,
+  reconcileSubtitleAssignments,
+} from "./schedule-libraries";
 import { MissingEffectFilesDialog } from "./components/MissingEffectFilesDialog";
 import {
   adoptTitleTemplate,
@@ -64,7 +69,6 @@ import {
   summarizeTitleFile,
   titleFileName,
 } from "./title-file";
-import { matchingNamedAssetPath } from "./graphic-title-matching";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
 import { airDurationSeconds, playableClips } from "./clip-duration";
 import { useStableCallback } from "./stable-callback";
@@ -1129,21 +1133,53 @@ export function App() {
       }
       setActiveSchedule(slot);
       setSelectedAssetId(scheduledAssets[0]?.id ?? "");
+      // Пути, объявленные расписанием, встают в панель ресурсов сразу: иначе
+      // оператор видит «Not selected» там, где расписание всё принесло само,
+      // и идёт выбирать папки заново, не зная, что подхватилось.
+      const libraries = librariesFromSchedule(parsed);
+      if (libraries.logoPath) {
+        setScheduleLogoPath(libraries.logoPath);
+        setScheduleLogoSource(libraries.logoSource ?? "");
+      }
+      if (libraries.ageDirectory) {
+        setAgeLibrary({ directoryPath: libraries.ageDirectory, imagePaths: libraries.agePaths });
+      }
+      if (libraries.subtitleDirectory) {
+        setSubtitleLibrary({
+          directoryPath: libraries.subtitleDirectory,
+          filePaths: libraries.subtitlePaths,
+        });
+      }
       // Языки, с которыми расписание сохраняли, объявлены его заголовком.
       // Набор дорожек программы фиксируется на старте по этому списку, поэтому
       // восстановить его надо до первого Start, а не «когда-нибудь потом».
-      if (parsed.audioLanguages.length > 0) {
+      if (parsed.audioLanguages.length > 0 || libraries.audioDirectory) {
+        const directoryPath = libraries.audioDirectory
+          ?? settings.audioTrackDirectory
+          ?? "";
         setAudioTrackLibrary((current) => ({
-          directoryPath: current?.directoryPath ?? settings.audioTrackDirectory ?? "",
-          languages: parsed.audioLanguages,
+          directoryPath: directoryPath || current?.directoryPath || "",
+          languages: parsed.audioLanguages.length > 0
+            ? parsed.audioLanguages
+            : current?.languages ?? [],
         }));
-        setSettings((current) => ({ ...current, audioTracksEnabled: true }));
+        setSettings((current) => ({
+          ...current,
+          audioTracksEnabled: true,
+          audioTrackDirectory: directoryPath || current.audioTrackDirectory,
+        }));
       }
+      const synchronised = [
+        libraries.logoPath ? tr("логотип", "logo") : null,
+        libraries.agePaths.length > 0 ? `AGE ${libraries.agePaths.length}` : null,
+        parsed.audioLanguages.length > 0
+          ? `${tr("языки", "languages")}: ${parsed.audioLanguages.map((language) => language.label).join(" · ")}`
+          : null,
+        libraries.subtitlePaths.length > 0 ? `SRT ${libraries.subtitlePaths.length}` : null,
+      ].filter(Boolean);
       setScheduleActionMessage(
         `${slot === "current" ? "Current" : "Future"} schedule imported: ${scheduledAssets.length} items` +
-          (parsed.audioLanguages.length > 0
-            ? ` · языки: ${parsed.audioLanguages.map((language) => language.label).join(" · ")}`
-            : "") +
+          (synchronised.length > 0 ? ` · ${synchronised.join(" · ")}` : "") +
           ".",
       );
       const failed = scheduledAssets.filter((asset) => asset.status === "error");
@@ -2681,10 +2717,22 @@ export function App() {
   async function selectSubtitleDirectory() {
     const selected = await window.gruberDesktop?.selectSubtitleDirectory();
     if (!selected) return;
+    // Первый выбор папки включает субтитры всем, кому нашёлся файл: оператор
+    // выбрал папку именно затем, чтобы они пошли в эфир, а обходить сотню
+    // роликов ради галочки на каждом — работа, которой он не просил.
+    // Дальше решения оператора уважаются: выключенный ролик остаётся
+    // выключенным, даже если файл для него есть.
+    const enableAll = subtitleLibrary === null;
     setSubtitleLibrary(selected);
-    setPlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths));
-    setFuturePlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths));
-    setScheduleActionMessage(`SRT folder loaded: ${selected.filePaths.length} subtitle file(s).`);
+    setPlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths, enableAll));
+    setFuturePlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths, enableAll));
+    const matched = enableAll
+      ? countSubtitleMatches([...playlist, ...futurePlaylist], selected.filePaths)
+      : 0;
+    setScheduleActionMessage(
+      `SRT folder loaded: ${selected.filePaths.length} subtitle file(s)` +
+        (enableAll ? ` · ${tr("включено роликов", "enabled on")}: ${matched}` : "") + ".",
+    );
   }
 
   async function selectAudioTrackDirectory() {
@@ -4216,21 +4264,6 @@ function normalizeComparablePath(value: string): string {
 
 function inferGraphicKind(filePath: string): "static" | "video" {
   return /\.(?:png|webp)$/i.test(filePath) ? "static" : "video";
-}
-
-function reconcileSubtitleAssignments(
-  items: MediaAsset[],
-  subtitlePaths: string[],
-): MediaAsset[] {
-  return items.map((asset) => {
-    if (!asset.subtitles?.enabled) return asset;
-    const filePath = matchingSubtitlePath(asset.name, subtitlePaths);
-    return { ...asset, subtitles: { enabled: Boolean(filePath), filePath } };
-  });
-}
-
-function matchingSubtitlePath(mediaName: string, subtitlePaths: string[]): string | null {
-  return matchingNamedAssetPath(mediaName, subtitlePaths);
 }
 
 function parentDirectory(value: string): string {
