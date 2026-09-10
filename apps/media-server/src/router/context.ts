@@ -10,7 +10,16 @@ import { PlayoutSupervisor } from "../ffmpeg/playout-supervisor.js";
 import type { ApplicationLogger } from "../logging/logger.js";
 import { SystemMetricsSampler } from "../system-metrics.js";
 
-export const largePlaylistBodyLimitBytes = 32 * 1_024 * 1_024;
+/**
+ * Потолок тела запроса для маршрутов, принимающих расписание.
+ *
+ * Числом строки расписания не ограничены — их держит этот лимит, и он же
+ * единственный, кто говорит правду о размере: недельная сетка из отбивок это
+ * десятки тысяч строк, а снимок сессии несёт каждую дважды (медиатека плюс
+ * само расписание). Выше не поднимаем без нужды: разбор JSON синхронный, и
+ * служба на это время не отвечает ни на один эфирный маршрут.
+ */
+export const largePlaylistBodyLimitBytes = 64 * 1_024 * 1_024;
 
 export interface RouteContext {
   capabilities: FfmpegCapabilitiesService;

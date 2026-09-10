@@ -915,6 +915,70 @@ test("a complaint on shutdown is not written as a failure", () => {
   assert.equal(playoutEventLevel("Clip 2 renderer failed"), "error");
 });
 
+test("a week-long schedule is not rejected for being long", () => {
+  // Потолок в тысячу строк отвергал недельную сетку целиком: 168 часов из
+  // отбивок и анонсов — это больше тысячи строк, а снимок проверяется одной
+  // схемой, и оператор видел «сессия не сохраняется» без всякой связи с
+  // расписанием, которое он только что импортировал. Размер держит лимит тела
+  // запроса, а не счётчик.
+  const items = Array.from({ length: 5_000 }, (_, index) => ({
+    id: `row-${index}`,
+    name: `Ролик ${index}`,
+    filePath: `/media/clip-${index}.mp4`,
+    trimInSeconds: 0,
+    trimOutSeconds: 30,
+  }));
+  const request = startPlayoutRequestSchema.parse({
+    ...baseRequest(),
+    playlist: items,
+    nextPlaylist: items,
+  });
+  assert.equal(request.playlist.length, 5_000);
+  assert.equal(request.nextPlaylist.length, 5_000);
+
+  // И тот же список в снимке сессии: он проверяется одной схемой, поэтому
+  // отказ по любому потолку отменяет сохранение целиком.
+  const snapshot = workspaceSessionSnapshotSchema.parse({
+    version: 2,
+    assets: items.map((item) => sessionAsset(item.id, item.filePath)),
+    currentPlaylist: items.map((item) => sessionAsset(item.id, item.filePath)),
+    futurePlaylist: [],
+    activeSchedule: "current",
+    selectedAssetId: null,
+    currentScheduleMetadata: null,
+    futureScheduleMetadata: null,
+    scheduleLogoPath: "",
+    scheduleLogoSource: "",
+    ageLibrary: null,
+    settings: {},
+  });
+  assert.equal(snapshot.currentPlaylist.length, 5_000);
+});
+
+/** Ролик в снимке сессии — минимум полей, которых требует схема. */
+function sessionAsset(id: string, filePath: string) {
+  return {
+    id,
+    name: id,
+    filePath,
+    duration: "00:00:30",
+    durationSeconds: 30,
+    codec: "h264",
+    codecFamily: "h264",
+    codecProfile: "High",
+    resolution: "1920x1080",
+    fps: "25 fps",
+    bitrate: "6 Mbps",
+    size: "220 MB",
+    status: "analyzed",
+    preview: `/api/media/thumbnail?path=${id}`,
+    colorSpace: "bt709",
+    audio: "aac",
+    hasAudio: true,
+    sha256: "",
+  };
+}
+
 test("a cue point survives the round trip through the schedule file", () => {
   // Метку ставит оператор по хронометражу, и без неё перенесённое на другую
   // машину расписание выходит в эфир без врезок — молча.

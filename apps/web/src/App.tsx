@@ -2,6 +2,9 @@ import { scheduleExportRequest } from "./schedule-export";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 declare const __FLUXIO_VERSION__: string;
+
+/** Как часто снимок сессии уходит на сервер сам по себе, без правок. */
+const workspaceAutosaveIntervalMs = 5 * 60_000;
 import {
   broadcastEffectDefinitionSchema,
   broadcastEffectSettingsSchema,
@@ -1581,6 +1584,26 @@ export function App() {
     await persistWorkspaceSession(buildWorkspaceSaveRequest());
   });
   useEffect(() => window.gruberDesktop?.onFlushWorkspace(flushWorkspace), [flushWorkspace]);
+
+  /**
+   * Сохранение по часам, а не только по правкам.
+   *
+   * Обычное автосохранение идёт следом за изменением, и, если оно однажды не
+   * прошло — служба перезапускалась, сеть моргнула, снимок не влез в лимит, —
+   * повтора не будет до следующей правки. Оператор при этом ведёт эфир, ничего
+   * не меняя, и теряет всё, что набрал до сбоя. Раз в пять минут снимок уходит
+   * независимо от того, трогали расписание или нет.
+   */
+  useEffect(() => {
+    if (!workspaceAutosaveReady || demoDataEnabled) return;
+    const timer = window.setInterval(() => {
+      void flushWorkspace().catch((error: unknown) => setOperationError(tr(
+        `Сессия не сохраняется: ${errorMessage(error)}. Изменения не переживут перезапуск.`,
+        `Workspace autosave failed: ${errorMessage(error)}. Changes will not survive a restart.`,
+      )));
+    }, workspaceAutosaveIntervalMs);
+    return () => window.clearInterval(timer);
+  }, [workspaceAutosaveReady, demoDataEnabled, flushWorkspace]);
 
   async function saveSessionList() {
     if (playlist.length === 0 && futurePlaylist.length === 0) {

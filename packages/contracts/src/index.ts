@@ -1392,8 +1392,8 @@ export const startPlayoutRequestSchema = z.object({
    * цветные полосы. Подстановка живёт в supervisor, чтобы её видел любой
    * вызывающий, а не только HTTP-маршрут.
    */
-  playlist: z.array(playoutItemSchema).max(1_000),
-  nextPlaylist: z.array(playoutItemSchema).max(1_000).default([]),
+  playlist: z.array(playoutItemSchema),
+  nextPlaylist: z.array(playoutItemSchema).default([]),
   video: videoEncodingSchema,
   audio: audioEncodingSchema,
   logo: logoOverlaySchema.nullable().default(null),
@@ -1559,11 +1559,11 @@ export const startCompositeClipPreviewRequestSchema = z.object({
 });
 
 export const updateNextPlaylistRequestSchema = z.object({
-  nextPlaylist: z.array(playoutItemSchema).max(1_000),
+  nextPlaylist: z.array(playoutItemSchema),
 });
 
 export const updateCurrentPlaylistRequestSchema = z.object({
-  playlist: z.array(playoutItemSchema).min(1).max(1_000),
+  playlist: z.array(playoutItemSchema).min(1),
 });
 
 export const playoutStateSchema = z.enum([
@@ -1827,9 +1827,15 @@ const workspaceSettingValueSchema = z.union([
 
 export const workspaceSessionSnapshotSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]),
-  assets: z.array(workspaceSessionAssetSchema).max(2_500),
-  currentPlaylist: z.array(workspaceSessionAssetSchema).max(1_000),
-  futurePlaylist: z.array(workspaceSessionAssetSchema).max(1_000),
+  // Числом строки расписания не ограничены — их держит лимит тела запроса, и
+  // это единственный потолок, который не врёт. Счётчик в тысячу отвергал
+  // недельную сетку целиком: 168 часов из отбивок и анонсов — это больше
+  // тысячи строк, а снимок проверяется одной схемой, поэтому оператор видел
+  // «сессия не сохраняется» без всякой связи с расписанием, которое он только
+  // что импортировал.
+  assets: z.array(workspaceSessionAssetSchema),
+  currentPlaylist: z.array(workspaceSessionAssetSchema),
+  futurePlaylist: z.array(workspaceSessionAssetSchema),
   activeSchedule: z.enum(["current", "future"]),
   selectedAssetId: z.string().min(1).nullable(),
   currentScheduleMetadata: workspaceScheduleMetadataSchema.nullable(),
