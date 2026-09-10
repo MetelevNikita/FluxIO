@@ -4183,6 +4183,17 @@ input[type="range"] {
 
 .stream-runtime-list { display: flex; flex-direction: column; gap: 8px; }
 
+/* Путь заставки занимает всю доступную ширину, кнопки садятся по нижнему краю
+   поля: подпись «Файл» иначе разъезжается с ними по вертикали. */
+.reserve-clip-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.reserve-clip-row .form-field { flex: 1; }
+.reserve-clip-row button { height: 36px; white-space: nowrap; }
+
 .stream-runtime-row {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) repeat(3, auto) auto auto;

@@ -5,6 +5,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  Film,
   FlagTriangleRight,
   Grid2X2,
   LockKeyhole,
@@ -140,19 +141,6 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   return (
     <main className="broadcast-screen screen-body">
       <section className="settings-column">
-        <div className="settings-card">
-          <label htmlFor="reserve-file">{tr("Резервная заставка", "Reserve clip")}</label>
-          <input id="reserve-file" value={settings.reserveFilePath} readOnly placeholder={tr("Цветные полосы", "Colour bars")} />
-          <button type="button" disabled={active || !window.gruberDesktop} onClick={async () => {
-            const files = await window.gruberDesktop?.selectMediaFiles();
-            if (files?.[0]) update("reserveFilePath", files[0]);
-          }}>{tr("Загрузить резервную заставку", "Load reserve clip")}</button>
-          <button type="button" disabled={active || !settings.reserveFilePath} onClick={() => update("reserveFilePath", "")}>
-            {tr("Использовать цветные полосы", "Use colour bars")}
-          </button>
-          <p>{tr("Повторяется при пустом Future до запуска следующего расписания. Путь сохраняется в сессии.", "Loops when Future is empty until the next schedule starts. The path is saved in the session.")}</p>
-        </div>
-
         <div className="settings-heading settings-heading-row">
           <div>
             <h1>{tr("Настройки кодирования", "Encoding Settings")}</h1>
@@ -820,6 +808,46 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                 : tr("FFmpeg передаёт CBR MPEG-TS через инжектор TSDuck. Выходная PMT объявляет PID SCTE-35, а каждая метка выдаётся дважды перед временем события.", "FFmpeg sends CBR MPEG-TS through the TSDuck injector. The output PMT announces the SCTE-35 PID and each marker is emitted twice before its event time.")}
             </span>
           </div>
+        </SettingsCard>
+
+        <SettingsCard icon={<Film size={16} />} title={tr("Резервная заставка", "Reserve clip")}>
+          <div className="reserve-clip-row">
+            <div className="form-field">
+              <label htmlFor="reserve-clip-path">{tr("Файл", "File")}</label>
+              <input
+                id="reserve-clip-path"
+                placeholder={tr("Цветные полосы", "Colour bars")}
+                readOnly
+                title={settings.reserveFilePath || undefined}
+                value={settings.reserveFilePath}
+              />
+            </div>
+            <button
+              className="stream-add-button"
+              disabled={active || !window.gruberDesktop}
+              onClick={async () => {
+                const files = await window.gruberDesktop?.selectMediaFiles();
+                if (files?.[0]) update("reserveFilePath", files[0]);
+              }}
+              type="button"
+            >
+              <Upload size={13} /> {tr("Выбрать", "Choose")}
+            </button>
+            <button
+              className="stream-add-button"
+              disabled={active || !settings.reserveFilePath}
+              onClick={() => update("reserveFilePath", "")}
+              type="button"
+            >
+              <Square size={13} /> {tr("Цветные полосы", "Colour bars")}
+            </button>
+          </div>
+          <p className="transport-setting-note">
+            {tr(
+              "Уходит в эфир, когда расписание кончилось, а следующего ещё нет: повторяется до старта Future. Без файла идут цветные полосы. Путь хранится в сессии.",
+              "Goes on air when the schedule has ended and the next one has not arrived: it loops until Future starts. With no file, colour bars are used. The path is kept in the session.",
+            )}
+          </p>
         </SettingsCard>
       </section>
 
