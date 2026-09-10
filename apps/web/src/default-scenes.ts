@@ -160,6 +160,8 @@ function textNode(
         color,
         align: "left",
         strokeWidth: 0,
+        autoFit: false,
+        autoFitMinScale: 0.4,
         strokeColor: "#000000",
       },
     },
@@ -256,6 +258,7 @@ function clockScene(tr: Translate): SceneTemplate {
           textStyle: {
             fontFilePath: null, fontFamily: "", size: 0.042, lineHeight: 1.2,
             letterSpacing: 0, color: "#FFFFFF", align: "left",
+            autoFit: false, autoFitMinScale: 0.4,
             strokeWidth: 0, strokeColor: "#000000",
           },
         },
@@ -301,6 +304,7 @@ function tickerScene(tr: Translate): SceneTemplate {
           textStyle: {
             fontFilePath: null, fontFamily: "", size: 0.036, lineHeight: 1.2,
             letterSpacing: 0, color: "#FFFFFF", align: "left",
+            autoFit: false, autoFitMinScale: 0.4,
             strokeWidth: 0, strokeColor: "#000000",
           },
         },

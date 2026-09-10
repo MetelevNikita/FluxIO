@@ -140,6 +140,19 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   return (
     <main className="broadcast-screen screen-body">
       <section className="settings-column">
+        <div className="settings-card">
+          <label htmlFor="reserve-file">{tr("Резервная заставка", "Reserve clip")}</label>
+          <input id="reserve-file" value={settings.reserveFilePath} readOnly placeholder={tr("Цветные полосы", "Colour bars")} />
+          <button type="button" disabled={active || !window.gruberDesktop} onClick={async () => {
+            const files = await window.gruberDesktop?.selectMediaFiles();
+            if (files?.[0]) update("reserveFilePath", files[0]);
+          }}>{tr("Загрузить резервную заставку", "Load reserve clip")}</button>
+          <button type="button" disabled={active || !settings.reserveFilePath} onClick={() => update("reserveFilePath", "")}>
+            {tr("Использовать цветные полосы", "Use colour bars")}
+          </button>
+          <p>{tr("Повторяется при пустом Future до запуска следующего расписания. Путь сохраняется в сессии.", "Loops when Future is empty until the next schedule starts. The path is saved in the session.")}</p>
+        </div>
+
         <div className="settings-heading settings-heading-row">
           <div>
             <h1>{tr("Настройки кодирования", "Encoding Settings")}</h1>

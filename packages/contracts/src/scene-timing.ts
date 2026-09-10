@@ -228,6 +228,36 @@ export function fromHeight(share: number, format: SceneFormat): number {
 }
 
 /**
+ * Кегль и ширина надписи, вписанной в свою рамку.
+ *
+ * Значение поля приходит извне и длины не выбирает: в одну плашку приезжают
+ * и «Иван», и «Александр Константинопольский». Уменьшается кегль, а не ширина
+ * — сжатие по горизонтали ломает буквы, и заметно это только в эфире.
+ *
+ * Рамка берётся из **базового** значения ширины, а не из анимированного:
+ * ширина у текстового узла — то, что дизайнер нарисовал рамкой, и раскрытие
+ * плашки не имеет права дёргать кегль вместе с собой.
+ *
+ * `width` — то, что нарисуется: у надписи, упёршейся в минимальный кегль, это
+ * ширина рамки, потому что дальше её режет сама рамка. Ей же меряется
+ * привязанная подложка — иначе плашка ушла бы за границу, за которую текст
+ * не выпустили.
+ */
+export function textAutoFit(
+  node: SceneNode,
+  format: SceneFormat,
+  measuredWidth: number,
+): { scale: number; width: number } {
+  const frame = (node.overrides[format.layout]?.width ?? node.transform.width.value) *
+    format.width;
+  if (!node.textStyle.autoFit || frame <= 0 || measuredWidth <= frame) {
+    return { scale: 1, width: measuredWidth };
+  }
+  const scale = Math.max(node.textStyle.autoFitMinScale, frame / measuredWidth);
+  return { scale, width: Math.min(measuredWidth * scale, frame) };
+}
+
+/**
  * Прямоугольник узла в пикселях кадра на момент `timeSeconds`.
  *
  * `textWidths` приходит снаружи: измерить строку без шрифта нельзя, а тянуть

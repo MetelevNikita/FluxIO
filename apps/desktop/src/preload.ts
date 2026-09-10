@@ -44,6 +44,17 @@ const instanceName = process.argv.find((value) => value.startsWith(instanceNameA
   ?.slice(instanceNameArgument.length) ?? "FluxIO";
 
 contextBridge.exposeInMainWorld("gruberDesktop", {
+  saveWorkspaceFiles: (files: unknown): Promise<string> => ipcRenderer.invoke("workspace:save-files" satisfies DesktopChannel, files),
+  onFlushWorkspace: (callback: () => Promise<void>) => {
+    const listener = (_event: unknown, token: string) => {
+      void callback().then(
+        () => ipcRenderer.send("workspace:flush" satisfies DesktopChannel, token, null),
+        (error) => ipcRenderer.send("workspace:flush" satisfies DesktopChannel, token, String(error)),
+      );
+    };
+    ipcRenderer.on("workspace:flush" satisfies DesktopChannel, listener);
+    return () => ipcRenderer.removeListener("workspace:flush" satisfies DesktopChannel, listener);
+  },
   getServiceHealth: (): Promise<unknown> =>
     ipcRenderer.invoke(SERVICE_HEALTH_CHANNEL, mediaApiBaseUrl) as Promise<unknown>,
   getMediaFilePath: (file: File): string => webUtils.getPathForFile(file),

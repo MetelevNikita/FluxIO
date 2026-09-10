@@ -7,6 +7,7 @@ const RENAME_INSTANCE_CHANNEL = "instances:rename";
 const DELETE_INSTANCE_CHANNEL = "instances:delete";
 
 contextBridge.exposeInMainWorld("fluxioLauncher", {
+  restore: (id: string): Promise<void> => ipcRenderer.invoke("workspace:restore", id),
   overview: (): Promise<unknown> => ipcRenderer.invoke(INSTANCES_OVERVIEW_CHANNEL),
   open: (id: string): Promise<void> => ipcRenderer.invoke(OPEN_INSTANCE_CHANNEL, id),
   add: (name: string): Promise<void> => ipcRenderer.invoke(ADD_INSTANCE_CHANNEL, name),

@@ -51,6 +51,7 @@ export interface PreparedPlayoutItem {
   trimInSeconds: number;
   durationSeconds: number;
   hasAudio: boolean;
+  loopSource?: boolean;
   ageTitle?: AgeTitleOverlay;
   itemLogo?: ItemLogoOverlay;
   effects?: GraphicEffectLayer[];
@@ -332,7 +333,7 @@ export function buildFfmpegClipAudioProducerCommand(
     "-nostdin",
     "-y",
     "-loglevel", "warning",
-    ...(hasAudio && inputPath ? ["-i", inputPath] : []),
+    ...(hasAudio && inputPath ? [...(item.loopSource && inputPath === item.filePath ? ["-stream_loop", "-1"] : []), "-i", inputPath] : []),
     ...overlays.flatMap((overlay) => ["-i", overlay.filePath]),
     "-filter_complex", filterGraph,
     "-map", "[aprogram]",
@@ -504,7 +505,7 @@ export function buildFfmpegCompositePreviewCommand(
  * обычные ролики, иначе program encoder получит поток другого формата.
  */
 function clipInputArgs(item: PreparedPlayoutItem, video: VideoEncoding): string[] {
-  if (!isBarsSource(item.filePath)) return ["-i", item.filePath];
+  if (!isBarsSource(item.filePath)) return [...(item.loopSource ? ["-stream_loop", "-1"] : []), "-i", item.filePath];
   return [
     "-f",
     "lavfi",
@@ -595,7 +596,7 @@ export function buildFfmpegCommand(
     args.push("-vaapi_device", request.video.vaapiDevice);
   }
   if (options.filterComplexScriptPath) {
-    args.push("-filter_complex_script", options.filterComplexScriptPath);
+    args.push("-/filter_complex", options.filterComplexScriptPath);
   } else {
     args.push("-filter_complex", filterGraph);
   }

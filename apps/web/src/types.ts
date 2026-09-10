@@ -197,6 +197,7 @@ export interface BroadcastSettings {
   logoMargin: number;
   logoOpacity: number;
   repeatSchedule: boolean;
+  reserveFilePath: string;
   scte35PlanningEnabled: boolean;
   scte35Command: string;
   scte35Owner: string;

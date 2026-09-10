@@ -167,6 +167,7 @@ export const portableEncodingSettingsSchema = z.object({
   logoMargin: z.number().int().min(0).max(500),
   logoOpacity: z.number().min(0.05).max(1),
   repeatSchedule: z.boolean(),
+  reserveFilePath: z.string().default(""),
   scte35PlanningEnabled: z.boolean(),
   scte35Command: z.enum([
     "time_signal + segmentation_descriptor",
@@ -997,6 +998,7 @@ export const parsedScheduleItemSchema = z.object({
   logoPath: z.string().nullable(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
   broadcastShows: z.array(scheduleBroadcastShowSchema).max(64).default([]),
+  scte35Markers: z.array(scte35MarkerSchema).max(1_000).default([]),
   srtPath: z.string().nullable().default(null),
   srtEnabled: z.boolean().default(true),
   audioTracks: z.array(scheduleAudioTrackSchema).max(maximumProgramAudioTracks).default([]),
@@ -1048,6 +1050,14 @@ export const scheduleExportItemSchema = z.object({
   }).nullable().optional(),
   graphicElements: z.array(scheduleGraphicElementSchema).max(64).default([]),
   broadcastShows: z.array(scheduleBroadcastShowSchema).max(64).default([]),
+  /**
+   * Метки SCTE-35 ролика.
+   *
+   * Их ставит оператор по хронометражу — там же, где сходится реклама, — и без
+   * них перенесённое на другую машину расписание выходит в эфир без врезок,
+   * причём молча: снаружи это выглядит как «метки пропали».
+   */
+  scte35Markers: z.array(scte35MarkerSchema).max(1_000).optional(),
   srtPath: z.string().min(1).refine((value) => !/[\r\n{}]/.test(value), {
     message: "SRT path must not contain braces or line breaks",
   }).nullable().optional(),
@@ -1381,6 +1391,9 @@ export const startPlayoutRequestSchema = z.object({
   subtitleOutput: subtitleOutputSchema.default(defaultSubtitleOutput),
   audioProgram: audioProgramSchema.optional(),
   repeatPlaylist: z.boolean().default(false),
+  /** Remaining time in the 168-hour schedule; null preserves finite playout. */
+  scheduleDurationSeconds: z.number().positive().max(604_800).nullable().default(null),
+  reserveFilePath: z.string().default(""),
   scte35: scte35PlanningSchema.default({
     enabled: false,
     command: "time_signal",

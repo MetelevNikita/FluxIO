@@ -10,6 +10,7 @@ export class WorkspaceCheckpoint {
   #context: RouteContext;
   #timer: NodeJS.Timeout | null = null;
   #errorReported = false;
+  #syncing = false;
 
   constructor(context: RouteContext) {
     this.#context = context;
@@ -31,13 +32,15 @@ export class WorkspaceCheckpoint {
 
   async #sync(): Promise<void> {
     const database = this.#context.database;
-    if (!database) return;
-
+    if (!database || this.#syncing) return;
+    this.#syncing = true;
     try {
       await database.syncWorkspaceCheckpoint(this.#context.playout.getStatus());
       this.#errorReported = false;
     } catch (error) {
       this.#reportOnce(error);
+    } finally {
+      this.#syncing = false;
     }
   }
 

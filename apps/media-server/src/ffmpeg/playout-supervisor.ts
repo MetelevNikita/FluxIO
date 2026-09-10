@@ -19,6 +19,7 @@ import type {
 } from "@gruber/contracts";
 import {
   barsPlayoutItem,
+  barsSourcePath,
   barsSegmentSeconds,
   defaultMpegTsOutputSettings,
   emptyResourceUsage,
@@ -165,6 +166,17 @@ export class PlayoutPreflightError extends Error {}
  */
 export interface PlayoutEventOptions {
   quiet?: boolean;
+  /**
+   * Событие ожидаемое: в журнал оно идёт обычной строкой, даже если несёт в
+   * себе слово «error».
+   *
+   * Так закрывается выдача: TSDuck успевает пожаловаться на сокет, которого
+   * уже нет, после того как эфир штатно кончился. Записанная ошибкой, эта
+   * жалоба красит нормальное завершение в красный — и приучает не читать
+   * журнал там, где ошибка настоящая. Решает это supervisor: он один знает,
+   * останавливается линия или падает.
+   */
+  expected?: boolean;
 }
 
 export type PlayoutEventSink = (entry: string, options?: PlayoutEventOptions) => void;
@@ -772,12 +784,20 @@ export class PlayoutSupervisor {
         `SRT subtitles ignored for ${ignoredSubtitles.length} clip(s): matching files are unavailable`,
       );
     }
+    let reserve: PreparedPlayoutItem | undefined;
+    if (request.scheduleDurationSeconds != null && request.reserveFilePath) {
+      try {
+        [reserve] = await prepareItems({ ...request, playlist: [reservePlayoutItem(request)] }, this.capabilities.ffprobePath);
+      } catch (error) {
+        this.#appendEvent(`Reserve file unavailable; using colour bars: ${String(error)}`);
+      }
+    }
     return {
-      items: await prepareItems(
+      items: fitScheduleWindow(await prepareItems(
         resolvedRequest,
         this.capabilities.ffprobePath,
         reportProgress,
-      ),
+      ), resolvedRequest.playlist.length === 1 && ["reserve", "bars"].includes(resolvedRequest.playlist[0]!.id) ? null : resolvedRequest.scheduleDurationSeconds, reserve),
       request: resolvedRequest,
     };
   }
@@ -818,7 +838,6 @@ export class PlayoutSupervisor {
   updateNextPlaylist(nextPlaylist: StartPlayoutRequest["nextPlaylist"]): PlayoutStatus {
     if (
       !this.#request ||
-      this.#status.schedulePhase !== "current" ||
       !["starting", "running"].includes(this.#status.state)
     ) {
       throw new PlayoutConflictError(
@@ -835,13 +854,13 @@ export class PlayoutSupervisor {
     const request = this.#request;
     if (
       !request ||
-      this.#status.schedulePhase !== "current" ||
       !["starting", "running"].includes(this.#status.state)
     ) {
       throw new PlayoutConflictError(
         "The Current playlist can only be updated while rolling playout is on air",
       );
     }
+    const transitionCount = this.#status.scheduleTransitionCount;
     const activeIndexBeforePreparation = this.#status.currentItemIndex;
     const alignedPlaylist = alignHotChangePlaylist(
       request.playlist,
@@ -866,6 +885,7 @@ export class PlayoutSupervisor {
           ...request,
           playlist: [item],
           nextPlaylist: [],
+          scheduleDurationSeconds: null,
         });
         return { item: resolved.request.playlist[0]!, prepared: resolved.items[0]! };
       },
@@ -881,6 +901,9 @@ export class PlayoutSupervisor {
     if (!["starting", "running"].includes(this.#status.state)) {
       throw new PlayoutConflictError("HOT CHANGE was cancelled because playout stopped");
     }
+    if (transitionCount !== this.#status.scheduleTransitionCount) {
+      throw new PlayoutConflictError("Schedule changed during HOT CHANGE; retry with Current");
+    }
     const activeIndex = this.#status.currentItemIndex;
     assertPlaylistPrefixUnchanged(this.#items, resolvedPlaylist, activeIndex);
     for (let index = activeIndexBeforePreparation + 1; index <= activeIndex; index += 1) {
@@ -892,12 +915,12 @@ export class PlayoutSupervisor {
     }
     const oldNext = this.#items[activeIndex + 1];
     const newNext = resolvedItems[activeIndex + 1];
-    this.#items = [
+    this.#items = fitScheduleWindow([
       ...this.#items.slice(0, activeIndex + 1),
       ...resolvedItems.slice(activeIndex + 1),
-    ];
+    ], request.scheduleDurationSeconds, this.#items.find((item) => item.id === "schedule-reserve"));
     this.#request = {
-      ...request,
+      ...this.#request!,
       playlist: [
         ...request.playlist.slice(0, activeIndex + 1),
         ...resolvedPlaylist.slice(activeIndex + 1),
@@ -1280,6 +1303,12 @@ export class PlayoutSupervisor {
         this.#appendEvent(`TSDuck continuity warning #${this.#status.continuityErrors}: ${message}`);
       } else if (/\b(error|failed|dropping|obsolete)\b/i.test(line)) {
         const message = redactSecrets(line.trim(), this.#request);
+        // Жалобы на закрытии — часть остановки, а не отказ линии: эфира уже
+        // нет, и объяснять его падение нечем.
+        if (!["starting", "running"].includes(this.#status.state)) {
+          this.#appendEvent(`TSDuck at shutdown: ${message}`, { expected: true });
+          continue;
+        }
         // Причина падения живёт в логе, а в статус попадал только код выхода:
         // оператор видел «exited with 1» и шёл читать журнал, чтобы узнать,
         // что приёмник SRT не отвечает.
@@ -1440,6 +1469,12 @@ export class PlayoutSupervisor {
       return;
     }
 
+    if (!wasStopping && !failedByInjector && code === 0 && this.#request?.scheduleDurationSeconds != null) {
+      this.#status.state = "starting";
+      void this.#startReserve();
+      return;
+    }
+
     this.#status.stoppedAt = new Date().toISOString();
     // Выходы живут, пока идёт программа. Без неё зеркало пусто, и оставленная
     // ветка до конца сессии службы читает тишину — процессом, который никто
@@ -1471,6 +1506,34 @@ export class PlayoutSupervisor {
     }
   }
 
+  async #startReserve(): Promise<void> {
+    const request = this.#request;
+    if (!request) return;
+    try {
+      let prepared: PreparedRequest;
+      try {
+        prepared = await this.#prepareRequest({ ...request, playlist: [reservePlayoutItem(request)], scheduleDurationSeconds: null });
+      } catch (error) {
+        this.#appendEvent(`Reserve clip unavailable; using colour bars: ${String(error)}`);
+        prepared = await this.#prepareRequest({ ...request, playlist: [barsPlayoutItem()], scheduleDurationSeconds: null });
+      }
+      if (this.#status.state !== "starting") return;
+      this.#request = { ...request, playlist: prepared.request.playlist, repeatPlaylist: false };
+      // Заставка ждёт следующего расписания целым окном, а не своей длиной:
+      // перезапуск процессов раз в несколько секунд — это разрыв выдачи, и
+      // головная станция видит его как обрыв, а не как заставку.
+      this.#items = fitScheduleWindow(
+        [], request.scheduleDurationSeconds ?? weekSeconds, prepared.items[0],
+      );
+      this.#status.totalItems = this.#items.length;
+      this.#resetLoopProgress();
+      this.#appendEvent("Reserve on air; waiting for the next schedule");
+      await this.#restartLoop();
+    } catch (error) {
+      this.#handleProcessError(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   async #restartLoop(): Promise<void> {
     try {
       await this.#prepareLoopCommands();
@@ -1481,6 +1544,7 @@ export class PlayoutSupervisor {
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
       }
+      if (this.#status.state !== "starting") return;
       this.#spawnPreparedFfmpeg();
     } catch (error) {
       this.#handleProcessError(
@@ -1500,8 +1564,13 @@ export class PlayoutSupervisor {
         playlist: currentRequest.nextPlaylist,
         nextPlaylist: [],
         repeatPlaylist: false,
+        // Окно наследуется: расписание длится свои 168 часов независимо от
+        // того, которое из них сейчас в эфире, — иначе второй переход считал
+        // бы длительность не так, как первый.
+        scheduleDurationSeconds: currentRequest.scheduleDurationSeconds,
       };
       const prepared = await this.#prepareRequest(futureRequest);
+      if (this.#status.state !== "starting") return;
       this.#request = prepared.request;
       this.#items = prepared.items;
       this.#status.schedulePhase = "future";
@@ -1521,6 +1590,7 @@ export class PlayoutSupervisor {
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
       }
+      if (this.#status.state !== "starting") return;
       const child = this.#spawnPreparedFfmpeg();
       await waitForSpawn(child);
       this.#appendEvent("Future schedule promoted to Current and is now on air");
@@ -3346,7 +3416,7 @@ function formatSeconds(value: number): string {
  */
 export function withBarsFallback(request: StartPlayoutRequest): StartPlayoutRequest {
   if (request.playlist.length > 0) return request;
-  return { ...request, playlist: [barsPlayoutItem()], repeatPlaylist: true };
+  return { ...request, playlist: [reservePlayoutItem(request)], repeatPlaylist: request.scheduleDurationSeconds == null };
 }
 
 /** Имя возможности выдачи для журнала. */
@@ -3356,4 +3426,74 @@ function outputFeatureLabel(feature: OutputProtocolFeature): string {
   if (feature === "multipleAudioTracks") return "multiple audio tracks";
   if (feature === "mpegTsService") return "MPEG-TS service settings";
   return "a constant transport bitrate";
+}
+
+/** Длина расписания. Недельная сетка — то, подо что расписание и собирают. */
+export const weekSeconds = 604_800;
+
+/**
+ * Подрезает расписание по окну и добивает недостачу заставкой.
+ *
+ * Расписание привязано ко времени суток, поэтому его окно — величина
+ * постоянная, а не сумма того, что оператор успел в него положить. Ролики
+ * сверх окна отрезаются: доиграв их, эфир уехал бы вперёд и вёз бы этот сдвиг
+ * до конца недели. Недостача добивается заставкой на её же оставшееся время —
+ * пустой эфир до следующего расписания хуже цветных полос.
+ *
+ * Заставка идёт с `-stream_loop -1`: своя длина у неё короткая, а ждать ей
+ * иногда сутки.
+ */
+export function fitScheduleWindow(
+  items: PreparedPlayoutItem[],
+  seconds: number | null,
+  reserve?: PreparedPlayoutItem,
+): PreparedPlayoutItem[] {
+  if (seconds == null) return items;
+  const result: PreparedPlayoutItem[] = [];
+  let remaining = seconds;
+  for (const item of items) {
+    if (remaining <= 0) break;
+    const durationSeconds = Math.min(item.durationSeconds, remaining);
+    result.push({ ...item, durationSeconds });
+    // Округление держит остаток на кадровой сетке: без него неделя набирает
+    // «0.6799999999999999» и последняя строка получает хвост в микросекунду.
+    remaining = Math.max(0, Math.round((remaining - durationSeconds) * 1_000_000) / 1_000_000);
+  }
+  if (remaining > 0) {
+    result.push({
+      ...(reserve ?? { filePath: barsSourcePath, hasAudio: false }),
+      id: scheduleReserveId,
+      name: "Заставка — расписание короче окна",
+      trimInSeconds: 0,
+      durationSeconds: remaining,
+      // Полосы бесконечны сами по себе: у `lavfi` конца нет, и повтор входа
+      // ему только мешает.
+      loopSource: Boolean(reserve),
+    });
+  }
+  return result;
+}
+
+/** Опознаватель добивки. Он же говорит интерфейсу, что в эфире не расписание. */
+export const scheduleReserveId = "schedule-reserve";
+
+/**
+ * Ролик заставки: файл оператора, а без него — цветные полосы.
+ *
+ * Заставку показывают, когда расписание кончилось, а следующего ещё нет:
+ * полосы честно говорят «эфира нет», но канал со своей заставкой выглядит
+ * работающим, а не сломанным.
+ */
+export function reservePlayoutItem(
+  request: Pick<StartPlayoutRequest, "reserveFilePath">,
+): StartPlayoutRequest["playlist"][number] {
+  if (!request.reserveFilePath) return barsPlayoutItem();
+  return {
+    id: "reserve",
+    name: "Заставка",
+    filePath: request.reserveFilePath,
+    trimInSeconds: 0,
+    trimOutSeconds: null,
+    scte35Markers: [],
+  };
 }

@@ -39,6 +39,9 @@ export const DELETE_INSTANCE_CHANNEL = "instances:delete";
 export const SHOW_INSTANCES_CHANNEL = "instances:show";
 
 export type DesktopChannel =
+  | typeof SAVE_WORKSPACE_FILES_CHANNEL
+  | typeof RESTORE_WORKSPACE_CHANNEL
+  | typeof FLUSH_WORKSPACE_CHANNEL
   | typeof SELECT_LOGO_CHANNEL
   | typeof SELECT_MEDIA_DIRECTORY_CHANNEL
   | typeof SELECT_MEDIA_FILES_CHANNEL
@@ -70,3 +73,7 @@ export type DesktopChannel =
   | typeof RENAME_INSTANCE_CHANNEL
   | typeof DELETE_INSTANCE_CHANNEL
   | typeof SHOW_INSTANCES_CHANNEL;
+
+export const SAVE_WORKSPACE_FILES_CHANNEL = "workspace:save-files";
+export const RESTORE_WORKSPACE_CHANNEL = "workspace:restore";
+export const FLUSH_WORKSPACE_CHANNEL = "workspace:flush";

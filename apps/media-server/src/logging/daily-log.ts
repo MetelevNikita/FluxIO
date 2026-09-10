@@ -85,6 +85,19 @@ export function formatLogLine(
 }
 
 /** Отметка времени по часам машины — в журнале нет ни одной величины в UTC. */
+/**
+ * Уровень записи для события эфирного контура.
+ *
+ * Supervisor отдаёт строку, а не код, поэтому уровень берётся из текста.
+ * Исключение объявляет он же: `expected` — ожидаемая жалоба на остановке.
+ * Так закрывается выдача — TSDuck успевает пожаловаться на сокет, которого
+ * уже нет, после того как эфир штатно кончился, — и записанная ошибкой
+ * жалоба красит нормальное завершение в красный.
+ */
+export function playoutEventLevel(message: string, expected = false): "info" | "error" {
+  return !expected && /fail|error|ошибк/i.test(message) ? "error" : "info";
+}
+
 export function formatLocalStamp(date: Date): string {
   return `${localDateKey(date)} ${String(date.getHours()).padStart(2, "0")}:` +
     `${String(date.getMinutes()).padStart(2, "0")}:` +

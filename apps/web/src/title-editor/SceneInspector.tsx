@@ -825,6 +825,30 @@ function TextSection({
           <Num label={tr("Обводка", "Stroke")} value={node.textStyle.strokeWidth} unit="%"
             onCommit={(v) => onChange({ ...node, textStyle: { ...node.textStyle, strokeWidth: clamp(v, 0, 0.02) } })} />
         </Grid>
+        <label className="scene-row scene-row-check">
+          <input
+            checked={node.textStyle.autoFit}
+            onChange={(event) => onChange({ ...node, textStyle: { ...node.textStyle, autoFit: event.target.checked } })}
+            type="checkbox"
+          />
+          <span>{tr("Вписывать в рамку", "Fit to frame")}</span>
+        </label>
+        {node.textStyle.autoFit ? (
+          <>
+            <Num label={tr("Мельче не делать", "Smallest size")}
+              value={node.textStyle.autoFitMinScale * 100} unit="%" raw
+              onCommit={(v) => onChange({
+                ...node,
+                textStyle: { ...node.textStyle, autoFitMinScale: clamp(v / 100, 0.1, 1) },
+              })} />
+            <p className="scene-hint">
+              {tr(
+                "Строка длиннее рамки выходит в эфир уменьшенным кеглем, а не за краем: значение поля приходит извне, и его длину никто не выбирает. Ширину рамки задаёт «Размер» узла, привязанная подложка растёт до неё и дальше не идёт.",
+                "A string longer than the frame reaches air at a smaller size instead of past the edge: the field value comes from outside and nobody picks its length. The frame is the node's own width; a plate bound to it grows no further.",
+              )}
+            </p>
+          </>
+        ) : null}
       </Section>
     </>
   );

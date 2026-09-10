@@ -1,4 +1,6 @@
-import { app, BrowserWindow, shell } from "electron";
+import { randomUUID } from "node:crypto";
+import { api } from "./session-files.js";
+import { app, BrowserWindow, shell, dialog, ipcMain } from "electron";
 import path from "node:path";
 
 //
@@ -17,6 +19,120 @@ export interface FluxioInstance {
 
 let launcherWindow: BrowserWindow | null = null;
 const programWindows = new Map<string, BrowserWindow>();
+const windowInstances = new Map<number, FluxioInstance>();
+let quitting = false;
+
+export function programInstance(webContentsId: number): FluxioInstance | undefined {
+  return windowInstances.get(webContentsId);
+}
+
+export function reloadProgramWindow(instance: FluxioInstance): void {
+  const existing = programWindows.get(instance.id);
+  if (existing && !existing.isDestroyed()) existing.reload();
+  else openProgramWindow(instance);
+}
+
+export function registerShutdown(loadInstances: () => FluxioInstance[]): void {
+  let pending = false;
+  app.on("before-quit", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    if (pending) return;
+    pending = true;
+    void confirmProgramShutdown(loadInstances().filter((entry) => entry.enabled)).then((approved) => {
+      if (approved) { quitting = true; app.quit(); }
+    }).finally(() => { pending = false; });
+  });
+}
+
+async function confirmProgramShutdown(instances: FluxioInstance[]): Promise<boolean> {
+  const owner = BrowserWindow.getFocusedWindow();
+  try {
+    const active: FluxioInstance[] = [];
+    for (const instance of instances) {
+      const status = await api(instance, "/api/playout/status");
+      if (["starting", "running", "stopping"].includes(String(status.state))) active.push(instance);
+    }
+    if (active.length) {
+      const options = {
+        type: "warning" as const, title: "Завершение трансляции",
+        message: "Вы уверены, что хотите закрыть и завершить трансляцию программы?",
+        detail: active.map((entry) => entry.name).join("\n"),
+        buttons: ["Отмена", "Завершить трансляцию и закрыть"], defaultId: 0, cancelId: 0,
+      };
+      const result = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+      if (result.response !== 1) return false;
+    }
+    for (const instance of instances) await saveBeforeClose(instance, owner);
+    for (const instance of active) {
+      await api(instance, "/api/playout/stop", { method: "POST" });
+      const deadline = Date.now() + 15_000;
+      while (true) {
+        const status = await api(instance, "/api/playout/status");
+        if (!["starting", "running", "stopping"].includes(String(status.state))) break;
+        if (Date.now() >= deadline) throw new Error(`Не удалось остановить ${instance.name}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    // Остановленный чекпоинт сохраняется тоже: закрытие по своей воле — не
+    // обрыв, и подниматься после него автостартом приложение не должно.
+    for (const instance of active) await saveBeforeClose(instance, owner);
+    return true;
+  } catch (error) {
+    dialog.showErrorBox("Закрытие отменено", String(error));
+    return false;
+  }
+}
+
+/**
+ * Сохранение сессии перед закрытием.
+ *
+ * Несохранённая сессия — повод спросить, а не запрет закрываться: окно, из
+ * которого нельзя выйти, потому что интерфейс завис, оператор всё равно снимет
+ * силой — только уже вместе со службой и эфиром.
+ */
+async function saveBeforeClose(
+  instance: FluxioInstance,
+  owner: BrowserWindow | null,
+): Promise<void> {
+  const window = programWindows.get(instance.id);
+  if (!window || window.isDestroyed()) return;
+  try {
+    await flushProgram(window);
+  } catch (error) {
+    const options = {
+      type: "warning" as const,
+      title: "Сессия не сохранена",
+      message: `Не удалось сохранить сессию «${instance.name}». Закрыть всё равно?`,
+      detail: String(error),
+      buttons: ["Отмена", "Закрыть без сохранения"],
+      defaultId: 0,
+      cancelId: 0,
+    };
+    const result = owner
+      ? await dialog.showMessageBox(owner, options)
+      : await dialog.showMessageBox(options);
+    if (result.response !== 1) throw error;
+  }
+}
+
+function flushProgram(window: BrowserWindow): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const token = randomUUID();
+    const timer = setTimeout(() => finish(new Error("Сессия не сохранена: интерфейс не ответил")), 30_000);
+    const listener = (event: Electron.IpcMainEvent, responseToken: unknown, error: unknown) => {
+      if (event.sender !== window.webContents || responseToken !== token) return;
+      finish(error ? new Error(String(error)) : undefined);
+    };
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      ipcMain.removeListener("workspace:flush", listener);
+      if (error) reject(error); else resolve();
+    };
+    ipcMain.on("workspace:flush", listener);
+    window.webContents.send("workspace:flush", token);
+  });
+}
 
 export function desktopIconPath(): string {
   const iconName = process.platform === "darwin" ? "icon-mac.png" : "icon.png";
@@ -62,7 +178,23 @@ export function openProgramWindow(instance: FluxioInstance): BrowserWindow {
 
   const window = createMainWindow(instance);
   programWindows.set(instance.id, window);
-  window.once("closed", () => programWindows.delete(instance.id));
+  const contentsId = window.webContents.id;
+  windowInstances.set(contentsId, instance);
+  let closing = false;
+  let closeApproved = false;
+  window.on("close", (event) => {
+    if (quitting || closeApproved) return;
+    event.preventDefault();
+    if (closing) return;
+    closing = true;
+    void confirmProgramShutdown([instance]).then((approved) => {
+      if (approved) { closeApproved = true; window.close(); }
+    }).finally(() => { closing = false; });
+  });
+  window.once("closed", () => {
+    programWindows.delete(instance.id);
+    windowInstances.delete(contentsId);
+  });
   window.once("ready-to-show", () => {
     window.show();
     window.focus();

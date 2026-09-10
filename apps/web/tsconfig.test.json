@@ -46,6 +46,8 @@
     "src/schedule-ids.test.ts",
     "src/schedule-timeline.ts",
     "src/schedule-timeline.test.ts",
-    "src/types.ts"
+    "src/types.ts",
+    "src/schedule-export.ts",
+    "src/schedule-export.test.ts"
   ]
 }

@@ -99,7 +99,7 @@ function createRouteContext(): RouteContext {
         // оператор щёлкает внутри окна (QuickEdit). Поток в несколько строк в
         // секунду туда не идёт — в журнале он остаётся целиком.
         if (!options?.quiet) console.info(`[PLAYOUT] ${entry}`);
-        logger.playoutEvent(entry);
+        logger.playoutEvent(entry, undefined, options?.expected);
       },
     ),
     previewDirectory,

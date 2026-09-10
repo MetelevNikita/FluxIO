@@ -3,6 +3,8 @@ export {};
 declare global {
   interface Window {
     gruberDesktop?: {
+      saveWorkspaceFiles: (files: { session: string; current: string; future: string; configuration: string }) => Promise<string>;
+      onFlushWorkspace: (callback: () => Promise<void>) => () => void;
       getServiceHealth: () => Promise<unknown>;
       getMediaFilePath: (file: File) => string;
       mediaApiBaseUrl: string;

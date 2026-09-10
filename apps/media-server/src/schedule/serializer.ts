@@ -68,6 +68,20 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
           (show.fields ? ` fields {${show.fields}}` : ""),
       );
     }
+    // Метка SCTE-35 — свойство ролика, и едет она вместе с его графикой:
+    // врезку ставят по хронометражу, а хронометраж принадлежит строке.
+    for (const marker of item.scte35Markers ?? []) {
+      lines.push(
+        `insertCue {${marker.kind}} ` +
+          `at {${formatScheduleTimecode(marker.positionSeconds)}} ` +
+          `event {${marker.eventId}} ` +
+          `duration {${marker.durationSeconds == null
+            ? ""
+            : formatScheduleTimecode(marker.durationSeconds)}} ` +
+          `type {${marker.segmentationTypeId}}` +
+          (marker.upid ? ` upid {${marker.upid}}` : ""),
+      );
+    }
     if (item.srtPath) {
       // Явное состояние: оператор мог отключить burn-in, оставив путь в расписании.
       lines.push(`insertSRT {${item.srtPath}} state {${item.srtEnabled === false ? "off" : "on"}}`);

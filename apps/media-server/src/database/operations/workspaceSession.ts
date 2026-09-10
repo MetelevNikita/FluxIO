@@ -11,6 +11,7 @@ import { Prisma } from "../../generated/prisma/client.js";
 import type { DatabaseContext } from "../context.js";
 import {
   recoverableCheckpointFromStatus,
+  promoteWorkspaceSnapshot,
   restoreWorkspaceSession,
   sanitizeWorkspaceSnapshot,
 } from "../checkpoint.js";
@@ -22,7 +23,7 @@ export async function saveWorkspaceSession(
   status: PlayoutStatus,
 ): Promise<SavedWorkspaceSession> {
   const request = workspaceSessionSaveRequestSchema.parse(input);
-  const { sanitized, secrets } = sanitizeWorkspaceSnapshot(request.snapshot);
+  const { sanitized, secrets } = sanitizeWorkspaceSnapshot(promoteWorkspaceSnapshot(request.snapshot, status));
 
   const payload = {
     snapshot: jsonValue(sanitized),
@@ -64,9 +65,13 @@ export async function syncWorkspaceCheckpoint(
 ): Promise<void> {
   if (!status.sessionId) return;
 
+  const session = await database.client.workspaceSession.findUnique({ where: { slot: "last" } });
+  if (!session) return;
+  const snapshot = session.snapshot as unknown as WorkspaceSessionSaveRequest["snapshot"];
+  const promoted = promoteWorkspaceSnapshot(snapshot, status);
   await database.client.workspaceSession.updateMany({
-    data: { checkpoint: checkpointValue(status) },
-    where: { slot: "last" },
+    data: { checkpoint: checkpointValue(status), ...(promoted !== snapshot ? { snapshot: jsonValue(promoted) } : {}) },
+    where: { slot: "last", updatedAt: session.updatedAt },
   });
 }
 

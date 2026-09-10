@@ -8,6 +8,7 @@ import {
   revealClip,
   revealShift,
   sceneSegmentAt,
+  textAutoFit,
   textUnits,
   trackValueAt,
   type SceneFormat,
@@ -121,9 +122,12 @@ export function measureSceneText(
     );
     // Меряем по образцу, а не по текущему значению: у часов оно меняется
     // каждую секунду, и плашка дёргалась бы вместе с цифрами.
-    widths[node.id] = measureNodeText(
+    // Вписанная надпись отдаёт наружу ширину рамки, а не свою: привязанная
+    // плашка обязана остановиться на той же границе, за которую текст не
+    // выпустили.
+    widths[node.id] = textAutoFit(node, format, measureNodeText(
       surface, node, fitSampleText(node.text, input), size, node.textStyle.fontFamily,
-    );
+    )).width;
   }
   return widths;
 }
@@ -141,10 +145,18 @@ function drawText(
   const raw = resolveText(node.text, input);
   if (!raw) return;
 
-  const size = fromHeight(
+  const base = fromHeight(
     node.overrides[format.layout]?.fontSize ?? node.textStyle.size,
     format,
   );
+  // Кегль подгоняется по тому же образцу, каким меряется плашка: у часов
+  // текущее значение меняется каждую секунду, и надпись прыгала бы вместе с
+  // цифрами. Выключенная подгонка за промер не платит.
+  const size = node.textStyle.autoFit
+    ? base * textAutoFit(node, format, measureNodeText(
+        surface, node, fitSampleText(node.text, input), base, node.textStyle.fontFamily,
+      )).scale
+    : base;
   surface.font = fontSpec(size, node.textStyle.fontFamily);
   surface.textBaseline = "alphabetic";
 
@@ -175,12 +187,17 @@ function drawText(
   // куда её поставил дизайнер, независимо от кегля.
   const y = box.y + box.height / 2 + size * 0.35;
 
-  if (isTicker) {
-    // Строка обязана обрезаться по своей области, иначе она уезжает за плашку
-    // и снаружи это выглядит как «текст не подставился».
+  // Область ограничивает надпись: бегущую строку — целиком, иначе она уезжает
+  // за плашку и снаружи это выглядит как «текст не подставился»; вписанную —
+  // по ширине, потому что упёршаяся в минимальный кегль строка всё ещё длиннее
+  // рамки. По высоте вписанную не режем: у букв с выносными элементами хвосты
+  // торчат за прямоугольник узла, и обрезка по нему их срезала бы.
+  const clipped = isTicker || node.textStyle.autoFit;
+  if (clipped) {
     surface.save();
     surface.beginPath();
-    surface.rect(box.x, box.y, box.width, box.height);
+    if (isTicker) surface.rect(box.x, box.y, box.width, box.height);
+    else surface.rect(box.x, 0, box.width, format.height);
     surface.clip();
   }
 
@@ -228,13 +245,13 @@ function drawText(
       }
       cursor += unitWidth;
     }
-    if (isTicker) surface.restore();
+    if (clipped) surface.restore();
     return;
   }
 
   paint(content, x, y);
 
-  if (isTicker) surface.restore();
+  if (clipped) surface.restore();
 }
 
 /** Сдвиг и прозрачность одной части по её доле отыгранности. */

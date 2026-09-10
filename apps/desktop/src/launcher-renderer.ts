@@ -29,6 +29,7 @@ interface Overview {
 }
 
 interface LauncherBridge {
+  restore: (id: string) => Promise<void>;
   overview: () => Promise<Overview>;
   open: (id: string) => Promise<void>;
   add: (name: string) => Promise<void>;
@@ -44,6 +45,7 @@ const form = requiredElement("instance-form") as HTMLFormElement;
 const nameInput = requiredElement("instance-name") as HTMLInputElement;
 const dialogTitle = requiredElement("dialog-title");
 let loading = false;
+let cardLayout = "";
 let editingId: string | null = null;
 
 function requiredElement(id: string): HTMLElement {
@@ -73,11 +75,23 @@ function render(overview: Overview): void {
   );
   setText("fluxio-memory", formatMemory(overview.totals.memoryMb));
   setText("fluxio-processes", String(overview.totals.processes));
-  cards.replaceChildren(
-    ...(overview.instances.length > 0
-      ? overview.instances.map(instanceCard)
-      : [emptyState()]),
-  );
+  const layout = JSON.stringify(overview.instances.map(({ id, name, online, enabled }) => ({ id, name, online, enabled })));
+  if (layout !== cardLayout) {
+    cards.replaceChildren(...(overview.instances.length ? overview.instances.map(instanceCard) : [emptyState()]));
+    cardLayout = layout;
+  } else {
+    overview.instances.forEach((instance, index) => {
+      const card = cards.children[index] as HTMLElement;
+      const fresh = instanceCard(instance);
+      card.className = fresh.className;
+      const values = fresh.querySelectorAll(".state-badge, .current-item, dd, button");
+      card.querySelectorAll(".state-badge, .current-item, dd, button").forEach((element, position) => {
+        const next = values[position]!;
+        if (element.textContent !== next.textContent) element.textContent = next.textContent;
+        if (element instanceof HTMLButtonElement && next instanceof HTMLButtonElement) element.disabled = next.disabled;
+      });
+    });
+  }
 }
 
 function emptyState(): HTMLElement {
@@ -147,7 +161,16 @@ function instanceCard(instance: InstanceOverview): HTMLElement {
   rename.addEventListener("click", () => openDialog(instance.id, instance.name));
   const actions = document.createElement("div");
   actions.className = "instance-actions";
-  actions.append(button, rename);
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "secondary";
+  restore.textContent = "Восстановить сессию";
+  restore.disabled = !instance.online || !instance.enabled || stateClass(instance.playoutState) === "running";
+  restore.addEventListener("click", async () => {
+    try { await launcherBridge.restore(instance.id); }
+    catch (error) { updatedAt.textContent = error instanceof Error ? error.message : String(error); }
+  });
+  actions.append(button, rename, restore);
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "secondary";

@@ -11,6 +11,7 @@ import {
   localDateKey,
   logFileName,
   observeStatus,
+  playoutEventLevel,
   recordError,
   type DailyStats,
   type LogLevel,
@@ -61,9 +62,15 @@ export class ApplicationLogger {
     this.#write(formatLogLine(at, level, category, message));
   }
 
-  /** Событие эфирного контура: тот же поток, что уходит в консоль и статус. */
-  playoutEvent(message: string, at = new Date()): void {
-    this.log(/fail|error|ошибк/i.test(message) ? "error" : "info", "PLAYOUT", message, at);
+  /**
+   * Событие эфирного контура: тот же поток, что уходит в консоль и статус.
+   *
+   * Уровень берётся из текста, потому что supervisor отдаёт строку, а не код.
+   * Исключение объявляет он же: `expected` — ожидаемая жалоба на остановке,
+   * и красить ею штатное завершение нельзя.
+   */
+  playoutEvent(message: string, at = new Date(), expected = false): void {
+    this.log(playoutEventLevel(message, expected), "PLAYOUT", message, at);
   }
 
   /** Снимок состояния эфира. Из него набирается вся суточная статистика. */
@@ -89,20 +96,33 @@ export class ApplicationLogger {
    * невозможно, поэтому каждая такая заминка пишется в журнал с длительностью:
    * в следующий раз будет видно, что именно держало сервис.
    */
-  watchEventLoop(thresholdMs = 500, sampleMs = 250): () => void {
+  watchEventLoop(thresholdMs = 500, sampleMs = 250, sleepMs = 30_000): () => void {
     let previous = Date.now();
+    let previousCpu = process.cpuUsage();
     const timer = setInterval(() => {
       const now = Date.now();
+      const busyMs = cpuMilliseconds(process.cpuUsage(previousCpu));
       const lag = now - previous - sampleMs;
       previous = now;
-      if (lag >= thresholdMs) {
-        this.log(
-          "warn",
-          "SERVICE",
-          `Сервис не отвечал ${(lag / 1_000).toFixed(2)} с — на это время интерфейс замирает`,
-          new Date(now),
-        );
-      }
+      previousCpu = process.cpuUsage();
+      if (lag < thresholdMs) return;
+      // Сон машины останавливает таймер ровно так же, как заминка, и по одним
+      // часам они неразличимы: закрытый на ночь ноутбук писал в журнал «сервис
+      // не отвечал 900 с» — заминку, которой не было. Отличает их процессорное
+      // время: служба, стоявшая на длинной синхронной работе, его потратила,
+      // спящая — нет. Порог мягкий, потому что ждать диска (разбор шрифтов) —
+      // тоже заминка, а процессор при этом почти простаивает; поэтому одного
+      // процессорного времени мало и нужен ещё потолок: заминка в четверть
+      // часа — это уже не «интерфейс замер», это остановленная машина.
+      const slept = lag > sleepMs && busyMs < lag / 4;
+      this.log(
+        slept ? "info" : "warn",
+        "SERVICE",
+        slept
+          ? `Служба простояла ${(lag / 1_000).toFixed(2)} с без работы — машина спала или была приостановлена`
+          : `Сервис не отвечал ${(lag / 1_000).toFixed(2)} с — на это время интерфейс замирает`,
+        new Date(now),
+      );
     }, sampleMs);
     timer.unref?.();
     return () => clearInterval(timer);
@@ -162,4 +182,9 @@ function defaultLogDirectory(): string {
     // Рабочего стола нет.
   }
   return path.join(homeDirectory, "FluxIO logs");
+}
+
+/** Процессорное время замера в миллисекундах: `cpuUsage` считает микросекунды. */
+function cpuMilliseconds(usage: NodeJS.CpuUsage): number {
+  return (usage.user + usage.system) / 1_000;
 }

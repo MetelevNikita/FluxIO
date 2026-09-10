@@ -196,6 +196,68 @@ test("a plate bound to text is drawn wide enough for the string it backs", () =>
   assert.ok(Math.abs(short - widths.title! - 2 * 0.02 * format.height) < 1e-6);
 });
 
+test("a string longer than its frame reaches air smaller, not past the edge", () => {
+  // Значение поля приходит извне — из файла задания, из выгрузки, — и длину
+  // его никто не выбирает: «Иван» и «Александр Константинопольский» приезжают
+  // в одну плашку.
+  const fmt = hd();
+  const template = fitted();
+  const timing = sceneTiming(template.director, 5);
+  const frame = 0.3 * fmt.width;
+
+  const ruler = new RecordingSurface();
+  const drawn = (title: string) => {
+    const surface = new RecordingSurface();
+    drawScene(surface, template, fmt, timing, input({ timeSeconds: 3, fields: { title } }));
+    const text = surface.ops("fillText")[0]!;
+    ruler.font = text.font ?? "";
+    return {
+      size: Number.parseFloat(text.font ?? "0"),
+      right: text.args[0]! + ruler.measureText(text.text ?? "").width,
+    };
+  };
+
+  const short = drawn("Иван");
+  const long = drawn("Александр Константинопольский");
+  assert.equal(short.size, 0.05 * fmt.height, "короткая строка не имеет права менять кегль");
+  assert.ok(long.size < short.size, "длинная строка не ужалась");
+  // Правый край надписи — правый край рамки: за него как раз и не выпускают.
+  const edge = 0.06 * fmt.width + frame;
+  assert.ok(long.right <= edge + 1, `надпись ушла за рамку: ${long.right} > ${edge}`);
+  assert.ok(long.right > edge - frame * 0.05, "надпись ужали сильнее, чем нужно");
+});
+
+test("a plate bound to a fitted string stops at the same frame the text did", () => {
+  // Иначе подложка ушла бы за границу, за которую текст не выпустили, — и
+  // ограничивать область было бы нечем.
+  const fmt = hd();
+  const template = fitted();
+  const timing = sceneTiming(template.director, 5);
+  const padding = 2 * 0.02 * fmt.height;
+  assert.ok(
+    Math.abs(plateWidth(template, fmt, timing, "Александр Константинопольский") -
+      (0.3 * fmt.width + padding)) < 1,
+    "плашка переросла рамку вписанного текста",
+  );
+});
+
+test("a fitted string that hits its smallest size is cut by the frame", () => {
+  // Минимальный кегль — не «сжать во что угодно»: ужатая в десять раз строка
+  // читается не лучше срезанной, а на кодировщике рассыпается в кашу.
+  const surface = new RecordingSurface();
+  const template = fitted();
+  drawScene(surface, template, hd(), sceneTiming(template.director, 5), input({
+    timeSeconds: 3,
+    fields: { title: "Александр Константинопольский и другие представители делегации" },
+  }));
+  const text = surface.ops("fillText")[0]!;
+  assert.ok(
+    Math.abs(Number.parseFloat(text.font ?? "0") - 0.4 * 0.05 * 1080) < 1,
+    "кегль ушёл ниже минимума",
+  );
+  assert.ok(surface.ops("clip").length > 0, "вылезшая за минимум строка не обрезана рамкой");
+});
+
 test("the same scene keeps its proportions from 576 to 2160", () => {
   const template = lowerThird();
   const timing = sceneTiming(template.director, 5);
@@ -319,6 +381,17 @@ function format(layout: SceneFormat["layout"], width: number, height: number): S
 
 function hd(): SceneFormat {
   return format("hd", 1920, 1080);
+}
+
+/** Тот же титр, но надпись вписана в свою рамку. */
+function fitted(): SceneTemplate {
+  const template = lowerThird();
+  return {
+    ...template,
+    nodes: template.nodes.map((entry) => (entry.kind === "text"
+      ? { ...entry, textStyle: { ...entry.textStyle, autoFit: true, autoFitMinScale: 0.4 } }
+      : entry)),
+  };
 }
 
 function plateWidth(

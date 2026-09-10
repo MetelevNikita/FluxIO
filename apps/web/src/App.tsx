@@ -1,3 +1,4 @@
+import { scheduleExportRequest } from "./schedule-export";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 declare const __FLUXIO_VERSION__: string;
@@ -5,7 +6,6 @@ import {
   broadcastEffectDefinitionSchema,
   broadcastEffectSettingsSchema,
   graphicEffectAssetSchema,
-  type AudioScanLanguage,
   type BroadcastEffectKind,
   type BroadcastTaskFileContent,
   type GraphicEffectAsset,
@@ -13,7 +13,6 @@ import {
   type MediaProbe,
   type ParsedSchedule,
   type ScheduleExportExtension,
-  type SerializeScheduleRequest,
   type SavedWorkspaceSession,
   type ScheduleStartMarker,
   type StartPlayoutRequest,
@@ -53,7 +52,7 @@ import {
 } from "./encoding-settings-profile";
 import { SceneFormatDialog } from "./title-editor/SceneFormatDialog";
 import { TitleLibraryDialog } from "./title-editor/TitleLibraryDialog";
-import { decodeScheduleBlob, encodeScheduleBlob } from "./schedule-blob";
+import { decodeScheduleBlob } from "./schedule-blob";
 import { MissingEffectFilesDialog } from "./components/MissingEffectFilesDialog";
 import {
   adoptTitleTemplate,
@@ -118,7 +117,7 @@ import {
   readTickerSourceFile,
   verifyGraphicEffectPaths,
   serializeScheduleFile,
-  saveWorkspaceSession as persistWorkspaceSession,
+  saveWorkspaceSession as saveWorkspaceToDatabase,
   deleteWorkspaceSession as deletePersistedWorkspaceSession,
   startCompositeClipPreview as startCompositeClipPreviewSession,
   startPlayout as startPlayoutSession,
@@ -539,17 +538,14 @@ export function App() {
   useEffect(() => {
     if (
       !workspaceAutosaveReady ||
-      demoDataEnabled ||
-      (playlist.length === 0 && futurePlaylist.length === 0)
+      demoDataEnabled
     ) {
       return;
     }
     const timer = window.setTimeout(() => {
       const request = buildWorkspaceSaveRequest();
-      workspaceAutosaveChain.current = workspaceAutosaveChain.current
-        .catch(() => undefined)
-        .then(async () => {
-          const saved = await persistWorkspaceSession(request);
+      void persistWorkspaceSession(request)
+        .then((saved) => {
           setSavedWorkspaceSession(saved);
           setRecoveryCheckpoint(saved.checkpoint?.interrupted ? saved.checkpoint : null);
         })
@@ -582,11 +578,21 @@ export function App() {
     settings,
   ]);
 
+  /**
+   * Разобран ли последний переход расписания.
+   *
+   * Пока не разобран, плейлисты эфира трогать нельзя: Current интерфейса — это
+   * прошлая неделя, и заливка вернула бы в эфир расписание, которое только что
+   * кончилось. Переходов не было — разбирать нечего.
+   */
+  const schedulePromotionSettled = !playoutStatus?.scheduleTransitionCount ||
+    schedulePromotionHandled.current ===
+      `${playoutStatus.sessionId}:${playoutStatus.scheduleTransitionCount}`;
+
   useEffect(() => {
     if (
       !workspaceAutosaveReady ||
       !playoutStatus?.sessionId ||
-      playoutStatus.schedulePhase !== "future" ||
       playoutStatus.scheduleTransitionCount < 1
     ) {
       return;
@@ -620,7 +626,7 @@ export function App() {
   useEffect(() => {
     if (
       !playoutStatus?.sessionId ||
-      playoutStatus.schedulePhase !== "current" ||
+      !schedulePromotionSettled ||
       !["starting", "running"].includes(playoutStatus.state)
     ) {
       return;
@@ -636,14 +642,14 @@ export function App() {
   }, [
     futurePlaylist,
     playoutStatus?.sessionId,
-    playoutStatus?.schedulePhase,
+    schedulePromotionSettled,
     playoutStatus?.state,
   ]);
 
   useEffect(() => {
     if (
       !playoutStatus?.sessionId ||
-      playoutStatus.schedulePhase !== "current" ||
+      !schedulePromotionSettled ||
       !["starting", "running"].includes(playoutStatus.state)
     ) {
       return;
@@ -677,7 +683,7 @@ export function App() {
   }, [
     playlist,
     playoutStatus?.sessionId,
-    playoutStatus?.schedulePhase,
+    schedulePromotionSettled,
     playoutStatus?.state,
   ]);
 
@@ -696,6 +702,9 @@ export function App() {
 
   function restoreWorkspaceSnapshot(session: SavedWorkspaceSession) {
     const snapshot = session.snapshot;
+    if (playoutStatus?.sessionId && snapshot.currentPlaylist.some((item) => item.id === playoutStatus.currentItemId)) {
+      schedulePromotionHandled.current = `${playoutStatus.sessionId}:${playoutStatus.scheduleTransitionCount}`;
+    }
     const restoredSettings = {
       ...initialBroadcastSettings,
       ...snapshot.settings,
@@ -1060,6 +1069,10 @@ export function App() {
               durationSeconds: Math.max(0.04, show.endOnSeconds - show.startOnSeconds),
             }];
           }),
+          // Метки врезок приходят строками `insertCue` над роликом: без них
+          // перенесённое расписание выходит в эфир без SCTE-35, и снаружи это
+          // выглядит как «метки пропали».
+          scte35Markers: item.scte35Markers,
           subtitles: item.srtPath
             ? { enabled: true, filePath: item.srtPath }
             : undefined,
@@ -1531,6 +1544,43 @@ export function App() {
       `${activeSchedule === "current" ? "Current" : "Future"} import cleared.`,
     );
   }
+
+  function persistWorkspaceSession(request: WorkspaceSessionSaveRequest): Promise<SavedWorkspaceSession> {
+    const save = workspaceAutosaveChain.current.catch(() => undefined).then(async () => {
+      // The file is also saved when the database fails, so recovery remains possible.
+      let saved: SavedWorkspaceSession | undefined;
+      let databaseError: unknown;
+      try { saved = await saveWorkspaceToDatabase(request); } catch (error) { databaseError = error; }
+      if (window.gruberDesktop) {
+        const snapshot = request.snapshot;
+        const schedules = await Promise.all((["current", "future"] as const).map(async (slot) => {
+          const items = snapshot[slot === "current" ? "currentPlaylist" : "futurePlaylist"];
+          if (!items.length) return "";
+          return (await serializeScheduleFile(scheduleExportRequest(
+            items, snapshot[slot === "current" ? "currentScheduleMetadata" : "futureScheduleMetadata"],
+            snapshot.effectLibrary, snapshot.audioTrackLibrary,
+          ))).content;
+        }));
+        await window.gruberDesktop.saveWorkspaceFiles({
+          session: JSON.stringify(saved ?? { snapshot }),
+          current: schedules[0]!, future: schedules[1]!,
+          configuration: serializeEncodingSettingsProfile(createEncodingSettingsProfile(
+            { ...initialBroadcastSettings, ...snapshot.settings } as BroadcastSettings, applicationVersion,
+          )),
+        });
+      }
+      if (databaseError) throw databaseError;
+      return saved!;
+    });
+    workspaceAutosaveChain.current = save.then(() => undefined, () => undefined);
+    return save;
+  }
+
+  const flushWorkspace = useStableCallback(async () => {
+    if (!workspaceAutosaveReady || demoDataEnabled) throw new Error("Session is not ready to save");
+    await persistWorkspaceSession(buildWorkspaceSaveRequest());
+  });
+  useEffect(() => window.gruberDesktop?.onFlushWorkspace(flushWorkspace), [flushWorkspace]);
 
   async function saveSessionList() {
     if (playlist.length === 0 && futurePlaylist.length === 0) {
@@ -2923,69 +2973,7 @@ export function App() {
       const metadata = activeSchedule === "current"
         ? currentScheduleMetadata
         : futureScheduleMetadata;
-      // Эффекты второго уровня едут в расписании определением плюс ссылкой:
-      // без них импорт восстановил бы ролики, но не титры, и оператор собирал
-      // бы их заново.
-      const usedEffectIds = new Set(
-        visiblePlaylist.flatMap((asset) => (asset.scenes ?? []).map((show) => show.effectId)),
-      );
-      const request: SerializeScheduleRequest = {
-        delaySeconds: metadata?.delaySeconds ?? 0,
-        extension,
-        // Языки переводов уходят в файл заголовком: расписание открывают на
-        // другой машине и через неделю, а пересканировать папку переводов при
-        // открытии нечем — это ffprobe по каждому файлу расписания.
-        audioLanguages: audioTrackLibrary?.languages
-          ?? languagesFromPlaylist(visiblePlaylist),
-        broadcastEffects: effectLibrary
-          .filter((effect) => effect.broadcast && usedEffectIds.has(effect.id))
-          .map((effect) => ({
-            effectId: effect.id,
-            name: effect.name,
-            kind: effect.broadcast!.kind,
-            // base64: расписание разбирается по фигурным скобкам, а в JSON
-            // сцены их полно.
-            data: encodeScheduleBlob(effect.broadcast),
-          })),
-        items: visiblePlaylist.map((asset) => ({
-          type: asset.scheduleType ?? inferScheduleType(
-            asset.declaredDurationSeconds ?? asset.durationSeconds,
-          ),
-          declaredDurationSeconds: asset.declaredDurationSeconds ?? asset.durationSeconds,
-          filePath: asset.filePath,
-          ageTitle: asset.ageTitle
-            ? {
-                durationSeconds: clampAgeDuration(asset.ageTitle.durationSeconds),
-                enabled: asset.ageTitle.enabled,
-                text: asset.ageTitle.text,
-              }
-            : null,
-          logoPath: asset.itemLogo?.enabled ? asset.itemLogo.filePath : null,
-          graphicElements: (asset.effects ?? []).map((effect) => ({
-            backgroundPath: effect.backgroundPath ?? effect.filePath,
-            durationSeconds: effect.endSeconds - effect.startSeconds,
-            endOnSeconds: effect.endSeconds,
-            name: effect.name,
-            startOnSeconds: effect.startSeconds,
-            titlePath: effect.titlePath ?? null,
-            titlePaths: effect.titlePaths,
-          })),
-          broadcastShows: (asset.scenes ?? []).map((show) => ({
-            effectId: show.effectId,
-            startOnSeconds: show.startSeconds,
-            endOnSeconds: show.startSeconds + show.durationSeconds,
-            fields: Object.keys(show.fields).length > 0 ? encodeScheduleBlob(show.fields) : "",
-          })),
-          srtPath: asset.subtitles?.filePath ?? null,
-          srtEnabled: Boolean(asset.subtitles?.enabled),
-          audioTracks: (asset.audioTracks ?? []).map((track) => ({
-            language: track.label,
-            languageCode: track.languageCode,
-            filePath: track.filePath,
-          })),
-        })),
-        startTime: metadata?.startTime ?? "12:00:00.00",
-      };
+      const request = scheduleExportRequest(visiblePlaylist, metadata, effectLibrary, audioTrackLibrary);
       const serialized = await serializeScheduleFile(request);
       const sourceBase = (metadata?.sourceName ?? `${activeSchedule}-schedule`)
         .replace(/\.(?:air|txt)$/i, "") || `${activeSchedule}-schedule`;
@@ -3910,7 +3898,9 @@ function buildStartRequest(
       bitrateKbps: Math.min(2_000, Math.max(32, Math.trunc(settings.subtitleBitrateKbps))),
       ptsOffsetMs: Math.min(10_000, Math.max(0, Math.trunc(settings.subtitlePtsOffsetMs))),
     },
+    reserveFilePath: settings.reserveFilePath,
     repeatPlaylist: settings.repeatSchedule,
+    scheduleDurationSeconds: settings.repeatSchedule ? null : 604_800,
     scte35: {
       enabled: settings.scte35PlanningEnabled,
       command: settings.scte35Command.startsWith("splice_insert")
@@ -4027,6 +4017,9 @@ function offsetStartRequest(
   itemIndex: number,
   offsetSeconds: number,
 ): StartPlayoutRequest {
+  const skippedSeconds = request.playlist.slice(0, itemIndex).reduce((sum, item) =>
+    sum + Math.max(0, (item.trimOutSeconds ?? item.sourceDurationSeconds ?? 0) - item.trimInSeconds), 0) + offsetSeconds;
+  request = { ...request, scheduleDurationSeconds: request.scheduleDurationSeconds == null ? null : Math.max(0.04, request.scheduleDurationSeconds - skippedSeconds) };
   const remaining = request.playlist.slice(itemIndex);
   const first = remaining[0];
   if (!first) throw new Error("No media remains after the selected start clip");
@@ -4152,20 +4145,6 @@ function effectiveAssetDuration(asset: MediaAsset): number {
  * Запасной путь для случая, когда папку переводов в этой сессии не открывали,
  * а дорожки на роликах уже есть — например, расписание пришло из файла.
  */
-function languagesFromPlaylist(items: MediaAsset[]): AudioScanLanguage[] {
-  const counts = new Map<string, { label: string; itemCount: number }>();
-  for (const asset of items) {
-    for (const track of asset.audioTracks ?? []) {
-      const known = counts.get(track.languageCode);
-      if (known) known.itemCount += 1;
-      else counts.set(track.languageCode, { label: track.label, itemCount: 1 });
-    }
-  }
-  return [...counts.entries()]
-    .map(([languageCode, value]) => ({ languageCode, ...value }))
-    .sort((left, right) => left.languageCode.localeCompare(right.languageCode));
-}
-
 function primitiveSettings(
   settings: BroadcastSettings,
 ): WorkspaceSessionSaveRequest["snapshot"]["settings"] {
@@ -4400,12 +4379,6 @@ function assignChannelLogo(
       widthPercent: settings.logoWidthPercent,
     },
   }));
-}
-
-function inferScheduleType(seconds: number): "movie" | "chop" | "clip" {
-  if (seconds < 30) return "chop";
-  if (seconds > 300) return "movie";
-  return "clip";
 }
 
 function downloadSchedule(content: string, fileName: string): void {

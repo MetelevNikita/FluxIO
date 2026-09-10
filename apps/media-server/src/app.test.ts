@@ -1,3 +1,4 @@
+import { promoteWorkspaceSnapshot } from "./database/checkpoint.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
@@ -30,7 +31,7 @@ import {
   videoEncodingSchema,
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
-import { describeTsdDuckExit } from "./ffmpeg/playout-supervisor.js";
+import { fitScheduleWindow, reservePlayoutItem, describeTsdDuckExit } from "./ffmpeg/playout-supervisor.js";
 import { parseWindowsProcessList } from "./process-metrics.js";
 
 // Мастер установки запускает `npm test` с окружением станции: `setup.mjs`
@@ -49,6 +50,7 @@ import {
   buildDailyReport,
   emptyDailyStats,
   formatLogLine,
+  playoutEventLevel,
   logFileName,
   observeStatus,
 } from "./logging/daily-log.js";
@@ -296,6 +298,19 @@ test("workspace recovery separates secrets and records a playout checkpoint", ()
       }],
     },
   });
+  snapshot.settings.reserveFilePath = "/media/reserve.mp4";
+  snapshot.settings.audioTrackDirectory = "/media/Audio";
+  snapshot.ageLibrary = { directoryPath: "/media/AGE", imagePaths: ["/media/AGE/16.png"] };
+  snapshot.scheduleLogoPath = "/media/logo.png";
+  const future = { ...asset, id: "next-week" };
+  const promoted = promoteWorkspaceSnapshot({ ...snapshot, futurePlaylist: [future] }, { currentItemId: future.id });
+  assert.deepEqual(promoted.currentPlaylist, [future]);
+  assert.deepEqual(promoted.futurePlaylist, []);
+  assert.equal(promoteWorkspaceSnapshot(promoted, { currentItemId: future.id }), promoted);
+  assert.equal(promoted.settings.reserveFilePath, "/media/reserve.mp4");
+  assert.equal(promoted.settings.audioTrackDirectory, "/media/Audio");
+  assert.equal(promoted.ageLibrary?.directoryPath, "/media/AGE");
+  assert.equal(promoted.scheduleLogoPath, "/media/logo.png");
   const protectedSnapshot = sanitizeWorkspaceSnapshot(snapshot);
   assert.equal(protectedSnapshot.sanitized.currentPlaylist[0]?.filePath, asset.filePath);
   assert.equal(protectedSnapshot.sanitized.startMarker?.assetId, asset.id);
@@ -882,6 +897,83 @@ test("schedule carries the audio languages it was saved with", () => {
   assert.equal(parsed.warnings.length, 0);
 });
 
+test("a complaint on shutdown is not written as a failure", () => {
+  // Выдача закрывается после того, как эфир кончился, и TSDuck успевает
+  // пожаловаться на сокет, которого уже нет. Записанная ошибкой, эта жалоба
+  // красит штатное завершение в красный — и приучает не читать журнал там,
+  // где ошибка настоящая.
+  assert.equal(playoutEventLevel("TSDuck at shutdown: * Error: ip: socket not open", true), "info");
+  // А настоящий отказ линии ошибкой быть обязан: по нему оператор и ищет причину.
+  assert.equal(playoutEventLevel("TSDuck: * Error: srt: connection rejected"), "error");
+  assert.equal(playoutEventLevel("Clip 2 renderer failed"), "error");
+});
+
+test("a cue point survives the round trip through the schedule file", () => {
+  // Метку ставит оператор по хронометражу, и без неё перенесённое на другую
+  // машину расписание выходит в эфир без врезок — молча.
+  const serialized = serializeSchedule({
+    extension: "txt",
+    broadcastEffects: [],
+    startTime: "12:00:00.00",
+    delaySeconds: 0,
+    audioLanguages: [],
+    items: [{
+      type: "clip",
+      declaredDurationSeconds: 60,
+      filePath: "/media/one.mp4",
+      ageTitle: null,
+      logoPath: null,
+      broadcastShows: [],
+      graphicElements: [],
+      srtPath: null,
+      scte35Markers: [
+        {
+          id: "cue-1",
+          positionSeconds: 12.5,
+          eventId: 54_321,
+          kind: "break-start",
+          durationSeconds: 30,
+          segmentationTypeId: 52,
+          upid: "TEST-54321",
+        },
+        {
+          id: "cue-2",
+          positionSeconds: 42.5,
+          eventId: 54_322,
+          kind: "break-end",
+          durationSeconds: null,
+          segmentationTypeId: 53,
+          upid: "",
+        },
+      ],
+    }],
+  });
+
+  assert.match(
+    serialized.content,
+    /insertCue \{break-start\} at \{00:00:12\.50\} event \{54321\} duration \{00:00:30\.00\} type \{52\} upid \{TEST-54321\}/,
+  );
+  // Конец врезки длительности не несёт, и пустая пара скобок это и говорит.
+  assert.match(serialized.content, /insertCue \{break-end\} at \{00:00:42\.50\} event \{54322\} duration \{\} type \{53\}/);
+
+  const parsed = parseScheduleText(serialized.content, "/tmp/schedule.txt");
+  assert.deepEqual(
+    parsed.items[0]?.scte35Markers.map((marker) => ({
+      positionSeconds: marker.positionSeconds,
+      eventId: marker.eventId,
+      kind: marker.kind,
+      durationSeconds: marker.durationSeconds,
+      segmentationTypeId: marker.segmentationTypeId,
+      upid: marker.upid,
+    })),
+    [
+      { positionSeconds: 12.5, eventId: 54_321, kind: "break-start", durationSeconds: 30, segmentationTypeId: 52, upid: "TEST-54321" },
+      { positionSeconds: 42.5, eventId: 54_322, kind: "break-end", durationSeconds: null, segmentationTypeId: 53, upid: "" },
+    ],
+  );
+  assert.equal(parsed.warnings.length, 0);
+});
+
 test("schedule without a language header derives languages from its own tracks", () => {
   // Расписания прежних версий заголовка не несут: языки собираются из самих
   // строк дорожек, иначе оператор открывает файл с переводами и видит пустой
@@ -1298,10 +1390,10 @@ test("a 168-hour playlist keeps FFmpeg inputs out of the Windows command line", 
   assert.ok(scripted.filterGraph.length > 32_767);
   assert.deepEqual(
     scripted.args.slice(
-      scripted.args.indexOf("-filter_complex_script"),
-      scripted.args.indexOf("-filter_complex_script") + 2,
+      scripted.args.indexOf("-/filter_complex"),
+      scripted.args.indexOf("-/filter_complex") + 2,
     ),
-    ["-filter_complex_script", scriptPath],
+    ["-/filter_complex", scriptPath],
   );
   assert.equal(scripted.args.includes("-filter_complex"), false);
   assert.equal(embedded.args.includes("-i"), false);
@@ -3103,7 +3195,7 @@ test(
         .map((value) => Number.parseFloat(value))
         .filter(Number.isFinite);
       assert.ok(
-        keyframeTimes.some((value) => Math.abs(value - 3.5) < 0.1),
+        keyframeTimes.some((value) => Math.abs(value - (keyframeTimes[0] ?? 0) - 3.5) < 0.1),
         `No IDR found around SCTE-35 event PTS; keyframes=${keyframeTimes.join(",")}`,
       );
       const monitor = await runCommand(tspPath, [
@@ -4146,6 +4238,8 @@ test("the font list is scanned once: every request would re-read hundreds of fil
 
 function baseRequest(): StartPlayoutRequest {
   return {
+    scheduleDurationSeconds: null,
+    reserveFilePath: "",
     playlist: [{
       id: "one",
       name: "one.mp4",
@@ -4681,4 +4775,53 @@ test("the interface server never serves a file from outside its own directory", 
   assert.equal(isApplicationRoute("/playlist"), true);
   assert.equal(isApplicationRoute("/assets/main-A1b2C3d4.js"), false);
   assert.equal(isApplicationRoute("/api/playout/status"), false);
+});
+
+
+test("weekly boundary cuts overruns and loops the reserve through underruns", () => {
+  const items = [{ ...preparedItems()[0]!, durationSeconds: 604_799 }, { ...preparedItems()[0]!, id: "last", durationSeconds: 8 }];
+  assert.deepEqual(fitScheduleWindow(items, 604_800).map((item) => item.durationSeconds), [604_799, 1]);
+  const reserve = { ...preparedItems()[0]!, filePath: "/media/reserve.mp4" };
+  const padded = fitScheduleWindow(items.slice(0, 1), 604_800, reserve);
+  assert.equal(padded[1]?.filePath, reserve.filePath);
+  assert.equal(padded[1]?.durationSeconds, 1);
+  assert.equal(padded[1]?.loopSource, true);
+  const request = baseRequest();
+  assert.ok(buildFfmpegClipVideoProducerCommand(request, padded[1]!, "/tmp/preview").args.includes("-stream_loop"));
+  assert.ok(buildFfmpegClipAudioProducerCommand(request, padded[1]!).args.includes("-stream_loop"));
+  assert.equal(reservePlayoutItem(request).filePath, "bars://smpte");
+  request.reserveFilePath = reserve.filePath;
+  assert.equal(reservePlayoutItem(request).filePath, reserve.filePath);
+});
+
+test("real repeated Future transitions accept another Future and hot changes after every promotion", {
+  skip: process.env.GRUBER_RUN_STABILITY_TESTS !== "1", timeout: 60_000,
+}, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "fluxio-weeks-"));
+  const supervisor = new PlayoutSupervisor(new FfmpegCapabilitiesService(), directory);
+  const request = baseRequest();
+  request.video = { ...request.video, width: 640, height: 360, preset: "ultrafast" };
+  request.endpoint = { ...request.endpoint, protocol: "udp", host: "127.0.0.1", port: await testUdpPort(), packetSize: 1316, ttl: 1, localAddress: "", mpegTs: { ...defaultMpegTsOutputSettings } };
+  const week = (number: number) => [{ ...request.playlist[0]!, id: `week-${number}`, name: `Week ${number}`, filePath: "bars://smpte", trimOutSeconds: 2 }];
+  request.playlist = week(0);
+  request.nextPlaylist = week(1);
+  try {
+    await supervisor.start(request);
+    let handled = 0;
+    const deadline = Date.now() + 45_000;
+    while (handled < 3) {
+      const status = supervisor.getStatus();
+      assert.notEqual(status.state, "failed", status.logs.slice(-15).join("\n"));
+      assert.notEqual(status.state, "completed", "Future chain stopped prematurely");
+      if (status.scheduleTransitionCount > handled && status.state === "running") {
+        handled = status.scheduleTransitionCount;
+        assert.equal(status.queuedFutureItems, 0);
+        await supervisor.updatePlaylist(week(handled));
+        supervisor.updateNextPlaylist(week(handled + 1));
+      }
+      assert.ok(Date.now() < deadline, "Timed out waiting for consecutive weeks");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(handled, 3);
+  } finally { await supervisor.close(); await rm(directory, { recursive: true, force: true }); }
 });

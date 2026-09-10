@@ -9,6 +9,7 @@ import {
   type ScheduleItemType,
   type ScheduleBroadcastEffect,
   type ScheduleBroadcastShow,
+  type Scte35Marker,
 } from "@gruber/contracts";
 import { languageLabel, resolveLanguageCode } from "../audio/languages.js";
 
@@ -31,6 +32,9 @@ const broadcastShowPattern =
 const graphicPattern = /^insertGraphicElement_(?:\{([^}]*)\}|([^\s]+))\s+backgroundPath\s*\{([^}]*)\}\s+((?:titlePath(?:#\d+)?\s*\{[^}]*\}\s*)*)duration\s*\{([^}]*)\}\s+startOn\s*\{([^}]*)\}(?:\s+endOn\s*\{([^}]*)\})?\s*$/i;
 const graphicTitlePattern = /titlePath(?:#(\d+))?\s*\{([^}]*)\}/gi;
 const srtPattern = /^insertSRT\s*\{([^}]*)\}(?:\s*state\s*\{(on|off)\})?\s*$/i;
+
+const cuePattern =
+  /^insertCue\s*\{(break-start|break-end)\}\s+at\s*\{([^}]*)\}\s+event\s*\{([^}]*)\}\s+duration\s*\{([^}]*)\}\s+type\s*\{([^}]*)\}(?:\s+upid\s*\{([^}]*)\})?\s*$/i;
 // Путь дорожки сам начинается с {язык}, поэтому внешние скобки закрываются жадно.
 const audioTrackPattern = /^insertAudioTrack_\{([^}]{1,32})\}\s*\{(.+)\}\s*$/i;
 
@@ -111,6 +115,7 @@ export function parseScheduleText(
   let pendingBroadcastShows: ScheduleBroadcastShow[] = [];
   let pendingSrtPath: string | null = null;
   let pendingSrtEnabled = true;
+  let pendingScte35Markers: Scte35Marker[] = [];
   const items: ParsedScheduleItem[] = [];
   const warnings: string[] = [];
 
@@ -241,6 +246,29 @@ export function parseScheduleText(
       });
       continue;
     }
+    const cue = line.match(cuePattern);
+    if (cue) {
+      const positionSeconds = parseClock(cue[2] ?? "", true, `Line ${entry.lineNumber}`);
+      const duration = optionalDirectiveValue(cue[4]);
+      pendingScte35Markers.push({
+        // Опознаватель метки собирается заново: он живёт только внутри сессии,
+        // а расписание переносят между машинами.
+        id: `cue-${entry.lineNumber}-${pendingScte35Markers.length + 1}`,
+        kind: (cue[1] ?? "break-start").toLowerCase() as Scte35Marker["kind"],
+        positionSeconds,
+        eventId: parseNonNegative(cue[3] ?? "", `Line ${entry.lineNumber}: invalid cue event`),
+        durationSeconds: duration
+          ? parseClock(duration, true, `Line ${entry.lineNumber}`)
+          : null,
+        segmentationTypeId: parseNonNegative(
+          cue[5] ?? "",
+          `Line ${entry.lineNumber}: invalid cue type`,
+        ),
+        upid: optionalDirectiveValue(cue[6]) ?? "",
+      });
+      continue;
+    }
+
     const srt = line.match(srtPattern);
     if (srt) {
       pendingSrtPath = requiredDirectiveValue(srt[1], "insertSRT", entry.lineNumber);
@@ -301,6 +329,7 @@ export function parseScheduleText(
         filePath,
         graphicElements: pendingGraphicElements,
         broadcastShows: pendingBroadcastShows,
+        scte35Markers: pendingScte35Markers,
         lineNumber: entry.lineNumber,
         logoPath: pendingLogoPath,
         srtPath: pendingSrtPath,
@@ -315,6 +344,7 @@ export function parseScheduleText(
       pendingLogoPath = null;
       pendingGraphicElements = [];
       pendingBroadcastShows = [];
+      pendingScte35Markers = [];
       pendingSrtPath = null;
       pendingSrtEnabled = true;
       continue;

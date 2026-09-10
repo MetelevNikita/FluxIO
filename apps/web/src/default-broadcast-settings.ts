@@ -78,6 +78,7 @@ export const initialBroadcastSettings: BroadcastSettings = {
   logoMargin: 32,
   logoOpacity: 1,
   repeatSchedule: false,
+  reserveFilePath: "",
   scte35PlanningEnabled: false,
   scte35Command: "time_signal + segmentation_descriptor",
   scte35Owner: "Provider",

@@ -1,3 +1,4 @@
+import { createSessionDirectories, registerSessionFiles } from "./session-files.js";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import {
 } from "./channels.js";
 import { registerIpcHandlers } from "./ipc.js";
 import {
+  registerShutdown,
   desktopIconPath,
   openLauncherWindow,
   openProgramWindow,
@@ -29,11 +31,14 @@ if (!hasLock) app.quit();
 
 //
 
-if (hasLock) void app.whenReady().then(() => {
+if (hasLock) void app.whenReady().then(async () => {
   if (process.platform === "darwin" && !app.isPackaged) {
     app.dock?.setIcon(desktopIconPath());
   }
 
+  await createSessionDirectories(configuredInstances());
+  registerSessionFiles(configuredInstances);
+  registerShutdown(configuredInstances);
   registerIpcHandlers();
   registerInstanceHandlers(configuredInstances);
   openLauncherWindow(true);
@@ -96,8 +101,10 @@ function registerInstanceHandlers(loadConfigured: () => FluxioInstance[]): void 
   });
   ipcMain.handle(SHOW_INSTANCES_CHANNEL, () => { openLauncherWindow(); });
   ipcMain.handle(INSTANCES_OVERVIEW_CHANNEL, () => collectOverview(loadConfigured()));
-  ipcMain.handle(ADD_INSTANCE_CHANNEL, (_event, name: unknown) =>
-    runSetup(["--add-instance", `--instance-name=${instanceName(name)}`]));
+  ipcMain.handle(ADD_INSTANCE_CHANNEL, async (_event, name: unknown) => {
+    await runSetup(["--add-instance", `--instance-name=${instanceName(name)}`]);
+    await createSessionDirectories(loadConfigured());
+  });
   ipcMain.handle(RENAME_INSTANCE_CHANNEL, (_event, id: unknown, name: unknown) => {
     if (typeof id !== "string") throw new Error("Invalid program ID");
     return runSetup([`--rename-instance=${id}`, `--instance-name=${instanceName(name)}`]);

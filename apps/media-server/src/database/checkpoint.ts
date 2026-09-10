@@ -4,6 +4,7 @@ import {
   type PlayoutStatus,
   type SavedWorkspaceSession,
   type WorkspaceSessionSaveRequest,
+  type WorkspaceSessionSnapshot,
 } from "@gruber/contracts";
 import type { Prisma } from "../generated/prisma/client.js";
 import type { SecretCipher } from "./secrets.js";
@@ -122,7 +123,7 @@ export function restoreWorkspaceSession(
     ? workspaceSessionCheckpointSchema.parse(session.checkpoint)
     : null;
 
-  return savedWorkspaceSessionSchema.parse({
+  const restored = savedWorkspaceSessionSchema.parse({
     id: session.id,
     snapshot: { ...snapshot, settings },
     checkpoint: checkpoint
@@ -131,6 +132,7 @@ export function restoreWorkspaceSession(
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   });
+  return { ...restored, snapshot: promoteWorkspaceSnapshot(restored.snapshot, currentStatus.sessionId ? currentStatus : checkpoint) };
 }
 
 //
@@ -174,4 +176,11 @@ function hasProgress(
     value.currentItemElapsedSeconds > 0 ||
     value.currentItemIndex > 0 ||
     value.progressPercent > 0;
+}
+
+/** A checkpoint in Future must never be restored against last week's Current. */
+export function promoteWorkspaceSnapshot(snapshot: WorkspaceSessionSnapshot, status: { currentItemId: string | null } | null): WorkspaceSessionSnapshot {
+  const id = status?.currentItemId;
+  if (!id || snapshot.currentPlaylist.some((item) => item.id === id) || !snapshot.futurePlaylist.some((item) => item.id === id)) return snapshot;
+  return { ...snapshot, currentPlaylist: snapshot.futurePlaylist, futurePlaylist: [], currentScheduleMetadata: snapshot.futureScheduleMetadata, futureScheduleMetadata: null, activeSchedule: "current", selectedAssetId: id, startMarker: null };
 }
