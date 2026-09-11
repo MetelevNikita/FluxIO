@@ -74,7 +74,11 @@ export function registerSessionFiles(loadInstances: () => FluxioInstance[]): voi
 }
 
 export async function api(instance: FluxioInstance, route: string, init?: RequestInit): Promise<Record<string, unknown>> {
-  const response = await fetch(new URL(route, instance.apiUrl), { ...init, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(30_000) });
+  // Заголовок JSON — только вместе с телом. На пустое тело с этим заголовком
+  // Fastify отвечает 400, и остановка эфира при закрытии окна не проходила
+  // никогда: закрытие отменялось с «Body cannot be empty when content-type is set».
+  const headers = init?.body ? { "content-type": "application/json" } : undefined;
+  const response = await fetch(new URL(route, instance.apiUrl), { ...init, headers, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   return await response.json() as Record<string, unknown>;
 }

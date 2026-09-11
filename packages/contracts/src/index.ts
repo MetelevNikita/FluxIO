@@ -1422,7 +1422,10 @@ export const startPlayoutRequestSchema = z.object({
   audioProgram: audioProgramSchema.optional(),
   repeatPlaylist: z.boolean().default(false),
   /** Remaining time in the 168-hour schedule; null preserves finite playout. */
-  scheduleDurationSeconds: z.number().positive().max(604_800).nullable().default(null),
+  // Окно планируемого эфира задаёт оператор, и оно бывает длиннее недели, а
+  // неделя с переводом часов на час длиннее 168 часов: потолок ровно в неделю
+  // отказал бы обоим в старте.
+  scheduleDurationSeconds: z.number().positive().max(366 * 86_400).nullable().default(null),
   reserveFilePath: z.string().default(""),
   scte35: scte35PlanningSchema.default({
     enabled: false,
@@ -1771,6 +1774,18 @@ export const workspaceSessionAssetSchema = z.object({
   subtitles: subtitleOverlaySchema.optional(),
 });
 
+/**
+ * Форма, в которой расписание выходит в эфир. Выбирает оператор.
+ *
+ * `free` — произвольное: старт с любого ролика, плейлист по кругу.
+ * `planned` — планируемое: окно от `anchorDate` + `startTime` длиной
+ * `targetDurationSeconds` задаёт оператор началом и концом; старт с любого ролика,
+ * кончается эфир в конец окна. `weekly` — недельное: то же окно ровно на неделю,
+ * но старт только по часам, с того места, которое идёт сейчас по сетке.
+ */
+export const playbackModeSchema = z.enum(["free", "planned", "weekly"]);
+export type PlaybackMode = z.infer<typeof playbackModeSchema>;
+
 export const workspaceScheduleMetadataSchema = z.object({
   sourceFilePath: z.string(),
   sourceName: z.string(),
@@ -1780,6 +1795,12 @@ export const workspaceScheduleMetadataSchema = z.object({
   delaySeconds: z.number().nonnegative(),
   targetDurationSeconds: z.number().positive(),
   warnings: z.array(z.string()),
+  /**
+   * Не выбрано — прежнее поведение: повтор решает кнопка «Повтор» в настройках,
+   * окно — неделя. Сессии до этой версии поля не несут, и навязать им
+   * недельный режим значило бы молча запереть старт с выбранного ролика.
+   */
+  playbackMode: playbackModeSchema.optional(),
 });
 
 /*

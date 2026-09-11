@@ -62,6 +62,16 @@ import {
   reconcileSubtitleAssignments,
 } from "./schedule-libraries";
 import { MissingEffectFilesDialog } from "./components/MissingEffectFilesDialog";
+import { PlaybackModeDialog } from "./components/PlaybackModeDialog";
+import {
+  applyPlaybackDraft,
+  formatAirMoment,
+  playbackStart,
+  playbackWindow,
+  withPlaybackMode,
+  type PlaybackDraft,
+  type PlaybackStart,
+} from "./playback-mode";
 import {
   adoptTitleTemplate,
   packTitleFile,
@@ -183,7 +193,7 @@ interface EditingSceneDraft {
 }
 
 export function App() {
-  const { tr } = useI18n();
+  const { language, tr } = useI18n();
   const [view, setView] = useState<AppView>("import");
   /**
    * Эффект, сцену которого правит редактор титров. Редактор — накладка поверх
@@ -203,6 +213,8 @@ export function App() {
   const [activeSchedule, setActiveSchedule] = useState<ScheduleSlot>("current");
   const [currentScheduleMetadata, setCurrentScheduleMetadata] = useState<ScheduleMetadata | null>(null);
   const [futureScheduleMetadata, setFutureScheduleMetadata] = useState<ScheduleMetadata | null>(null);
+  /** Какому расписанию сейчас выбирают тип воспроизведения; `null` — окно закрыто. */
+  const [playbackDialogSlot, setPlaybackDialogSlot] = useState<ScheduleSlot | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState(() =>
     demoDataEnabled ? "production" : "",
   );
@@ -354,6 +366,7 @@ export function App() {
   const stableRemovePlaylistItem = useStableCallback(removePlaylistItem);
   const stableRemoveScte35Marker = useStableCallback(removeScte35Marker);
   const stableOpenPlaylistSchedule = useStableCallback(openPlaylistSchedule);
+  const stableOpenPlaybackDialog = useStableCallback(() => setPlaybackDialogSlot(activeSchedule));
   const stableSaveActiveSchedule = useStableCallback(saveActiveSchedule);
   const stableSaveSessionList = useStableCallback(saveSessionList);
   const stableCreateNewPlaylist = useStableCallback(createNewPlaylist);
@@ -3153,6 +3166,7 @@ export function App() {
       setOperationError("A schedule start marker can only be set in the Current playlist.");
       return;
     }
+    if (refuseClockBoundStart()) return;
     const asset = playlist.find((item) => item.id === assetId);
     if (!asset) return;
     const offset = Math.min(
@@ -3178,6 +3192,7 @@ export function App() {
       setOperationError("Hot take is only available from the Current playlist.");
       return;
     }
+    if (refuseClockBoundStart()) return;
     const asset = playlist.find((item) => item.id === assetId);
     if (!asset) return;
     if (asset.status !== "analyzed") {
@@ -3195,12 +3210,12 @@ export function App() {
     setTakeBusy(true);
     setOperationError(null);
     try {
-      const request = buildStartRequestFromAsset(
+      const request = withPlaybackMode(buildStartRequestFromAsset(
         buildStartRequest(playlist, settings, futurePlaylist),
         playlist,
         assetId,
         offsetSeconds,
-      );
+      ), currentScheduleMetadata);
       setPlayoutStatus(await takePlayoutSession(request));
       setRecoveryCheckpoint(null);
       setScheduleActionMessage(
@@ -3222,18 +3237,106 @@ export function App() {
     );
   }
 
+  /**
+   * Выбранная форма ложится в метаданные своего расписания.
+   *
+   * Кнопка «Повтор» у Current встаёт в то же положение: у произвольного она
+   * включена, у остальных — выключена, иначе настройки говорили бы одно, а эфир
+   * делал другое. Отметка старта у недельного снимается — он её не читает.
+   */
+  function applyPlaybackMode(draft: PlaybackDraft) {
+    const slot = playbackDialogSlot ?? activeSchedule;
+    const applied = applyPlaybackDraft(
+      slot === "current" ? currentScheduleMetadata : futureScheduleMetadata,
+      draft,
+    );
+    if (slot === "current") {
+      setCurrentScheduleMetadata(applied);
+      setSettings((current) => ({ ...current, repeatSchedule: draft.mode === "free" }));
+      if (draft.mode === "weekly") setScheduleStartMarker(null);
+    } else {
+      setFutureScheduleMetadata(applied);
+    }
+    setPlaybackDialogSlot(null);
+    if (draft.mode === "free") {
+      setScheduleActionMessage(tr(
+        "Произвольное: старт с любого ролика, плейлист идёт по кругу.",
+        "Free: start from any clip, the playlist loops.",
+      ));
+      return;
+    }
+    const { startsAt, endsAt } = playbackWindow(applied, slot);
+    const span = `${formatAirMoment(startsAt, language)} → ${formatAirMoment(endsAt, language)}`;
+    setScheduleActionMessage(draft.mode === "weekly"
+      ? tr(`Недельное: ${span}. Эфир поднимается только по часам.`, `Weekly: ${span}. Playout starts on the clock only.`)
+      : tr(
+        `Планируемое: ${span}. Старт с любого ролика, эфир кончится в заданный конец.`,
+        `Planned: ${span}. Start from any clip; air ends at the set end.`,
+      ));
+  }
+
+  /** Недельное стартует только по часам: старт с выбранного ролика в нём заперт. */
+  function refuseClockBoundStart(): boolean {
+    if (currentScheduleMetadata?.playbackMode !== "weekly") return false;
+    setOperationError(tr(
+      "Недельное расписание идёт только по часам: старт с выбранного ролика заперт. Нужен старт с ролика — смените тип воспроизведения.",
+      "A weekly schedule runs on the clock only: starting from a chosen clip is locked. Change the playback type to start from a clip.",
+    ));
+    return true;
+  }
+
+  /** Почему расписание сейчас не поднимается — словами оператора. */
+  function playbackRefusal(
+    gate: Exclude<PlaybackStart, { kind: "on-air" | "any-clip" }>,
+    mode: ScheduleMetadata["playbackMode"],
+  ): string {
+    if (gate.kind === "not-started") {
+      const at = formatAirMoment(gate.startsAt, language);
+      return tr(
+        `Неделя расписания ещё не началась — эфир по ней поднимется не раньше ${at}.`,
+        `The schedule week has not started — playout can start from ${at}.`,
+      );
+    }
+    if (gate.kind === "ended") {
+      const at = formatAirMoment(gate.endsAt, language);
+      return mode === "planned"
+        ? tr(
+          `Время планируемого эфира кончилось ${at}. Задайте новые начало и конец или смените тип воспроизведения.`,
+          `The planned air time ended ${at}. Set a new start and end or change the playback type.`,
+        )
+        : tr(
+          `Неделя расписания кончилась ${at}. Загрузите следующую или смените тип воспроизведения.`,
+          `The schedule week ended ${at}. Load the next one or change the playback type.`,
+        );
+    }
+    return tr(
+      "Неделя идёт, но ролики расписания кончились раньше неё — поднимать эфир не с чего. Дополните расписание или смените тип воспроизведения.",
+      "The week is running, but the schedule ran out before it — nothing to start from. Extend the schedule or change the playback type.",
+    );
+  }
+
   async function startPlayout(mode: "default" | "resume" | "beginning" = "default") {
     setOperationError(null);
     try {
       const baseRequest = buildStartRequest(playlist, settings, futurePlaylist);
+      // Недельное поднимается только по часам, какой бы кнопкой ни нажали
+      // старт: отметка и «с начала» в нём значили бы сетку, сдвинутую до конца
+      // недели. До начала недели и после конца любого окна старт не разрешён.
+      const gate = playbackStart(playlist, currentScheduleMetadata, "current");
+      if (gate.kind !== "on-air" && gate.kind !== "any-clip") {
+        setOperationError(playbackRefusal(gate, currentScheduleMetadata?.playbackMode));
+        return;
+      }
       // Подъём после сбоя идёт по часам, а не с места обрыва: расписание
       // привязано ко времени суток, и после часового простоя место обрыва
       // означало бы эфир, сдвинутый на час до конца недели. Чекпоинт остаётся
       // запасным путём — на плейлист без расписания часам опереться не на что.
-      const catchUp = mode === "resume"
-        ? scheduleCatchUpPoint(playlist, currentScheduleMetadata, "current")
-        : null;
-      const request = mode === "resume" && catchUp
+      const catchUp = gate.kind === "on-air"
+        ? gate.point
+        : mode === "resume"
+          ? scheduleCatchUpPoint(playlist, currentScheduleMetadata, "current")
+          : null;
+      const request = withPlaybackMode(catchUp
         ? buildStartRequestFromAsset(
             baseRequest, playlist, catchUp.assetId, catchUp.itemOffsetSeconds,
           )
@@ -3246,7 +3349,7 @@ export function App() {
               scheduleStartMarker.assetId,
               scheduleStartMarker.offsetSeconds,
             )
-          : baseRequest;
+          : baseRequest, currentScheduleMetadata);
       setPlayoutStatus(await startPlayoutSession(request));
       setRecoveryCheckpoint(null);
       // Пропущенные ролики — не мелочь: эфир пошёл короче, чем показывает
@@ -3259,7 +3362,7 @@ export function App() {
         );
       }
       setScheduleActionMessage(
-        mode === "resume" && catchUp
+        catchUp
           ? `Playout caught up with the schedule: "${
             playlist.find((asset) => asset.id === catchUp.assetId)?.name ?? "clip"
           }" at ${formatClock(catchUp.itemOffsetSeconds)}.`
@@ -3292,9 +3395,22 @@ export function App() {
         setOperationError("The Future schedule is empty.");
         return;
       }
-      setPlayoutStatus(await startPlayoutSession(
-        buildStartRequest(futurePlaylist, settings, []),
-      ));
+      // Future поднимается в своей форме: недельная — тоже только по часам.
+      const gate = playbackStart(futurePlaylist, futureScheduleMetadata, "future");
+      if (gate.kind !== "on-air" && gate.kind !== "any-clip") {
+        setOperationError(playbackRefusal(gate, futureScheduleMetadata?.playbackMode));
+        return;
+      }
+      const futureRequest = buildStartRequest(futurePlaylist, settings, []);
+      setPlayoutStatus(await startPlayoutSession(withPlaybackMode(
+        gate.kind === "on-air"
+          ? buildStartRequestFromAsset(
+              futureRequest, futurePlaylist, gate.point.assetId, gate.point.itemOffsetSeconds,
+            )
+          : futureRequest,
+        futureScheduleMetadata,
+        "future",
+      )));
       setRecoveryCheckpoint(null);
       setScheduleActionMessage("Playout started from the Future schedule.");
     } catch (error) {
@@ -3353,7 +3469,12 @@ export function App() {
             ? () => addNativeFiles(activeSchedule)
             : undefined}
           onSelectSchedule={window.gruberDesktop ? importNativeSchedule : undefined}
-          onProceed={() => setView("playlist")}
+          onProceed={() => {
+            // Загруженное просится в эфир — сначала выбирается его форма:
+            // от неё зависит, можно ли стартовать с ролика.
+            setView("playlist");
+            setPlaybackDialogSlot(activeSchedule);
+          }}
           operationError={operationError}
         />
       ) : null}
@@ -3427,6 +3548,7 @@ export function App() {
             ageDurationSeconds={settings.ageTitleDurationSeconds}
             ageLibrary={ageLibrary}
             scheduleActionMessage={scheduleActionMessage}
+            operationError={operationError}
             scheduleBusy={mediaBusy}
             workspaceBusy={workspaceBusy}
             takeBusy={takeBusy}
@@ -3451,6 +3573,7 @@ export function App() {
             onLogoSettingsChange={stableUpdateScheduleLogoSettings}
             onClearStartMarker={stableClearStartMarker}
             onStartFromItem={stableStartFromPlaylistItem}
+            onChoosePlaybackMode={stableOpenPlaybackDialog}
             onStartCompositePreview={stableStartCompositePreview}
             onRemoveItems={stableRemovePlaylistItems}
             onMoveToOtherSchedule={stableMoveItemsToOtherSchedule}
@@ -3485,6 +3608,7 @@ export function App() {
           onSettingsChange={setSettings}
           onStart={stableStartPlayout}
           onStartFresh={stableStartPlayoutFromBeginning}
+          playbackMode={currentScheduleMetadata?.playbackMode ?? null}
           onStop={stableStopPlayout}
           operationError={operationError}
           playlistLength={playlist.length}
@@ -3615,6 +3739,16 @@ export function App() {
           </div>
           <button onClick={() => setAutoResumeIn(null)} type="button">{tr("Отменить", "Cancel")}</button>
         </div>
+      ) : null}
+
+      {playbackDialogSlot ? (
+        <PlaybackModeDialog
+          metadata={playbackDialogSlot === "current" ? currentScheduleMetadata : futureScheduleMetadata}
+          onApply={applyPlaybackMode}
+          onClose={() => setPlaybackDialogSlot(null)}
+          playlist={playbackDialogSlot === "current" ? playlist : futurePlaylist}
+          slot={playbackDialogSlot}
+        />
       ) : null}
 
       {missingEffectFiles.length > 0 ? (

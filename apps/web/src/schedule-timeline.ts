@@ -46,7 +46,7 @@ export function buildScheduleTimeline(
   });
 }
 
-function scheduleStartsAt(metadata: ScheduleMetadata | null, slot: ScheduleSlot, now: Date): number {
+export function scheduleStartsAt(metadata: ScheduleMetadata | null, slot: ScheduleSlot, now: Date): number {
   const anchor = parseLocalDate(metadata?.anchorDate) ?? scheduleAnchor(slot, now);
   // Местное время старта; дальнейшие длительности идут по реальным миллисекундам,
   // чтобы дробные секунды и перевод часов не сдвигали позицию эфира.

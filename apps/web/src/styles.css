@@ -1364,6 +1364,17 @@ p {
 }
 
 .schedule-coverage.over > em { color: #fb7185; }
+
+/* Отказ старта — полной строкой и с переносом: обрезанная многоточием причина
+   ничего не объясняет, а читают её как раз тогда, когда эфир не пошёл. */
+.schedule-coverage-error {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: normal;
+}
 .schedule-coverage.under > em { color: var(--warning); }
 .schedule-coverage.exact > em { color: #4ade80; }
 
@@ -7906,3 +7917,132 @@ button.scene-tree-twist:hover { color: var(--text); }
   place-items: center;
   color: var(--text-secondary, #8b98a5);
 }
+
+/* ---------------------------- тип воспроизведения ------------------------- */
+
+/* Окно того же семейства, что «Потеряны файлы эффектов»: подложка, шапка,
+   подвал. Рамка нейтральная — это выбор, а не тревога. */
+.playback-mode-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 10, 0.78);
+  padding: 24px;
+}
+
+.playback-mode {
+  width: min(620px, 100%);
+  max-height: min(720px, 92vh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 30px 70px -30px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+
+.playback-mode > header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+}
+
+.playback-mode > header div { display: grid; gap: 4px; min-width: 0; }
+.playback-mode > header strong { font-size: 13.5px; color: var(--text); }
+.playback-mode > header small { font-size: 11px; line-height: 1.5; color: var(--muted); }
+
+.playback-mode > header button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--muted);
+}
+
+.playback-mode-body { display: grid; gap: 12px; padding: 14px 16px; overflow-y: auto; }
+.playback-mode-options { display: grid; gap: 8px; }
+
+.playback-mode-option {
+  display: grid;
+  grid-template-columns: 14px 32px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-deep);
+  cursor: pointer;
+}
+
+.playback-mode-option input { margin: 0; accent-color: var(--accent); }
+.playback-mode-option:hover { border-color: rgba(245, 213, 101, 0.45); }
+.playback-mode-option.selected { border-color: var(--accent); background: rgba(245, 213, 101, 0.07); }
+.playback-mode-option b { display: block; font-size: 12.5px; color: var(--text); }
+.playback-mode-option small { display: block; margin-top: 3px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+
+.playback-mode-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.playback-mode-option.selected .playback-mode-icon { color: var(--accent); }
+
+.playback-mode-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-deep);
+}
+
+.playback-mode-note { grid-column: 1 / -1; margin: 0; font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+.playback-mode-note b { color: var(--text); }
+.playback-mode-note.warn { color: var(--warning); }
+
+.playback-mode > footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.playback-mode > footer p { margin: 0; font-size: 10.5px; line-height: 1.5; color: var(--muted-dark); }
+.playback-mode > footer div { display: flex; gap: 8px; }
+
+/* Строка окна расписания: говорит, в какой форме идёт эфир, и открывает выбор. */
+.playback-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playback-mode-chip b { color: var(--accent); }
+.playback-mode-chip:hover { border-color: rgba(245, 213, 101, 0.45); color: var(--text); }

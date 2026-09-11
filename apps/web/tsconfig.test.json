@@ -50,6 +50,8 @@
     "src/schedule-export.ts",
     "src/schedule-export.test.ts",
     "src/schedule-libraries.ts",
-    "src/schedule-libraries.test.ts"
+    "src/schedule-libraries.test.ts",
+    "src/playback-mode.ts",
+    "src/playback-mode.test.ts"
   ]
 }

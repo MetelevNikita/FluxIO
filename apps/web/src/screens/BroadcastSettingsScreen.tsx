@@ -1,3 +1,4 @@
+import type { PlaybackMode } from "@gruber/contracts";
 import {
   AudioLines,
   Captions,
@@ -70,6 +71,8 @@ interface BroadcastSettingsScreenProps {
   scheduleStartMarker: ScheduleStartMarker | null;
   scheduleStartItemName: string | null;
   scte35MarkerCount: number;
+  /** Тип воспроизведения Current: выбранный, он и решает повтор. */
+  playbackMode: PlaybackMode | null;
   settings: BroadcastSettings;
   onSettingsChange: (settings: BroadcastSettings) => void;
   onImportSettings: (file?: File) => Promise<void>;
@@ -101,6 +104,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   scheduleStartMarker,
   scheduleStartItemName,
   scte35MarkerCount,
+  playbackMode,
   settings,
   onSettingsChange,
   onImportSettings,
@@ -149,12 +153,16 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             </p>
           </div>
           <div className="playout-actions">
+            {/* Выбранный тип воспроизведения сам решает повтор: включённая
+                рядом кнопка говорила бы одно, а эфир делал другое. */}
             <button
-              aria-pressed={settings.repeatSchedule}
-              className={`schedule-repeat-button ${settings.repeatSchedule ? "active" : ""}`}
-              disabled={active}
+              aria-pressed={playbackMode ? playbackMode === "free" : settings.repeatSchedule}
+              className={`schedule-repeat-button ${(playbackMode ? playbackMode === "free" : settings.repeatSchedule) ? "active" : ""}`}
+              disabled={active || playbackMode !== null}
               onClick={() => update("repeatSchedule", !settings.repeatSchedule)}
-              title={tr("После последнего ролика начать плейлист заново", "Restart the playlist from the first clip after the last clip finishes")}
+              title={playbackMode
+                ? tr("Повтор задаёт тип воспроизведения расписания — сменить его можно в Playlist", "Repeat follows the schedule playback type — change it in Playlist")
+                : tr("После последнего ролика начать плейлист заново", "Restart the playlist from the first clip after the last clip finishes")}
               type="button"
             >
               <Repeat2 size={15} /> {tr("Повтор", "Repeat")}

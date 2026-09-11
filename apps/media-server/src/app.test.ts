@@ -1,3 +1,16 @@
+import { constants as osConstants, tmpdir as systemTempDirectory } from "node:os";
+import {
+  mkdtemp as makeTestDirectory,
+  rm as removeTestPath,
+  writeFile as writeTestFile,
+} from "node:fs/promises";
+import {
+  airProcessPriority,
+  raiseAirPriority,
+  readAhead,
+  readAheadBudgetBytes,
+  readAheadRange,
+} from "./ffmpeg/air-resources.js";
 import { promoteWorkspaceSnapshot } from "./database/checkpoint.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -1022,6 +1035,64 @@ test("the AGE image path survives the round trip, and its absence is not invente
   assert.equal(parsed.items[0]?.ageTitlePath, "D:/AGE/16.png");
   assert.equal(parsed.items[1]?.ageTitlePath, null);
   assert.equal(parsed.warnings.length, 0);
+});
+
+test("playout processes ask for high priority, but never realtime", () => {
+  // REALTIME ставит машину колом при первом же затыке, а выдача идёт в реальном
+  // времени и лишнего процессора не просит: высокого достаточно.
+  assert.equal(airProcessPriority("win32"), osConstants.priority.PRIORITY_HIGH);
+  assert.notEqual(airProcessPriority("win32"), osConstants.priority.PRIORITY_HIGHEST);
+  assert.equal(airProcessPriority("linux"), osConstants.priority.PRIORITY_ABOVE_NORMAL);
+
+  // Отказ называется коротким системным кодом, а не обёрткой Node: в
+  // `ERR_SYSTEM_ERROR` есть слово «error», и журнал красил им штатный отказ в
+  // красный, как аварию.
+  let reason = "";
+  raiseAirPriority(2_147_483_000, (value) => { reason = value; });
+  assert.match(reason, /^E[A-Z]+$/);
+  assert.equal(playoutEventLevel(`Playout process priority not raised (${reason})`), "info");
+});
+
+test("read-ahead starts where the clip enters the air and stays within its memory budget", () => {
+  const gib = 1_073_741_824;
+  const mib = 1_048_576;
+  // Подъём по часам начинает передачу с середины: первая половина в памяти ей не нужна.
+  assert.deepEqual(
+    readAheadRange({ sizeBytes: 10 * gib, trimInSeconds: 1_800, durationSeconds: 1_800, budgetBytes: 2 * gib }),
+    { start: 5 * gib, end: 7 * gib - 1 },
+  );
+  // Ролик с начала и меньше бюджета читается целиком.
+  assert.deepEqual(
+    readAheadRange({ sizeBytes: 500 * mib, trimInSeconds: 0, durationSeconds: 60, budgetBytes: 2 * gib }),
+    { start: 0, end: 500 * mib - 1 },
+  );
+  assert.equal(readAheadRange({ sizeBytes: 500 * mib, trimInSeconds: 0, durationSeconds: 60, budgetBytes: 0 }), null);
+
+  // Не больше половины свободной памяти и не больше 2 ГиБ; крохи не читаем.
+  assert.equal(readAheadBudgetBytes(8 * gib), 2 * gib);
+  assert.equal(readAheadBudgetBytes(gib), 512 * mib);
+  assert.equal(readAheadBudgetBytes(100 * mib), 0);
+});
+
+test("read-ahead reads the clip and never throws into the air", async () => {
+  const directory = await makeTestDirectory(path.join(systemTempDirectory(), "fluxio-read-ahead-"));
+  const filePath = path.join(directory, "clip.mp4");
+  const plenty = 8 * 1_073_741_824;
+  try {
+    await writeTestFile(filePath, Buffer.alloc(3 * 1_048_576, 7));
+    const item = { filePath, trimInSeconds: 0, durationSeconds: 10 };
+    assert.equal((await readAhead(item, new AbortController().signal, plenty))?.bytes, 3 * 1_048_576);
+
+    // Остановленный эфир чтение не продолжает, и это не исключение.
+    const stopped = new AbortController();
+    stopped.abort();
+    assert.equal(await readAhead(item, stopped.signal, plenty), null);
+    // Пропавший файл тоже не роняет эфир: без чтения впрок он просто идёт с диска.
+    const gone = { ...item, filePath: path.join(directory, "gone.mp4") };
+    assert.equal(await readAhead(gone, new AbortController().signal, plenty), null);
+  } finally {
+    await removeTestPath(directory, { force: true, recursive: true });
+  }
 });
 
 test("a cue point survives the round trip through the schedule file", () => {

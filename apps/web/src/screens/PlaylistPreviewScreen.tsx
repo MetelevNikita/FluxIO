@@ -27,6 +27,7 @@ import {
   Pause,
   Play,
   Redo2,
+  CalendarClock,
   Repeat2,
   Replace,
   RadioTower,
@@ -60,6 +61,7 @@ import { airDurationSeconds } from "../clip-duration";
 import { ColourBars } from "../components/ColourBars";
 import { attachHlsVideo } from "../hls-video";
 import { usePlayoutStatus } from "../playout-status";
+import { formatAirMoment, playbackWindow } from "../playback-mode";
 import { mediaPath } from "../runtime";
 import { mediaThumbnailUrl, stopClipPreview } from "../media-api";
 import { mediaApiUrl } from "../runtime";
@@ -112,6 +114,8 @@ interface PlaylistPreviewScreenProps {
     audioOriginalLanguage?: string;
   }) => void;
   scheduleActionMessage: string | null;
+  /** Отказ последней операции — прежде всего старта, кнопка которого здесь. */
+  operationError: string | null;
   scheduleBusy: boolean;
   workspaceBusy: boolean;
   takeBusy: boolean;
@@ -152,6 +156,8 @@ interface PlaylistPreviewScreenProps {
   onClearStartMarker: () => void;
   /** Ролик и место внутри него: точку старта выбирает окно «Взять в эфир». */
   onStartFromItem: (assetId: string, offsetSeconds: number) => Promise<void>;
+  /** Открыть «Тип воспроизведения» для активного расписания. */
+  onChoosePlaybackMode: () => void;
   onStartCompositePreview: (asset: MediaAsset, startSeconds: number) => Promise<ClipPreviewSession>;
   onSelectAgeDirectory?: () => Promise<void>;
   onSelectScheduleLogoDirectory?: () => Promise<void>;
@@ -217,6 +223,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   onSelectAudioTrackDirectory,
   onAudioTrackSettingsChange,
   scheduleActionMessage,
+  operationError,
   scheduleBusy,
   workspaceBusy,
   takeBusy,
@@ -246,6 +253,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   onNewPlaylist,
   onClearStartMarker,
   onStartFromItem,
+  onChoosePlaybackMode,
   onStartCompositePreview,
   onSelectAgeDirectory,
   onSelectScheduleLogoDirectory,
@@ -488,13 +496,31 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     (total, asset) => total + airDurationSeconds(asset),
     scheduleMetadata?.delaySeconds ?? 0,
   );
+  const playbackMode = scheduleMetadata?.playbackMode ?? null;
   const scheduleTarget = scheduleMetadata?.targetDurationSeconds ?? 604_800;
   const scheduleVariance = playlistDuration - scheduleTarget;
-  const scheduleCoverage = Math.abs(scheduleVariance) < 0.01
+  // У произвольного окна нет: список идёт по кругу, и недобор с перебором ему
+  // мерить нечем.
+  const scheduleCoverage = playbackMode === "free" || Math.abs(scheduleVariance) < 0.01
     ? "exact"
     : scheduleVariance > 0
       ? "over"
       : "under";
+  // У планируемого и недельного строка показывает окно: оно и есть время,
+  // которое эфир обязан заполнить.
+  const playbackBounds = (playbackMode === "planned" || playbackMode === "weekly") && scheduleMetadata
+    ? playbackWindow(scheduleMetadata, activeSchedule)
+    : null;
+  const playbackModeTitle = playbackMode === "free"
+    ? "Произвольное"
+    : playbackMode === "planned"
+      ? "Планируемое"
+      : playbackMode === "weekly" ? "Недельное" : "Тип воспроизведения не выбран";
+  const playbackModeDetail = playbackBounds
+    ? `${formatAirMoment(playbackBounds.startsAt)} → ${formatAirMoment(playbackBounds.endsAt)}`
+    : playbackMode === "free"
+      ? "по кругу · старт с любого ролика"
+      : `${scheduleMetadata?.startTime ?? "12:00:00.00"} +7 days`;
   /**
    * Ролики, файла которых на диске нет.
    *
@@ -1210,11 +1236,28 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           >Future <span>{futureCount}</span></button>
         </div>
         <div className={`schedule-coverage ${scheduleCoverage} ${missingAssets.length > 0 ? "has-missing" : ""}`}>
-          <span>
-            <b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b>
-            {" → "}<b>{scheduleMetadata?.startTime ?? "12:00:00.00"}</b> +7 days
-          </span>
-          <strong>{formatHours(playlistDuration)} / 168:00:00</strong>
+          {/* Строка говорит, в какой форме идёт эфир, и открывает выбор: от
+              формы зависит, можно ли стартовать с ролика, и узнавать это на
+              нажатии Start — поздно. */}
+          <button
+            className="playback-mode-chip"
+            onClick={onChoosePlaybackMode}
+            title="Сменить тип воспроизведения"
+            type="button"
+          >
+            <CalendarClock size={11} />
+            <b>{playbackModeTitle}</b>
+            <span>{playbackModeDetail}</span>
+          </button>
+          <strong>
+            {formatHours(playlistDuration)}
+            {playbackMode === "free" ? " · по кругу" : ` / ${formatHours(scheduleTarget)}`}
+          </strong>
+          {/* Кнопка старта стоит на этом экране, а отказ показывался только на
+              соседних: оператор жал Start, и не происходило ничего — ни эфира,
+              ни причины. Недельное отказывает до начала недели, и молчать об
+              этом значило бы выглядеть сломанным. */}
+          {operationError ? <p className="schedule-coverage-error" role="alert">{operationError}</p> : null}
           {/* Недобор и перебор — разные беды, и называть их одним словом
               нельзя: первый оставляет эфир без картинки, второй срезает конец
               недели. Обе величины стоят рядом, чтобы не считать их в уме. */}
@@ -1236,11 +1279,13 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             </div>
           </dl>
           <em>
-            {scheduleCoverage === "exact"
-              ? "Schedule fits the 168-hour window"
+            {playbackMode === "free"
+              ? "Плейлист идёт по кругу"
+              : scheduleCoverage === "exact"
+              ? `Schedule fits the ${formatHours(scheduleTarget)} window`
               : `${scheduleCoverage === "over" ? "Overrun" : "Underrun"} ${formatHours(Math.abs(scheduleVariance))}`}
           </em>
-          {scheduleMetadata ? (
+          {scheduleMetadata?.sourceFilePath ? (
             <small title={scheduleMetadata.sourceFilePath}>
               {scheduleMetadata.sourceName} · {scheduleMetadata.encoding} · delay {scheduleMetadata.delaySeconds}s
               {scheduleMetadata.warnings.length > 0
@@ -1812,9 +1857,12 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 ) : null}
                 <button
                   className={`playlist-start-button ${playoutActive ? "on-air" : ""}`}
-                  disabled={activeSchedule !== "current" || takeBusy || asset.status !== "analyzed"}
+                  disabled={activeSchedule !== "current" || takeBusy || asset.status !== "analyzed" ||
+                    playbackMode === "weekly"}
                   onClick={() => setTakeTarget(asset)}
-                  title={asset.status !== "analyzed"
+                  title={playbackMode === "weekly"
+                    ? "Недельное расписание идёт только по часам: старт с ролика заперт"
+                    : asset.status !== "analyzed"
                     ? "Analyze the clip successfully before selecting it as a start point"
                     : playoutActive
                       ? `Restart the on-air playout from ${asset.name}`

@@ -1,3 +1,4 @@
+import type { PlaybackMode } from "@gruber/contracts";
 import type {
   ClipAudioOverlay,
   PlayoutSceneShow,
@@ -109,6 +110,8 @@ export interface ScheduleMetadata {
   delaySeconds: number;
   targetDurationSeconds: number;
   warnings: string[];
+  /** Тип воспроизведения; не выбран — прежнее поведение. */
+  playbackMode?: PlaybackMode;
 }
 
 export interface BroadcastSettings {

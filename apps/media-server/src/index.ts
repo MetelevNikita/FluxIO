@@ -1,4 +1,5 @@
 import { buildApp } from "./app.js";
+import { raiseAirPriority } from "./ffmpeg/air-resources.js";
 import { installBrokenPipeGuard } from "./ffmpeg/pipe-errors.js";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -27,6 +28,14 @@ function readPort(value: string | undefined): number {
 
 const app = buildApp({
   logger: false,
+});
+
+// Служба сама стоит в тракте эфира: кадры между рендерером и кодировщиком
+// перекачивает она, и процессор, занятый чужой работой, сказывается на выдаче.
+raiseAirPriority(process.pid, (reason) => {
+  const message = `Приоритет службы не поднят (${reason}): эфир идёт с обычным приоритетом`;
+  console.warn(`[MEDIA] ${message}`);
+  app.applicationLogger.log("warn", "SERVICE", message);
 });
 
 // Труба, закрывшаяся без обработчика, уносила службу целиком: эфир обрывался

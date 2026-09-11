@@ -1,3 +1,4 @@
+import { raiseAirPriority, readAhead } from "./air-resources.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
@@ -227,6 +228,11 @@ export class PlayoutSupervisor {
   #producerRuntimes = new Map<ChildProcessWithoutNullStreams, ClipProducerRuntime>();
   /** Живые графические процессы: их надо гасить вместе с эфиром. */
   #sceneProducers = new Set<ChildProcessWithoutNullStreams>();
+  /** Чтение роликов впрок: по одному, обрывается вместе с рендерерами. */
+  #readAheadControl = new AbortController();
+  #readAheadChain: Promise<void> = Promise.resolve();
+  /** Отказ поднять приоритет называется один раз за жизнь службы, а не на каждом ролике. */
+  #priorityFailureReported = false;
 
   #producerStartupTimer: NodeJS.Timeout | null = null;
   #expectedTsdDuckStops = new WeakSet<ChildProcessWithoutNullStreams>();
@@ -1623,6 +1629,7 @@ export class PlayoutSupervisor {
       stdio: ["pipe", "pipe", "pipe", ...Array<"pipe">(audioPipeCount).fill("pipe")],
     }) as ChildProcessWithoutNullStreams;
     this.#child = child;
+    this.#raiseAirPriority(child);
     this.#progressBuffer = "";
     this.#logBuffer = "";
     this.#lastLoggedFrame = -1;
@@ -1693,6 +1700,7 @@ export class PlayoutSupervisor {
         stdio: ["pipe", "pipe", "pipe"],
       }) as ChildProcessWithoutNullStreams;
       this.#sceneProducers.add(producer);
+      this.#raiseAirPriority(producer);
 
       // Труба рендерера закрывается вместе с роликом, а рисовальщик к этому
       // моменту держит ещё кадр: закрытая труба здесь — обычная смена ролика,
@@ -1753,6 +1761,9 @@ export class PlayoutSupervisor {
     const request = this.#request;
     const item = this.#items[index];
     if (!request || !item) throw new Error(`Clip ${index + 1} is not prepared`);
+    // Первый ролик и предзапущенный следующий приходят сюда же: оба
+    // дочитываются в память раньше, чем до них дойдёт выдача.
+    this.#queueReadAhead(item);
     const videoCommand = buildFfmpegClipVideoProducerCommand(
       request,
       { ...item, airEpochSeconds: this.#clipAirEpochSeconds(index) },
@@ -1765,6 +1776,7 @@ export class PlayoutSupervisor {
       shell: false,
       stdio: ["pipe", "pipe", "pipe", ...scenes.map(() => "pipe" as const)],
     }) as ChildProcessWithoutNullStreams;
+    this.#raiseAirPriority(child);
     this.#attachSceneProducers(child, index, scenes);
     const videoFrameBytes = Math.ceil(request.video.width * request.video.height * 1.5);
     const runtime: ClipProducerRuntime = {
@@ -1832,6 +1844,7 @@ export class PlayoutSupervisor {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
+    this.#raiseAirPriority(child);
     const audioBufferBytes = request.audio.sampleRate * request.audio.channels * 2 * 2;
     const label = source ? source.label : "audio";
     const audio: ClipAudioRuntime = {
@@ -2119,6 +2132,7 @@ export class PlayoutSupervisor {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.#tsduckChild = child;
+    this.#raiseAirPriority(child);
     this.#tsduckLogBuffer = "";
     this.#tsduckLastError = null;
     child.stderr.on("data", (chunk: Buffer) => this.#readTsdDuckLogs(chunk));
@@ -2255,6 +2269,7 @@ export class PlayoutSupervisor {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.#subtitleChild = child;
+    this.#raiseAirPriority(child);
     this.#subtitleLogBuffer = "";
     const readLogs = (chunk: Buffer) => {
       this.#subtitleLogBuffer += chunk.toString("utf8");
@@ -2515,7 +2530,50 @@ export class PlayoutSupervisor {
     child?.kill("SIGTERM");
   }
 
+  /**
+   * Процесс эфира получает высокий приоритет — все, кроме предпросмотра: он не
+   * вправе отбирать процессор у выдачи. Отказ эфиру не мешает, он идёт с
+   * обычным приоритетом, и об этом говорится один раз за жизнь службы.
+   */
+  #raiseAirPriority(child: { pid?: number }): void {
+    raiseAirPriority(child.pid, (reason) => {
+      if (this.#priorityFailureReported) return;
+      this.#priorityFailureReported = true;
+      // Строка ожидаемая: эфир идёт дальше, и уровень записи не должен зависеть
+      // от того, какими словами система назвала отказ.
+      this.#appendEvent(
+        `Playout process priority not raised (${reason}); air runs at normal priority`,
+        { expected: true },
+      );
+    });
+  }
+
+  /**
+   * Ролик дочитывается в память раньше, чем до него дойдёт выдача.
+   *
+   * По одному: два чтения сразу гоняли бы головку диска между двумя файлами и
+   * мешали друг другу. Цветные полосы рисует сам FFmpeg — читать там нечего.
+   */
+  #queueReadAhead(item: PreparedPlayoutItem): void {
+    if (isBarsSource(item.filePath)) return;
+    const signal = this.#readAheadControl.signal;
+    this.#readAheadChain = this.#readAheadChain.then(async () => {
+      if (signal.aborted) return;
+      const result = await readAhead(item, signal);
+      if (result && result.bytes > 0) {
+        this.#appendEvent(
+          `Read-ahead "${item.name}": ${Math.round(result.bytes / 1_048_576)} MB in ${result.seconds.toFixed(1)} s`,
+        );
+      }
+    });
+  }
+
   #terminateClipProducers(): void {
+    // Чтение впрок обрывается вместе с рендерерами: остановленному эфиру
+    // память не нужна, а новый начнёт своё сам.
+    this.#readAheadControl.abort();
+    this.#readAheadControl = new AbortController();
+    this.#readAheadChain = Promise.resolve();
     const producers = [this.#producerChild, this.#prefetchedProducerChild]
       .filter((child): child is ChildProcessWithoutNullStreams => Boolean(child));
     this.#producerChild = null;
