@@ -757,7 +757,8 @@ export class PlayoutSupervisor {
     }
   }
 
-  async #prepareRequest(request: StartPlayoutRequest): Promise<PreparedRequest> {
+  /** `quiet` снимает счётчик подготовки: горячая замена пишет в журнал одну строку итога. */
+  async #prepareRequest(request: StartPlayoutRequest, quiet = false): Promise<PreparedRequest> {
     const capabilities = await this.capabilities.get();
     validateCapabilities(capabilities, request);
     // Кодировщик выбирается один раз на сессию: набор ускорителей за время
@@ -773,7 +774,7 @@ export class PlayoutSupervisor {
     if (request.subtitleOutput.mode === "dvb") {
       await this.gstreamerCapabilities.assertDvbSubtitlesAvailable();
     }
-    const reportProgress: PreparationProgress = (stage, completed, total) => {
+    const reportProgress: PreparationProgress | undefined = quiet ? undefined : (stage, completed, total) => {
       if (completed === total || completed === 1 || completed % 50 === 0) {
         this.#appendEvent(
           `${stage === "graphics" ? "Graphics" : "Media"} preparation: ` +
@@ -879,23 +880,37 @@ export class PlayoutSupervisor {
       item,
       prepared: this.#items[index],
     }]));
-    const preparedTail = await mapWithConcurrency(
-      alignedPlaylist.slice(activeIndexBeforePreparation + 1),
-      playlistPreparationConcurrency,
-      async (item) => {
-        const existing = existingById.get(item.id);
-        if (existing?.prepared && JSON.stringify(existing.item) === JSON.stringify(item)) {
-          return { item, prepared: existing.prepared };
-        }
-        const resolved = await this.#prepareRequest({
+    const tail = alignedPlaylist.slice(activeIndexBeforePreparation + 1);
+    const reused = tail.map((item) => {
+      const existing = existingById.get(item.id);
+      return existing?.prepared && JSON.stringify(existing.item) === JSON.stringify(item)
+        ? existing.prepared
+        : null;
+    });
+    // Изменившиеся ролики готовятся одной пачкой, а не запросом на каждый.
+    // Логотип и маркировка лежат на всех роликах недели, и их правка меняет
+    // тысячу строк разом: поштучно это тысяча проверок возможностей, свой кэш
+    // ffprobe на каждый ролик и по две строки «1/1 clip(s) checked» в журнал —
+    // настоящее событие в них тонуло.
+    const changed = tail.filter((_, index) => !reused[index]);
+    const resolved = changed.length > 0
+      ? await this.#prepareRequest({
           ...request,
-          playlist: [item],
+          playlist: changed,
           nextPlaylist: [],
           scheduleDurationSeconds: null,
-        });
-        return { item: resolved.request.playlist[0]!, prepared: resolved.items[0]! };
-      },
-    );
+        }, true)
+      : null;
+    let changedIndex = 0;
+    const preparedTail = tail.map((item, index) => {
+      const prepared = reused[index];
+      if (prepared) return { item, prepared };
+      const at = changedIndex++;
+      return { item: resolved!.request.playlist[at]!, prepared: resolved!.items[at]! };
+    });
+    if (changed.length > 0) {
+      this.#appendEvent(`HOT CHANGE prepared ${changed.length} upcoming clip(s)`);
+    }
     const resolvedPlaylist = [
       ...request.playlist.slice(0, activeIndexBeforePreparation + 1),
       ...preparedTail.map((entry) => entry.item),

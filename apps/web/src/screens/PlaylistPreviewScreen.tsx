@@ -1016,19 +1016,14 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 <option value="center">Center</option>
               </select>
             </label>
-            <label>
-              <span>Width <b>{logoSettings.logoWidthPercent}%</b></span>
-              <input
-                aria-label="Channel logo width percent"
-                max={50}
-                min={1}
-                onChange={(event) => onLogoSettingsChange({
-                  logoWidthPercent: Number(event.target.value),
-                })}
-                type="range"
-                value={logoSettings.logoWidthPercent}
-              />
-            </label>
+            <CommitRange
+              ariaLabel="Channel logo width percent"
+              label="Width"
+              max={50}
+              min={1}
+              onCommit={(logoWidthPercent) => onLogoSettingsChange({ logoWidthPercent })}
+              value={logoSettings.logoWidthPercent}
+            />
             <label>
               <span>Margin</span>
               <input
@@ -1041,19 +1036,14 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 type="number"
               />
             </label>
-            <label>
-              <span>Opacity <b>{Math.round(logoSettings.logoOpacity * 100)}%</b></span>
-              <input
-                aria-label="Channel logo opacity percent"
-                max={100}
-                min={5}
-                onChange={(event) => onLogoSettingsChange({
-                  logoOpacity: Number(event.target.value) / 100,
-                })}
-                type="range"
-                value={Math.round(logoSettings.logoOpacity * 100)}
-              />
-            </label>
+            <CommitRange
+              ariaLabel="Channel logo opacity percent"
+              label="Opacity"
+              max={100}
+              min={5}
+              onCommit={(percent) => onLogoSettingsChange({ logoOpacity: percent / 100 })}
+              value={Math.round(logoSettings.logoOpacity * 100)}
+            />
           </div>
         </div>
         <div className="schedule-resource-control age-source-control">
@@ -3104,4 +3094,46 @@ function isBuffered(video: HTMLVideoElement, seconds: number): boolean {
 /** Анимированный ли логотип: у картинки повтор ничего не меняет. */
 function animatedLogo(filePath: string): boolean {
   return /\.(mov|mp4|m4v|webm|mkv|gif|json)$/i.test(filePath.trim());
+}
+
+/**
+ * Ползунок, который отдаёт значение, когда его отпустили.
+ *
+ * Логотип лежит на каждом ролике расписания, и запись на каждом шаге ползунка
+ * запускала горячую замену всей недели на каждый процент: служба готовила
+ * ролики по кругу, журнал заваливало, а история отмены набирала шаг на каждое
+ * движение. Пока ползунок держат, меняется только подпись.
+ */
+function CommitRange({ ariaLabel, label, max, min, onCommit, value }: {
+  ariaLabel: string;
+  label: string;
+  max: number;
+  min: number;
+  onCommit: (value: number) => void;
+  value: number;
+}) {
+  const [draft, setDraft] = useState<number | null>(null);
+  // Значение берётся из самого поля, а не из черновика: отпускание приходит
+  // отдельным событием, и замыкание могло бы застать черновик прошлого шага.
+  const commit = (event: { currentTarget: HTMLInputElement }) => {
+    const next = Number(event.currentTarget.value);
+    setDraft(null);
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <label>
+      <span>{label} <b>{draft ?? value}%</b></span>
+      <input
+        aria-label={ariaLabel}
+        max={max}
+        min={min}
+        onBlur={commit}
+        onChange={(event) => setDraft(Number(event.target.value))}
+        onKeyUp={commit}
+        onPointerUp={commit}
+        type="range"
+        value={draft ?? value}
+      />
+    </label>
+  );
 }

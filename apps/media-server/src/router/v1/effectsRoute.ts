@@ -31,7 +31,7 @@ import {
 import { probeMedia } from "../../ffmpeg/probe.js";
 import { readImageSequence } from "../../effects/image-sequence.js";
 import { importVectorLayers } from "../../effects/vector-import.js";
-import { badRequest, type RouteContext } from "../context.js";
+import { badRequest, largePlaylistBodyLimitBytes, type RouteContext } from "../context.js";
 
 export async function effectsRoute(app: FastifyInstance, context: RouteContext) {
   app.post("/api/effects/analyze", async (request, reply) => {
@@ -116,7 +116,7 @@ export async function effectsRoute(app: FastifyInstance, context: RouteContext) 
   // Графика расписания живёт на диске сервера, а не в базе: перед работой с
   // восстановленным или импортированным расписанием интерфейс спрашивает, какие
   // файлы пропали, чтобы предложить оператору замену.
-  app.post("/api/effects/verify", async (request, reply) => {
+  app.post("/api/effects/verify", { bodyLimit: largePlaylistBodyLimitBytes }, async (request, reply) => {
     try {
       const body = verifyGraphicEffectsRequestSchema.parse(request.body);
       const missing: string[] = [];

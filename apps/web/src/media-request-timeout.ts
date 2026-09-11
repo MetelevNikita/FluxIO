@@ -11,7 +11,10 @@ const analysisPrefixes = [
 ];
 
 export function mediaRequestTimeoutMs(path: string): number {
-  if (path.startsWith("/api/playout/start") || path.startsWith("/api/playout/take")) {
+  // Горячая замена готовит изменённые ролики тем же путём, что и старт, а
+  // правка логотипа меняет все ролики недели: десяти секунд не хватало, и
+  // интерфейс сообщал об ошибке замены, которую служба на деле доводила.
+  if (["/api/playout/start", "/api/playout/take", "/api/playout/playlist"].some((prefix) => path.startsWith(prefix))) {
     return playoutPreparationTimeoutMs;
   }
   if (analysisPrefixes.some((prefix) => path.startsWith(prefix))) {

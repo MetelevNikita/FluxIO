@@ -241,16 +241,25 @@ test(
   },
 );
 
-test("workspace session accepts JSON bodies larger than Fastify's one MiB default", async () => {
+test("routes that carry a whole schedule accept JSON bodies larger than Fastify's one MiB default", async () => {
   const app = buildApp({ logger: false });
   try {
-    const response = await app.inject({
-      method: "PUT",
-      url: "/api/workspace-session",
-      headers: { "content-type": "application/json" },
-      payload: { oversizedProbe: "x".repeat(1_100_000) },
-    });
-    assert.notEqual(response.statusCode, 413);
+    // Неделя весит больше мегабайта: с лимитом по умолчанию сохранение .txt и
+    // автосохранение в FluxIO Sessions отвечали 413, а браузер, не успевший
+    // дослать тело, видел вместо ответа «Failed to fetch».
+    for (const [method, url] of [
+      ["PUT", "/api/workspace-session"],
+      ["POST", "/api/schedule/serialize"],
+      ["POST", "/api/effects/verify"],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { "content-type": "application/json" },
+        payload: { oversizedProbe: "x".repeat(1_100_000) },
+      });
+      assert.notEqual(response.statusCode, 413, url);
+    }
   } finally {
     await app.close();
   }

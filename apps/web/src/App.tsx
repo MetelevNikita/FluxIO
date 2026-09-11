@@ -1617,7 +1617,10 @@ export function App() {
       let saved: SavedWorkspaceSession | undefined;
       let databaseError: unknown;
       try { saved = await saveWorkspaceToDatabase(request); } catch (error) { databaseError = error; }
-      if (window.gruberDesktop) {
+      // Файлы на рабочем столе — запасная копия. Когда база снимок приняла,
+      // их отказ не повод писать «изменения не переживут перезапуск»: это
+      // неправда, и оператор искал бы потерю там, где её нет.
+      if (window.gruberDesktop) try {
         const snapshot = request.snapshot;
         const schedules = await Promise.all((["current", "future"] as const).map(async (slot) => {
           const items = snapshot[slot === "current" ? "currentPlaylist" : "futurePlaylist"];
@@ -1634,6 +1637,11 @@ export function App() {
             { ...initialBroadcastSettings, ...snapshot.settings } as BroadcastSettings, applicationVersion,
           )),
         });
+      } catch (error) {
+        if (!databaseError) setOperationError(tr(
+          `Файлы в папке FluxIO Sessions не записаны: ${errorMessage(error)}. Сессия сохранена в базе.`,
+          `FluxIO Sessions files were not written: ${errorMessage(error)}. The session is saved in the database.`,
+        ));
       }
       if (databaseError) throw databaseError;
       return saved!;
