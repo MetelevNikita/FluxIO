@@ -2,6 +2,7 @@ import { LoaderCircle, Server } from "lucide-react";
 import type { PlayoutStatus } from "@gruber/contracts";
 import type { ConnectionState } from "../use-media-service";
 import { useI18n } from "../i18n";
+import { statusBarView } from "../status-bar";
 
 interface GlobalStatusBarProps {
   connection: ConnectionState;
@@ -15,16 +16,11 @@ export function GlobalStatusBar({
   status,
 }: GlobalStatusBarProps) {
   const { tr } = useI18n();
-  const progress = status?.progressPercent ?? 0;
-  const active = status
-    ? ["starting", "running", "stopping"].includes(status.state)
-    : false;
+  // Ход эфира — только у идущего: остановленная сессия оставляет в статусе
+  // имя, прогресс и скорость, и строка выглядела бы живым эфиром.
+  const view = statusBarView(status);
+  const progress = view.progressPercent;
   const serverActive = connection.kind === "ready";
-  const remaining = Math.max(
-    0,
-    ((status?.totalDurationSeconds ?? 0) - (status?.outTimeSeconds ?? 0)) /
-      Math.max(status?.speed ?? 0, 1),
-  );
   return (
     <footer className="global-status-bar">
       <div
@@ -40,11 +36,14 @@ export function GlobalStatusBar({
           <small>{serverAddress}</small>
         </span>
       </div>
-      <div className="encoding-file">
-        <LoaderCircle className={active ? "spin" : ""} size={16} />
+      <div
+        className="encoding-file"
+        title={view.lastClipName ? `${tr("Последний ролик", "Last clip")}: ${view.lastClipName}` : undefined}
+      >
+        <LoaderCircle className={view.onAir ? "spin" : ""} size={16} />
         <span>
-          {active ? tr("В эфире:", "On Air:") : tr("Вещание:", "Playout:")}{" "}
-          <strong>{status?.currentItemName ?? localizedState(status?.state, tr)}</strong>
+          {view.onAir ? tr("В эфире:", "On Air:") : tr("Вещание:", "Playout:")}{" "}
+          <strong>{view.clipName ?? localizedState(status?.state, tr)}</strong>
         </span>
       </div>
       <div
@@ -60,9 +59,14 @@ export function GlobalStatusBar({
       <div className="encoding-summary">
         <span>{progress.toFixed(1)}% {tr("выполнено", "Complete")}</span>
         <i />
-        <span className="muted">{tr("Осталось:", "Est. Remaining:")} {formatDuration(remaining)}</span>
+        <span className="muted">
+          {tr("Осталось:", "Est. Remaining:")}{" "}
+          {view.remainingSeconds === null ? "—" : formatDuration(view.remainingSeconds)}
+        </span>
         <i />
-        <span className="speed-tag">×{(status?.speed ?? 0).toFixed(2)} {tr("скорость", "Speed")}</span>
+        <span className="speed-tag">
+          {view.speed === null ? "—" : `×${view.speed.toFixed(2)}`} {tr("скорость", "Speed")}
+        </span>
       </div>
     </footer>
   );
@@ -77,6 +81,7 @@ function localizedState(
   if (state === "running") return tr("работает", "running");
   if (state === "stopping") return tr("остановка", "stopping");
   if (state === "failed") return tr("ошибка", "failed");
+  if (state === "completed") return tr("завершено", "completed");
   return state;
 }
 

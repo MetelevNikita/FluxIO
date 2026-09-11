@@ -1474,6 +1474,20 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           </div>
 
           <div className="playlist-toolbar-group">
+            {/* Тип эфира решает, как пойдёт старт — с любого ролика или только
+                по часам, — поэтому кнопка стоит рядом с пуском. Окно само
+                спрашивает тип один раз за запуск, дальше его меняют здесь. */}
+            <button
+              className="toolbar-button"
+              onClick={onChoosePlaybackMode}
+              title={playoutActive
+                ? `Сейчас: ${playbackModeTitle}. Эфир идёт — новый тип применится со следующего старта`
+                : `Сейчас: ${playbackModeTitle}`}
+              type="button"
+            >
+              <CalendarClock size={14} />
+              <span>Изменить тип эфира</span>
+            </button>
             <button
               className={`toolbar-button air ${playoutActive ? "live" : ""}`}
               disabled={playlist.length === 0}

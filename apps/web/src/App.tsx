@@ -367,6 +367,20 @@ export function App() {
   const stableRemoveScte35Marker = useStableCallback(removeScte35Marker);
   const stableOpenPlaylistSchedule = useStableCallback(openPlaylistSchedule);
   const stableOpenPlaybackDialog = useStableCallback(() => setPlaybackDialogSlot(activeSchedule));
+
+  /**
+   * Тип воспроизведения спрашивается один раз за запуск — когда плейлист с
+   * роликами впервые на экране: и после загрузки через Import, и после
+   * восстановления сессии на старте. Дальше его меняют кнопкой в плейлисте —
+   * окно на каждом переходе мешало бы работать с уже выбранным типом.
+   */
+  const playbackTypeAsked = useRef(false);
+  useEffect(() => {
+    if (playbackTypeAsked.current || view !== "playlist") return;
+    if ((activeSchedule === "current" ? playlist : futurePlaylist).length === 0) return;
+    playbackTypeAsked.current = true;
+    setPlaybackDialogSlot(activeSchedule);
+  }, [view, activeSchedule, playlist, futurePlaylist]);
   const stableSaveActiveSchedule = useStableCallback(saveActiveSchedule);
   const stableSaveSessionList = useStableCallback(saveSessionList);
   const stableCreateNewPlaylist = useStableCallback(createNewPlaylist);
@@ -3469,12 +3483,7 @@ export function App() {
             ? () => addNativeFiles(activeSchedule)
             : undefined}
           onSelectSchedule={window.gruberDesktop ? importNativeSchedule : undefined}
-          onProceed={() => {
-            // Загруженное просится в эфир — сначала выбирается его форма:
-            // от неё зависит, можно ли стартовать с ролика.
-            setView("playlist");
-            setPlaybackDialogSlot(activeSchedule);
-          }}
+          onProceed={() => setView("playlist")}
           operationError={operationError}
         />
       ) : null}

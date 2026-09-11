@@ -52,6 +52,8 @@
     "src/schedule-libraries.ts",
     "src/schedule-libraries.test.ts",
     "src/playback-mode.ts",
-    "src/playback-mode.test.ts"
+    "src/playback-mode.test.ts",
+    "src/status-bar.ts",
+    "src/status-bar.test.ts"
   ]
 }
