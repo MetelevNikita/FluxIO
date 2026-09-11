@@ -14,6 +14,8 @@
     "src/default-broadcast-settings.ts",
     "src/clip-duration.ts",
     "src/clip-duration.test.ts",
+    "src/clip-split.ts",
+    "src/clip-split.test.ts",
     "src/missing-graphics.ts",
     "src/missing-graphics.test.ts",
     "src/default-scenes.ts",

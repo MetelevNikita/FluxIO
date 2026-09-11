@@ -7,7 +7,17 @@ export function scheduleExportRequest(items: MediaAsset[], metadata: ScheduleMet
       const usedEffectIds = new Set(
         items.flatMap((asset) => (asset.scenes ?? []).map((show) => show.effectId)),
       );
+      // Пометка между частями идёт в файл своей строкой — перед роликом, за
+      // которым стояла в списке; роликом она при этом не считается.
+      const media = items.filter((asset) => asset.rowKind !== "comment");
+      const comments: NonNullable<SerializeScheduleRequest["comments"]> = [];
+      let mediaBefore = 0;
+      for (const asset of items) {
+        if (asset.rowKind === "comment") comments.push({ beforeItemIndex: mediaBefore, text: asset.name });
+        else mediaBefore += 1;
+      }
       return {
+        comments,
         delaySeconds: metadata?.delaySeconds ?? 0,
         extension: "txt",
         // Языки переводов уходят в файл заголовком: расписание открывают на
@@ -25,11 +35,16 @@ export function scheduleExportRequest(items: MediaAsset[], metadata: ScheduleMet
             // сцены их полно.
             data: encodeScheduleBlob(effect.broadcast),
           })),
-        items: items.map((asset) => ({
+        items: media.map((asset) => ({
           type: asset.scheduleType ?? scheduleItemTypeFor(
             asset.declaredDurationSeconds ?? asset.durationSeconds,
           ),
           declaredDurationSeconds: asset.declaredDurationSeconds ?? asset.durationSeconds,
+          // Часть разрезанного ролика играет файл со своей точки входа, а имя ей
+          // дал оператор: без них открытое заново расписание пустило бы вторую
+          // часть с начала фильма и под именем файла.
+          inPointSeconds: asset.trimInSeconds || undefined,
+          name: asset.name !== asset.filePath.split(/[\\/]/).at(-1) ? asset.name : undefined,
           filePath: asset.filePath,
           ageTitle: asset.ageTitle
             ? {

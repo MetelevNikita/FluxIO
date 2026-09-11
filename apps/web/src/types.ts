@@ -50,6 +50,12 @@ export interface MediaAsset {
   scheduleType?: ScheduleItemType;
   declaredDurationSeconds?: number;
   scheduleLineNumber?: number;
+  /** Часть разрезанного ролика: откуда она начинается в исходном файле. */
+  trimInSeconds?: number;
+  /** Части одного разреза — красятся и узнаются вместе. */
+  splitGroupId?: string;
+  /** Пометка между частями — место под рекламу: без файла и в эфир не уходит. */
+  rowKind?: "clip" | "comment";
   ageTitle?: {
     durationSeconds: number;
     enabled: boolean;

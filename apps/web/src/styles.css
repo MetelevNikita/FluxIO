@@ -1997,6 +1997,55 @@ p {
   background: var(--surface-hover);
 }
 
+/* Части одного разреза: розовая полоса того же вида, что у выделения, — на
+   прокрутке видно, где фильм разрезан под рекламу. Выделение объявлено ниже и
+   перебивает её: активная строка остаётся жёлтой. */
+.playlist-row.split-part {
+  box-shadow: inset 4px 0 0 #ec4899, inset 0 0 28px rgba(236, 72, 153, 0.05);
+  background: linear-gradient(90deg, rgba(236, 72, 153, 0.2), rgba(236, 72, 153, 0.035) 78%);
+}
+
+.playlist-row.split-part .playlist-status-stripe { background: #ec4899; }
+
+/* Пометка под рекламу: сплошной горчичный без прозрачности и без хронометража —
+   это не ролик, а место, куда встанет блок. */
+.playlist-row.comment-row {
+  /* Высота свёрнутой строки: заглушка отложенной строки считает пометку такой же. */
+  height: 38px;
+  min-height: 38px;
+  color: #1f1800;
+  background: #c9a227;
+  box-shadow: none;
+}
+
+.playlist-comment {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.playlist-comment strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.playlist-comment button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 4px;
+  color: #1f1800;
+  background: #b8921f;
+}
+
 /* Выбранная строка красится жёлтым так же заметно, как эфирная — зелёным, а
    пропавшая — красным: у оператора три состояния строки, и различать их он
    должен на прокрутке, не вчитываясь. */
@@ -8046,3 +8095,47 @@ button.scene-tree-twist:hover { color: var(--text); }
 
 .playback-mode-chip b { color: var(--accent); }
 .playback-mode-chip:hover { border-color: rgba(245, 213, 101, 0.45); color: var(--text); }
+
+/* Разделение ролика: оболочка — окно типа эфира, здесь только строки частей. */
+.clip-split { width: min(780px, 100%); }
+.clip-split-count { display: flex; align-items: flex-end; gap: 10px; }
+.clip-split-count .form-field { width: 120px; }
+.clip-split-parts { display: grid; gap: 6px; }
+
+.clip-split-part {
+  display: grid;
+  grid-template-columns: 72px 132px 132px minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #ec4899;
+  border-radius: 8px;
+  background: var(--surface-deep);
+}
+
+.clip-split-part b { padding-bottom: 10px; font-size: 11.5px; color: var(--text); }
+.clip-split-part .form-field label { margin-bottom: 4px; font-size: 10.5px; }
+.clip-split-part .form-field input { height: 32px; }
+
+.clip-split-comment {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: #1f1800;
+  background: #c9a227;
+}
+
+.clip-split-comment label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; }
+
+.clip-split-comment input {
+  height: 28px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 8px;
+  color: #1f1800;
+  background: #f0d98a;
+}

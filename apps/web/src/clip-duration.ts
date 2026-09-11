@@ -40,7 +40,10 @@ export function airDurationSeconds(asset: {
  * строки не попадают вовсе: эфир идёт мимо них, а оператор в это время
  * подставляет файл. Как только файл появился, ролик возвращается в эфирный
  * список ближайшей горячей заменой — перезапускать линию не нужно.
+ *
+ * Пометка между частями фильма — не ролик вовсе: файла у неё нет, и эфиру
+ * отдать ей нечего.
  */
-export function playableClips<T extends { status?: string }>(playlist: readonly T[]): T[] {
-  return playlist.filter((asset) => asset.status !== "error");
+export function playableClips<T extends { status?: string; rowKind?: string }>(playlist: readonly T[]): T[] {
+  return playlist.filter((asset) => asset.status !== "error" && asset.rowKind !== "comment");
 }

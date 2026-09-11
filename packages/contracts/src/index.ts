@@ -1005,10 +1005,28 @@ export const scheduleBroadcastShowSchema = z.object({
 export type ScheduleBroadcastEffect = z.infer<typeof scheduleBroadcastEffectSchema>;
 export type ScheduleBroadcastShow = z.infer<typeof scheduleBroadcastShowSchema>;
 
+/**
+ * Пометка между частями разрезанного ролика — своя строка расписания `comment {…}`.
+ * Хронометража у неё нет, поэтому она живёт не среди роликов, а рядом с ними:
+ * перед роликом с номером `beforeItemIndex` (число роликов — в конце файла).
+ */
+export const scheduleCommentSchema = z.object({
+  beforeItemIndex: z.number().int().nonnegative(),
+  text: z.string().trim().min(1).max(120).refine((value) => !/[\r\n{}]/.test(value), {
+    message: "Comment must not contain braces or line breaks",
+  }),
+});
+
+export type ScheduleComment = z.infer<typeof scheduleCommentSchema>;
+
 export const parsedScheduleItemSchema = z.object({
   type: scheduleItemTypeSchema,
   declaredDurationSeconds: z.number().positive(),
   declaredDuration: z.string().min(1),
+  /** Точка входа части разрезанного ролика; у целого ролика — ноль. */
+  inPointSeconds: z.number().nonnegative().default(0),
+  /** Название, заданное оператором; `null` — имя файла. */
+  name: z.string().nullable().default(null),
   filePath: z.string().min(1),
   ageTitle: z.string().nullable(),
   ageTitleDurationSeconds: z.number().int().min(10).max(60).nullable(),
@@ -1046,6 +1064,8 @@ export const parsedScheduleSchema = z.object({
   totalDurationSeconds: z.number().nonnegative(),
   varianceSeconds: z.number(),
   items: z.array(parsedScheduleItemSchema).min(1),
+  /** Пометки между частями разрезанных роликов. */
+  comments: z.array(scheduleCommentSchema).max(10_000).default([]),
   warnings: z.array(z.string()),
 });
 
@@ -1054,6 +1074,12 @@ export const scheduleExportExtensionSchema = z.literal("txt");
 export const scheduleExportItemSchema = z.object({
   type: scheduleItemTypeSchema,
   declaredDurationSeconds: z.number().positive(),
+  /** Точка входа части разрезанного ролика; без неё строка играет файл с начала. */
+  inPointSeconds: z.number().nonnegative().optional(),
+  /** Название, заданное оператором, — например, «Фильм · часть 2». */
+  name: z.string().trim().min(1).max(200).refine((value) => !/[\r\n{}]/.test(value), {
+    message: "Item name must not contain braces or line breaks",
+  }).optional(),
   filePath: z.string().min(1).refine((value) => !/[\r\n]/.test(value), {
     message: "Media path must not contain line breaks",
   }),
@@ -1106,6 +1132,8 @@ export const serializeScheduleRequestSchema = z.object({
   /** Языки переводов, доступные на момент сохранения, — тоже заголовком. */
   audioLanguages: z.array(audioScanLanguageSchema).max(64).default([]),
   items: z.array(scheduleExportItemSchema).min(1),
+  /** Пометки между частями — своими строками, перед роликом с номером `beforeItemIndex`. */
+  comments: z.array(scheduleCommentSchema).max(10_000).optional(),
 });
 
 export const serializedScheduleSchema = z.object({
@@ -1772,6 +1800,12 @@ export const workspaceSessionAssetSchema = z.object({
   /** Дополнительные звуковые дорожки — тем же молчаливым срезом теряются. */
   audioTracks: z.array(audioTrackSchema).max(maximumProgramAudioTracks).optional(),
   subtitles: subtitleOverlaySchema.optional(),
+  /** Часть разрезанного ролика: точка входа в исходном файле. */
+  trimInSeconds: z.number().nonnegative().optional(),
+  /** Части одного разреза красятся вместе. */
+  splitGroupId: z.string().min(1).max(128).optional(),
+  /** Пометка между частями — место под рекламу, без файла и хронометража. */
+  rowKind: z.enum(["clip", "comment"]).optional(),
 });
 
 /**

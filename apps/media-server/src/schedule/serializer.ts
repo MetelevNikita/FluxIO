@@ -32,7 +32,13 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
     );
   }
 
-  for (const item of schedule.items) {
+  for (const [index, item] of schedule.items.entries()) {
+    // Пометка между частями — своя строка: хронометража у неё нет, и к ролику
+    // ниже она не относится.
+    for (const comment of schedule.comments ?? []) {
+      if (comment.beforeItemIndex === index) lines.push(`comment {${comment.text}}`);
+    }
+    if (item.name) lines.push(`insertName {${item.name}}`);
     if (item.ageTitle?.enabled) {
       // Путь картинки пишется рядом с текстом: по одному «16+» папку AGE на
       // другой машине не найти, и маркировка ушла бы в эфир нарисованной
@@ -90,13 +96,19 @@ export function serializeSchedule(input: SerializeScheduleRequest): SerializedSc
       // Явное состояние: оператор мог отключить burn-in, оставив путь в расписании.
       lines.push(`insertSRT {${item.srtPath}} state {${item.srtEnabled === false ? "off" : "on"}}`);
     }
+    // Точка входа пишется только у части, начатой не с начала файла: у целого
+    // ролика и первой части она нулевая, и строка остаётся прежнего вида.
+    const inPoint = item.inPointSeconds ? `<${formatScheduleTimecode(item.inPointSeconds)}> ` : "";
     lines.push(
-      `${item.type} ${formatScheduleTimecode(item.declaredDurationSeconds)} ${item.filePath}`,
+      `${item.type} ${inPoint}${formatScheduleTimecode(item.declaredDurationSeconds)} ${item.filePath}`,
     );
     // Звуковые дорожки идут под роликом: графика сверху, звук снизу.
     for (const track of item.audioTracks ?? []) {
       lines.push(`insertAudioTrack_{${track.language}} {${track.filePath}}`);
     }
+  }
+  for (const comment of schedule.comments ?? []) {
+    if (comment.beforeItemIndex >= schedule.items.length) lines.push(`comment {${comment.text}}`);
   }
 
   return serializedScheduleSchema.parse({

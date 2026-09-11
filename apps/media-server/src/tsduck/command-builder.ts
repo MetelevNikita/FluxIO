@@ -136,6 +136,13 @@ export function buildTsdDuckCommand({
   }
 
   if (request.scte35.enabled && cueFilePath && cueCount > 0) {
+    // Без --wait-first-batch. Этот флаг держит всю цепочку tsp, пока файл меток
+    // не загрузится, а файл, который не загрузился (нет на диске, путь не
+    // открылся, разбор отверг значение), держит её вечно и молча: выдача и
+    // зеркало предпросмотра стоят, а FFmpeg продолжает рапортовать кадры. Без
+    // флага эфир идёт, а отказ уходит в журнал. Чтобы первая метка не опоздала,
+    // файл читается на первом же опросе: он дописан до запуска TSDuck, и ждать
+    // его «устойчивости» незачем.
     args.push(
       "-P",
       "spliceinject",
@@ -145,7 +152,10 @@ export function buildTsdDuckCommand({
       String(pid),
       "--files",
       cueFilePath,
-      "--wait-first-batch",
+      "--poll-interval",
+      "100",
+      "--min-stable-delay",
+      "0",
       "--queue-size",
       String(Math.max(100, cueCount * 3)),
       "--start-delay",

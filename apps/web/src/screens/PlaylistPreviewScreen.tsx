@@ -41,6 +41,8 @@ import {
   Volume2,
   VolumeX,
   X,
+  Megaphone,
+  Scissors,
 } from "lucide-react";
 import {
   memo,
@@ -59,6 +61,8 @@ import {
 } from "../broadcast-effects";
 import { airDurationSeconds } from "../clip-duration";
 import { ColourBars } from "../components/ColourBars";
+import { ClipSplitDialog } from "../components/ClipSplitDialog";
+import { minimumPartSeconds, type SplitDraft } from "../clip-split";
 import { attachHlsVideo } from "../hls-video";
 import { usePlayoutStatus } from "../playout-status";
 import { formatAirMoment, playbackWindow } from "../playback-mode";
@@ -177,6 +181,8 @@ interface PlaylistPreviewScreenProps {
   onPasteItems: (sources: MediaAsset[], insertBeforeId: string | null) => void;
   /** Заменить файл во всех строках этого ролика; в браузере моста нет. */
   onReplaceClip?: (assetId: string) => Promise<void>;
+  /** Разрезать ролик на части с пометками под рекламу между ними. */
+  onSplitItem: (assetId: string, draft: SplitDraft) => void;
   /** Показать файл в проводнике; в браузере моста нет — проп пустой. */
   onRevealInFolder?: (filePath: string) => Promise<void>;
   /** Очистить активное расписание целиком. */
@@ -277,8 +283,11 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   subtitleLibrary,
   onSelectSubtitleDirectory,
   scte35Defaults,
+  onSplitItem,
 }: PlaylistPreviewScreenProps) {
   const fileInput = useRef<HTMLInputElement>(null);
+  /** Ролик, открытый в окне «Разделение ролика». */
+  const [splitTarget, setSplitTarget] = useState<MediaAsset | null>(null);
   /** Куда положить файлы, выбранные обычным полем браузера. */
   const browserInsertBefore = useRef<string | null>(null);
   const previewContainer = useRef<HTMLDivElement>(null);
@@ -474,7 +483,10 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
     selectedAsset.id === "production"
       ? mediaPath("program-preview.png")
       : selectedAsset.preview;
-  const realMediaPreview = selectedAsset.status === "analyzed" && selectedAsset.id !== "production";
+  // У пометки под рекламу нет файла: играть в предпросмотре нечего.
+  const commentSelected = selectedAsset.rowKind === "comment";
+  const realMediaPreview = selectedAsset.status === "analyzed" && selectedAsset.id !== "production" &&
+    !commentSelected;
 
   // Кадр под курсором перемотки. Пока плеер стоит, на экране висел постер, и
   // перемотка выглядела мёртвой: картинка не двигалась. Позиция берётся с
@@ -1429,6 +1441,20 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             >
               <Replace size={14} />
             </button>
+            {/* Разрез фильма под рекламу: части идут в эфир отрезками одного
+                файла. Ролик, который уже в эфире, не режется: горячая замена
+                не меняет строку в эфире, и разрез не дошёл бы до линии. */}
+            <button
+              className="toolbar-button"
+              disabled={selectedIds.size !== 1 || selectedAsset.rowKind === "comment" ||
+                selectedAsset.id === onAirAssetId ||
+                airDurationSeconds(selectedAsset) < 2 * minimumPartSeconds}
+              onClick={() => setSplitTarget(selectedAsset)}
+              title={`Разделить «${selectedAsset.name}» на части`}
+              type="button"
+            >
+              <Scissors size={14} />
+            </button>
             <button
               className="toolbar-button danger"
               disabled={playlist.length < 2}
@@ -1596,7 +1622,14 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             // не занимают экран.
             if (dayFolded && !entry.startsNewDay) return null;
             return (
-            <div className="playlist-timeline-entry" key={asset.id}>
+            <DeferredEntry
+              assetId={asset.id}
+              height={deferredEntryHeight(entry.startsNewDay, dayFolded, collapsed)}
+              key={asset.id}
+              rootRef={playlistRows}
+            >
+            {() => (
+            <div className="playlist-timeline-entry">
               {/* Заголовок дня остаётся на месте даже когда день свёрнут:
                   им и держится сетка недели — по нему видно, где кончается
                   один эфирный день и начинается следующий. */}
@@ -1624,7 +1657,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               ) : null}
             {dayFolded ? null : (
             <div
-              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} ${missing ? "missing-file-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} ${missing ? "missing-file-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"} ${asset.splitGroupId ? "split-part" : ""} ${asset.rowKind === "comment" ? "comment-row" : ""}`}
               data-asset-id={asset.id}
               draggable
               onContextMenu={(event) => {
@@ -1680,6 +1713,35 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               }}
             >
               <span className="playlist-status-stripe" />
+              {asset.rowKind === "comment" ? (
+              // Пометка под рекламу: ни хронометража, ни обвязки у неё нет — только
+              // текст и крестик. Перетаскивание и меню строки остаются за ней.
+              <div
+                className="playlist-comment"
+                onClick={(event) => selectPlaylistAsset(asset, event)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  selectPlaylistAsset(asset, event);
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <Megaphone size={13} />
+                <strong title={asset.name}>{asset.name}</strong>
+                <button
+                  aria-label={`Remove ${asset.name} from playlist`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemoveItem(asset.id);
+                  }}
+                  title="Убрать пометку"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+              ) : (<>
               <button
                 aria-expanded={!collapsed}
                 aria-label={`${collapsed ? "Expand" : "Collapse"} ${asset.name}`}
@@ -1970,9 +2032,12 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                   <i style={{ width: `${onAirProgressPercent}%` }} />
                 </span>
               ) : null}
+              </>)}
             </div>
             )}
             </div>
+            )}
+            </DeferredEntry>
             );
           })}
         </div>
@@ -2020,6 +2085,17 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           targetSchedule={activeSchedule === "current" ? "Future" : "Current"}
           x={rowMenu.x}
           y={rowMenu.y}
+        />
+      ) : null}
+
+      {splitTarget ? (
+        <ClipSplitDialog
+          asset={splitTarget}
+          onCancel={() => setSplitTarget(null)}
+          onSplit={(draft) => {
+            onSplitItem(splitTarget.id, draft);
+            setSplitTarget(null);
+          }}
         />
       ) : null}
 
@@ -2085,6 +2161,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               poster={previewSource}
               ref={videoRef}
             />
+          ) : commentSelected ? (
+            <ColourBars title="Пометка под рекламу: файла у неё нет" />
           ) : (
             <img
               alt={`Preview for ${selectedAsset.name}`}
@@ -3136,4 +3214,70 @@ function CommitRange({ ariaLabel, label, max, min, onCommit, value }: {
       />
     </label>
   );
+}
+
+/**
+ * Строка расписания, которая собирается, только подойдя к области просмотра.
+ *
+ * Неделя — это тысяча с лишним строк по семь десятков узлов: вход на вкладку
+ * собирал их все и разом запрашивал миниатюры каждого ролика. Служба режет
+ * миниатюры FFmpeg по четыре, браузер держал на них все соединения к службе, и
+ * опрос статуса стоял в очереди — переход сюда после импорта шёл секундами.
+ * Далёкая строка — заглушка той же высоты с тем же `data-asset-id`: прокрутка
+ * к ролику в эфире находит и её. Собранная строка остаётся собранной: разбирать
+ * её обратно на прокрутке значит терять фокус в её полях.
+ */
+function DeferredEntry({ assetId, children, height, rootRef }: {
+  assetId: string;
+  children: () => React.ReactNode;
+  height: number;
+  rootRef: { readonly current: HTMLElement | null };
+}) {
+  const placeholder = useRef<HTMLDivElement>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const node = placeholder.current;
+    const root = rootRef.current;
+    if (near || !node || !root) return;
+    return observeNearViewport(root, node, () => setNear(true));
+  }, [near, rootRef]);
+  if (near) return <>{children()}</>;
+  return (
+    <div className="playlist-timeline-entry" data-asset-id={assetId} ref={placeholder} style={{ height }} />
+  );
+}
+
+/** Высота заглушки: заголовок дня 34, свёрнутая строка 38, развёрнутая 68 — сняты с отрисованных строк. */
+function deferredEntryHeight(startsNewDay: boolean, dayFolded: boolean, collapsed: boolean): number {
+  return (startsNewDay ? 34 : 0) + (dayFolded ? 0 : collapsed ? 38 : 68);
+}
+
+const nearViewportObservers = new WeakMap<Element, {
+  callbacks: Map<Element, () => void>;
+  observer: IntersectionObserver;
+}>();
+
+/**
+ * Один наблюдатель на список, а не на строку. Запас в пару экранов: строка
+ * собирается до того, как её увидят, и прокрутка колесом не показывает пустоты.
+ */
+function observeNearViewport(root: Element, node: Element, onNear: () => void): () => void {
+  let shared = nearViewportObservers.get(root);
+  if (!shared) {
+    const callbacks = new Map<Element, () => void>();
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) callbacks.get(entry.target)?.();
+      }
+    }, { root, rootMargin: "1200px 0px" });
+    shared = { callbacks, observer };
+    nearViewportObservers.set(root, shared);
+  }
+  const { callbacks, observer } = shared;
+  callbacks.set(node, onNear);
+  observer.observe(node);
+  return () => {
+    callbacks.delete(node);
+    observer.unobserve(node);
+  };
 }

@@ -1013,16 +1013,24 @@ export class PlayoutSupervisor {
     const mirrorPorts = this.#branchPlans
       .filter((plan) => plan.mode !== "program")
       .map((plan) => plan.mirrorPort);
+    // Файлы для TSDuck передаются именем, а не путём: он запускается в их
+    // каталоге (`#spawnTsdDuck`). Каталог лежит в профиле пользователя и на
+    // эфирной машине может содержать кириллицу, а имя файла — всегда латиница:
+    // разбору путей нативного tsp портить нечего. Не открывшийся файл меток
+    // выглядел бы как отсутствующий — без единой строки в журнале.
     const tsduck = buildTsdDuckCommand({
       cueCount: this.#cues.length,
-      cueFilePath,
+      cueFilePath: cueFilePath && path.basename(cueFilePath),
       inputPort,
       mirrorPorts,
       monitorPrefix: tsduckMonitorPrefix,
       previewPort: transportPreviewPort,
       request,
       silentOutput: mirrorPorts.length > 0,
-      subtitles: subtitleTransport,
+      subtitles: subtitleTransport && {
+        ...subtitleTransport,
+        pmtPatchFilePath: path.basename(subtitleTransport.pmtPatchFilePath),
+      },
     });
     this.#commandArgs = command.args;
     this.#tsduckArgs = tsduck.args;
@@ -1284,6 +1292,16 @@ export class PlayoutSupervisor {
 
   #updateNextCue(): void {
     if (!this.#status.scte35.enabled) return;
+    const missed = this.#status.scte35.state === "failed"
+      ? null
+      : missedScte35Cue(this.#cues, this.#status.outTimeSeconds, (cue) =>
+          this.#observedCueKeys.has(`${this.#status.loopCount}:${cue.eventId}`));
+    if (missed) {
+      this.#status.scte35.state = "failed";
+      this.#status.scte35.error =
+        `SCTE-35 cue failed: event ${missed.eventId} was not emitted before its splice time`;
+      this.#appendEvent(this.#status.scte35.error);
+    }
     const next = this.#cues.find(
       (cue) => cue.programTimeSeconds >= this.#status.outTimeSeconds,
     );
@@ -2142,7 +2160,10 @@ export class PlayoutSupervisor {
 
   async #spawnTsdDuck(): Promise<void> {
     if (this.#tsduckArgs.length === 0) throw new Error("TSDuck command is not prepared");
+    // Файлы меток и патча PMT переданы именем: TSDuck ищет их в рабочем каталоге.
+    await mkdir(this.previewDirectory, { recursive: true });
     const child = spawn(this.tsduckCapabilities.tspPath, this.#tsduckArgs, {
+      cwd: this.previewDirectory,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -2901,6 +2922,25 @@ async function prepareAudioOverlays(
     prepared.push({ ...overlay, filePath: probe.filePath });
   }
   return prepared.length > 0 ? prepared : undefined;
+}
+
+/**
+ * Метка, чей момент прошёл, а TSDuck её так и не выпустил.
+ *
+ * Файл меток больше не держит транспорт до загрузки, поэтому не загрузившийся
+ * файл эфир не останавливает — зато молча оставляет его без врезок. Выпущенную
+ * метку splicemonitor отмечает заранее, за pre-roll: не отмеченная к своему
+ * моменту метка (с запасом на опрос файла) — уже отказ, а не «ещё впереди».
+ */
+export function missedScte35Cue<T extends { eventId: number; programTimeSeconds: number }>(
+  cues: readonly T[],
+  outTimeSeconds: number,
+  isObserved: (cue: T) => boolean,
+  graceSeconds = 2,
+): T | null {
+  return cues.find((cue) =>
+    cue.programTimeSeconds + graceSeconds < outTimeSeconds && !isObserved(cue)
+  ) ?? null;
 }
 
 export async function mapWithConcurrency<T, R>(

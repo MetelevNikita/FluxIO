@@ -81,6 +81,13 @@ import {
 } from "./title-file";
 import { MissingGraphicsDialog } from "./components/MissingGraphicsDialog";
 import { airDurationSeconds, playableClips } from "./clip-duration";
+import {
+  commentRow,
+  formatSplitTimecode,
+  splitAssetRows,
+  splitGroupsFromSchedule,
+  type SplitDraft,
+} from "./clip-split";
 import { useStableCallback } from "./stable-callback";
 import {
   applyGraphicReplacements,
@@ -400,6 +407,7 @@ export function App() {
   const stableMoveItemsToOtherSchedule = useStableCallback(moveItemsToOtherSchedule);
   const stableLinkMissingFile = useStableCallback(linkMissingFile);
   const stablePastePlaylistItems = useStableCallback(pastePlaylistItems);
+  const stableSplitPlaylistItem = useStableCallback(splitPlaylistItem);
   const stableReplaceClipEverywhere = useStableCallback(replaceClipEverywhere);
   const stableRevealAssetInFolder = useStableCallback(revealAssetInFolder);
   const stableClearActiveImport = useStableCallback(clearActiveImport);
@@ -1008,6 +1016,8 @@ export function App() {
           effectIssues.push(`«${entry.name}»: ${errorMessage(reason)}`);
         }
       }
+      // Части разрезанного ролика узнаются по стыку: пометки «это один фильм» файл не несёт.
+      const splitGroups = splitGroupsFromSchedule(parsed.items);
       const scheduledAssets = parsed.items.map((item, index) => {
         const probe = probesByPath.get(item.filePath);
         const base = probe
@@ -1016,9 +1026,14 @@ export function App() {
         const ageText = item.ageTitle ?? ageRatingFromFileName(base.name);
         const logoSourcePath = (item.logoPath ?? scheduleLogoPath) || undefined;
         const logoPath = logoSourcePath;
+        const splitGroupId = splitGroups[index] ?? undefined;
         return {
           ...base,
           id: `schedule-${slot}-${hashString(parsed.sourceFilePath)}-${index}`,
+          name: item.name ?? base.name,
+          duration: splitGroupId ? formatSplitTimecode(item.declaredDurationSeconds) : base.duration,
+          trimInSeconds: item.inPointSeconds > 0 ? item.inPointSeconds : undefined,
+          splitGroupId,
           scheduleType: item.type,
           declaredDurationSeconds: item.declaredDurationSeconds,
           scheduleLineNumber: item.lineNumber,
@@ -1137,7 +1152,14 @@ export function App() {
           broadcast: null,
         } satisfies GraphicEffectAsset))
       );
-      setAssets((current) => mergeAssets(current, scheduledAssets));
+      // В медиатеку идут файлы, а не строки: часть фильма там — просто фильм,
+      // иначе следующая постановка из медиатеки встала бы с середины файла.
+      setAssets((current) => mergeAssets(current, scheduledAssets.map(
+        ({ trimInSeconds: _trimIn, splitGroupId: _group, ...asset }) => ({
+          ...asset,
+          name: asset.filePath.split(/[\\/]/).at(-1) ?? asset.name,
+        }),
+      )));
       setEffectLibrary((current) => mergeEffectAssets(
         current,
         // Восстановленные эффекты второго уровня кладём вместе с обычными:
@@ -1150,16 +1172,29 @@ export function App() {
           `Could not restore schedule effects: ${effectIssues.join("; ")}`,
         ));
       }
+      // Пометки между частями встают туда, где стояли в файле; роликами они не считаются.
+      const commentRows = (index: number) => parsed.comments
+        .filter((comment) => index < scheduledAssets.length
+          ? comment.beforeItemIndex === index
+          : comment.beforeItemIndex >= index)
+        .map((comment, position) => commentRow(
+          comment.text,
+          `schedule-${slot}-${hashString(parsed.sourceFilePath)}-comment-${index}-${position}`,
+        ));
+      const scheduleRows = [
+        ...scheduledAssets.flatMap((asset, index) => [...commentRows(index), asset]),
+        ...commentRows(scheduledAssets.length),
+      ];
       if (slot === "current") {
-        setPlaylist(scheduledAssets);
+        setPlaylist(scheduleRows);
         setCurrentScheduleMetadata(metadata);
         setScheduleStartMarker(null);
       } else {
-        setFuturePlaylist(scheduledAssets);
+        setFuturePlaylist(scheduleRows);
         setFutureScheduleMetadata(metadata);
       }
       setActiveSchedule(slot);
-      setSelectedAssetId(scheduledAssets[0]?.id ?? "");
+      setSelectedAssetId(scheduleRows[0]?.id ?? "");
       // Пути, объявленные расписанием, встают в панель ресурсов сразу: иначе
       // оператор видит «Not selected» там, где расписание всё принесло само,
       // и идёт выбирать папки заново, не зная, что подхватилось.
@@ -1477,6 +1512,28 @@ export function App() {
    * титры, AGE, логотип, метки, звуковые дорожки — переезжает как есть: ради
    * этого ролик и копируют.
    */
+  /**
+   * Разрезание ролика на части под рекламу.
+   *
+   * Строка заменяется частями с пометками между ними одной правкой списка —
+   * это один шаг истории, и «Отменить» возвращает фильм целым. Части получают
+   * новые опознаватели: у каждой своя обвязка, склеивать их с исходной строкой
+   * нельзя.
+   */
+  function splitPlaylistItem(assetId: string, draft: SplitDraft) {
+    const source = visiblePlaylist.find((item) => item.id === assetId);
+    if (!source) return;
+    const rows = splitAssetRows(source, draft, () => newScheduleRowId(source.filePath));
+    const replace = (items: MediaAsset[]) => items.flatMap((item) => (item.id === assetId ? rows : [item]));
+    if (activeSchedule === "current") setPlaylist(replace);
+    else setFuturePlaylist(replace);
+    setSelectedAssetId(rows[0]?.id ?? "");
+    setScheduleActionMessage(tr(
+      `«${source.name}» разделён на части: ${draft.parts.length}.`,
+      `"${source.name}" was split into ${draft.parts.length} parts.`,
+    ));
+  }
+
   function pastePlaylistItems(sources: MediaAsset[], insertBeforeId: string | null) {
     if (sources.length === 0) return;
     const copies = sources.map((asset) => ({
@@ -3376,7 +3433,9 @@ export function App() {
       setRecoveryCheckpoint(null);
       // Пропущенные ролики — не мелочь: эфир пошёл короче, чем показывает
       // сетка, и оператор должен знать, сколько строк ждут файла.
-      const skipped = playlist.length - playableClips(playlist).length;
+      // Считаются строки без файла, а не всё, что не ушло в эфир: пометка под
+      // рекламу в эфир не идёт штатно, и в «пропавших» ей делать нечего.
+      const skipped = playlist.filter((asset) => asset.status === "error").length;
       if (skipped > 0) {
         setOperationError(
           `Эфир идёт мимо ${skipped} ролик(ов) без файла. Подставьте файлы кнопкой Link file — ` +
@@ -3596,6 +3655,7 @@ export function App() {
             onMoveToOtherSchedule={stableMoveItemsToOtherSchedule}
             onLinkMissingFile={stableLinkMissingFile}
             onPasteItems={stablePastePlaylistItems}
+            onSplitItem={stableSplitPlaylistItem}
             onReplaceClip={desktopBridgeAvailable ? stableReplaceClipEverywhere : undefined}
             onRevealInFolder={desktopBridgeAvailable ? stableRevealAssetInFolder : undefined}
             onClearSchedule={stableClearActiveImport}
@@ -4155,8 +4215,11 @@ function buildPlayoutItems(playlist: MediaAsset[]): StartPlayoutRequest["playlis
     filePath: asset.filePath,
     sourceDurationSeconds: asset.durationSeconds > 0 ? asset.durationSeconds : undefined,
     hasAudio: asset.hasAudio ?? !/^no audio stream$/i.test(asset.audio.trim()),
-    trimInSeconds: 0,
-    trimOutSeconds: asset.declaredDurationSeconds ?? null,
+    // Часть разрезанного ролика — отрезок файла: вход из строки, выход через её длину.
+    trimInSeconds: asset.trimInSeconds ?? 0,
+    trimOutSeconds: asset.declaredDurationSeconds == null
+      ? null
+      : (asset.trimInSeconds ?? 0) + asset.declaredDurationSeconds,
     scte35Markers: asset.scte35Markers ?? [],
     scheduleType: asset.scheduleType ?? null,
     declaredDurationSeconds: asset.declaredDurationSeconds ?? null,

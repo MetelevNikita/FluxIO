@@ -17,7 +17,12 @@ import { languageLabel, resolveLanguageCode } from "../audio/languages.js";
 const targetDurationSeconds = 7 * 24 * 60 * 60;
 const maximumScheduleBytes = 5 * 1024 * 1024;
 const headerPattern = /^start\s+on\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)\s*-\s*delay\s+(\d+(?:\.\d+)?)\s*$/i;
-const itemPattern = /^(movie|chop|clip)\s+(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
+// `<вход>` — точка входа части разрезанного ролика, тем же синтаксисом, что у AirSheet.
+const itemPattern =
+  /^(movie|chop|clip)\s+(?:<(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)>\s+)?(\d{2,}:\d{2}:\d{2}(?:\.\d{1,3})?)\s+(.+)$/i;
+// Пометка между частями — отдельная строка расписания, а не свойство ролика.
+const commentPattern = /^comment\s*\{([^{}]*)\}\s*$/i;
+const namePattern = /^insertName\s*\{([^{}]*)\}\s*$/i;
 const agePattern =
   /^insertAgeTitle\s*\{([^}]*)\}(?:\s+duration\s*\{(\d+)\})?(?:\s+path\s*\{([^}]*)\})?\s*$/i;
 const logoPattern = /^insertLogoTitle\s*\{([^}]*)\}\s*$/i;
@@ -119,7 +124,9 @@ export function parseScheduleText(
   let pendingSrtPath: string | null = null;
   let pendingSrtEnabled = true;
   let pendingScte35Markers: Scte35Marker[] = [];
+  let pendingName: string | null = null;
   const items: ParsedScheduleItem[] = [];
+  const comments: ParsedSchedule["comments"] = [];
   const warnings: string[] = [];
 
   for (const entry of logicalLines(text)) {
@@ -301,10 +308,27 @@ export function parseScheduleText(
       continue;
     }
 
+    const comment = line.match(commentPattern);
+    if (comment) {
+      comments.push({
+        beforeItemIndex: items.length,
+        text: requiredDirectiveValue(comment[1], "comment", entry.lineNumber),
+      });
+      continue;
+    }
+    const name = line.match(namePattern);
+    if (name) {
+      pendingName = requiredDirectiveValue(name[1], "insertName", entry.lineNumber);
+      continue;
+    }
+
     const itemMatch = line.match(itemPattern);
     if (itemMatch) {
       const type = itemMatch[1]?.toLowerCase() as ScheduleItemType;
-      const declaredDuration = itemMatch[2] ?? "";
+      const inPointSeconds = itemMatch[2]
+        ? parseClock(itemMatch[2], true, `Line ${entry.lineNumber}`)
+        : 0;
+      const declaredDuration = itemMatch[3] ?? "";
       const declaredDurationSeconds = parseClock(
         declaredDuration,
         true,
@@ -313,7 +337,7 @@ export function parseScheduleText(
       if (declaredDurationSeconds <= 0) {
         throw new ScheduleParseError(`Line ${entry.lineNumber}: duration must be positive`);
       }
-      const filePath = itemMatch[3]?.trim() ?? "";
+      const filePath = itemMatch[4]?.trim() ?? "";
       if (!filePath) throw new ScheduleParseError(`Line ${entry.lineNumber}: media path is empty`);
       const itemWarnings = validateTypeDuration(type, declaredDurationSeconds, entry.lineNumber);
       for (const graphicElement of pendingGraphicElements) {
@@ -331,6 +355,8 @@ export function parseScheduleText(
         ageTitlePath: pendingAgeTitle ? pendingAgeTitlePath : null,
         declaredDuration,
         declaredDurationSeconds,
+        inPointSeconds,
+        name: pendingName,
         filePath,
         graphicElements: pendingGraphicElements,
         broadcastShows: pendingBroadcastShows,
@@ -351,6 +377,7 @@ export function parseScheduleText(
       pendingGraphicElements = [];
       pendingBroadcastShows = [];
       pendingScte35Markers = [];
+      pendingName = null;
       pendingSrtPath = null;
       pendingSrtEnabled = true;
       continue;
@@ -379,6 +406,7 @@ export function parseScheduleText(
       ? declaredLanguages
       : collectAudioLanguages(items),
     broadcastEffects,
+    comments,
     delaySeconds,
     encoding,
     items,
@@ -395,7 +423,7 @@ export function parseScheduleText(
 function logicalLines(text: string): Array<{ lineNumber: number; text: string }> {
   return text.split(/\r?\n/).flatMap((sourceLine, index) => {
     const separated = sourceLine
-      .replace(/}(?=(?:movie|chop|clip)\s+\d{2,}:\d{2}:\d{2})/gi, "}\n")
+      .replace(/}(?=(?:movie|chop|clip)\s+(?:<[\d:.]+>\s+)?\d{2,}:\d{2}:\d{2})/gi, "}\n")
       .split("\n");
     return separated.map((line) => ({ lineNumber: index + 1, text: line }));
   });

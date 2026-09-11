@@ -44,7 +44,7 @@ import {
   videoEncodingSchema,
 } from "@gruber/contracts";
 import { buildApp } from "./app.js";
-import { fitScheduleWindow, reservePlayoutItem, describeTsdDuckExit } from "./ffmpeg/playout-supervisor.js";
+import { fitScheduleWindow, reservePlayoutItem, describeTsdDuckExit, missedScte35Cue } from "./ffmpeg/playout-supervisor.js";
 import { parseWindowsProcessList } from "./process-metrics.js";
 
 // Мастер установки запускает `npm test` с окружением станции: `setup.mjs`
@@ -1170,6 +1170,54 @@ test("a cue point survives the round trip through the schedule file", () => {
   assert.equal(parsed.warnings.length, 0);
 });
 
+test("a split film keeps its in-points, part names and break markers in the schedule file", () => {
+  // Часть фильма — отрезок файла. Без точки входа открытое заново расписание
+  // пустило бы вторую часть с начала фильма, а без пометки пропало бы место
+  // под рекламу.
+  const part = (inPointSeconds: number, name: string) => ({
+    type: "movie" as const,
+    declaredDurationSeconds: 2_700,
+    inPointSeconds,
+    name,
+    filePath: "/media/Фильм.mp4",
+    ageTitle: null,
+    logoPath: null,
+    broadcastShows: [],
+    graphicElements: [],
+    srtPath: null,
+  });
+  const serialized = serializeSchedule({
+    extension: "txt",
+    broadcastEffects: [],
+    startTime: "12:00:00.00",
+    delaySeconds: 0,
+    audioLanguages: [],
+    items: [part(0, "Фильм · часть 1"), part(2_700, "Фильм · часть 2")],
+    comments: [
+      { beforeItemIndex: 1, text: "Рекламный блок" },
+      { beforeItemIndex: 2, text: "Анонс" },
+    ],
+  });
+
+  assert.match(
+    serialized.content,
+    /comment \{Рекламный блок\}\r\ninsertName \{Фильм · часть 2\}\r\nmovie <00:45:00\.00> 00:45:00\.00 \/media\/Фильм\.mp4/,
+  );
+  // Первая часть начинается с начала файла, и её строка остаётся прежнего вида.
+  assert.match(serialized.content, /\r\nmovie 00:45:00\.00 \/media\/Фильм\.mp4\r\n/);
+
+  const parsed = parseScheduleText(serialized.content, "/tmp/schedule.txt");
+  assert.deepEqual(
+    parsed.items.map((item) => [item.inPointSeconds, item.name]),
+    [[0, "Фильм · часть 1"], [2_700, "Фильм · часть 2"]],
+  );
+  assert.deepEqual(parsed.comments, [
+    { beforeItemIndex: 1, text: "Рекламный блок" },
+    { beforeItemIndex: 2, text: "Анонс" },
+  ]);
+  assert.equal(parsed.warnings.length, 0);
+});
+
 test("schedule without a language header derives languages from its own tracks", () => {
   // Расписания прежних версий заголовка не несут: языки собираются из самих
   // строк дорожек, иначе оператор открывает файл с переводами и видит пустой
@@ -2290,7 +2338,10 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /--add-registration 0x43554549/);
   assert.match(rendered, /--service 42/);
   assert.match(rendered, /--add-pid 500\/0x86/);
-  assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml/);
+  assert.match(rendered, /spliceinject .*--files \/tmp\/cues\.xml --poll-interval 100 --min-stable-delay 0/);
+  // Ожидание первой пачки держало всю цепочку tsp, пока файл меток не
+  // загрузится, — и навсегда, если не загрузится: гасли выдача и предпросмотр.
+  assert.doesNotMatch(rendered, /--wait-first-batch/);
   assert.match(rendered, /splicemonitor .*--splice-pid 500/);
   assert.match(rendered, /pcradjust --bitrate \d+ --pid 256 --min-ms-interval 18/);
   assert.match(rendered, /continuity --fix --pid 256 --pid 257 --tag FluxIO-output/);
@@ -2299,6 +2350,20 @@ test("TSDuck command adds CUEI PMT signaling, SCTE PID and UDP output", () => {
   assert.match(rendered, /--local-address 192\.168\.10\.20/);
   assert.match(rendered, /--force-local-multicast-outgoing/);
   assert.ok(calculateTransportMuxRate(request) > 2_628_000);
+});
+
+test("an SCTE-35 cue that TSDuck never emitted is reported once its splice time passes", () => {
+  // Файл меток больше не держит транспорт до загрузки: не загрузившийся файл
+  // эфир не останавливает, и отсутствие вставки обязано быть видно по часам.
+  const cues = [
+    { eventId: 1, programTimeSeconds: 10 },
+    { eventId: 2, programTimeSeconds: 30 },
+  ];
+  const isObserved = (cue: { eventId: number }) => cue.eventId === 1;
+  assert.equal(missedScte35Cue(cues, 25, isObserved), null);
+  // Метка на самой границе ещё не отказ: splicemonitor и опрос файла дают запас.
+  assert.equal(missedScte35Cue(cues, 31, isObserved), null);
+  assert.equal(missedScte35Cue(cues, 33, isObserved)?.eventId, 2);
 });
 
 test("final transport monitor mirrors post-TSDuck MPEG-TS into an HLS preview", () => {
@@ -2323,6 +2388,9 @@ test("final transport monitor mirrors post-TSDuck MPEG-TS into an HLS preview", 
   }).join(" ");
   assert.match(renderedFfmpeg, /udp:\/\/127\.0\.0\.1:19002\?fifo_size=1000000/);
   assert.match(renderedFfmpeg, /-map 0:v:0 -map 0:a:0\?/);
+  // Монитор, а не второй выход: превью делит машину с эфиром и замирает первым.
+  assert.match(renderedFfmpeg, /-skip_loop_filter all .*-i udp/);
+  assert.match(renderedFfmpeg, /fps=12\.5,scale=640:-2/);
   assert.match(renderedFfmpeg, /-f hls/);
   assert.ok(renderedFfmpeg.includes(path.join(
     previewDirectory,
