@@ -518,31 +518,44 @@ export function App() {
 
   const undoPlaylistChange = useCallback(() => {
     const history = playlistHistory.current;
-    const step = history.past.pop();
+    const step = history.past.at(-1);
     if (!step) return;
+    if (frozenCurrentPrefix(playlist, true).some((asset, index) => JSON.stringify(asset) !== JSON.stringify(step.current[index]))) {
+      refuseOnAirEdit();
+      return;
+    }
+    history.past.pop();
     history.ahead.push(playlistSnapshot.current);
     applyingHistory.current = true;
-    setPlaylist(step.current);
+    setCurrentPlaylist(step.current);
     setFuturePlaylist(step.future);
     setHistoryDepth({ undo: history.past.length, redo: history.ahead.length });
-  }, []);
+  }, [playlist, playoutStatus]);
 
   const redoPlaylistChange = useCallback(() => {
     const history = playlistHistory.current;
-    const step = history.ahead.pop();
+    const step = history.ahead.at(-1);
     if (!step) return;
+    if (frozenCurrentPrefix(playlist, true).some((asset, index) => JSON.stringify(asset) !== JSON.stringify(step.current[index]))) {
+      refuseOnAirEdit();
+      return;
+    }
+    history.ahead.pop();
     history.past.push(playlistSnapshot.current);
     applyingHistory.current = true;
-    setPlaylist(step.current);
+    setCurrentPlaylist(step.current);
     setFuturePlaylist(step.future);
     setHistoryDepth({ undo: history.past.length, redo: history.ahead.length });
-  }, []);
+  }, [playlist, playoutStatus]);
 
   /** Есть ли нативный мост: в браузере часть диалогов открыть нечем. */
   const desktopBridgeAvailable = Boolean(window.gruberDesktop);
   const workspaceRestoreStarted = useRef(false);
   const workspaceAutosaveChain = useRef<Promise<void>>(Promise.resolve());
   const currentPlaylistSyncChain = useRef<Promise<void>>(Promise.resolve());
+  const futurePlaylistSyncChain = useRef<Promise<void>>(Promise.resolve());
+  const futurePlaylistSync = useRef({ sessionId: "", snapshot: "" });
+  const playoutStartSource = useRef<{ sessionId: string; schedule: ScheduleSlot } | null>(null);
   const schedulePromotionHandled = useRef("");
   const currentPlaylistSync = useRef({ sessionId: "", snapshot: "" });
 
@@ -676,17 +689,42 @@ export function App() {
     if (
       !playoutStatus?.sessionId ||
       !schedulePromotionSettled ||
-      !["starting", "running"].includes(playoutStatus.state)
+      futurePlaylist.length === 0 ||
+      playoutStatus.state !== "running"
     ) {
       return;
     }
+    // Starting directly from Future makes that list the on-air programme;
+    // queueing it again would replay the same schedule after it finishes.
+    const knownStartSource = playoutStartSource.current?.sessionId === playoutStatus.sessionId
+      ? playoutStartSource.current.schedule
+      : null;
+    const restoredFutureSession = !knownStartSource &&
+      Boolean(playoutStatus.currentItemId) &&
+      !playlist.some((asset) => asset.id === playoutStatus.currentItemId);
+    if (knownStartSource === "future" || restoredFutureSession) return;
+    const snapshot = JSON.stringify(buildPlayoutItems(futurePlaylist));
+    if (
+      futurePlaylistSync.current.sessionId === playoutStatus.sessionId &&
+      futurePlaylistSync.current.snapshot === snapshot
+    ) return;
+    // The request is deliberately scheduled after the running status is
+    // painted, but not delayed by a polling interval: a short Current clip
+    // must still have its Future ready before the rolling transition.
     const timer = window.setTimeout(() => {
-      void updateNextPlayoutPlaylist(buildPlayoutItems(futurePlaylist))
-        .then(setPlayoutStatus)
+      const sessionId = playoutStatus.sessionId!;
+      futurePlaylistSyncChain.current = futurePlaylistSyncChain.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (futurePlaylistSync.current.sessionId === sessionId && futurePlaylistSync.current.snapshot === snapshot) return;
+          const status = await updateNextPlayoutPlaylist(buildPlayoutItems(futurePlaylist));
+          futurePlaylistSync.current = { sessionId: status.sessionId ?? sessionId, snapshot };
+          setPlayoutStatus(status);
+        })
         .catch((error) => setOperationError(
           `Future schedule sync failed: ${errorMessage(error)}`,
         ));
-    }, 750);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [
     futurePlaylist,
@@ -1007,6 +1045,10 @@ export function App() {
       setView("import");
       return;
     }
+    if (slot === "current" && frozenCurrentPrefix().length > 0) {
+      refuseOnAirEdit();
+      return;
+    }
     const schedulePath = await window.gruberDesktop?.selectScheduleFile();
     if (!schedulePath) return;
     setMediaBusy(true);
@@ -1209,7 +1251,7 @@ export function App() {
         ...commentRows(scheduledAssets.length),
       ];
       if (slot === "current") {
-        setPlaylist(scheduleRows);
+        setCurrentPlaylist(scheduleRows);
         setCurrentScheduleMetadata(metadata);
         setScheduleStartMarker(null);
       } else {
@@ -1340,7 +1382,7 @@ export function App() {
         return probed ? { ...dress(probed), id: item.id } : { ...item, status: "error" as const };
       });
       setAssets((current) => mergeAssets(current, probes.map(probeToAsset).map(dress)));
-      setPlaylist(applyProbe);
+      setCurrentPlaylist(applyProbe);
       setFuturePlaylist(applyProbe);
       setSelectedAssetId((current) => current || rows[0]?.id || "");
     } catch (error) {
@@ -1355,7 +1397,7 @@ export function App() {
           ? { ...item, progress: undefined, status: "error" as const }
           : item
       )));
-      setPlaylist(markFailed);
+      setCurrentPlaylist(markFailed);
       setFuturePlaylist(markFailed);
     } finally {
       setMediaBusy(false);
@@ -1374,8 +1416,9 @@ export function App() {
       if (index < 0) return [...current, ...rows];
       return [...current.slice(0, index), ...rows, ...current.slice(index)];
     };
-    if (slot === "current") setPlaylist(place);
-    else setFuturePlaylist(place);
+    if (slot === "current") {
+      setCurrentPlaylist(place);
+    } else setFuturePlaylist(place);
   }
 
   /**
@@ -1463,17 +1506,21 @@ export function App() {
   function moveItemsToOtherSchedule(assetIds: string[]) {
     const moving = new Set(assetIds);
     if (moving.size === 0) return;
+    if (activeSchedule === "current" && assetIds.some((id) => frozenCurrentPrefix().some((item) => item.id === id))) {
+      refuseOnAirEdit();
+      return;
+    }
     const source = activeSchedule === "current" ? playlist : futurePlaylist;
     const taken = source.filter((asset) => moving.has(asset.id));
     if (taken.length === 0) return;
     const rest = source.filter((asset) => !moving.has(asset.id));
     if (activeSchedule === "current") {
-      setPlaylist(rest);
+      setCurrentPlaylist(rest);
       setFuturePlaylist((current) => [...current, ...taken]);
       if (scheduleStartMarker && moving.has(scheduleStartMarker.assetId)) setScheduleStartMarker(null);
     } else {
       setFuturePlaylist(rest);
-      setPlaylist((current) => [...current, ...taken]);
+      setCurrentPlaylist((current) => [...current, ...taken]);
     }
     if (moving.has(selectedAssetId)) setSelectedAssetId(rest[0]?.id ?? "");
     setScheduleActionMessage(
@@ -1492,6 +1539,10 @@ export function App() {
   async function linkMissingFile(assetId: string) {
     const asset = visiblePlaylist.find((item) => item.id === assetId);
     if (!asset) return;
+    if (activeSchedule === "current" && frozenCurrentPrefix().some((item) => item.id === assetId)) {
+      refuseOnAirEdit();
+      return;
+    }
     const picked = await window.gruberDesktop?.selectMediaFiles();
     const filePath = picked?.[0];
     if (!filePath) return;
@@ -1522,7 +1573,7 @@ export function App() {
           }
         : item));
       setAssets(relinked);
-      setPlaylist(relinked);
+      setCurrentPlaylist(relinked);
       setFuturePlaylist(relinked);
       setScheduleActionMessage(`Linked "${probed.name}" to the schedule row of "${asset.name}".`);
     } catch (error) {
@@ -1553,7 +1604,7 @@ export function App() {
     if (!source) return;
     const rows = splitAssetRows(source, draft, () => newScheduleRowId(source.filePath));
     const replace = (items: MediaAsset[]) => items.flatMap((item) => (item.id === assetId ? rows : [item]));
-    if (activeSchedule === "current") setPlaylist(replace);
+    if (activeSchedule === "current") setActivePlaylist(replace(playlist));
     else setFuturePlaylist(replace);
     setSelectedAssetId(rows[0]?.id ?? "");
     setScheduleActionMessage(tr(
@@ -1586,6 +1637,10 @@ export function App() {
     const asset = visiblePlaylist.find((item) => item.id === assetId);
     if (!asset) return;
     const previousPath = asset.filePath;
+    if (frozenCurrentPrefix(playlist, true).some((item) => item.filePath === previousPath)) {
+      refuseOnAirEdit();
+      return;
+    }
     const picked = await window.gruberDesktop?.selectMediaFiles();
     const filePath = picked?.[0];
     if (!filePath) return;
@@ -1595,10 +1650,10 @@ export function App() {
       const [probe] = await probeMediaPaths([filePath]);
       if (!probe) throw new Error("The media service could not analyze the selected file");
       const probed = probeToAsset(probe);
-      let replaced = 0;
+      const replaced = [...playlist, ...futurePlaylist]
+        .filter((item) => item.filePath === previousPath).length;
       const swap = (items: MediaAsset[]) => items.map((item) => {
         if (item.filePath !== previousPath) return item;
-        replaced += 1;
         return {
           ...item,
           ...probed,
@@ -1617,7 +1672,7 @@ export function App() {
           scte35Markers: item.scte35Markers,
         };
       });
-      setPlaylist(swap);
+      setCurrentPlaylist(swap);
       setFuturePlaylist(swap);
       setAssets((current) => mergeAssets(
         current.filter((item) => item.filePath !== previousPath),
@@ -1680,6 +1735,10 @@ export function App() {
 
   function clearActiveImport() {
     const retainedPlaylist = activeSchedule === "current" ? futurePlaylist : playlist;
+    if (activeSchedule === "current" && frozenCurrentPrefix().length > 0) {
+      refuseOnAirEdit();
+      return;
+    }
     const retainedPaths = new Set(retainedPlaylist.map((asset) => asset.filePath));
     setAssets((current) => current.filter((asset) => retainedPaths.has(asset.filePath)));
     if (activeSchedule === "current") {
@@ -1918,7 +1977,7 @@ export function App() {
       ));
       const map = new Map([[filePath, replacement]]);
       setEffectLibrary((current) => mergeEffectAssets(current, [replacement]));
-      setPlaylist((current) => applyGraphicReplacements(current, map).items);
+      setCurrentPlaylist((current) => applyGraphicReplacements(current, map).items);
       setFuturePlaylist((current) => applyGraphicReplacements(current, map).items);
       setMissingGraphicsResolved((current) => ({ ...current, [filePath]: replacement.filePath }));
     } catch (error) {
@@ -1936,7 +1995,7 @@ export function App() {
         .map((item) => item.filePath),
     );
     if (unresolved.size === 0) return;
-    setPlaylist((current) => dropMissingGraphics(current, unresolved));
+    setCurrentPlaylist((current) => dropMissingGraphics(current, unresolved));
     setFuturePlaylist((current) => dropMissingGraphics(current, unresolved));
     setMissingGraphics([]);
     setMissingGraphicsResolved({});
@@ -2786,7 +2845,7 @@ export function App() {
       const currentApplied = applyBroadcastPlan(currentAssets, plan);
       const futureApplied = applyBroadcastPlan(futureAssets, plan);
       const touched = currentApplied.touched + futureApplied.touched;
-      setPlaylist(currentApplied.items);
+      setCurrentPlaylist(currentApplied.items);
       setFuturePlaylist(futureApplied.items);
       if (!options.silent) {
         setEffectsMessage(tr(
@@ -2832,7 +2891,7 @@ export function App() {
     // Эффект второго уровня оставляет ещё надписи и звуковые вставки — их
     // снимает removeBroadcastEffect, чтобы в плейлисте не остался сирота.
     const removeAssignments = (items: MediaAsset[]) => removeBroadcastEffect(items, effectId);
-    setPlaylist(removeAssignments);
+    setCurrentPlaylist(removeAssignments);
     setFuturePlaylist(removeAssignments);
   }
 
@@ -2846,7 +2905,7 @@ export function App() {
     // выключенным, даже если файл для него есть.
     const enableAll = subtitleLibrary === null;
     setSubtitleLibrary(selected);
-    setPlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths, enableAll));
+    setCurrentPlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths, enableAll));
     setFuturePlaylist((items) => reconcileSubtitleAssignments(items, selected.filePaths, enableAll));
     const matched = enableAll
       ? countSubtitleMatches([...playlist, ...futurePlaylist], selected.filePaths)
@@ -2900,7 +2959,7 @@ export function App() {
         if (!announce && found.length === 0) return asset;
         return { ...asset, audioTracks: found };
       });
-      setPlaylist(attach);
+      setCurrentPlaylist(attach);
       setFuturePlaylist(attach);
       // Папка без совпадений не стирает сохранённый набор языков: после
       // переноса проекта файлов перевода может не оказаться на месте, а набор
@@ -3018,13 +3077,52 @@ export function App() {
     if (target.length === 0) setView("import");
   }
 
+  function frozenCurrentPrefix(items = playlist, includeWhenFutureIsSelected = false): MediaAsset[] {
+    if (
+      (!includeWhenFutureIsSelected && activeSchedule !== "current") ||
+      !playoutStatus ||
+      !["starting", "running"].includes(playoutStatus.state)
+    ) return [];
+    return items.slice(0, Math.min(items.length, playoutStatus.currentItemIndex + 1));
+  }
+
+  function changesOnAirPrefix(next: MediaAsset[]): boolean {
+    const frozen = frozenCurrentPrefix();
+    return frozen.some((asset, index) => JSON.stringify(asset) !== JSON.stringify(next[index]));
+  }
+
+  function refuseOnAirEdit(): void {
+    setOperationError(
+      "The clip currently on air and clips already played are frozen. Edit the next clip or the Future schedule instead.",
+    );
+  }
+
   function setActivePlaylist(next: MediaAsset[]) {
+    if (activeSchedule === "current" && changesOnAirPrefix(next)) {
+      refuseOnAirEdit();
+      return;
+    }
     if (activeSchedule === "current") setPlaylist(next);
     else setFuturePlaylist(next);
   }
 
+  function setCurrentPlaylist(
+    next: MediaAsset[] | ((current: MediaAsset[]) => MediaAsset[]),
+  ) {
+    setPlaylist((current) => {
+      const updated = typeof next === "function" ? next(current) : next;
+      if (frozenCurrentPrefix(current, true).some((asset, index) => JSON.stringify(asset) !== JSON.stringify(updated[index]))) {
+        queueMicrotask(refuseOnAirEdit);
+        return current;
+      }
+      return updated;
+    });
+  }
+
   function updateActivePlaylist(updater: (current: MediaAsset[]) => MediaAsset[]) {
-    if (activeSchedule === "current") setPlaylist(updater);
+    if (activeSchedule === "current") {
+      setCurrentPlaylist(updater);
+    }
     else setFuturePlaylist(updater);
   }
 
@@ -3093,7 +3191,7 @@ export function App() {
     const update = (items: MediaAsset[]) => items.map((asset) => asset.ageTitle
       ? { ...asset, ageTitle: { ...asset.ageTitle, durationSeconds } }
       : asset);
-    setPlaylist(update);
+    setCurrentPlaylist(update);
     setFuturePlaylist(update);
     setScheduleActionMessage(
       `AGE duration set to ${durationSeconds}s for Current and Future schedules.`,
@@ -3131,7 +3229,7 @@ export function App() {
           },
         }
       : asset);
-    setPlaylist(update);
+    setCurrentPlaylist(update);
     setFuturePlaylist(update);
     setScheduleActionMessage("Channel logo appearance updated for Current and Future schedules.");
   }
@@ -3141,7 +3239,7 @@ export function App() {
     if (!selection) return;
     const ageAssets = mapAgeAssetPaths(selection.imagePaths);
     setAgeLibrary(selection);
-    setPlaylist((items) => assignAgeAssets(
+    setCurrentPlaylist((items) => assignAgeAssets(
       items,
       ageAssets,
       settings.ageTitleDurationSeconds,
@@ -3257,7 +3355,7 @@ export function App() {
           importedSettings.logoPath,
           importedSettings,
         );
-        setPlaylist(applyImportedLogo);
+        setCurrentPlaylist(applyImportedLogo);
         setFuturePlaylist(applyImportedLogo);
       }
       setSettingsProfileMessage(
@@ -3427,7 +3525,11 @@ export function App() {
   async function startPlayout(mode: "default" | "resume" | "beginning" = "default") {
     setOperationError(null);
     try {
-      const baseRequest = buildStartRequest(playlist, settings, futurePlaylist);
+      // Future is optional and may arrive after the engineer has started the
+      // current schedule. It is attached through PUT /next-playlist once the
+      // encoder is already on air, so a huge/unavailable second schedule cannot
+      // delay or block the initial start.
+      const baseRequest = buildStartRequest(playlist, settings, [], true, futurePlaylist);
       // Недельное поднимается только по часам, какой бы кнопкой ни нажали
       // старт: отметка и «с начала» в нём значили бы сетку, сдвинутую до конца
       // недели. До начала недели и после конца любого окна старт не разрешён.
@@ -3459,7 +3561,9 @@ export function App() {
               scheduleStartMarker.offsetSeconds,
             )
           : baseRequest, currentScheduleMetadata);
-      setPlayoutStatus(await startPlayoutSession(request));
+      const status = await startPlayoutSession(request);
+      playoutStartSource.current = { sessionId: status.sessionId ?? "", schedule: "current" };
+      setPlayoutStatus(status);
       setRecoveryCheckpoint(null);
       // Пропущенные ролики — не мелочь: эфир пошёл короче, чем показывает
       // сетка, и оператор должен знать, сколько строк ждут файла.
@@ -3513,7 +3617,7 @@ export function App() {
         return;
       }
       const futureRequest = buildStartRequest(futurePlaylist, settings, []);
-      setPlayoutStatus(await startPlayoutSession(withPlaybackMode(
+      const status = await startPlayoutSession(withPlaybackMode(
         gate.kind === "on-air"
           ? buildStartRequestFromAsset(
               futureRequest, futurePlaylist, gate.point.assetId, gate.point.itemOffsetSeconds,
@@ -3521,7 +3625,9 @@ export function App() {
           : futureRequest,
         futureScheduleMetadata,
         "future",
-      )));
+      ));
+      playoutStartSource.current = { sessionId: status.sessionId ?? "", schedule: "future" };
+      setPlayoutStatus(status);
       setRecoveryCheckpoint(null);
       setScheduleActionMessage("Playout started from the Future schedule.");
     } catch (error) {
@@ -4079,6 +4185,7 @@ function buildStartRequest(
   settings: BroadcastSettings,
   nextPlaylist: MediaAsset[] = [],
   requireStreaming = true,
+  audioProgramPlaylist: MediaAsset[] = [...playlist, ...nextPlaylist],
 ): StartPlayoutRequest {
   // Пустое расписание больше не отказ: служба поднимет линию на цветных полосах,
   // и собрать расписание можно уже под живым эфиром. Превью отдельного ролика
@@ -4149,7 +4256,7 @@ function buildStartRequest(
   return {
     playlist: buildPlayoutItems(playlist),
     nextPlaylist: buildPlayoutItems(nextPlaylist),
-    audioProgram: buildAudioProgram([...playlist, ...nextPlaylist], {
+    audioProgram: buildAudioProgram(audioProgramPlaylist, {
       basePid: programEndpoint.protocol === "rtmp"
         ? settings.udpAudioPid
         : programEndpoint.mpegTs.audioPid,

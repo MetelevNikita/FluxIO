@@ -305,18 +305,21 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <SelectField
             disabled={programVideoCodecs.length === 1}
             label={tr("Кодек", "Codec")}
-            onChange={(value) => onSettingsChange({
-              ...settings,
-              videoCodec: value,
-              videoHardware: hardwareOptionsFor(capabilities, value, settings.fieldOrder)
+            onChange={(value) => {
+              const videoHardware = hardwareOptionsFor(capabilities, value, settings.fieldOrder)
                 .some((option) => option.value === settings.videoHardware)
                 ? settings.videoHardware
-                : "off",
-              profile: nearestVideoProfile(value, settings.videoHardware, settings.profile),
-              bFrames: value === "MPEG-2 Video"
-                ? Math.min(2, settings.bFrames)
-                : settings.bFrames,
-            })}
+                : "off";
+              onSettingsChange({
+                ...settings,
+                videoCodec: value,
+                videoHardware,
+                profile: nearestVideoProfile(value, videoHardware, settings.profile),
+                bFrames: value === "MPEG-2 Video"
+                  ? Math.min(2, settings.bFrames)
+                  : settings.bFrames,
+              });
+            }}
             options={programVideoCodecs}
             value={settings.videoCodec}
           />
@@ -378,7 +381,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
                   ...settings,
                   width: value,
                   height: settings.dimensionsLocked
-                    ? Math.round((value / 16) * 9)
+                    ? Math.max(2, Math.round((value * 9) / 32) * 2)
                     : settings.height,
                 });
               }}

@@ -90,6 +90,7 @@ import {
   logoFilterChain,
   logoInputArgs,
   logoSourceKind,
+  videoEncoderArgs,
   type PreparedPlayoutItem,
 } from "./ffmpeg/command-builder.js";
 import {
@@ -2482,6 +2483,15 @@ test("FFmpeg applies deterministic I/P/B GOP settings to all program codecs", ()
   );
 });
 
+test("software H265 Main 10 requests a 10-bit pixel format", () => {
+  const request = baseRequest();
+  request.video.codec = "h265";
+  request.video.profile = "Main 10";
+  const args = buildFfmpegCommand(request, preparedItems(), "/tmp/preview").args;
+  const pix = args.indexOf("-pix_fmt");
+  assert.equal(args[pix + 1], "yuv420p10le");
+});
+
 test("GOP contract rejects impossible and codec-incompatible structures", () => {
   const impossible = baseRequest();
   impossible.video.gopSize = 2;
@@ -2497,6 +2507,15 @@ test("GOP contract rejects impossible and codec-incompatible structures", () => 
   baseline.video.profile = "Baseline";
   baseline.video.bFrames = 1;
   assert.equal(startPlayoutRequestSchema.safeParse(baseline).success, false);
+
+  const oddFrame = baseRequest();
+  oddFrame.video.width = 1_921;
+  assert.equal(startPlayoutRequestSchema.safeParse(oddFrame).success, false);
+
+  const invertedVbr = baseRequest();
+  invertedVbr.video.rateControl = "vbr";
+  invertedVbr.video.maxBitrateKbps = 1_000;
+  assert.equal(startPlayoutRequestSchema.safeParse(invertedVbr).success, false);
 });
 
 test("TSDuck command sends the injected MPEG-TS through SRT caller settings", () => {
@@ -3011,6 +3030,30 @@ test("SCTE-35 preflight rejects an elementary-stream PID collision", async () =>
     await assert.rejects(supervisor.start(request), /conflicts with video PID/);
   } finally {
     await supervisor.close();
+  }
+});
+
+test("stopping while a schedule is being prepared leaves the session idle", async () => {
+  const realCapabilities = new FfmpegCapabilitiesService();
+  const delayedCapabilities = {
+    ffmpegPath: realCapabilities.ffmpegPath,
+    ffprobePath: realCapabilities.ffprobePath,
+    get: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return realCapabilities.get();
+    },
+  } as unknown as FfmpegCapabilitiesService;
+  const directory = await mkdtemp(path.join(tmpdir(), "gruber-cancel-start-"));
+  const supervisor = new PlayoutSupervisor(delayedCapabilities, path.join(directory, "preview"));
+  try {
+    const starting = supervisor.start(baseRequest());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const stopped = await supervisor.stop();
+    assert.equal(stopped.state, "idle");
+    assert.equal((await starting).state, "idle");
+  } finally {
+    await supervisor.close();
+    await rm(directory, { force: true, recursive: true });
   }
 });
 
@@ -4073,10 +4116,11 @@ function video(overrides: Record<string, unknown> = {}) {
   });
 }
 
-test("hardware off keeps the software encoder, whatever the machine has", () => {
-  const chosen = resolveVideoEncoder(video(), ["h264_nvenc", "h264_qsv"]);
+test("hardware off requires the selected software encoder", () => {
+  const chosen = resolveVideoEncoder(video(), ["libx264", "h264_nvenc", "h264_qsv"]);
   assert.equal(chosen.name, "libx264");
   assert.equal(chosen.vendor, "off");
+  assert.throws(() => resolveVideoEncoder(video(), ["h264_nvenc"]), /no 'libx264' software encoder/);
 });
 
 test("auto takes the first accelerator that can encode this codec", () => {
@@ -4137,11 +4181,39 @@ test("NVENC gets its own preset scale and forced IDR, not x264 parameters", () =
   assert.match(joined, /-rc cbr/);
 });
 
-test("VideoToolbox keeps a software fallback: the accelerator can be busy", () => {
+test("VideoToolbox never enables a hidden software fallback", () => {
   const chosen = resolveVideoEncoder(video({ hardware: "videotoolbox" }), ["h264_videotoolbox"]);
   const joined = hardwareEncoderArgs(video({ hardware: "videotoolbox" }), chosen).join(" ");
-  assert.match(joined, /-allow_sw 1/);
+  assert.equal(joined.includes("-allow_sw"), false);
   assert.match(joined, /-realtime 1/);
+});
+
+test("auto skips hardware that cannot carry interlaced fields", () => {
+  const chosen = resolveVideoEncoder(
+    video({ hardware: "auto", fieldOrder: "upper" }),
+    ["h264_nvenc", "h264_qsv"],
+  );
+  assert.equal(chosen.vendor, "qsv");
+});
+
+test("hardware CBR pins maxrate to target and QSV uses inferred rate control", () => {
+  const settings = video({ hardware: "qsv", maxBitrateKbps: 20_000 });
+  const chosen = resolveVideoEncoder(settings, ["h264_qsv"]);
+  const args = hardwareEncoderArgs(settings, chosen);
+  assert.deepEqual(args.slice(args.indexOf("-maxrate"), args.indexOf("-maxrate") + 2), ["-maxrate", "8000k"]);
+  assert.equal(args.includes("-rc_mode"), false);
+});
+
+test("hardware encoder keeps the requested field order in the output stream", () => {
+  const settings = video({ hardware: "qsv", fieldOrder: "upper" });
+  const chosen = resolveVideoEncoder(settings, ["h264_qsv"]);
+  const args = videoEncoderArgs(settings, chosen);
+  assert.deepEqual(args.slice(args.indexOf("-field_order"), args.indexOf("-field_order") + 2), ["-field_order", "tt"]);
+});
+
+test("human-readable Main Profile maps to H264 main", () => {
+  const chosen = resolveVideoEncoder(video({ hardware: "nvenc", profile: "Main Profile" }), ["h264_nvenc"]);
+  assert.deepEqual(hardwareEncoderArgs(video({ hardware: "nvenc", profile: "Main Profile" }), chosen).slice(-4), ["-profile:v", "main", "-level", "4.1"]);
 });
 
 test("variable rate control does not ask an accelerator for CBR", () => {

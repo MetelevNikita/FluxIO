@@ -1065,6 +1065,8 @@ export function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEnc
     // они не понимают, а `-sc_threshold` из общего набора игнорируют.
     return [
       ...hardwareEncoderArgs(video, encoder),
+      "-field_order",
+      ffmpegFieldOrder(video.fieldOrder),
       "-g", String(gop),
       "-keyint_min", String(gop),
       "-bf", String(video.bFrames),

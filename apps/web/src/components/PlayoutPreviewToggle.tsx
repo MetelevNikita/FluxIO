@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Power } from "lucide-react";
 import { setPlayoutPreview } from "../media-api";
 import { usePlayoutStatus } from "../playout-status";
 
@@ -12,15 +13,22 @@ export function PlayoutPreviewToggle() {
   if (status?.previewPath && !status.previewPath.includes("transport-index.m3u8")) return null;
 
   return <>
-    <button disabled={!running || busy} onClick={() => {
+    <button
+      aria-pressed={enabled}
+      className={`preview-air-toggle ${enabled ? "enabled" : ""}`}
+      disabled={!running || busy}
+      onClick={() => {
       setBusy(true);
       setError(null);
       void setPlayoutPreview(!enabled)
         .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
         .finally(() => setBusy(false));
-    }} type="button">
+      }}
+      type="button"
+    >
+      <Power size={12} />
       {busy ? "Переключение…" : enabled ? "Отключить эфирное превью" : "Включить эфирное превью"}
     </button>
-    {error ? <span role="alert">{error}</span> : null}
+    {error ? <span className="preview-air-error" role="alert">{error}</span> : null}
   </>;
 }

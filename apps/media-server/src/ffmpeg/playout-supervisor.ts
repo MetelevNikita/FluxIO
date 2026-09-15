@@ -285,6 +285,8 @@ export class PlayoutSupervisor {
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
   #takeInProgress = false;
+  /** Invalidates an in-flight preparation when Stop/close arrives before spawn. */
+  #startGeneration = 0;
   /** Что сняли с запроса из-за транспорта: называется в журнале после старта. */
   #droppedOutputFeatures: OutputProtocolFeature[] = [];
   /** Выходы, ответвлённые от мультиплекса программы. Живут своей жизнью. */
@@ -686,6 +688,7 @@ export class PlayoutSupervisor {
       throw new PlayoutConflictError("A playout session is already active");
     }
 
+    const startGeneration = ++this.#startGeneration;
     this.#transportPreviewEnabled = false;
     this.#request = request;
     this.#status = {
@@ -733,6 +736,12 @@ export class PlayoutSupervisor {
 
     try {
       const next = prepared ?? await this.#prepareRequest(request);
+      // Stop can arrive while a large schedule is being probed. Do not let the
+      // completed preparation resurrect an encoder after the operator closed
+      // the UI.
+      if (startGeneration !== this.#startGeneration) {
+        return this.getStatus();
+      }
       const resolvedRequest = next.request;
       this.#request = resolvedRequest;
       this.#items = next.items;
@@ -741,6 +750,9 @@ export class PlayoutSupervisor {
       await mkdir(this.previewDirectory, { recursive: true });
       this.#branchPlans = [];
       await this.#prepareLoopCommands();
+      if (startGeneration !== this.#startGeneration) {
+        return this.getStatus();
+      }
       this.#appendEvent(`Starting ${request.playlist.length} clip playout`);
       if (resolvedRequest.audio.loudnessNormalization.enabled) {
         const loudness = resolvedRequest.audio.loudnessNormalization;
@@ -773,6 +785,7 @@ export class PlayoutSupervisor {
       await waitForSpawn(child);
       return this.getStatus();
     } catch (error) {
+      if (startGeneration !== this.#startGeneration) return this.getStatus();
       void this.#outputs.stopAll();
       this.#stopResourceSampling();
       this.#terminateTsdDuck();
@@ -849,9 +862,16 @@ export class PlayoutSupervisor {
 
   async stop(): Promise<PlayoutStatus> {
     const child = this.#child;
+    const wasStarting = this.#status.state === "starting";
+    if (wasStarting) this.#startGeneration += 1;
     if (!child && !this.#tsduckChild && !this.#subtitleChild && !this.#transportPreviewChild) {
       void this.#outputs.stopAll();
       this.#stopResourceSampling();
+      if (wasStarting) {
+        this.#status.state = "idle";
+        this.#status.stoppedAt = new Date().toISOString();
+        this.#appendEvent("Playout start cancelled");
+      }
       return this.getStatus();
     }
     if (this.#status.state !== "stopping") {

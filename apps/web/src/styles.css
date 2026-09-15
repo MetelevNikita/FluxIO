@@ -2963,6 +2963,69 @@ p {
   color: #86efac;
 }
 
+/* Переключатель эфирного превью — та же семантика цвета, что у общих
+   primary/danger-кнопок, а не голая кнопка браузера. Компонент живёт и в
+   панели монитора Broadcast, и в переключателе источника Playlist. */
+.preview-air-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.preview-air-toggle:not(:disabled) {
+  border-color: rgba(245, 213, 101, 0.52);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.preview-air-toggle.enabled:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.55);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+}
+
+.preview-air-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(245, 213, 101, 0.14);
+  color: var(--accent);
+}
+
+.preview-air-toggle.enabled:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.8);
+  background: rgba(239, 68, 68, 0.2);
+  color: #fee2e2;
+}
+
+.preview-air-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.preview-air-error {
+  display: block;
+  margin: 4px 10px 0;
+  max-width: 220px;
+  overflow: hidden;
+  color: #fca5a5;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-source-switch .preview-air-error {
+  display: inline;
+  margin: 0;
+}
+
 .preview-source-hint {
   min-width: 0;
   overflow: hidden;
@@ -3054,6 +3117,14 @@ p {
   background: #000;
 }
 
+/* Проводник не должен наследовать ограничение монитора 620px и затемняющую
+   вуаль предпросмотра: в этом режиме весь блок принадлежит списку файлов. */
+.program-preview.file-browser-open {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
 .media-file-browser { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; padding: 10px; background: var(--surface-deep); color: var(--text); font-size: 11px; }
 .media-file-browser-heading { display: flex; gap: 8px; align-items: center; min-width: 0; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
 .media-file-browser-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3071,6 +3142,8 @@ p {
   background: rgba(0, 0, 0, 0.28);
   pointer-events: none;
 }
+
+.program-preview.file-browser-open::after { display: none; }
 
 .program-preview > img,
 .program-preview > video {
@@ -4161,6 +4234,10 @@ input[type="range"] {
 
 .monitor-preview-card {
   overflow: hidden;
+}
+
+.monitor-preview-card > .preview-air-toggle {
+  margin: 10px 10px 0;
 }
 
 .monitor-preview {

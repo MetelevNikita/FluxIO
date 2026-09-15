@@ -2199,7 +2199,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
         </div>
 
         <div className="preview-stage">
-        <div className="program-preview" ref={previewContainer}>
+        <div className={`program-preview ${fileBrowserOpen ? "file-browser-open" : ""}`} ref={previewContainer}>
           {fileBrowserOpen ? (
             <MediaFileBrowser onAdd={onAddBrowserPaths} />
           ) : monitorSource === "air" ? (
