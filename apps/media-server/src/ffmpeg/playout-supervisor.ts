@@ -114,6 +114,7 @@ const tsduckMonitorPrefix = "GRUBER_SCTE35:";
 const consoleProgressIntervalSeconds = 5;
 const playlistPreparationConcurrency = 8;
 const clipProducerStartupTimeoutMs = 30_000;
+const directoryProcessShutdownTimeoutMs = 5_000;
 const maximumSubtitleRestartAttempts = 3;
 const minimumClipPipeBufferBytes = 1_048_576;
 /**
@@ -2089,13 +2090,6 @@ export class PlayoutSupervisor {
         `"${this.#items[index]?.name ?? "unknown"}"`,
     );
     this.#armClipProducerStartup(runtime);
-    const nextIndex = index + 1;
-    this.#prefetchedProducerChild = nextIndex < this.#items.length
-      ? this.#spawnClipProducer(nextIndex)
-      : null;
-    if (this.#prefetchedProducerChild) {
-      this.#appendEvent(`Clip ${nextIndex + 1} prefetched and waiting on the local pipe`);
-    }
   }
 
   #handleClipProducerClose(
@@ -2178,6 +2172,14 @@ export class PlayoutSupervisor {
     this.#appendEvent(
       `Clip renderer ${runtime.index + 1}/${this.#items.length} pipe ready: video + ${tracks}`,
     );
+    // Не запускаем второй rawvideo-процесс, пока первый не отдал кадр:
+    // предзагрузка раньше готовности могла забить pipe и задушить старт эфира.
+    if (this.#producerChild === runtime.child && !this.#prefetchedProducerChild) {
+      const nextIndex = runtime.index + 1;
+      if (nextIndex >= this.#items.length) return;
+      this.#prefetchedProducerChild = this.#spawnClipProducer(nextIndex);
+      this.#appendEvent(`Clip ${nextIndex + 1} prefetched and waiting on the local pipe`);
+    }
   }
 
   #armClipProducerStartup(runtime: ClipProducerRuntime): void {
@@ -2634,7 +2636,25 @@ export class PlayoutSupervisor {
   }
 
   async #waitForDirectoryProcesses(): Promise<void> {
-    await Promise.all(this.#closingDirectoryProcesses);
+    if (this.#closingDirectoryProcesses.size === 0) return;
+    const pending = Promise.all(this.#closingDirectoryProcesses).then(() => "closed" as const);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      const handle = setTimeout(() => resolve("timeout"), directoryProcessShutdownTimeoutMs);
+      timer = handle;
+      handle.unref();
+    });
+    try {
+      const result = await Promise.race([pending, timeout]);
+      if (result === "timeout" && this.#closingDirectoryProcesses.size > 0) {
+        this.#appendEvent(
+          "Previous output process did not close in time; continuing startup",
+          { expected: true },
+        );
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   #terminateFfmpeg(): void {
@@ -2688,8 +2708,11 @@ export class PlayoutSupervisor {
     this.#readAheadControl.abort();
     this.#readAheadControl = new AbortController();
     this.#readAheadChain = Promise.resolve();
-    const producers = [this.#producerChild, this.#prefetchedProducerChild]
-      .filter((child): child is ChildProcessWithoutNullStreams => Boolean(child));
+    const producers = new Set<ChildProcessWithoutNullStreams>([
+      ...[this.#producerChild, this.#prefetchedProducerChild]
+        .filter((child): child is ChildProcessWithoutNullStreams => Boolean(child)),
+      ...this.#producerRuntimes.keys(),
+    ]);
     this.#producerChild = null;
     this.#prefetchedProducerChild = null;
     this.#clearClipProducerStartupTimer();
