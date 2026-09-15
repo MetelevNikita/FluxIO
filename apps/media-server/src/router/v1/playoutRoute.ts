@@ -73,6 +73,22 @@ export async function playoutRoute(app: FastifyInstance, context: RouteContext) 
 
   app.post("/api/playout/stop", async () => context.playout.stop());
 
+  app.post("/api/playout/preview/start", async (_request, reply) => {
+    try {
+      return await context.playout.startPreview();
+    } catch (error) {
+      return playoutErrorReply(reply, error);
+    }
+  });
+
+  app.post("/api/playout/preview/stop", async (_request, reply) => {
+    try {
+      return await context.playout.stopPreview();
+    } catch (error) {
+      return playoutErrorReply(reply, error);
+    }
+  });
+
   /*
    * Отдельный пуск и останов выхода.
    *

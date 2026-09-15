@@ -20,6 +20,7 @@ import {
 } from "../transport-clock.js";
 import {
   hardwareEncoderArgs,
+  normalizeH264Profile,
   softwareEncoder,
   type ResolvedVideoEncoder,
 } from "./hardware-encoder.js";
@@ -1043,7 +1044,9 @@ export function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEnc
     : "0";
   const common = [
     "-pix_fmt",
-    "yuv420p",
+    video.codec === "h265" && video.profile.toLowerCase().includes("10")
+      ? "yuv420p10le"
+      : "yuv420p",
     "-field_order",
     ffmpegFieldOrder(video.fieldOrder),
     "-g",
@@ -1069,9 +1072,7 @@ export function videoEncoderArgs(video: VideoEncoding, chosen?: ResolvedVideoEnc
   }
 
   if (video.codec === "h264") {
-    const profile = ["baseline", "main", "high"].includes(video.profile.toLowerCase())
-      ? video.profile.toLowerCase()
-      : "high";
+    const profile = normalizeH264Profile(video.profile);
     codecArgs = [
       "-c:v",
       "libx264",

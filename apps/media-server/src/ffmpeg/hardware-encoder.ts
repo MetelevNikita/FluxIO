@@ -73,14 +73,35 @@ export function resolveVideoEncoder(
   video: VideoEncoding,
   availableEncoders: readonly string[],
 ): ResolvedVideoEncoder {
-  if (video.hardware === "off") return softwareEncoder(video.codec);
-
   const available = new Set(availableEncoders);
+  if (video.hardware === "off") {
+    const encoder = softwareEncoder(video.codec);
+    if (!available.has(encoder.name)) {
+      throw new HardwareEncoderError(
+        `This FFmpeg build has no '${encoder.name}' software encoder for ${video.codec}.`,
+      );
+    }
+    return encoder;
+  }
+  if (video.rateControl === "crf") {
+    throw new HardwareEncoderError(
+      "CRF is supported only by software encoding. Choose CBR/VBR or turn hardware encoding off.",
+    );
+  }
+  if (video.codec === "h265" && video.profile.toLowerCase().includes("10")) {
+    throw new HardwareEncoderError(
+      "Main 10 currently requires software H.265 encoding. Choose Main Profile or turn hardware encoding off.",
+    );
+  }
 
   if (video.hardware === "auto") {
     for (const vendor of autoOrder) {
       const name = encoderNames[vendor][video.codec];
-      if (name && available.has(name)) {
+      if (
+        name &&
+        available.has(name) &&
+        (video.fieldOrder === "progressive" || hardwareSupportsInterlace(vendor))
+      ) {
         return { name, vendor, needsHardwareUpload: vendor === "vaapi" };
       }
     }
@@ -128,7 +149,9 @@ export function hardwareEncoderArgs(
   resolved: ResolvedVideoEncoder,
 ): string[] {
   const bitrate = `${video.targetBitrateKbps}k`;
-  const maxrate = `${Math.max(video.targetBitrateKbps, video.maxBitrateKbps)}k`;
+  const maxrate = `${video.rateControl === "cbr"
+    ? video.targetBitrateKbps
+    : Math.max(video.targetBitrateKbps, video.maxBitrateKbps)}k`;
   const bufsize = `${video.bufferSizeKbps}k`;
   const cbr = video.rateControl === "cbr";
 
@@ -149,7 +172,7 @@ export function hardwareEncoderArgs(
       "-no-scenecut", "1",
     ];
     if (video.codec === "h264") {
-      args.push("-profile:v", h264Profile(video.profile), "-level", video.level);
+      args.push("-profile:v", normalizeH264Profile(video.profile), "-level", video.level);
     } else {
       args.push("-profile:v", video.profile.toLowerCase().includes("10") ? "main10" : "main");
     }
@@ -164,9 +187,8 @@ export function hardwareEncoderArgs(
       "-maxrate", maxrate,
       "-bufsize", bufsize,
     ];
-    if (cbr) args.push("-rc_mode", "CBR");
     // Просмотр вперёд копит задержку — для эфира это лишнее.
-    if (video.codec === "h264") args.push("-look_ahead", "0", "-profile:v", h264Profile(video.profile));
+    if (video.codec === "h264") args.push("-look_ahead", "0", "-profile:v", normalizeH264Profile(video.profile));
     return args;
   }
 
@@ -179,7 +201,7 @@ export function hardwareEncoderArgs(
       "-maxrate", maxrate,
       "-bufsize", bufsize,
     ];
-    if (video.codec === "h264") args.push("-profile:v", h264Profile(video.profile), "-level", video.level);
+    if (video.codec === "h264") args.push("-profile:v", normalizeH264Profile(video.profile), "-level", video.level);
     if (cbr) args.push("-filler_data", "1");
     return args;
   }
@@ -192,7 +214,7 @@ export function hardwareEncoderArgs(
       "-bufsize", bufsize,
       "-rc_mode", cbr ? "CBR" : "VBR",
     ];
-    if (video.codec === "h264") args.push("-profile:v", h264Profile(video.profile), "-level", video.level);
+    if (video.codec === "h264") args.push("-profile:v", normalizeH264Profile(video.profile), "-level", video.level);
     return args;
   }
 
@@ -204,18 +226,17 @@ export function hardwareEncoderArgs(
     "-maxrate", maxrate,
     "-bufsize", bufsize,
     "-realtime", "1",
-    // Без запасного программного пути кодирование падает, когда ускоритель
-    // занят другим процессом.
-    "-allow_sw", "1",
   ];
-  if (video.codec === "h264") args.push("-profile:v", h264Profile(video.profile));
+  if (video.codec === "h264") args.push("-profile:v", normalizeH264Profile(video.profile));
   if (cbr) args.push("-constant_bit_rate", "1");
   return args;
 }
 
-function h264Profile(profile: string): string {
+export function normalizeH264Profile(profile: string): string {
   const value = profile.toLowerCase();
-  return ["baseline", "main", "high"].includes(value) ? value : "high";
+  if (value.includes("baseline")) return "baseline";
+  if (value.includes("main")) return "main";
+  return "high";
 }
 
 /** Пресеты x264 в шкалу NVENC p1..p7. */

@@ -8,6 +8,7 @@
 export const SELECT_LOGO_CHANNEL = "dialog:select-logo";
 export const SELECT_MEDIA_DIRECTORY_CHANNEL = "dialog:select-media-directory";
 export const SELECT_MEDIA_FILES_CHANNEL = "dialog:select-media-files";
+export const BROWSE_MEDIA_CHANNEL = "media:browse";
 export const SELECT_SCHEDULE_FILE_CHANNEL = "dialog:select-schedule-file";
 export const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL = "dialog:select-schedule-logo-directory";
 export const SELECT_AGE_DIRECTORY_CHANNEL = "dialog:select-age-directory";
@@ -45,6 +46,7 @@ export type DesktopChannel =
   | typeof SELECT_LOGO_CHANNEL
   | typeof SELECT_MEDIA_DIRECTORY_CHANNEL
   | typeof SELECT_MEDIA_FILES_CHANNEL
+  | typeof BROWSE_MEDIA_CHANNEL
   | typeof SELECT_SCHEDULE_FILE_CHANNEL
   | typeof SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL
   | typeof SELECT_AGE_DIRECTORY_CHANNEL

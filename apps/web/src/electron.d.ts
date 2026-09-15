@@ -24,6 +24,12 @@ declare global {
       selectLogoFile: () => Promise<string | null>;
       selectMediaDirectory: () => Promise<string | null>;
       selectMediaFiles: () => Promise<string[]>;
+      browseMedia: (directoryPath: string | null) => Promise<{
+        directoryPath: string | null;
+        parentPath?: string | null;
+        entries: { name: string; path: string; directory: boolean }[];
+        truncated?: boolean;
+      }>;
       /** Показать файл в проводнике — им оператор ищет пропавший ролик. */
       revealInFolder: (filePath: string) => Promise<boolean>;
       selectScheduleFile: () => Promise<string | null>;

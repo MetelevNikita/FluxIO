@@ -36,6 +36,7 @@ interface ProbeStream {
 interface ProbeDocument {
   streams?: ProbeStream[];
   format?: {
+    format_name?: string;
     duration?: string;
     bit_rate?: string;
     size?: string;
@@ -75,6 +76,7 @@ export async function probeMedia(
   return mediaProbeSchema.parse({
     filePath: resolvedPath,
     name: path.basename(resolvedPath),
+    containerFormat: document.format?.format_name ?? "unknown",
     durationSeconds: numberValue(document.format?.duration),
     videoCodec: video.codec_name ?? "unknown",
     videoProfile: video.profile ?? "unknown",

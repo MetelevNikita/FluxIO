@@ -211,6 +211,12 @@ export async function stopPlayout(): Promise<PlayoutStatus> {
   );
 }
 
+export async function setPlayoutPreview(enabled: boolean): Promise<PlayoutStatus> {
+  return playoutStatusSchema.parse(await request(
+    `/api/playout/preview/${enabled ? "start" : "stop"}`, "POST",
+  ));
+}
+
 export async function startPlayoutStream(id: string): Promise<PlayoutStatus> {
   return playoutStatusSchema.parse(
     await request(`/api/playout/streams/${encodeURIComponent(id)}/start`, "POST"),

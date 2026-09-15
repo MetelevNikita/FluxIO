@@ -42,9 +42,11 @@ import {
   demoGraphicEffects,
 } from "./graphics-demo-data";
 import { initialBroadcastSettings } from "./default-broadcast-settings";
+import type { InputProfile } from "./input-profile";
 import {
   audioCodecFromLabel,
   outputCapabilitiesOf,
+  presetFromSlider,
   videoCodecFromLabel,
 } from "./output-capabilities";
 import {
@@ -217,6 +219,7 @@ export function App() {
     demoDataEnabled ? initialPlaylist : [],
   );
   const [futurePlaylist, setFuturePlaylist] = useState<MediaAsset[]>([]);
+  const [inputProfile, setInputProfile] = useState<InputProfile | null>(null);
   const [activeSchedule, setActiveSchedule] = useState<ScheduleSlot>("current");
   const [currentScheduleMetadata, setCurrentScheduleMetadata] = useState<ScheduleMetadata | null>(null);
   const [futureScheduleMetadata, setFutureScheduleMetadata] = useState<ScheduleMetadata | null>(null);
@@ -365,6 +368,9 @@ export function App() {
   // секунду, и обычные обработчики роняли бы его в перерисовку вместе со всем
   // списком роликов — оператор видит это как залипание кнопок.
   const stableAddFilesToActiveSchedule = useStableCallback(addFilesToActiveSchedule);
+  const stableAddBrowserPaths = useStableCallback((paths: string[], slot: ScheduleSlot, insertBeforeId: string | null = null) => {
+    void analyzePaths(paths, slot, insertBeforeId);
+  });
   const stableAddNativeFilesToActiveSchedule = useStableCallback(addNativeFilesToActiveSchedule);
   const stableAddScte35Marker = useStableCallback(addScte35Marker);
   const stableMovePlaylistItems = useStableCallback(movePlaylistItems);
@@ -618,6 +624,7 @@ export function App() {
     subtitleLibrary,
     scheduleStartMarker,
     settings,
+    inputProfile,
   ]);
 
   /**
@@ -837,6 +844,7 @@ export function App() {
         : null,
     );
     setSettings(restoredSettings);
+    setInputProfile(snapshot.inputProfile);
     setActiveSchedule(checkpointSelection ? "current" : snapshot.activeSchedule);
     setSelectedAssetId(
       checkpointSelection?.asset.id ??
@@ -907,6 +915,11 @@ export function App() {
     slot: ScheduleSlot = "current",
     insertBeforeId: string | null = null,
   ) => {
+    if (!inputProfile) {
+      setOperationError("Сначала создайте профиль входного видео на экране импорта.");
+      setView("import");
+      return;
+    }
     const accepted = files.filter(
       (file) =>
         file.type.startsWith("video/") ||
@@ -958,7 +971,7 @@ export function App() {
     if (accepted.length === 0 && files.length > 0) {
       setOperationError("Ни один из выбранных файлов не похож на видео.");
     }
-  }, []);
+  }, [inputProfile]);
 
   async function addNativeFiles(slot: ScheduleSlot = "current") {
     const paths = await window.gruberDesktop?.selectMediaFiles();
@@ -968,6 +981,11 @@ export function App() {
   }
 
   async function addNativeDirectory(slot: ScheduleSlot = "current") {
+    if (!inputProfile) {
+      setOperationError("Сначала создайте профиль входного видео на экране импорта.");
+      setView("import");
+      return;
+    }
     const directoryPath = await window.gruberDesktop?.selectMediaDirectory();
     if (!directoryPath) {
       return;
@@ -984,6 +1002,11 @@ export function App() {
   }
 
   async function importNativeSchedule(slot: ScheduleSlot) {
+    if (!inputProfile) {
+      setOperationError("Сначала создайте профиль входного видео на экране импорта.");
+      setView("import");
+      return;
+    }
     const schedulePath = await window.gruberDesktop?.selectScheduleFile();
     if (!schedulePath) return;
     setMediaBusy(true);
@@ -1281,6 +1304,11 @@ export function App() {
     insertBeforeId: string | null = null,
   ) {
     if (paths.length === 0) return;
+    if (!inputProfile) {
+      setOperationError("Сначала создайте профиль входного видео на экране импорта.");
+      setView("import");
+      return;
+    }
     setMediaBusy(true);
     setOperationError(null);
     const rows = paths.map((filePath) => ({
@@ -1782,6 +1810,7 @@ export function App() {
         subtitleLibrary,
         startMarker: scheduleStartMarker,
         settings: primitiveSettings(settings),
+        inputProfile,
       },
     };
   }
@@ -1805,6 +1834,7 @@ export function App() {
       await deletePersistedWorkspaceSession();
       clearMedia();
       setSettings(initialBroadcastSettings);
+      setInputProfile(null);
       setActiveSchedule("current");
       setSavedWorkspaceSession(null);
       setRecoveryCheckpoint(null);
@@ -3537,11 +3567,15 @@ export function App() {
         <ImportAnalyzeScreen
           activeSchedule={activeSchedule}
           assets={visiblePlaylist}
+          inputProfile={inputProfile}
+          onInputProfileChange={setInputProfile}
           currentCount={playlist.length}
           futureCount={futurePlaylist.length}
           onAddFiles={stableAddFilesToActiveSchedule}
           busy={mediaBusy}
           onClear={clearActiveImport}
+          onRemoveAsset={removePlaylistItem}
+          onReplaceAsset={desktopBridgeAvailable ? replaceClipEverywhere : undefined}
           onScheduleChange={setScheduleTab}
           onSelectDirectory={window.gruberDesktop
             ? () => addNativeDirectory(activeSchedule)
@@ -3594,6 +3628,9 @@ export function App() {
             futureCount={futurePlaylist.length}
             scheduleMetadata={activeSchedule === "current" ? currentScheduleMetadata : futureScheduleMetadata}
             onAddFiles={stableAddFilesToActiveSchedule}
+            onAddBrowserPaths={stableAddBrowserPaths}
+            inputProfile={inputProfile}
+            outputResolution={`${settings.width}×${settings.height}`}
             onAddNativeFiles={window.gruberDesktop ? stableAddNativeFilesToActiveSchedule : undefined}
             onAddScte35Marker={stableAddScte35Marker}
             onMoveItems={stableMovePlaylistItems}
@@ -3937,6 +3974,7 @@ function probeToAsset(probe: MediaProbe): MediaAsset {
     progress: 100,
     preview: mediaThumbnailUrl(probe.filePath),
     filePath: probe.filePath,
+    containerFormat: probe.containerFormat,
     colorSpace: probe.colorSpace,
     hasAudio: probe.hasAudio,
     audio: probe.hasAudio
@@ -4070,9 +4108,9 @@ function buildStartRequest(
     ? {
         protocol: "udp" as const,
         host: settings.udpHost,
-        port: settings.udpPort,
-        packetSize: settings.udpPacketSize,
-        ttl: settings.udpTtl,
+        port: integerOrDefault(settings.udpPort, 1234, 1, 65_535),
+        packetSize: integerOrDefault(settings.udpPacketSize, 1316, 188, 65_507),
+        ttl: integerOrDefault(settings.udpTtl, 1, 1, 255),
         localAddress: settings.udpLocalAddress,
         mpegTs,
       }
@@ -4080,9 +4118,9 @@ function buildStartRequest(
       ? {
           protocol: "srt" as const,
           host: settings.srtHost,
-          port: settings.srtPort,
+          port: integerOrDefault(settings.srtPort, 9000, 1, 65_535),
           mode: normalizeSrtMode(settings.srtMode),
-          latencyMs: settings.srtLatencyMs,
+          latencyMs: integerOrDefault(settings.srtLatencyMs, 120, 20, 8_000),
           passphrase: settings.srtPassphrase,
           streamId: settings.srtStreamId,
           mpegTs,
@@ -4125,19 +4163,22 @@ function buildStartRequest(
       hardware: settings.videoHardware,
       // Узел рендера VAAPI: у остальных ускорителей устройство выбирает драйвер.
       vaapiDevice: "/dev/dri/renderD128",
-      width: settings.width,
-      height: settings.height,
+      width: evenIntegerOrDefault(settings.width, 1920, 320, 7_680),
+      height: evenIntegerOrDefault(settings.height, 1080, 240, 4_320),
       frameRate: Number.parseFloat(settings.frameRate) || 25,
       rateControl: settings.rateControl.toLowerCase() === "cbr"
         ? "cbr"
         : settings.rateControl.toLowerCase() === "crf"
           ? "crf"
           : "vbr",
-      targetBitrateKbps: Math.round(settings.targetBitrate * 1_000),
-      maxBitrateKbps: Math.round(settings.maxBitrate * 1_000),
-      bufferSizeKbps: settings.bufferSize,
-      crf: settings.crf,
-      preset: normalizePreset(settings.preset),
+      targetBitrateKbps: integerOrDefault(settings.targetBitrate * 1_000, 8_000, 250, 200_000),
+      maxBitrateKbps: Math.max(
+        integerOrDefault(settings.targetBitrate * 1_000, 8_000, 250, 200_000),
+        integerOrDefault(settings.maxBitrate * 1_000, 10_000, 250, 250_000),
+      ),
+      bufferSizeKbps: integerOrDefault(settings.bufferSize, 16_000, 250, 500_000),
+      crf: Math.min(51, Math.max(0, Math.round(Number.isFinite(settings.crf) ? settings.crf : 23))),
+      preset: presetFromSlider(settings.preset),
       profile: settings.profile,
       level: settings.level,
       deinterlace: settings.deinterlace,
@@ -4148,13 +4189,13 @@ function buildStartRequest(
     },
     audio: {
       codec: audioCodecFromLabel(settings.audioCodec),
-      sampleRate: Number.parseInt(settings.sampleRate, 10) || 48_000,
+      sampleRate: integerOrDefault(Number.parseInt(settings.sampleRate, 10), 48_000, 8_000, 192_000),
       channels: settings.channels === "Mono"
         ? 1
         : settings.channels === "5.1"
           ? 6
           : 2,
-      bitrateKbps: settings.audioBitrate,
+      bitrateKbps: integerOrDefault(settings.audioBitrate, 192, 32, 640),
       loudnessNormalization: {
         enabled: settings.loudnessNormalizationEnabled,
         targetLufs: settings.loudnessTargetLufs,
@@ -4496,6 +4537,16 @@ function integerOrDefault(
   return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
 
+function evenIntegerOrDefault(
+  value: number,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const clamped = integerOrDefault(value, fallback, minimum, maximum);
+  return clamped % 2 === 0 ? clamped : clamped - 1;
+}
+
 function normalizeFieldOrder(
   value: string,
 ): StartPlayoutRequest["video"]["fieldOrder"] {
@@ -4528,16 +4579,6 @@ function normalizeScte35UpidType(
   if (value === "URI") return "uri";
   if (value === "None") return "none";
   return "ad-id";
-}
-
-function normalizePreset(value: number): StartPlayoutRequest["video"]["preset"] {
-  if (value < 12) return "ultrafast";
-  if (value < 24) return "veryfast";
-  if (value < 40) return "fast";
-  if (value < 58) return "medium";
-  if (value < 76) return "slow";
-  if (value < 90) return "slower";
-  return "veryslow";
 }
 
 function normalizeSrtMode(value: string): "caller" | "listener" | "rendezvous" {

@@ -12,6 +12,8 @@
   },
   "include": [
     "src/default-broadcast-settings.ts",
+    "src/input-profile.ts",
+    "src/input-profile.test.ts",
     "src/clip-duration.ts",
     "src/clip-duration.test.ts",
     "src/clip-split.ts",

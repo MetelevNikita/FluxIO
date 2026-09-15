@@ -1,11 +1,16 @@
-import { CalendarClock, Check, ChevronRight, LoaderCircle, Package, Plus, TriangleAlert } from "lucide-react";
-import { useRef, useState } from "react";
+import { CalendarClock, Check, ChevronRight, LoaderCircle, Package, Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { inputProfileMismatch, type InputProfile } from "../input-profile";
 import type { MediaAsset, ScheduleSlot } from "../types";
 import { useI18n } from "../i18n";
 
 interface ImportAnalyzeScreenProps {
   activeSchedule: ScheduleSlot;
   assets: MediaAsset[];
+  inputProfile: InputProfile | null;
+  onInputProfileChange: (profile: InputProfile) => void;
+  onRemoveAsset: (assetId: string) => void;
+  onReplaceAsset?: (assetId: string) => Promise<void>;
   busy: boolean;
   currentCount: number;
   futureCount: number;
@@ -22,6 +27,10 @@ interface ImportAnalyzeScreenProps {
 export function ImportAnalyzeScreen({
   activeSchedule,
   assets,
+  inputProfile,
+  onInputProfileChange,
+  onRemoveAsset,
+  onReplaceAsset,
   busy,
   currentCount,
   futureCount,
@@ -37,6 +46,16 @@ export function ImportAnalyzeScreen({
   const { tr } = useI18n();
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [draft, setDraft] = useState<InputProfile>(() => inputProfile ?? {
+    container: "mp4", codec: "h264", width: 1920, height: 1080,
+  });
+  useEffect(() => {
+    if (inputProfile) setDraft(inputProfile);
+  }, [inputProfile]);
+  const mismatchCount = useMemo(
+    () => assets.filter((asset) => inputProfileMismatch(asset, inputProfile).length > 0).length,
+    [assets, inputProfile],
+  );
   const totalDuration = assets.reduce(
     (total, asset) => total + asset.durationSeconds,
     0,
@@ -56,6 +75,27 @@ export function ImportAnalyzeScreen({
 
   return (
     <main className="import-screen screen-body">
+      <div className="input-profile-card">
+        <strong>{tr("Профиль входного видео", "Input video profile")}</strong>
+        <label>{tr("Контейнер", "Container")}
+          <input onChange={(event) => setDraft({ ...draft, container: event.target.value })} value={draft.container} placeholder="mp4" />
+        </label>
+        <label>{tr("Кодек", "Codec")}
+          <input onChange={(event) => setDraft({ ...draft, codec: event.target.value })} value={draft.codec} placeholder="h264" />
+        </label>
+        <label>{tr("Ширина", "Width")}
+          <input min={1} onChange={(event) => setDraft({ ...draft, width: Number(event.target.value) })} type="number" value={draft.width || ""} />
+        </label>
+        <label>{tr("Высота", "Height")}
+          <input min={1} onChange={(event) => setDraft({ ...draft, height: Number(event.target.value) })} type="number" value={draft.height || ""} />
+        </label>
+        <button disabled={!draft.container.trim() || !draft.codec.trim() || !Number.isInteger(draft.width) || draft.width < 1 || !Number.isInteger(draft.height) || draft.height < 1}
+          onClick={() => onInputProfileChange({ ...draft, container: draft.container.trim().replace(/^\./, "").toLowerCase(), codec: draft.codec.trim().toLowerCase() })}
+          type="button">{inputProfile ? tr("Обновить профиль", "Update profile") : tr("Создать профиль", "Create profile")}</button>
+        <span>{inputProfile
+          ? `${inputProfile.container.toUpperCase()} · ${inputProfile.codec.toUpperCase()} · ${inputProfile.width}×${inputProfile.height} · ${tr("несовпадений", "mismatches")}: ${mismatchCount}`
+          : tr("Создайте профиль перед импортом видео", "Create a profile before importing video")}</span>
+      </div>
       <div className="schedule-tabs import-schedule-tabs">
         <button
           className={activeSchedule === "current" ? "active" : ""}
@@ -83,7 +123,7 @@ export function ImportAnalyzeScreen({
         <div className="library-heading-actions">
           <button
             className="secondary-button schedule-import-button"
-            disabled={busy || !onSelectSchedule}
+            disabled={busy || !onSelectSchedule || !inputProfile}
             onClick={() => void onSelectSchedule?.(activeSchedule)}
             title={onSelectSchedule ? undefined : tr("Импорт расписания доступен в Electron", "Schedule import is available in Electron")}
             type="button"
@@ -93,7 +133,7 @@ export function ImportAnalyzeScreen({
           </button>
           <button
             className="secondary-button"
-            disabled={busy}
+            disabled={busy || !inputProfile}
             onClick={() => {
               if (onSelectFiles) {
                 void onSelectFiles();
@@ -123,7 +163,7 @@ export function ImportAnalyzeScreen({
 
       <button
         className={`drop-zone ${dragActive ? "drag-active" : ""}`}
-        disabled={busy}
+        disabled={busy || !inputProfile}
         onClick={() => {
           if (onSelectDirectory) {
             void onSelectDirectory();
@@ -179,11 +219,13 @@ export function ImportAnalyzeScreen({
                 <th>{tr("Битрейт", "Bitrate")}</th>
                 <th>{tr("Размер", "Size")}</th>
                 <th>{tr("Статус", "Status")}</th>
+                <th>{tr("Действия", "Actions")}</th>
               </tr>
             </thead>
             <tbody>
-              {assets.map((asset) => (
-                <tr key={asset.id}>
+              {assets.map((asset) => {
+                const mismatch = inputProfileMismatch(asset, inputProfile);
+                return <tr className={mismatch.length ? "input-profile-mismatch" : undefined} key={asset.id} title={mismatch.join("; ")}>
                   <td>
                     <img alt="" className="asset-thumbnail" src={asset.preview} />
                   </td>
@@ -198,13 +240,17 @@ export function ImportAnalyzeScreen({
                   <td className="mono">{asset.bitrate}</td>
                   <td className="mono">{asset.size}</td>
                   <td className="status-cell">
-                    <AssetStatus status={asset.status} />
+                    {mismatch.length ? <span className="asset-status error"><TriangleAlert size={11} /> {tr("Не соответствует", "Mismatch")}</span> : <AssetStatus status={asset.status} />}
                   </td>
-                </tr>
-              ))}
+                  <td className="asset-actions">
+                    {onReplaceAsset ? <button aria-label={`${tr("Заменить", "Replace")} ${asset.name}`} onClick={() => void onReplaceAsset(asset.id)} title={tr("Заменить файл", "Replace file")} type="button"><RefreshCw size={14} /></button> : null}
+                    <button aria-label={`${tr("Удалить", "Remove")} ${asset.name}`} onClick={() => onRemoveAsset(asset.id)} title={tr("Удалить строку", "Remove row")} type="button"><Trash2 size={14} /></button>
+                  </td>
+                </tr>;
+              })}
               {assets.length === 0 ? (
                 <tr>
-                  <td className="empty-library" colSpan={9}>
+                  <td className="empty-library" colSpan={10}>
                     {activeSchedule === "future"
                       ? tr("Будущий импорт пуст. Загрузите следующее расписание или добавьте файлы.", "Future import is empty. Load the next schedule or add standalone files.")
                       : tr("Текущий импорт пуст. Перетащите папку или добавьте файлы.", "Current import is empty. Drop a folder or add standalone files.")}

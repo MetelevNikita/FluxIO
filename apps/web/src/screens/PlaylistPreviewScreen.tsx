@@ -61,6 +61,9 @@ import {
 } from "../broadcast-effects";
 import { airDurationSeconds } from "../clip-duration";
 import { ColourBars } from "../components/ColourBars";
+import { PlayoutPreviewToggle } from "../components/PlayoutPreviewToggle";
+import { MediaFileBrowser, mediaBrowserDragType } from "../components/MediaFileBrowser";
+import { inputProfileMismatch, type InputProfile } from "../input-profile";
 import { ClipSplitDialog } from "../components/ClipSplitDialog";
 import { minimumPartSeconds, type SplitDraft } from "../clip-split";
 import { attachHlsVideo } from "../hls-video";
@@ -140,6 +143,9 @@ interface PlaylistPreviewScreenProps {
   initialPreviewTimeSeconds: number | null;
   /** `insertBeforeId` — строка, перед которой встают новые ролики; `null` — в конец. */
   onAddFiles: (files: File[], insertBeforeId?: string | null) => void;
+  onAddBrowserPaths: (paths: string[], slot: ScheduleSlot, insertBeforeId?: string | null) => void;
+  inputProfile: InputProfile | null;
+  outputResolution: string;
   onAddNativeFiles?: (insertBeforeId?: string | null) => Promise<void>;
   onAddScte35Marker: (assetId: string, marker: Scte35Marker) => void;
   onMoveItems: (sourceIds: string[], targetId: string) => void;
@@ -243,6 +249,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
   recoveryAssetId,
   initialPreviewTimeSeconds,
   onAddFiles,
+  onAddBrowserPaths,
+  inputProfile,
+  outputResolution,
   onAddNativeFiles,
   onAddScte35Marker,
   onMoveItems,
@@ -304,6 +313,8 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
    * что уходит в линию, а не что лежит в выбранной строке.
    */
   const [monitorSource, setMonitorSource] = useState<"clip" | "air">("air");
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const [showScaleInfo, setShowScaleInfo] = useState(false);
   /** Ролик, для которого открыт вопрос «с какого места запускать». */
   const [takeTarget, setTakeTarget] = useState<MediaAsset | null>(null);
   /** Строка поиска по расписанию: список не фильтруется, головка прыгает. */
@@ -1229,11 +1240,21 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           <button
             className={activeSchedule === "current" ? "active" : ""}
             onClick={() => onScheduleChange("current")}
+            onDragOver={(event) => { if (event.dataTransfer.types.includes(mediaBrowserDragType)) event.preventDefault(); }}
+            onDrop={(event) => {
+              const filePath = event.dataTransfer.getData(mediaBrowserDragType);
+              if (filePath) { event.preventDefault(); onAddBrowserPaths([filePath], "current"); }
+            }}
             type="button"
           >Current <span>{currentCount}</span></button>
           <button
             className={activeSchedule === "future" ? "active" : ""}
             onClick={() => onScheduleChange("future")}
+            onDragOver={(event) => { if (event.dataTransfer.types.includes(mediaBrowserDragType)) event.preventDefault(); }}
+            onDrop={(event) => {
+              const filePath = event.dataTransfer.getData(mediaBrowserDragType);
+              if (filePath) { event.preventDefault(); onAddBrowserPaths([filePath], "future"); }
+            }}
             type="button"
           >Future <span>{futureCount}</span></button>
         </div>
@@ -1567,12 +1588,16 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
           <span>Clip name</span>
           <span>Codec</span>
         </div>
+        <button className="playlist-autoscale-button" onClick={() => setShowScaleInfo((shown) => !shown)} title="Показать правила масштабирования" type="button">
+          Автоскейл → {outputResolution} ✓
+        </button>
+        {showScaleInfo ? <small className="playlist-autoscale-info">В эфире каждый источник уже подгоняется к {outputResolution} с сохранением пропорций. Недостающее пространство заполняется полями; файлы на диске не меняются.</small> : null}
         <div
           className={`playlist-rows ${fileDropActive ? "file-drop" : ""}`}
           onDragEnter={(event) => {
             // Перетаскивание строк внутри списка сюда не относится: у него нет
             // файлов, и подсветка «бросьте файлы» на нём только мешает.
-            if (event.dataTransfer.types.includes("Files")) setFileDropActive(true);
+            if (event.dataTransfer.types.includes("Files") || event.dataTransfer.types.includes(mediaBrowserDragType)) setFileDropActive(true);
           }}
           onDragLeave={(event) => {
             if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
@@ -1580,11 +1605,18 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             setDropBeforeId(null);
           }}
           onDragOver={(event) => {
-            if (!event.dataTransfer.types.includes("Files")) return;
+            if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes(mediaBrowserDragType)) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }}
           onDrop={(event) => {
+            const browserPath = event.dataTransfer.getData(mediaBrowserDragType);
+            if (browserPath) {
+              event.preventDefault();
+              onAddBrowserPaths([browserPath], activeSchedule);
+              setFileDropActive(false);
+              return;
+            }
             if (!event.dataTransfer.types.includes("Files")) return;
             event.preventDefault();
             setFileDropActive(false);
@@ -1657,8 +1689,9 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
               ) : null}
             {dayFolded ? null : (
             <div
-              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} ${missing ? "missing-file-row" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"} ${asset.splitGroupId ? "split-part" : ""} ${asset.rowKind === "comment" ? "comment-row" : ""}`}
+              className={`playlist-row ${collapsed ? "collapsed" : "expanded"} ${fxDensityClass(asset)} ${selectedAsset.id === asset.id ? "selected" : ""} ${selectedIds.has(asset.id) ? "bulk-selected" : ""} ${scheduleStartMarker?.assetId === asset.id ? "schedule-start-row" : ""} ${onAir ? "on-air-row" : ""} ${stoppedHere ? "recovery-stop-row" : ""} ${missing ? "missing-file-row" : ""} ${inputProfileMismatch(asset, inputProfile).length ? "input-profile-mismatch" : ""} status-${asset.status} schedule-type-${asset.scheduleType ?? "manual"} ${asset.splitGroupId ? "split-part" : ""} ${asset.rowKind === "comment" ? "comment-row" : ""}`}
               data-asset-id={asset.id}
+              title={inputProfileMismatch(asset, inputProfile).join("; ")}
               draggable
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -1675,7 +1708,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 // Файл, брошенный на строку, встаёт **перед** ней, если
                 // курсор в верхней половине, и после — если в нижней: так
                 // ведёт себя любой список, куда что-то вставляют.
-                if (!event.dataTransfer.types.includes("Files")) return;
+                if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes(mediaBrowserDragType)) return;
                 event.dataTransfer.dropEffect = "copy";
                 const box = event.currentTarget.getBoundingClientRect();
                 const below = event.clientY > box.top + box.height / 2;
@@ -1693,6 +1726,17 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 setDraggingIds(ids);
               }}
               onDrop={(event) => {
+                const browserPath = event.dataTransfer.getData(mediaBrowserDragType);
+                if (browserPath) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const box = event.currentTarget.getBoundingClientRect();
+                  const below = event.clientY > box.top + box.height / 2;
+                  onAddBrowserPaths([browserPath], activeSchedule, below ? timelineEntries[index + 1]?.asset.id ?? null : asset.id);
+                  setFileDropActive(false);
+                  setDropBeforeId(null);
+                  return;
+                }
                 // Файлы из проводника разрезают расписание в этом месте;
                 // перетаскивание строк внутри списка осталось прежним.
                 if (event.dataTransfer.types.includes("Files")) {
@@ -2119,20 +2163,25 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             Broadcast, — второй реализации предпросмотра эфира быть не должно,
             иначе оператор верил бы той, которую увидел первой. */}
         <div className="preview-source-switch" role="group" aria-label="Preview source">
+          {window.gruberDesktop ? <button className={fileBrowserOpen ? "active" : ""} onClick={() => {
+            if (!fileBrowserOpen) void pausePreview();
+            setFileBrowserOpen((open) => !open);
+          }} type="button"><FolderOpen size={12} /> Файлы</button> : null}
           <button
-            className={monitorSource === "clip" ? "active" : ""}
-            onClick={() => setMonitorSource("clip")}
+            className={monitorSource === "clip" && !fileBrowserOpen ? "active" : ""}
+            onClick={() => { setFileBrowserOpen(false); setMonitorSource("clip"); }}
             type="button"
           >
             <Film size={12} /> Ролик расписания
           </button>
           <button
-            className={`${monitorSource === "air" ? "active" : ""} ${playoutActive ? "live" : ""}`}
+            className={`${monitorSource === "air" && !fileBrowserOpen ? "active" : ""} ${playoutActive ? "live" : ""}`}
             onClick={() => {
               // Локальный предпросмотр гасим: его считает тот же FFmpeg, что
               // ведёт эфир, и оставленная за кадром сессия отбирала бы у него
               // ресурс машины впустую.
               void pausePreview();
+              setFileBrowserOpen(false);
               setMonitorSource("air");
             }}
             type="button"
@@ -2140,17 +2189,20 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
             <RadioTower size={12} /> Смотреть эфир
           </button>
           <span className="preview-source-hint">
-            {monitorSource === "air"
+            {fileBrowserOpen ? "Выберите файл или перетащите его в Current либо Future" : monitorSource === "air"
               ? playoutActive
                 ? "Выход после TSDuck — то же, что уходит на головную станцию"
                 : "Эфир не запущен: в мониторе цветные полосы"
               : "Локальный предпросмотр выбранного ролика с графикой"}
           </span>
+          {monitorSource === "air" && !fileBrowserOpen ? <PlayoutPreviewToggle /> : null}
         </div>
 
         <div className="preview-stage">
         <div className="program-preview" ref={previewContainer}>
-          {monitorSource === "air" ? (
+          {fileBrowserOpen ? (
+            <MediaFileBrowser onAdd={onAddBrowserPaths} />
+          ) : monitorSource === "air" ? (
             <AirMonitor />
           ) : previewUrl ? (
             <video
@@ -2171,7 +2223,7 @@ export const PlaylistPreviewScreen = memo(function PlaylistPreviewScreen({
                 : previewSource}
             />
           )}
-          {monitorSource === "clip" ? (
+          {monitorSource === "clip" && !fileBrowserOpen ? (
             <>
               <div className="preview-hud preview-hud-top">
                 <span className="decoding-status">
@@ -3044,7 +3096,7 @@ function AirMonitor() {
     });
   }, [source]);
 
-  if (!source) return <ColourBars title="Эфир не запущен" />;
+  if (!source) return <ColourBars title={active ? "Эфирное превью выключено" : "Эфир не запущен"} />;
   return (
     <>
       <video autoPlay muted playsInline ref={videoRef} />

@@ -44,13 +44,19 @@ import {
   audioCodecOptionsFor,
   audioCodecFromLabel,
   audioCodecLabels,
+  hardwareOptionsFor,
+  nearestVideoProfile,
   outputCapabilitiesOf,
+  presetFromSlider,
   settingsForOutputProtocol,
+  softwareVideoCodecOptionsFor,
   videoCodecFromLabel,
   videoCodecLabels,
   videoCodecOptionsFor,
+  videoProfileOptions,
 } from "../output-capabilities";
 import { ColourBars } from "../components/ColourBars";
+import { PlayoutPreviewToggle } from "../components/PlayoutPreviewToggle";
 import type { BroadcastSettings } from "../types";
 
 interface BroadcastSettingsScreenProps {
@@ -135,7 +141,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
   );
   const programProtocol = outputCapabilities.mpegTs ? "SRT" : settings.protocol;
   const programVideoCodecs = codecOptions(capabilities, programProtocol);
-  const programAudioCodecs = audioCodecOptionsFor(programProtocol);
+  const programAudioCodecs = audioCodecOptionsFor(programProtocol, capabilities);
+  const programHardwareOptions = hardwareOptionsFor(
+    capabilities,
+    settings.videoCodec,
+    settings.fieldOrder,
+  );
+  const programProfiles = videoProfileOptions(settings.videoCodec, settings.videoHardware);
   const scte35Editable = settings.scte35PlanningEnabled && outputCapabilities.scte35;
   const incompatibleScte35Output =
     settings.scte35PlanningEnabled && !outputCapabilities.scte35;
@@ -296,6 +308,11 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             onChange={(value) => onSettingsChange({
               ...settings,
               videoCodec: value,
+              videoHardware: hardwareOptionsFor(capabilities, value, settings.fieldOrder)
+                .some((option) => option.value === settings.videoHardware)
+                ? settings.videoHardware
+                : "off",
+              profile: nearestVideoProfile(value, settings.videoHardware, settings.profile),
               bFrames: value === "MPEG-2 Video"
                 ? Math.min(2, settings.bFrames)
                 : settings.bFrames,
@@ -308,20 +325,27 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               тому, что реально есть в сборке FFmpeg на этой машине. */}
           <SelectField
             label={tr("Кодирование", "Encoding")}
-            onChange={(value) => onSettingsChange({
-              ...settings,
-              videoHardware: (hardwareOptions(capabilities)
-                .find((option) => option.label === value)?.value ?? "off") as BroadcastSettings["videoHardware"],
-            })}
-            options={hardwareOptions(capabilities).map((option) => option.label)}
-            value={hardwareOptions(capabilities)
+            onChange={(value) => {
+              const videoHardware = programHardwareOptions
+                .find((option) => option.label === value)?.value ?? "off";
+              onSettingsChange({
+                ...settings,
+                videoHardware,
+                rateControl: videoHardware === "off" || settings.rateControl !== "CRF"
+                  ? settings.rateControl
+                  : "VBR",
+                profile: nearestVideoProfile(settings.videoCodec, videoHardware, settings.profile),
+              });
+            }}
+            options={programHardwareOptions.map((option) => option.label)}
+            value={programHardwareOptions
               .find((option) => option.value === settings.videoHardware)?.label ?? "Программное"}
           />
           <SelectField
             label={tr("Профиль", "Profile")}
             onChange={(value) => update("profile", value)}
-            options={["Main Profile", "High Profile", "Main 10"]}
-            value={settings.profile}
+            options={programProfiles}
+            value={programProfiles.includes(settings.profile) ? settings.profile : programProfiles[0]!}
           />
           <SelectField
             label={tr("Уровень", "Level")}
@@ -347,6 +371,8 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <div className="dimension-row">
             <NumberField
               label={tr("Ширина", "Width")}
+              max={7_680}
+              min={320}
               onChange={(value) => {
                 onSettingsChange({
                   ...settings,
@@ -370,6 +396,8 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             </button>
             <NumberField
               label={tr("Высота", "Height")}
+              max={4_320}
+              min={240}
               onChange={(value) => update("height", value)}
               value={settings.height}
             />
@@ -389,7 +417,14 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           />
           <SelectField
             label={tr("Порядок полей", "Field Order")}
-            onChange={(value) => update("fieldOrder", value)}
+            onChange={(value) => onSettingsChange({
+              ...settings,
+              fieldOrder: value,
+              videoHardware: hardwareOptionsFor(capabilities, settings.videoCodec, value)
+                .some((option) => option.value === settings.videoHardware)
+                ? settings.videoHardware
+                : "off",
+            })}
             options={[
               { label: tr("Прогрессивная", "Progressive"), value: "progressive" },
               { label: tr("Верхнее поле первым (TFF)", "Upper field first (TFF)"), value: "upper" },
@@ -410,12 +445,16 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
               label={tr("Длина GOP (кадры)", "GOP length (frames)")}
               max={600}
               min={1}
-              onChange={(value) => update("gopSize", value)}
+              onChange={(value) => onSettingsChange({
+                ...settings,
+                gopSize: value,
+                bFrames: Math.min(settings.bFrames, Math.max(0, value - 1)),
+              })}
               value={settings.gopSize}
             />
             <NumberField
               label={tr("Последовательные B-кадры", "Consecutive B-frames")}
-              max={settings.videoCodec === "MPEG-2 Video" ? 2 : 16}
+              max={Math.min(settings.videoCodec === "MPEG-2 Video" ? 2 : 16, settings.gopSize - 1)}
               min={0}
               onChange={(value) => update("bFrames", value)}
               value={settings.bFrames}
@@ -556,14 +595,18 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <SelectField
             label={tr("Режим управления", "Rate Control Mode")}
             onChange={(value) => update("rateControl", value)}
-            options={["CBR", "VBR", "CRF"]}
+            options={settings.videoHardware === "off" ? ["CBR", "VBR", "CRF"] : ["CBR", "VBR"]}
             value={settings.rateControl}
           />
           <RangeField
             label={tr("Целевой битрейт", "Target Bitrate")}
             max={50}
             min={1}
-            onChange={(value) => update("targetBitrate", value)}
+            onChange={(value) => onSettingsChange({
+              ...settings,
+              targetBitrate: value,
+              maxBitrate: Math.max(value, settings.maxBitrate),
+            })}
             step={0.5}
             suffix={`${settings.targetBitrate.toFixed(1)} Mbps`}
             value={settings.targetBitrate}
@@ -576,7 +619,8 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <NumberField
               disabled={settings.rateControl !== "VBR"}
               label={tr("Макс. битрейт (Мбит/с)", "Max Bitrate (Mbps)")}
-              onChange={(value) => update("maxBitrate", value)}
+              min={settings.targetBitrate}
+              onChange={(value) => update("maxBitrate", Math.max(settings.targetBitrate, value))}
               step={0.5}
               value={settings.maxBitrate}
             />
@@ -587,6 +631,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             />
           </div>
           <RangeField
+            disabled={settings.rateControl !== "CRF"}
             label="CRF"
             max={51}
             min={0}
@@ -612,7 +657,13 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
             <SelectField
               disabled={programAudioCodecs.length === 1}
               label={tr("Кодек", "Codec")}
-              onChange={(value) => update("audioCodec", value)}
+              onChange={(value) => onSettingsChange({
+                ...settings,
+                audioCodec: value,
+                channels: value === "MP2" && settings.channels === "5.1"
+                  ? "Stereo (L/R)"
+                  : settings.channels,
+              })}
               options={programAudioCodecs}
               value={settings.audioCodec}
             />
@@ -626,7 +677,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
           <SelectField
             label={tr("Каналы", "Channels")}
             onChange={(value) => update("channels", value)}
-            options={["Mono", "Stereo (L/R)", "5.1"]}
+            options={settings.audioCodec === "MP2" ? ["Mono", "Stereo (L/R)"] : ["Mono", "Stereo (L/R)", "5.1"]}
             value={settings.channels}
           />
           <RangeField
@@ -713,6 +764,7 @@ export const BroadcastSettingsScreen = memo(function BroadcastSettingsScreen({
 
         <AdditionalOutputs
           active={active}
+          capabilities={capabilities}
           networkInterfaces={networkInterfaces}
           onChange={onSettingsChange}
           settings={settings}
@@ -886,6 +938,8 @@ function UdpFields({
         <NumberField
           disabled={disabled}
           label="Port"
+          max={65_535}
+          min={1}
           onChange={(value) => update("udpPort", value)}
           value={settings.udpPort}
         />
@@ -1038,6 +1092,8 @@ function SrtFields({
         <NumberField
           disabled={disabled}
           label="Port"
+          max={65_535}
+          min={1}
           onChange={(value) => update("srtPort", value)}
           value={settings.srtPort}
         />
@@ -1053,6 +1109,8 @@ function SrtFields({
         <NumberField
           disabled={disabled}
           label="Latency (ms)"
+          max={8_000}
+          min={20}
           onChange={(value) => update("srtLatencyMs", value)}
           value={settings.srtLatencyMs}
         />
@@ -1075,11 +1133,13 @@ function SrtFields({
 
 function AdditionalOutputs({
   active,
+  capabilities,
   networkInterfaces,
   onChange,
   settings,
 }: {
   active: boolean;
+  capabilities: FfmpegCapabilities | null;
   networkInterfaces: NetworkInterfaceInfo[];
   onChange: (settings: BroadcastSettings) => void;
   settings: BroadcastSettings;
@@ -1147,6 +1207,7 @@ function AdditionalOutputs({
       ) : settings.outputStreams.map((stream) => (
         <AdditionalOutputEditor
           active={active}
+          capabilities={capabilities}
           key={stream.id}
           networkInterfaces={networkInterfaces}
           onChange={replace}
@@ -1161,6 +1222,7 @@ function AdditionalOutputs({
 
 function AdditionalOutputEditor({
   active,
+  capabilities,
   networkInterfaces,
   onChange,
   onRemove,
@@ -1168,6 +1230,7 @@ function AdditionalOutputEditor({
   stream,
 }: {
   active: boolean;
+  capabilities: FfmpegCapabilities | null;
   networkInterfaces: NetworkInterfaceInfo[];
   onChange: (stream: PlayoutStream) => void;
   onRemove: () => void;
@@ -1250,6 +1313,7 @@ function AdditionalOutputEditor({
       />
       {stream.transcode ? (
         <AdditionalTranscodeFields
+          capabilities={capabilities}
           disabled={active}
           onChange={(transcode) => onChange({ ...stream, transcode })}
           protocol={stream.endpoint.protocol}
@@ -1350,23 +1414,27 @@ function AdditionalMpegTsFields({
 type StreamTranscode = NonNullable<PlayoutStream["transcode"]>;
 
 function AdditionalTranscodeFields({
+  capabilities,
   disabled,
   onChange,
   protocol,
   transcode,
 }: {
+  capabilities: FfmpegCapabilities | null;
   disabled: boolean;
   onChange: (transcode: StreamTranscode) => void;
   protocol: PlayoutEndpoint["protocol"];
   transcode: StreamTranscode;
 }) {
   const protocolLabel = protocol.toUpperCase();
+  const videoOptions = softwareVideoCodecOptionsFor(protocolLabel, capabilities);
+  const audioOptions = audioCodecOptionsFor(protocolLabel, capabilities);
   return (
     <div className="stream-transcode-fields">
       <div className="three-column-fields">
-        <SelectField disabled={disabled} label="Video codec" onChange={(value) => onChange({ ...transcode, video: { ...transcode.video, codec: videoCodecFromLabel(value) } })} options={videoCodecOptionsFor(protocolLabel)} value={videoCodecLabels[transcode.video.codec]} />
-        <NumberField disabled={disabled} label="Width" min={16} max={16_384} onChange={(width) => onChange({ ...transcode, video: { ...transcode.video, width } })} value={transcode.video.width} />
-        <NumberField disabled={disabled} label="Height" min={16} max={16_384} onChange={(height) => onChange({ ...transcode, video: { ...transcode.video, height } })} value={transcode.video.height} />
+        <SelectField disabled={disabled} label="Video codec" onChange={(value) => onChange({ ...transcode, video: { ...transcode.video, codec: videoCodecFromLabel(value) } })} options={videoOptions} value={videoOptions.includes(videoCodecLabels[transcode.video.codec]) ? videoCodecLabels[transcode.video.codec] : videoOptions[0]!} />
+        <NumberField disabled={disabled} label="Width" min={320} max={7_680} onChange={(width) => onChange({ ...transcode, video: { ...transcode.video, width } })} value={transcode.video.width} />
+        <NumberField disabled={disabled} label="Height" min={240} max={4_320} onChange={(height) => onChange({ ...transcode, video: { ...transcode.video, height } })} value={transcode.video.height} />
       </div>
       <div className="three-column-fields">
         <NumberField disabled={disabled} label="Video bitrate (kbps)" min={1} onChange={(targetBitrateKbps) => onChange({ ...transcode, video: { ...transcode.video, targetBitrateKbps, maxBitrateKbps: Math.max(targetBitrateKbps, transcode.video.maxBitrateKbps) } })} value={transcode.video.targetBitrateKbps} />
@@ -1374,9 +1442,12 @@ function AdditionalTranscodeFields({
         <SelectField disabled={disabled} label="Field order" onChange={(fieldOrder) => onChange({ ...transcode, video: { ...transcode.video, fieldOrder: fieldOrder as typeof transcode.video.fieldOrder } })} options={["progressive", "upper", "lower"]} value={transcode.video.fieldOrder} />
       </div>
       <div className="three-column-fields">
-        <SelectField disabled={disabled} label="Audio codec" onChange={(value) => onChange({ ...transcode, audio: { ...transcode.audio, codec: audioCodecFromLabel(value) } })} options={audioCodecOptionsFor(protocolLabel)} value={audioCodecLabels[transcode.audio.codec]} />
+        <SelectField disabled={disabled} label="Audio codec" onChange={(value) => {
+          const codec = audioCodecFromLabel(value);
+          onChange({ ...transcode, audio: { ...transcode.audio, codec, channels: codec === "mp2" && transcode.audio.channels === 6 ? 2 : transcode.audio.channels } });
+        }} options={audioOptions} value={audioOptions.includes(audioCodecLabels[transcode.audio.codec]) ? audioCodecLabels[transcode.audio.codec] : audioOptions[0]!} />
         <NumberField disabled={disabled} label="Audio bitrate (kbps)" min={32} max={1_536} onChange={(bitrateKbps) => onChange({ ...transcode, audio: { ...transcode.audio, bitrateKbps } })} value={transcode.audio.bitrateKbps} />
-        <SelectField disabled={disabled} label="Channels" onChange={(channels) => onChange({ ...transcode, audio: { ...transcode.audio, channels: Number(channels) as 1 | 2 | 6 } })} options={[{ label: "Mono", value: "1" }, { label: "Stereo", value: "2" }, { label: "5.1", value: "6" }]} value={String(transcode.audio.channels)} />
+        <SelectField disabled={disabled} label="Channels" onChange={(channels) => onChange({ ...transcode, audio: { ...transcode.audio, channels: Number(channels) as 1 | 2 | 6 } })} options={transcode.audio.codec === "mp2" ? [{ label: "Mono", value: "1" }, { label: "Stereo", value: "2" }] : [{ label: "Mono", value: "1" }, { label: "Stereo", value: "2" }, { label: "5.1", value: "6" }]} value={String(transcode.audio.channels)} />
       </div>
       <p className="transport-setting-note">Software FFmpeg · CPU and memory appear per output in Encoding Monitor.</p>
     </div>
@@ -1455,7 +1526,7 @@ function additionalTranscode(
       maxBitrateKbps: Math.round(settings.maxBitrate * 1_000),
       bufferSizeKbps: settings.bufferSize,
       crf: settings.crf,
-      preset: settings.preset < 12 ? "ultrafast" : settings.preset < 24 ? "veryfast" : settings.preset < 40 ? "fast" : settings.preset < 58 ? "medium" : settings.preset < 76 ? "slow" : settings.preset < 90 ? "slower" : "veryslow",
+      preset: presetFromSlider(settings.preset),
       profile: settings.profile,
       level: settings.level,
       deinterlace: settings.deinterlace,
@@ -1563,6 +1634,7 @@ function EncodingMonitor() {
       </div>
 
       <div className="monitor-preview-card">
+        <PlayoutPreviewToggle />
         <div className="monitor-preview-layout">
         <div className="monitor-preview">
           <LivePreview
@@ -1572,7 +1644,7 @@ function EncodingMonitor() {
           />
           <span className="decoding-status">
             <i /> {active
-              ? postTransportPreview ? "Post-TSDuck TS Monitor" : "Final Program Monitor"
+              ? !previewUrl ? "Preview Off" : postTransportPreview ? "Post-TSDuck TS Monitor" : "Final Program Monitor"
               : "Preview Idle"}
           </span>
           <span className="monitor-resolution">
@@ -1897,7 +1969,9 @@ function LivePreview({ active, source }: { active: boolean; source: string | nul
   // До старта и при эфире без расписания в мониторе стоят цветные полосы — то
   // же самое, что в этот момент уходит в линию.
   if (!active || !source) {
-    return <ColourBars title={tr("Эфир не запущен", "Playout is not running")} />;
+    return <ColourBars title={active
+      ? tr("Эфирное превью выключено", "Live preview is off")
+      : tr("Эфир не запущен", "Playout is not running")} />;
   }
   return (
     <>
@@ -2134,6 +2208,7 @@ function TextField({
 }
 
 function RangeField({
+  disabled = false,
   label,
   max,
   min,
@@ -2142,6 +2217,7 @@ function RangeField({
   suffix,
   value,
 }: {
+  disabled?: boolean;
   label: string;
   max: number;
   min: number;
@@ -2158,6 +2234,7 @@ function RangeField({
       </label>
       <input
         aria-label={label}
+        disabled={disabled}
         max={max}
         min={min}
         onChange={(event) => onChange(Number(event.target.value))}
@@ -2206,34 +2283,8 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function presetLabel(value: number): string {
-  if (value < 20) return "Medium";
-  if (value < 45) return "Slow";
-  if (value < 75) return "Slower";
-  return "Veryslow";
-}
-
-/**
- * Ускорители, которые реально есть в этой сборке FFmpeg.
- *
- * Показывать недоступные бессмысленно: оператор выберет, а откажет preflight
- * уже перед стартом. «Авто» остаётся всегда — он сам найдёт первый доступный.
- */
-function hardwareOptions(
-  capabilities: FfmpegCapabilities | null,
-): { value: string; label: string }[] {
-  const encoders = new Set(capabilities?.videoEncoders ?? []);
-  const present = (...names: string[]) => names.some((name) => encoders.has(name));
-  const options = [{ value: "off", label: "Программное" }];
-  if (!capabilities) return options;
-  if (present("h264_nvenc", "hevc_nvenc")) options.push({ value: "nvenc", label: "NVIDIA NVENC" });
-  if (present("h264_qsv", "hevc_qsv")) options.push({ value: "qsv", label: "Intel Quick Sync" });
-  if (present("h264_amf", "hevc_amf")) options.push({ value: "amf", label: "AMD AMF" });
-  if (present("h264_vaapi", "hevc_vaapi")) options.push({ value: "vaapi", label: "VAAPI" });
-  if (present("h264_videotoolbox", "hevc_videotoolbox")) {
-    options.push({ value: "videotoolbox", label: "Apple VideoToolbox" });
-  }
-  if (options.length > 1) options.splice(1, 0, { value: "auto", label: "Авто" });
-  return options;
+  const preset = presetFromSlider(value);
+  return preset[0]!.toUpperCase() + preset.slice(1);
 }
 
 /**

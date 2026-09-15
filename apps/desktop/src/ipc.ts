@@ -1,4 +1,6 @@
 import { ipcMain, shell } from "electron";
+import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
 
 //
 
@@ -22,6 +24,7 @@ import {
   SELECT_LOGO_CHANNEL,
   SELECT_MEDIA_DIRECTORY_CHANNEL,
   SELECT_MEDIA_FILES_CHANNEL,
+  BROWSE_MEDIA_CHANNEL,
   SELECT_SCHEDULE_FILE_CHANNEL,
   SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL,
   SELECT_AUDIO_TRACK_DIRECTORY_CHANNEL,
@@ -70,6 +73,37 @@ export function registerIpcHandlers(): void {
 //
 
 function registerMediaHandlers(): void {
+  ipcMain.handle(BROWSE_MEDIA_CHANNEL, async (_event, directoryPath: unknown) => {
+    if (directoryPath == null) {
+      if (process.platform !== "win32") {
+        return { directoryPath: null, entries: [{ name: "/", path: "/", directory: true }] };
+      }
+      const drives = await Promise.all("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map(async (letter) => {
+        const drive = `${letter}:\\`;
+        return stat(drive).then(() => ({ name: drive, path: drive, directory: true }), () => null);
+      }));
+      return { directoryPath: null, entries: drives.filter(Boolean) };
+    }
+    if (typeof directoryPath !== "string" || !path.isAbsolute(directoryPath)) {
+      throw new Error("An absolute directory path is required");
+    }
+    const entries = (await readdir(directoryPath, { withFileTypes: true }))
+      .filter((entry) => !entry.name.startsWith(".") && (
+        entry.isDirectory() || entry.isFile() && videoExtensions.includes(path.extname(entry.name).slice(1).toLowerCase())
+      ))
+      .map((entry) => ({
+        name: entry.name,
+        path: path.join(directoryPath, entry.name),
+        directory: entry.isDirectory(),
+      }))
+      .sort((left, right) => Number(right.directory) - Number(left.directory) || left.name.localeCompare(right.name));
+    return {
+      directoryPath,
+      parentPath: path.dirname(directoryPath) === directoryPath ? null : path.dirname(directoryPath),
+      entries: entries.slice(0, 2_000),
+      truncated: entries.length > 2_000,
+    };
+  });
   // Показать ролик в проводнике. Путь приходит из renderer, поэтому берём его
   // как строку и ничего по нему не открываем: `showItemInFolder` только
   // подсвечивает файл в файловом менеджере, запуска у него нет.

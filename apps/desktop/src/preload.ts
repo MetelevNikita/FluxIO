@@ -8,6 +8,7 @@ import type { DesktopChannel } from "./channels.js";
 const SELECT_LOGO_CHANNEL: DesktopChannel = "dialog:select-logo";
 const SELECT_MEDIA_DIRECTORY_CHANNEL: DesktopChannel = "dialog:select-media-directory";
 const SELECT_MEDIA_FILES_CHANNEL: DesktopChannel = "dialog:select-media-files";
+const BROWSE_MEDIA_CHANNEL: DesktopChannel = "media:browse";
 const SELECT_SCHEDULE_FILE_CHANNEL: DesktopChannel = "dialog:select-schedule-file";
 const SELECT_SCHEDULE_LOGO_DIRECTORY_CHANNEL: DesktopChannel = "dialog:select-schedule-logo-directory";
 const SELECT_AGE_DIRECTORY_CHANNEL: DesktopChannel = "dialog:select-age-directory";
@@ -76,6 +77,17 @@ contextBridge.exposeInMainWorld("gruberDesktop", {
     ipcRenderer.invoke(SELECT_MEDIA_DIRECTORY_CHANNEL) as Promise<string | null>,
   selectMediaFiles: (): Promise<string[]> =>
     ipcRenderer.invoke(SELECT_MEDIA_FILES_CHANNEL) as Promise<string[]>,
+  browseMedia: (directoryPath: string | null): Promise<{
+    directoryPath: string | null;
+    parentPath?: string | null;
+    entries: { name: string; path: string; directory: boolean }[];
+    truncated?: boolean;
+  }> => ipcRenderer.invoke(BROWSE_MEDIA_CHANNEL, directoryPath) as Promise<{
+    directoryPath: string | null;
+    parentPath?: string | null;
+    entries: { name: string; path: string; directory: boolean }[];
+    truncated?: boolean;
+  }>,
   selectScheduleFile: (): Promise<string | null> =>
     ipcRenderer.invoke(SELECT_SCHEDULE_FILE_CHANNEL) as Promise<string | null>,
   selectEncodingSettingsFile: (): Promise<{ content: string; filePath: string } | null> =>

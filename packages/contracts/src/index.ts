@@ -205,6 +205,7 @@ export type EncodingSettingsFile = z.infer<typeof encodingSettingsFileSchema>;
 export const mediaProbeSchema = z.object({
   filePath: z.string().min(1),
   name: z.string().min(1),
+  containerFormat: z.string().optional(),
   durationSeconds: z.number().nonnegative(),
   videoCodec: z.string(),
   videoProfile: z.string(),
@@ -1177,6 +1178,19 @@ export const videoEncodingSchema = z.object({
   bFrames: z.number().int().min(0).max(16).default(0),
   closedGop: z.boolean().default(true),
 }).superRefine((video, context) => {
+  if (video.width % 2 !== 0) {
+    context.addIssue({ code: "custom", message: "Video width must be even", path: ["width"] });
+  }
+  if (video.height % 2 !== 0) {
+    context.addIssue({ code: "custom", message: "Video height must be even", path: ["height"] });
+  }
+  if (video.rateControl === "vbr" && video.maxBitrateKbps < video.targetBitrateKbps) {
+    context.addIssue({
+      code: "custom",
+      message: "Maximum bitrate must be at least the target bitrate in VBR mode",
+      path: ["maxBitrateKbps"],
+    });
+  }
   if (video.bFrames >= video.gopSize) {
     context.addIssue({
       code: "custom",
@@ -1778,6 +1792,7 @@ export const workspaceSessionAssetSchema = z.object({
   progress: z.number().min(0).max(100).optional(),
   preview: z.string().min(1),
   filePath: z.string().min(1),
+  containerFormat: z.string().optional(),
   colorSpace: z.string(),
   audio: z.string(),
   hasAudio: z.boolean().optional(),
@@ -1918,6 +1933,12 @@ export const workspaceSessionSnapshotSchema = z.object({
   subtitleLibrary: workspaceSubtitleLibrarySchema.nullable().default(null),
   startMarker: scheduleStartMarkerSchema.nullable().default(null),
   settings: z.record(z.string(), workspaceSettingValueSchema),
+  inputProfile: z.object({
+    container: z.string().min(1),
+    codec: z.string().min(1),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+  }).nullable().default(null),
 });
 
 export const workspaceSessionCheckpointSchema = z.object({

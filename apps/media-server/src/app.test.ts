@@ -518,6 +518,18 @@ test("GET /api/playout/status starts idle", async () => {
   }
 });
 
+test("on-demand transport preview cannot start without an on-air programme", async () => {
+  const app = buildApp({ logger: false });
+  try {
+    const response = await app.inject({ method: "POST", url: "/api/playout/preview/start" });
+    assert.equal(response.statusCode, 409);
+    const status = await app.inject({ method: "GET", url: "/api/playout/status" });
+    assert.equal(playoutStatusSchema.parse(status.json()).previewPath, null);
+  } finally {
+    await app.close();
+  }
+});
+
 test("GET /api/playout/audio-level returns the live meter sample", async () => {
   const app = buildApp({ logger: false });
   try {
@@ -3146,6 +3158,8 @@ test(
 
       const wallStartedAt = Date.now();
       await supervisor.start(request);
+      assert.equal(supervisor.getStatus().previewPath, null);
+      assert.match((await supervisor.startPreview()).previewPath ?? "", /transport-index\.m3u8/);
       const hotChangedPlaylist = [
         { ...request.playlist[0]!, id: "already-played-in-ui" },
         ...request.playlist.map((item, index) => index === 1
@@ -3283,6 +3297,61 @@ test(
       await restoredMediaPreview.close();
       await supervisor.close();
       await rm(directory, { force: true, recursive: true });
+    }
+  },
+);
+
+test(
+  "completed playout restarts in free mode and hot take closes preview processes",
+  { skip: process.env.GRUBER_RUN_FFMPEG_TESTS !== "1", timeout: 30_000 },
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "fluxio-mode-switch-"));
+    const clip = path.join(directory, "clip.mp4");
+    const previewDirectory = path.join(directory, "preview");
+    const outputPort = await testUdpPort();
+    const receiver = createSocket("udp4");
+    await new Promise<void>((resolve, reject) => {
+      receiver.once("error", reject);
+      receiver.bind(outputPort, "127.0.0.1", resolve);
+    });
+    const capabilities = new FfmpegCapabilitiesService();
+    const supervisor = new PlayoutSupervisor(capabilities, previewDirectory);
+    try {
+      await runCommand(capabilities.ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "2.2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", clip,
+      ]);
+      const request = baseRequest();
+      request.playlist = [{ ...request.playlist[0]!, filePath: clip }];
+      request.video.width = 320;
+      request.video.height = 180;
+      request.video.preset = "ultrafast";
+      request.endpoint = {
+        protocol: "udp", host: "127.0.0.1", port: outputPort,
+        packetSize: 1_316, ttl: 1, localAddress: "",
+        mpegTs: { ...defaultMpegTsOutputSettings },
+      };
+      await supervisor.start(request);
+      await supervisor.startPreview();
+      const deadline = Date.now() + 15_000;
+      while (["starting", "running"].includes(supervisor.getStatus().state)) {
+        if (Date.now() > deadline) throw new Error("Scheduled playout did not finish");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(supervisor.getStatus().state, "completed");
+      const restarted = await supervisor.start({ ...request, repeatPlaylist: true });
+      assert.ok(["starting", "running"].includes(restarted.state));
+      await supervisor.startPreview();
+      const taken = await supervisor.take({ ...request, repeatPlaylist: false });
+      assert.ok(["starting", "running"].includes(taken.state));
+      await supervisor.stop();
+    } finally {
+      receiver.close();
+      await supervisor.close();
+      await rm(directory, { force: true, recursive: true, maxRetries: 10, retryDelay: 100 });
     }
   },
 );

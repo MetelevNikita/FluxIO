@@ -4,7 +4,7 @@ export const initialBroadcastSettings: BroadcastSettings = {
   videoCodec: "H.265",
   videoHardware: "off" as const,
   autoResumeOnLaunch: false,
-  profile: "High Profile",
+  profile: "Main Profile",
   level: "5.1",
   preset: 18,
   width: 3840,

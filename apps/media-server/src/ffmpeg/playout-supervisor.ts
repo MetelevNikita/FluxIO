@@ -244,6 +244,8 @@ export class PlayoutSupervisor {
   #subtitleKillTimer: NodeJS.Timeout | null = null;
   #transportPreviewKillTimer: NodeJS.Timeout | null = null;
   #transportPreviewRestartTimer: NodeJS.Timeout | null = null;
+  #transportPreviewStopping: Promise<void> | null = null;
+  #closingDirectoryProcesses = new Set<Promise<void>>();
   #request: StartPlayoutRequest | null = null;
   #items: PreparedPlayoutItem[] = [];
   /** Кодировщик, выбранный на старте сессии; `null` — эфир ещё не готовился. */
@@ -278,6 +280,7 @@ export class PlayoutSupervisor {
   #subtitleLogBuffer = "";
   #transportPreviewLogBuffer = "";
   #transportPreviewRestartAttempts = 0;
+  #transportPreviewEnabled = false;
   #lastLoggedFrame = -1;
   #lastConsoleProgressSeconds = Number.NEGATIVE_INFINITY;
   #lastConsoleItemIndex = -1;
@@ -607,6 +610,39 @@ export class PlayoutSupervisor {
     return this.#startPrepared(withBarsFallback(this.#withSupportedFeatures(request)));
   }
 
+  async startPreview(): Promise<PlayoutStatus> {
+    if (!this.#tsduckChild || !["starting", "running"].includes(this.#status.state)) {
+      throw new PlayoutConflictError("Playout is not running");
+    }
+    this.#transportPreviewEnabled = true;
+    try {
+      await this.#spawnTransportPreview();
+      this.#applyCommandStatus(this.#status.totalDurationSeconds, this.#status.endpointLabel ?? "");
+      return this.getStatus();
+    } catch (error) {
+      this.#transportPreviewEnabled = false;
+      this.#status.previewPath = null;
+      throw error;
+    }
+  }
+
+  async stopPreview(): Promise<PlayoutStatus> {
+    if (this.#transportPreviewArgs.length === 0) {
+      throw new PlayoutPreflightError("On-demand preview is available for MPEG-TS output only");
+    }
+    this.#transportPreviewEnabled = false;
+    this.#status.previewPath = null;
+    const child = this.#transportPreviewChild;
+    const stopping = child
+      ? new Promise<void>((resolve) => child.once("close", () => resolve()))
+      : this.#transportPreviewStopping;
+    this.#transportPreviewStopping = stopping;
+    this.#terminateTransportPreview();
+    if (stopping) await stopping;
+    if (this.#transportPreviewStopping === stopping) this.#transportPreviewStopping = null;
+    return this.getStatus();
+  }
+
   async take(request: StartPlayoutRequest): Promise<PlayoutStatus> {
     if (this.#takeInProgress) {
       throw new PlayoutConflictError("A hot take is already in progress");
@@ -650,6 +686,7 @@ export class PlayoutSupervisor {
       throw new PlayoutConflictError("A playout session is already active");
     }
 
+    this.#transportPreviewEnabled = false;
     this.#request = request;
     this.#status = {
       ...idleStatus(),
@@ -699,7 +736,8 @@ export class PlayoutSupervisor {
       const resolvedRequest = next.request;
       this.#request = resolvedRequest;
       this.#items = next.items;
-      await rm(this.previewDirectory, { force: true, recursive: true });
+      await this.#waitForDirectoryProcesses();
+      await rm(this.previewDirectory, { force: true, recursive: true, maxRetries: 10, retryDelay: 100 });
       await mkdir(this.previewDirectory, { recursive: true });
       this.#branchPlans = [];
       await this.#prepareLoopCommands();
@@ -724,7 +762,7 @@ export class PlayoutSupervisor {
       }
       if (usesTsdDuckTransport(resolvedRequest)) {
         await this.#spawnTsdDuck();
-        await this.#spawnTransportPreview();
+        if (this.#transportPreviewEnabled) await this.#spawnTransportPreview();
       }
       await this.#outputs.startEnabled();
       this.#startResourceSampling();
@@ -1192,7 +1230,8 @@ export class PlayoutSupervisor {
     const selectedPreviewPath = this.#transportPreviewArgs.length > 0
       ? transportPreviewPath
       : previewPath;
-    this.#status.previewPath = `${selectedPreviewPath}?${previewVersion}`;
+    this.#status.previewPath = this.#transportPreviewArgs.length === 0 || this.#transportPreviewEnabled
+      ? `${selectedPreviewPath}?${previewVersion}` : null;
   }
 
   #readProgress(chunk: Buffer): void {
@@ -1575,10 +1614,11 @@ export class PlayoutSupervisor {
 
   async #restartLoop(): Promise<void> {
     try {
+      await this.#waitForDirectoryProcesses();
       await this.#prepareLoopCommands();
       if (this.#request && usesTsdDuckTransport(this.#request)) {
         await this.#spawnTsdDuck();
-        await this.#spawnTransportPreview();
+        if (this.#transportPreviewEnabled) await this.#spawnTransportPreview();
       }
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
@@ -1619,12 +1659,13 @@ export class PlayoutSupervisor {
       this.#status.queuedFutureItems = 0;
       this.#status.totalItems = prepared.items.length;
       this.#resetLoopProgress();
-      await rm(this.previewDirectory, { force: true, recursive: true });
+      await this.#waitForDirectoryProcesses();
+      await rm(this.previewDirectory, { force: true, recursive: true, maxRetries: 10, retryDelay: 100 });
       await mkdir(this.previewDirectory, { recursive: true });
       await this.#prepareLoopCommands();
       if (usesTsdDuckTransport(prepared.request)) {
         await this.#spawnTsdDuck();
-        await this.#spawnTransportPreview();
+        if (this.#transportPreviewEnabled) await this.#spawnTransportPreview();
       }
       if (this.#subtitleArgs.length > 0) {
         await this.#spawnDvbSubtitles();
@@ -2208,6 +2249,8 @@ export class PlayoutSupervisor {
   }
 
   async #spawnTransportPreview(): Promise<void> {
+    if (this.#transportPreviewStopping) await this.#transportPreviewStopping;
+    if (!this.#transportPreviewEnabled) return;
     if (this.#transportPreviewArgs.length === 0 || this.#transportPreviewChild) return;
     if (this.#transportPreviewRestartTimer) {
       clearTimeout(this.#transportPreviewRestartTimer);
@@ -2272,7 +2315,7 @@ export class PlayoutSupervisor {
   #scheduleTransportPreviewRestart(reason: string): void {
     const playoutActive = Boolean(this.#tsduckChild) &&
       ["starting", "running"].includes(this.#status.state);
-    if (!playoutActive || this.#transportPreviewArgs.length === 0) return;
+    if (!playoutActive || !this.#transportPreviewEnabled || this.#transportPreviewArgs.length === 0) return;
     if (this.#transportPreviewRestartAttempts >= 3) {
       this.#appendEvent(`Final transport preview unavailable after 3 retries (${reason})`);
       return;
@@ -2526,6 +2569,7 @@ export class PlayoutSupervisor {
     if (!child) return;
     this.#tsduckChild = null;
     this.#expectedTsdDuckStops.add(child);
+    this.#trackDirectoryProcessClose(child);
     child.kill("SIGTERM");
     this.#tsduckKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
     this.#tsduckKillTimer.unref();
@@ -2540,6 +2584,7 @@ export class PlayoutSupervisor {
     if (!child) return;
     this.#subtitleChild = null;
     this.#expectedSubtitleStops.add(child);
+    this.#trackDirectoryProcessClose(child);
     child.kill("SIGTERM");
     this.#subtitleKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
     this.#subtitleKillTimer.unref();
@@ -2554,9 +2599,22 @@ export class PlayoutSupervisor {
     if (!child) return;
     this.#transportPreviewChild = null;
     this.#expectedTransportPreviewStops.add(child);
+    this.#trackDirectoryProcessClose(child);
     child.kill("SIGTERM");
     this.#transportPreviewKillTimer = setTimeout(() => child.kill("SIGKILL"), 3_000);
     this.#transportPreviewKillTimer.unref();
+  }
+
+  #trackDirectoryProcessClose(child: ChildProcessWithoutNullStreams): void {
+    // На Windows cwd TSDuck и открытые HLS/SRT-файлы держат каталог даже после
+    // kill(); удалять его можно только после события close.
+    const closing = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    this.#closingDirectoryProcesses.add(closing);
+    void closing.then(() => this.#closingDirectoryProcesses.delete(closing));
+  }
+
+  async #waitForDirectoryProcesses(): Promise<void> {
+    await Promise.all(this.#closingDirectoryProcesses);
   }
 
   #terminateFfmpeg(): void {
@@ -2983,26 +3041,24 @@ function validateCapabilities(
   // об этом посреди эфира пропущенными кадрами — худший из вариантов.
   // Подмену на программный кодировщик делать нельзя: оператор выбрал ускоритель
   // именно потому, что программный не тянет.
-  if (request.video.hardware !== "off") {
-    let resolved;
-    try {
-      resolved = resolveVideoEncoder(request.video, capabilities.videoEncoders);
-    } catch (reason) {
-      throw new PlayoutPreflightError(
-        reason instanceof Error ? reason.message : String(reason),
-      );
-    }
-    if (
-      request.video.fieldOrder !== "progressive" &&
-      !hardwareSupportsInterlace(resolved.vendor)
-    ) {
+  let resolved;
+  try {
+    resolved = resolveVideoEncoder(request.video, capabilities.videoEncoders);
+  } catch (reason) {
+    throw new PlayoutPreflightError(
+      reason instanceof Error ? reason.message : String(reason),
+    );
+  }
+  if (
+    request.video.fieldOrder !== "progressive" &&
+    !hardwareSupportsInterlace(resolved.vendor)
+  ) {
       // Отдать прогрессив вместо 50i — это не «чуть хуже», а несовпадение
       // с профилем: головная станция ждёт поля.
       throw new PlayoutPreflightError(
         `${resolved.name} cannot encode interlaced video. ` +
           "Switch the field order to progressive, choose QSV, or turn hardware encoding off.",
       );
-    }
   }
   if (request.scte35.enabled && request.endpoint.protocol === "rtmp") {
     throw new PlayoutPreflightError(
@@ -3053,6 +3109,11 @@ function validateCapabilities(
       `FFmpeg does not support ${request.video.codec.toUpperCase()} encoding`,
     );
   }
+  if (!capabilities.audioEncoders.includes(request.audio.codec)) {
+    throw new PlayoutPreflightError(
+      `This FFmpeg build has no '${request.audio.codec}' audio encoder`,
+    );
+  }
   for (const stream of requestPlayoutStreams(request)) {
     if (stream.endpoint.protocol === "rtmp" && !capabilities.supports.rtmp) {
       throw new PlayoutPreflightError("FFmpeg does not support RTMP output");
@@ -3075,6 +3136,21 @@ function validateCapabilities(
     }
     if (!capabilities.supports[profile.video.codec]) {
       throw new PlayoutPreflightError(`${stream.name}: FFmpeg lacks the selected video codec`);
+    }
+    try {
+      resolveVideoEncoder(
+        { ...profile.video, hardware: "off" },
+        capabilities.videoEncoders,
+      );
+    } catch (reason) {
+      throw new PlayoutPreflightError(
+        `${stream.name}: ${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    }
+    if (!capabilities.audioEncoders.includes(profile.audio.codec)) {
+      throw new PlayoutPreflightError(
+        `${stream.name}: FFmpeg has no '${profile.audio.codec}' audio encoder`,
+      );
     }
     const configured = endpointMpegTsSettings(stream.endpoint).transportBitrateKbps;
     const minimum = branchTransportBitrateBps(profile) / 1_000;

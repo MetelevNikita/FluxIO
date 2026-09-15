@@ -59,13 +59,13 @@ export class FfmpegCapabilitiesService {
         srt: outputProtocols.includes("srt"),
         rtmp: outputProtocols.includes("rtmp"),
         h264: videoEncoders.some((name) =>
-          ["libx264", "h264_nvenc", "h264_qsv", "h264_vaapi", "h264_videotoolbox"].includes(name),
+          ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi", "h264_videotoolbox"].includes(name),
         ),
         h265: videoEncoders.some((name) =>
-          ["libx265", "hevc_nvenc", "hevc_qsv", "hevc_vaapi", "hevc_videotoolbox"].includes(name),
+          ["libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi", "hevc_videotoolbox"].includes(name),
         ),
-        mpeg2: videoEncoders.includes("mpeg2video"),
-        aac: audioEncoders.includes("aac") || audioEncoders.includes("aac_at"),
+        mpeg2: videoEncoders.some((name) => ["mpeg2video", "mpeg2_qsv", "mpeg2_vaapi"].includes(name)),
+        aac: audioEncoders.includes("aac"),
         burnInSubtitles: hasFilter(filters.stdout, "subtitles"),
         dynamicText: hasFilter(filters.stdout, "drawtext"),
       },

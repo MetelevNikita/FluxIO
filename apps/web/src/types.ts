@@ -42,6 +42,7 @@ export interface MediaAsset {
   progress?: number;
   preview: string;
   filePath: string;
+  containerFormat?: string;
   colorSpace: string;
   audio: string;
   hasAudio?: boolean;
